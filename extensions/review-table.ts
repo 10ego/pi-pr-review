@@ -23,6 +23,8 @@ interface Finding {
 	code_location?: {
 		absolute_file_path?: string | null;
 		line_range?: { start?: number; end?: number };
+		side?: string | null;
+		commentable?: boolean;
 	} | null;
 }
 
@@ -139,11 +141,21 @@ function location(f: Finding): string {
 	const p = f.code_location?.absolute_file_path;
 	if (!p) return "—";
 	const lr = f.code_location?.line_range;
+	const side = (f.code_location?.side ?? "").toString().toUpperCase();
+	const sideSuffix = side === "LEFT" ? " (LEFT)" : "";
 	if (lr && lr.start != null) {
 		const end = lr.end != null && lr.end !== lr.start ? `-${lr.end}` : "";
-		return `${p}:${lr.start}${end}`;
+		return `${p}:${lr.start}${end}${sideSuffix}`;
 	}
-	return p;
+	return `${p}${sideSuffix}`;
+}
+
+/** Whether a finding carries enough diff-anchored data to post as an inline comment. */
+function isCommentable(f: Finding): boolean {
+	const cl = f.code_location;
+	if (!cl || !cl.absolute_file_path) return false;
+	if (cl.commentable === false) return false;
+	return cl.line_range?.start != null;
 }
 
 function conf(n: number | undefined): string {
@@ -204,16 +216,18 @@ function renderReviewMarkdown(r: Review): string {
 	if (findings.length === 0) {
 		out.push("_No issues found — nit through P0._", "");
 	} else {
-		out.push("| # | Sev | Blk | Finding | Location | Conf |", "|---|:--:|:--:|---|---|:--:|");
+		const inlineCount = findings.filter(isCommentable).length;
+		out.push("| # | Sev | Blk | Inline | Finding | Location | Conf |", "|---|:--:|:--:|:--:|---|---|:--:|");
 		findings.forEach((f, i) => {
 			out.push(
-				`| ${i + 1} | ${severityLabel(f)} | ${isBlocking(f) ? "yes" : "—"} | ${cell(titleText(f))} | \`${cell(location(f))}\` | ${conf(f.confidence_score)} |`,
+				`| ${i + 1} | ${severityLabel(f)} | ${isBlocking(f) ? "yes" : "—"} | ${isCommentable(f) ? "✎" : "—"} | ${cell(titleText(f))} | \`${cell(location(f))}\` | ${conf(f.confidence_score)} |`,
 			);
 		});
-		out.push("");
+		out.push("", `_✎ = has diff-anchored location postable as an inline comment (${inlineCount}/${findings.length})._`, "");
 		findings.forEach((f, i) => {
 			out.push(`#### ${i + 1}. [${severityLabel(f)}] ${cell(titleText(f))}`);
-			out.push(`\`${location(f)}\` · confidence ${conf(f.confidence_score)} · ${isBlocking(f) ? "blocking" : "non-blocking"}`, "");
+			const anchor = isCommentable(f) ? "inline-ready" : "summary-only";
+			out.push(`\`${location(f)}\` · confidence ${conf(f.confidence_score)} · ${isBlocking(f) ? "blocking" : "non-blocking"} · ${anchor}`, "");
 			if (f.body?.trim()) out.push(f.body.trim(), "");
 		});
 	}

@@ -118,7 +118,11 @@ For every candidate finding: confirm it is real (read surrounding code if needed
 - **body**: concise valid Markdown explaining *why* it matters and citing the file/lines/function. State up front any scenario, environment, or input required for it to bite, and match tone to real severity (never overstate a nit).
 - No code chunk longer than 3 lines; wrap code in inline backticks or a fenced block. Matter-of-fact tone; no flattery, no accusation.
 - `severity` must be one of `P0|P1|P2|P3|nit` and match the title tag; `blocking` matches the rule above.
-- `code_location` should point at the changed code (tightest line range that pinpoints the issue). Use `null` for a repo-wide observation with no single line.
+- `code_location` must carry everything needed to post the finding as a GitHub **inline review comment** whenever the code it references is part of the diff:
+  - `absolute_file_path`: the file's **repo-relative** path exactly as it appears in the PR diff (this is GitHub's `path`, e.g. `pkg/store/cache.go`). Not an on-disk absolute path.
+  - `line_range`: the line numbers **on `side`** as they appear in the diff — new-file line numbers for `RIGHT`, old-file line numbers for `LEFT`. Compute them from the diff's `@@ -old,+new @@` hunk headers. Keep it tight; use `start == end` for a single line, and for a multi-line range `start` must be `< end` and inside the *same* hunk.
+  - `side`: `RIGHT` for added or context lines, `LEFT` for removed lines.
+  - `commentable`: `true` only when the cited lines lie **inside a diff hunk** (GitHub only accepts inline comments on diff lines). Set it to `false` — or set `code_location` to `null` — for observations about unchanged code, callers elsewhere, or repo-wide notes; those are reported in the summary rather than inline.
 
 ## Verdict
 
@@ -133,14 +137,22 @@ For every candidate finding: confirm it is real (read surrounding code if needed
 Analysis-only is the default. When comment mode is ON, after finalizing, also post to the PR via `gh`. Your terminal reply is still the JSON below — comment mode only controls GitHub writes.
 
 - Post **one summary review comment** with `gh pr comment $1 --body "..."` containing the overview, verification line, strengths, a findings table, and the verdict.
-- Post **inline comments** for each blocking, `P2`, and `P3` finding (anchored to the head SHA). Fold `nit`s into the summary comment rather than spamming inline; you may still leave an inline `nit` when it is location-specific and useful. Never post duplicate comments.
+- Post **inline comments** for each blocking, `P2`, and `P3` finding whose `code_location.commentable` is `true`, anchored to the head SHA. Fold `nit`s and any non-commentable findings into the summary comment rather than spamming inline (you may still leave an inline `nit` when it is location-specific and useful). Never post duplicate comments. Use the finding's own anchor fields:
 
   ```
+  # single line  (line_range.start == line_range.end)
   gh api repos/{owner}/{repo}/pulls/$1/comments \
     -f body='<comment>' -f commit_id='<headRefOid>' \
-    -f path='<file>' -F line=<line> -f side='RIGHT'
+    -f path='<absolute_file_path>' -F line=<line_range.end> -f side='<side>'
+
+  # multi-line  (line_range.start < line_range.end)
+  gh api repos/{owner}/{repo}/pulls/$1/comments \
+    -f body='<comment>' -f commit_id='<headRefOid>' -f path='<absolute_file_path>' \
+    -F start_line=<line_range.start> -f start_side='<side>' \
+    -F line=<line_range.end> -f side='<side>'
   ```
 
+  - `path` = `absolute_file_path`, `side`/`start_side` = the finding's `side`, and the line numbers come straight from `line_range`. If an inline post is rejected (e.g. the line is not part of the diff), fold that finding into the summary comment instead.
   - For small self-contained fixes, include a ` ```suggestion ` block, but only if committing it fixes the issue entirely; preserve exact leading whitespace and add/remove no indentation unless that is the fix. For larger fixes, describe them in prose.
   - When linking to code in a comment body, use this exact permalink form or GitHub Markdown won't render it: `https://github.com/{owner}/{repo}/blob/<full-head-SHA>/path/to/file#Lstart-Lend` — full commit SHA, matching repo, `#` after the filename, `Lstart-Lend` range, with a line of context on each side.
 - If there are no findings, post the summary comment with the overview, verification, strengths, and an "Approve — no issues found" verdict.
@@ -165,8 +177,10 @@ Return the JSON object below and nothing else. **Do not** wrap it in Markdown fe
       "body": "<valid Markdown: why it matters, with file/line citations and the conditions to trigger it>",
       "confidence_score": 0.0,
       "code_location": {
-        "absolute_file_path": "<file path or null>",
-        "line_range": { "start": 0, "end": 0 }
+        "absolute_file_path": "<repo-relative path exactly as in the diff, or null>",
+        "line_range": { "start": 0, "end": 0 },
+        "side": "RIGHT",
+        "commentable": true
       }
     }
   ],
@@ -181,5 +195,5 @@ Return the JSON object below and nothing else. **Do not** wrap it in Markdown fe
 - `verdict` is exactly `"approve"`, `"request_changes"`, or `"comment"`.
 - `overall_correctness` is exactly `"patch is correct"` or `"patch is incorrect"`.
 - Each finding's `severity` is one of `P0|P1|P2|P3|nit` and must match its `[..]` title tag; `blocking` is `true` only for `P0`/`P1`.
-- `code_location` points at the changed code with the tightest line range (or `null` for repo-wide observations).
+- `code_location` is diff-anchored so commentable findings can be posted inline: repo-relative `absolute_file_path`, `line_range` on `side` (new-file lines for `RIGHT`, old-file for `LEFT`), `side` = `RIGHT|LEFT`, and `commentable` = whether the lines are inside a diff hunk. Use `null` (or `commentable: false`) for repo-wide/out-of-diff observations.
 - Capture findings at **every** severity — nits included. Return an empty `findings` array only when there is genuinely nothing to note, and still fill in `overview`, `strengths`, `notes`, and the verdict.

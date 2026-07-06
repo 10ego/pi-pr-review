@@ -185,7 +185,9 @@ function buildSubagentSystemPrompt(tier: Tier): string {
 			"- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
 			"- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
 			"- why: the impact and the exact input/environment needed for it to bite",
-			"- location: <file path>:<start-end line range> (or 'repo-wide')",
+			"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
+			"- side: RIGHT for added/context lines, LEFT for removed lines",
+			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
 			"- confidence: a float 0.0-1.0",
 			"If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
 		);

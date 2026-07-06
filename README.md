@@ -131,12 +131,17 @@ Under the hood the assistant replies with **only** the JSON object (no prose, no
   "strengths": ["Reuses FormatTimestamp instead of ad-hoc formatting; net -3 lines."],
   "findings": [
     {
-      "title": "[nit] Confirm common.gen.go came from codegen, not a hand-edit",
-      "severity": "nit",
-      "blocking": false,
-      "body": "If hand-edited, the next `make generate` could clobber it.",
-      "confidence_score": 0.6,
-      "code_location": null
+      "title": "[P1] Guard against nil map before write",
+      "severity": "P1",
+      "blocking": true,
+      "body": "Panics under concurrent writes; guard with a mutex.",
+      "confidence_score": 0.9,
+      "code_location": {
+        "absolute_file_path": "pkg/store/cache.go",
+        "line_range": { "start": 42, "end": 45 },
+        "side": "RIGHT",
+        "commentable": true
+      }
     }
   ],
   "notes": { "correctness": "build confirms; no unused imports", "security": "none", "performance": "negligible" },
@@ -147,7 +152,9 @@ Under the hood the assistant replies with **only** the JSON object (no prose, no
 }
 ```
 
-Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2]` normal · `[P3]` low · `[nit]` trivial/optional. Verdict is `approve` (no blocking findings), `request_changes` (a blocking finding exists), or `comment`. With `--comment`, a summary review is posted plus inline comments for blocking/P2/P3 findings (nits folded into the summary).
+Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2]` normal · `[P3]` low · `[nit]` trivial/optional. Verdict is `approve` (no blocking findings), `request_changes` (a blocking finding exists), or `comment`.
+
+**Inline-comment ready.** Each finding's `code_location` is diff-anchored — repo-relative `absolute_file_path`, `line_range` on `side` (`RIGHT` for added/context lines, `LEFT` for removed), and `commentable` (whether the lines are inside a diff hunk). The rendered table shows an **Inline** ✎ column for findings that can be posted as GitHub inline review comments. With `--comment`, a summary review is posted plus inline comments (single- or multi-line, using each finding's anchor) for every commentable blocking/P2/P3 finding; nits and off-diff/repo-wide observations fold into the summary.
 
 ## What's in the package
 
