@@ -19,7 +19,7 @@ No model name is hardcoded anywhere. The package ships an extension that adds **
 
 ## Install
 
-Install as a pi package (user scope):
+Install straight from the public repo (user scope):
 
 ```bash
 pi install git:github.com/10ego/pi-pr-review
@@ -31,7 +31,7 @@ Or project scope (shareable with your team, auto-installed on trust):
 pi install -l git:github.com/10ego/pi-pr-review
 ```
 
-You can also publish it to npm/git and install with `pi install npm:pi-pr-review` or `pi install git:github.com/<you>/pi-pr-review`.
+You can also install from a local checkout by pointing at the package directory, e.g. `pi install ./pi-pr-review` (add `-l` for project scope).
 
 ### Alternative: use the template without packaging
 
