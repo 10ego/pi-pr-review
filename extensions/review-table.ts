@@ -55,10 +55,8 @@ function hasToolCall(message: { content?: MessagePart[] }): boolean {
 	return Array.isArray(message.content) && message.content.some((p) => p.type === "toolCall");
 }
 
-/** Extract the first balanced {...} object from a string (string-literal aware). */
-function sliceBalancedObject(s: string): string | null {
-	const start = s.indexOf("{");
-	if (start < 0) return null;
+/** Extract the balanced {...} object starting at index `start` (string-literal aware). */
+function sliceBalancedFrom(s: string, start: number): string | null {
 	let depth = 0;
 	let inStr = false;
 	let esc = false;
@@ -80,29 +78,41 @@ function sliceBalancedObject(s: string): string | null {
 	return null;
 }
 
+function isReviewShape(v: unknown): v is Review {
+	if (!v || typeof v !== "object") return false;
+	const r = v as Review;
+	return Array.isArray(r.findings) && (typeof r.overall_correctness === "string" || typeof r.verdict === "string");
+}
+
+/**
+ * Find the review JSON even if the model wrapped it in fences or prepended prose
+ * that itself contains braces. Scans every `{` in each source and returns the LAST
+ * valid review-shaped object (the real payload is normally last).
+ */
 function parseReview(text: string): Review | null {
-	const candidates: string[] = [];
-	const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-	if (fence?.[1]) candidates.push(fence[1]);
-	candidates.push(text);
-	for (const candidate of candidates) {
-		const objStr = sliceBalancedObject(candidate);
-		if (!objStr) continue;
-		try {
-			const parsed = JSON.parse(objStr) as Review;
-			if (
-				parsed &&
-				typeof parsed === "object" &&
-				Array.isArray(parsed.findings) &&
-				(typeof parsed.overall_correctness === "string" || typeof parsed.verdict === "string")
-			) {
-				return parsed;
-			}
-		} catch {
-			/* try next candidate */
-		}
+	const sources: string[] = [];
+	const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
+	for (let m = fenceRe.exec(text); m; m = fenceRe.exec(text)) {
+		if (m[1]) sources.push(m[1]);
 	}
-	return null;
+	sources.push(text);
+
+	let best: Review | null = null;
+	for (const src of sources) {
+		for (let i = 0; i < src.length; i++) {
+			if (src[i] !== "{") continue;
+			const objStr = sliceBalancedFrom(src, i);
+			if (!objStr) continue;
+			try {
+				const parsed = JSON.parse(objStr);
+				if (isReviewShape(parsed)) best = parsed;
+			} catch {
+				/* not JSON starting here; keep scanning */
+			}
+		}
+		if (best) return best; // prefer a match from an earlier (more specific) source
+	}
+	return best;
 }
 
 const SEVERITY_RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 };

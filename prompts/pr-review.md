@@ -8,6 +8,8 @@ Your job: fetch the PR, review the diff between its base branch and its head (me
 
 **Review philosophy — surface everything, then rank it.** Report *every* issue the author would plausibly want to know about, from trivial nits up to blocking defects. Do **not** silently discard minor issues, style, readability, naming, missing edge cases, or "worth confirming" observations — capture them as low-severity findings instead. Then let the **verdict** depend only on *blocking* issues, so a clean PR is still approved while its nits are still recorded. The only things you leave out are non-issues: something that is actually correct, pure speculation you cannot substantiate, or a subjective preference with no concrete benefit.
 
+> **OUTPUT CONTRACT — read this twice.** Your *entire* final message is the single JSON object defined under **OUTPUT FORMAT**, and nothing else: no prose, no Markdown, no headings, no code fences, and **not** the human-readable review. The overview, strengths, verification, notes, and verdict are **fields inside that JSON**, not text you write out. A separate renderer turns the JSON into the formatted table/report for humans — if you write the report yourself instead of the JSON, it will **not** render and the review will be considered failed. Do all your analysis with tools, then emit only the JSON object.
+
 Do **not** assume, name, or switch to any specific model. Model selection is configured by the user, never hardcoded here.
 
 ### Reviewer topology (tiered subagents, with inline fallback)
@@ -161,7 +163,7 @@ Analysis-only is the default. When comment mode is ON, after finalizing, also po
 
 ## OUTPUT FORMAT — your entire response MUST be exactly this JSON
 
-Return the JSON object below and nothing else. **Do not** wrap it in Markdown fences and **do not** add any prose before or after it. (In an interactive terminal it is rendered as a formatted review; in print/json/rpc modes it stays raw JSON for automation.)
+Your final message must be **exactly one JSON object** matching the shape below and nothing else — no leading sentence like "Here is the review", no Markdown, no headings, no ``` fences, no trailing commentary. The first character you emit is `{` and the last is `}`. Put the narrative into the `overview`, `strengths`, `verification`, `notes`, and `verdict` fields; do not also write it as prose. (In an interactive terminal the JSON is rendered as a formatted review table; in print/json/rpc modes it stays raw JSON for automation.)
 
 ```json
 {
