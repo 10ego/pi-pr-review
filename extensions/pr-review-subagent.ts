@@ -172,6 +172,7 @@ function buildSubagentSystemPrompt(tier: Tier): string {
 		TIER_GUIDANCE[tier],
 		"",
 		"Surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
+		"Stay strictly in scope: only report issues caused by or directly relevant to this PR's diff (the changed lines and the code they provably affect). Do NOT flag pre-existing issues in untouched code or audit the wider codebase; if a problem existed before this change, leave it out. Reading surrounding files/callers is for context and confirmation only.",
 	];
 	if (tier === "light") {
 		lines.push(
@@ -188,6 +189,7 @@ function buildSubagentSystemPrompt(tier: Tier): string {
 			"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
 			"- side: RIGHT for added/context lines, LEFT for removed lines",
 			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
+			"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
 			"- confidence: a float 0.0-1.0",
 			"If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
 		);
