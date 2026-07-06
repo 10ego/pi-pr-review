@@ -117,7 +117,9 @@ Type `/` in the pi editor and pick `pr-review`, or:
 
 ### Response format
 
-The assistant's reply is **only** the JSON object (no prose, no fences):
+In the **interactive TUI**, the final JSON is automatically rendered as a table — a verdict summary, a findings table (sorted P0→P3 with priority, location, and confidence), and a details section per finding. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
+
+Under the hood the assistant still replies with **only** the JSON object (no prose, no fences):
 
 ```json
 {
@@ -147,7 +149,8 @@ Priority tags: `[P0]` blocking/drop-everything · `[P1]` urgent · `[P2]` normal
 pi-pr-review/
 ├─ package.json                      # pi manifest: prompts + extensions
 ├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
-└─ extensions/pr-review-subagent.ts  # review_subagent tool + /pr-review-config command
+├─ extensions/pr-review-subagent.ts  # review_subagent tool + /pr-review-config command
+└─ extensions/review-table.ts        # renders the final JSON as a table (TUI only)
 ```
 
 ## Security & cost notes
