@@ -1,0 +1,27 @@
+{
+  "name": "pi-pr-review",
+  "version": "1.0.0",
+  "description": "Model-agnostic GitHub PR code review prompt for pi. Pass a PR number; it derives the base and head branches from the PR in the current repo, reviews the diff, and returns structured JSON findings.",
+  "keywords": [
+    "pi-package",
+    "code-review",
+    "github",
+    "pull-request",
+    "prompt-template"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "prompts": [
+      "./prompts"
+    ],
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}

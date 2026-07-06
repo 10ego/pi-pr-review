@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Logs / temp
+*.log
+tmp/
+.tmp/
