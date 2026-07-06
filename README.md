@@ -6,9 +6,11 @@ Pass a PR number and pi will:
 
 1. Resolve the PR in the **current directory's git repo** via `gh`.
 2. Derive the **base branch** and **head (merging) branch** automatically from the PR.
-3. Review the base↔head diff with disciplined passes (convention compliance, bugs, security/logic), validate each candidate, and filter false positives.
-4. Return a **structured JSON report** (findings with priority tags + an overall-correctness verdict).
-5. Optionally post the findings as inline PR comments (`--comment`).
+3. Review the base↔head diff with disciplined passes (overview, convention compliance, bugs, security/perf, readability), best-effort build/test verification, then validate each candidate.
+4. Return a **full structured review**: overview, strengths, verification, findings at **every** severity (`nit → P3 → P2 → P1 → P0`) with a blocking flag, correctness/security/performance notes, and a verdict.
+5. Optionally post the review + inline PR comments (`--comment`).
+
+**Captures everything, then ranks it.** Unlike a high-signal-only reviewer, it does not discard minor issues — nits, style, naming, missing edge cases, and "worth confirming" observations are all reported as low-severity findings. The **verdict** depends only on *blocking* (P0/P1) findings, so a clean PR is still approved while its nits are still recorded.
 
 No model name is hardcoded anywhere. The package ships an extension that adds **tiered review subagents** — `light` / `medium` / `heavy` — that you map to whatever models you like. If the extension isn't loaded, the same prompt runs every pass inline on your current session model, so it always works.
 
@@ -117,31 +119,35 @@ Type `/` in the pi editor and pick `pr-review`, or:
 
 ### Response format
 
-In the **interactive TUI**, the final JSON is automatically rendered as a table — a verdict summary, a findings table (sorted P0→P3 with priority, location, and confidence), and a details section per finding. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
+In the **interactive TUI**, the final JSON is rendered as a full review: a `## Code Review — PR #N: <title>` header, a **Verification** line, **Overview**, **Strengths**, a **Findings** table (sorted `P0 → nit`, with a blocking column, location, and confidence) plus per-finding details, **Correctness / Security / Performance** notes, and a **Verdict**. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
 
-Under the hood the assistant still replies with **only** the JSON object (no prose, no fences):
+Under the hood the assistant replies with **only** the JSON object (no prose, no fences):
 
 ```json
 {
+  "pr": { "number": 33, "title": "fix(logs): parse date-time log timestamps" },
+  "verification": "`go build ./...` ✅, `go test ./...` ✅ (130 passed)",
+  "overview": "Migrates log timestamps from epoch-ms to RFC3339 to match the endpoint contract.",
+  "strengths": ["Reuses FormatTimestamp instead of ad-hoc formatting; net -3 lines."],
   "findings": [
     {
-      "title": "[P1] Guard against nil map before write",
-      "body": "Explanation of why this is a problem, citing file/lines...",
-      "confidence_score": 0.86,
-      "priority": 1,
-      "code_location": {
-        "absolute_file_path": "pkg/store/cache.go",
-        "line_range": { "start": 42, "end": 45 }
-      }
+      "title": "[nit] Confirm common.gen.go came from codegen, not a hand-edit",
+      "severity": "nit",
+      "blocking": false,
+      "body": "If hand-edited, the next `make generate` could clobber it.",
+      "confidence_score": 0.6,
+      "code_location": null
     }
   ],
-  "overall_correctness": "patch is incorrect",
-  "overall_explanation": "One P1 nil-map write can panic under concurrent access.",
-  "overall_confidence_score": 0.8
+  "notes": { "correctness": "build confirms; no unused imports", "security": "none", "performance": "negligible" },
+  "verdict": "approve",
+  "overall_correctness": "patch is correct",
+  "overall_explanation": "Clean, well-scoped contract-alignment change with matching tests.",
+  "overall_confidence_score": 0.9
 }
 ```
 
-Priority tags: `[P0]` blocking/drop-everything · `[P1]` urgent · `[P2]` normal · `[P3]` nice-to-have. When findings exist and `--comment` is set, each distinct finding is posted once as an inline comment anchored to the PR head commit; with no findings it posts a single "no issues found" summary.
+Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2]` normal · `[P3]` low · `[nit]` trivial/optional. Verdict is `approve` (no blocking findings), `request_changes` (a blocking finding exists), or `comment`. With `--comment`, a summary review is posted plus inline comments for blocking/P2/P3 findings (nits folded into the summary).
 
 ## What's in the package
 
@@ -161,6 +167,7 @@ pi-pr-review/
 
 ## Design notes
 
-- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/already-reviewed, convention-file compliance, high-signal-only, validate-then-filter, optional comment posting with strict GitHub permalink rules) and its multi-model fan-out (haiku/sonnet/opus → configurable light/medium/heavy tiers).
-- **Output** matches the GPT review schema (findings + `overall_correctness`, priority tags, tight `code_location` ranges).
+- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/already-reviewed, overview + strengths, convention-file compliance, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with a multi-model fan-out (configurable light/medium/heavy tiers).
+- **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
+- **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the prompt degrades gracefully to inline passes when the extension is absent.

@@ -159,27 +159,39 @@ function finalAssistantText(messages: Message[]): string {
 
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
-		"You are a fast triage/summary reviewer. Decide review-worthiness and produce a tight summary of intent and risk areas. Do not deep-dive.",
+		"You are a fast overview/summary reviewer. Produce a concise overview of what the change does and how, list the change's genuine strengths, and note risk areas worth a closer look. Do not deep-dive into defects.",
 	medium:
-		"You are a convention-compliance reviewer. Audit changed lines against the in-scope repository convention files (CLAUDE.md / AGENTS.md and equivalents). Flag only clear, quotable rule violations scoped to the changed file.",
+		"You are a convention-compliance reviewer. Audit changed lines against the in-scope repository convention files (CLAUDE.md / AGENTS.md and equivalents). Report clear rule violations (quote the rule) and also softer deviations from documented style as nits.",
 	heavy:
-		"You are a rigorous bug and security/logic reviewer. Hunt for defects that will fail to compile/parse, produce wrong results regardless of input, or introduce security/logic flaws in the changed code. Validate each candidate before reporting; drop anything you cannot confirm.",
+		"You are a rigorous bug, security, logic, and maintainability reviewer. Hunt for defects at every severity in the changed code — from compile/parse failures and wrong results and security holes down to minor correctness smells, missing edge cases, and readability nits. Validate each candidate before reporting; drop only things that are actually correct or that you cannot substantiate.",
 };
 
 function buildSubagentSystemPrompt(tier: Tier): string {
-	return [
+	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
 		"",
-		"Only report HIGH-SIGNAL issues introduced by this change. No style nits, no speculation, no pre-existing issues.",
-		"Return your result as a concise Markdown list. For each candidate finding include, on its own lines:",
-		"- title: an imperative summary prefixed with a priority tag [P0]|[P1]|[P2]|[P3]",
-		"- why: one sentence on the impact and the exact input/environment needed for it to bite",
-		"- location: <file path>:<start-end line range within the diff>",
-		"- confidence: a float 0.0-1.0",
-		"If there are no qualifying findings, reply exactly with: NO FINDINGS.",
-		"Do not attempt to post GitHub comments or modify files. Reviewing only.",
-	].join("\n");
+		"Surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
+	];
+	if (tier === "light") {
+		lines.push(
+			"Return concise Markdown with two sections:",
+			"- 'Overview:' 1-3 short paragraphs on what the PR does and author intent.",
+			"- 'Strengths:' a bullet list of genuine strengths (or 'none').",
+		);
+	} else {
+		lines.push(
+			"Return your findings as a concise Markdown list. For each finding include, on its own lines:",
+			"- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
+			"- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
+			"- why: the impact and the exact input/environment needed for it to bite",
+			"- location: <file path>:<start-end line range> (or 'repo-wide')",
+			"- confidence: a float 0.0-1.0",
+			"If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
+		);
+	}
+	lines.push("Do not attempt to post GitHub comments or modify files. Reviewing only.");
+	return lines.join("\n");
 }
 
 async function writeTempPrompt(tier: Tier, body: string): Promise<{ dir: string; filePath: string }> {
