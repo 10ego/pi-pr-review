@@ -117,6 +117,10 @@ Type `/` in the pi editor and pick `pr-review`, or:
 
 `123` is the PR number in the current repo.
 
+### Duplicate review handling
+
+`--comment` summary comments include a hidden `pi-pr-review` marker with the reviewed `headRefOid`. A later run skips only when it finds a marker for the **current** head SHA. If new commits were pushed after the previous review, the head SHA changes and `/pr-review` reviews the PR again. Older unmarked comments are treated as unknown/stale, not proof that the current head was already reviewed.
+
 ### Response format
 
 In the **interactive TUI**, the final JSON is rendered as a full review: a `## Code Review — PR #N: <title>` header, a **Verification** line, **Overview**, **Strengths**, a **Findings** table (sorted `P0 → nit`, with a blocking column, location, and confidence) plus per-finding details, **Correctness / Security / Performance** notes, and a **Verdict**. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
@@ -174,7 +178,7 @@ pi-pr-review/
 
 ## Design notes
 
-- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
+- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/same-head-already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
 - **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.

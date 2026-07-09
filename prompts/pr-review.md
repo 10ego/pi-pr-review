@@ -58,13 +58,15 @@ gh pr view $1 --json number,title,body,state,isDraft,author,baseRefName,headRefN
 gh pr diff $1
 ```
 
-`baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA (needed for verification and permalinks/inline comments). `gh pr diff $1` is the base↔head diff and is the review artifact you pass to every subagent as `context`.
+`baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA (needed for duplicate-review reconciliation, verification, and permalinks/inline comments). `gh pr diff $1` is the base↔head diff and is the review artifact you pass to every subagent as `context`.
 
 **Skip conditions.** Stop immediately (emit the empty-findings JSON with `verdict: "approve"`, `overall_correctness: "patch is correct"`, and an explanation noting the skip) if any is true:
 - The PR is closed or merged (`state` != OPEN).
 - The PR is a draft (`isDraft` == true).
 - The change obviously does not need review (automated/bot PR, or a trivial change that is clearly correct).
-- A prior review by this bot/user already exists in `comments` (avoid duplicate reviews). Do **not** skip solely because the PR was AI-authored — review those normally.
+- A prior `pi-pr-review` summary comment exists with a hidden marker whose `headRefOid` exactly matches the current `headRefOid` (same PR head already reviewed). Do **not** skip for older markers with a different SHA, unmarked prior comments/reviews, or because the PR was AI-authored — review those normally.
+
+**Duplicate-review reconciliation.** Prior comments are only authoritative when they contain the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If comments contain older unmarked review text, treat it as unknown/stale and continue; unmarked comments cannot prove the current head was reviewed.
 
 Otherwise continue.
 
@@ -148,8 +150,8 @@ Merge duplicate candidate findings across passes, then for every remaining candi
 
 Analysis-only is the default. When comment mode is ON, after finalizing, also post to the PR via `gh`. Your terminal reply is still the JSON below — comment mode only controls GitHub writes.
 
-- Post **one summary review comment** with `gh pr comment $1 --body "..."` containing the overview, verification line, strengths, a findings table, and the verdict.
-- Post **inline comments** for each blocking, `P2`, and `P3` finding whose `code_location.commentable` is `true`, anchored to the head SHA. Fold `nit`s and any non-commentable findings into the summary comment rather than spamming inline (you may still leave an inline `nit` when it is location-specific and useful). Never post duplicate comments. Use the finding's own anchor fields:
+- Post **one summary review comment** with `gh pr comment $1 --body "..."` containing the overview, verification line, strengths, a findings table, and the verdict. End the comment body with this exact hidden reconciliation marker using the current PR head SHA: `<!-- pi-pr-review: {"schema":1,"headRefOid":"<headRefOid>"} -->`. This marker is what future runs use to skip only an already-reviewed identical head.
+- Post **inline comments** for each blocking, `P2`, and `P3` finding whose `code_location.commentable` is `true`, anchored to the head SHA. Fold `nit`s and any non-commentable findings into the summary comment rather than spamming inline (you may still leave an inline `nit` when it is location-specific and useful). Never post duplicate inline comments for the same finding on the same `headRefOid`; comments attached to older SHAs do not make the current head a duplicate. Use the finding's own anchor fields:
 
   ```
   # single line  (line_range.start == line_range.end)
@@ -167,7 +169,7 @@ Analysis-only is the default. When comment mode is ON, after finalizing, also po
   - `path` = `absolute_file_path`, `side`/`start_side` = the finding's `side`, and the line numbers come straight from `line_range`. If an inline post is rejected (e.g. the line is not part of the diff), fold that finding into the summary comment instead.
   - For small self-contained fixes, include a ` ```suggestion ` block, but only if committing it fixes the issue entirely; preserve exact leading whitespace and add/remove no indentation unless that is the fix. For larger fixes, describe them in prose.
   - When linking to code in a comment body, use this exact permalink form or GitHub Markdown won't render it: `https://github.com/{owner}/{repo}/blob/<full-head-SHA>/path/to/file#Lstart-Lend` — full commit SHA, matching repo, `#` after the filename, `Lstart-Lend` range, with a line of context on each side.
-- If there are no findings, post the summary comment with the overview, verification, strengths, and an "Approve — no issues found" verdict.
+- If there are no findings, post the summary comment with the overview, verification, strengths, an "Approve — no issues found" verdict, and the same hidden reconciliation marker.
 
 ---
 
