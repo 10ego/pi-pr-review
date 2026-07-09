@@ -36,6 +36,7 @@ Tier→model mapping is set with `/pr-review-config`; if a tier is unset the sub
 Arguments for this run: `$@`
 - `$1` is the PR number (required).
 - If the token `--comment` appears anywhere in the arguments, "comment mode" is ON. Otherwise it is OFF (analysis only, no writes to GitHub).
+- If `--include-closed` or `--review-closed` appears anywhere in the arguments, review closed/merged PRs without asking for confirmation.
 
 ---
 
@@ -60,15 +61,16 @@ gh pr diff $1
 
 `baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA (needed for duplicate-review reconciliation, verification, and permalinks/inline comments). `gh pr diff $1` is the base↔head diff and is the review artifact you pass to every subagent as `context`.
 
+**Non-open PR confirmation.** If `state` is not `OPEN` and neither `--include-closed` nor `--review-closed` was supplied, do **not** hard-skip and do **not** emit the review JSON yet. Pause and ask exactly one confirmation question: `PR #$1 is <state> (head <headRefOid>). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.` This pre-review confirmation prompt is the only allowed non-JSON response. If the user confirms, continue from Step 2; if needed, rerun Step 1 first to refresh metadata/diff.
+
 **Skip conditions.** Stop immediately (emit the empty-findings JSON with `verdict: "approve"`, `overall_correctness: "patch is correct"`, and an explanation noting the skip) if any is true:
-- The PR is closed or merged (`state` != OPEN).
 - The PR is a draft (`isDraft` == true).
 - The change obviously does not need review (automated/bot PR, or a trivial change that is clearly correct).
 - A prior `pi-pr-review` summary comment exists with a hidden marker whose `headRefOid` exactly matches the current `headRefOid` (same PR head already reviewed). Do **not** skip for older markers with a different SHA, unmarked prior comments/reviews, or because the PR was AI-authored — review those normally.
 
 **Duplicate-review reconciliation.** Prior comments are only authoritative when they contain the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If comments contain older unmarked review text, treat it as unknown/stale and continue; unmarked comments cannot prove the current head was reviewed.
 
-Otherwise continue.
+Otherwise continue. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally; in `--comment` mode, still anchor inline comments to `headRefOid`, but if GitHub rejects inline comments on a non-open PR, fold those findings into the summary comment instead.
 
 ## Step 2 — Gather project convention files
 

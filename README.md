@@ -111,11 +111,17 @@ The orchestrator (which fetches the PR, merges findings, and emits the JSON) and
 Type `/` in the pi editor and pick `pr-review`, or:
 
 ```
-/pr-review 123            # analysis only — prints the JSON report, no GitHub writes
-/pr-review 123 --comment  # also posts inline review comments to the PR
+/pr-review 123                            # analysis only — prints the JSON report, no GitHub writes
+/pr-review 123 --comment                  # also posts inline review comments to the PR
+/pr-review 123 --include-closed           # review a closed/merged PR without a confirmation prompt
+/pr-review 123 --review-closed --comment  # review/comment on a closed/merged PR when GitHub accepts it
 ```
 
 `123` is the PR number in the current repo.
+
+### Closed or merged PRs
+
+Closed/merged PRs no longer hard-skip. If you run `/pr-review 123` on a non-open PR, the prompt asks whether to continue before producing a review. Use `--include-closed` or `--review-closed` to proceed non-interactively. If `--comment` is also used and GitHub rejects inline comments on the non-open PR, findings should be folded into the summary comment instead.
 
 ### Duplicate review handling
 
@@ -123,9 +129,11 @@ Type `/` in the pi editor and pick `pr-review`, or:
 
 ### Response format
 
+For actual review output, the assistant replies with **only** the JSON object (no prose, no fences). The only exception is the pre-review confirmation question for closed/merged PRs when `--include-closed` / `--review-closed` was not supplied.
+
 In the **interactive TUI**, the final JSON is rendered as a full review: a `## Code Review — PR #N: <title>` header, a **Verification** line, **Overview**, **Strengths**, a **Findings** table (sorted `P0 → nit`, with a blocking column, location, and confidence) plus per-finding details, **Correctness / Security / Performance** notes, and a **Verdict**. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
 
-Under the hood the assistant replies with **only** the JSON object (no prose, no fences):
+Example payload:
 
 ```json
 {
@@ -178,7 +186,7 @@ pi-pr-review/
 
 ## Design notes
 
-- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/same-head-already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
+- **Process** mirrors the Claude review workflow (PR-number driven, confirm-before-reviewing closed/merged PRs, skip draft/same-head-already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
 - **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.
