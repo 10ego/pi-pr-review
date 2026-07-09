@@ -12,7 +12,7 @@ Pass a PR number and pi will:
 
 **Captures everything, then ranks it.** Unlike a high-signal-only reviewer, it does not discard minor issues — nits, style, naming, missing edge cases, and "worth confirming" observations are all reported as low-severity findings. The **verdict** depends only on *blocking* (P0/P1) findings, so a clean PR is still approved while its nits are still recorded.
 
-No model name is hardcoded anywhere. The package ships an extension that adds **tiered review subagents** — `light` / `medium` / `heavy` — that you map to whatever models you like. If the extension isn't loaded, the same prompt runs every pass inline on your current session model, so it always works.
+No model name is hardcoded anywhere. The package ships an extension that adds **tiered review subagents** — `light` / `medium` / `heavy` — that you map to whatever models you like. Independent review passes fan out through a batch tool so overview, conventions/maintainability, correctness, and security/performance can run in parallel. If the extension isn't loaded, the same prompt runs every pass inline on your current session model, so it always works.
 
 ## Requirements
 
@@ -56,9 +56,9 @@ The `/pr-review-config` command maps three labels to models:
 
 | Tier | Used for | Pick a model that is… |
 |------|----------|----------------------|
-| `light`  | triage / skip decision / change summary | fast + cheap |
-| `medium` | convention-file (CLAUDE.md/AGENTS.md) compliance | balanced |
-| `heavy`  | bug + security/logic review and validation | strongest |
+| `light`  | overview / strengths / high-level risk scan | fast + cheap |
+| `medium` | convention compliance + readability / maintainability | balanced |
+| `heavy`  | bug + security/logic review | strongest |
 
 ```
 /pr-review-config                                   # open the settings menu (like /settings & /nervous:config)
@@ -95,7 +95,7 @@ Example `pr-review.json`:
 }
 ```
 
-Each tier runs in an **isolated `pi` subprocess** on its configured model. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
+Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
 
 ### 2. The orchestrator / fallback model
 
@@ -162,19 +162,19 @@ Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2
 pi-pr-review/
 ├─ package.json                      # pi manifest: prompts + extensions
 ├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
-├─ extensions/pr-review-subagent.ts  # review_subagent tool + /pr-review-config command
+├─ extensions/pr-review-subagent.ts  # review_subagents/review_subagent tools + /pr-review-config command
 └─ extensions/review-table.ts        # renders the final JSON as a table (TUI only)
 ```
 
 ## Security & cost notes
 
-- The `review_subagent` tool spawns isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Subagents are read-only reviewers (`read,bash,grep,find,ls` by default) and never post comments or edit files.
+- The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Subagents are read-only reviewers (`read,bash,grep,find,ls` by default) and never post comments or edit files.
 - Project-local `pr-review.json` is only read when the project is trusted.
-- Tiered review calls multiple models per PR. Point `light` at a cheap model to keep triage inexpensive; reserve `heavy` for the deep passes.
+- Tiered review calls multiple models per PR, now concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for the deep passes.
 
 ## Design notes
 
-- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/already-reviewed, overview + strengths, convention-file compliance, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with a multi-model fan-out (configurable light/medium/heavy tiers).
+- **Process** mirrors the Claude review workflow (PR-number driven, skip closed/draft/already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
 - **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
-- pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the prompt degrades gracefully to inline passes when the extension is absent.
+- pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.

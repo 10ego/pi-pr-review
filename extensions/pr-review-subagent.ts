@@ -6,14 +6,17 @@
  * - Config surface: `pr-review.json` (user: ~/.pi/agent, project: <repo>/.pi) maps
  *   the labels `light` / `medium` / `heavy` to whatever models you choose.
  *   No model names are hardcoded here — you configure them.
- * - Tool: `review_subagent` spawns an isolated `pi` subprocess on the model bound
- *   to the requested tier and returns its review report.
+ * - Tool: `review_subagent` spawns one isolated `pi` subprocess on the model
+ *   bound to the requested tier and returns its review report.
+ * - Tool: `review_subagents` accepts multiple pass assignments with shared PR
+ *   context and runs those isolated subprocesses concurrently with bounded
+ *   parallelism, returning deterministic per-pass results.
  * - Command: `/pr-review-config` shows or edits the tier→model mapping.
  *
  * The orchestrating /pr-review prompt dispatches passes by tier label:
- *   light  -> triage / skip decision / change summary
- *   medium -> convention-file (CLAUDE.md/AGENTS.md) compliance
- *   heavy  -> bug + security/logic review and finding validation
+ *   light  -> overview / strengths / high-level risk scan
+ *   medium -> convention compliance + readability / maintainability
+ *   heavy  -> bug + security/logic review
  */
 
 import { spawn } from "node:child_process";
@@ -52,10 +55,12 @@ const TIERS: Tier[] = ["light", "medium", "heavy"];
 
 const UNSET = "(unset — pi default)";
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
+const DEFAULT_BATCH_PARALLEL = 4;
+const MAX_BATCH_PARALLEL = 6;
 const TIER_PURPOSE: Record<Tier, string> = {
-	light: "triage / skip decision / change summary",
-	medium: "convention-file (CLAUDE.md/AGENTS.md) compliance",
-	heavy: "bug + security/logic review and validation",
+	light: "overview / strengths / high-level risk scan",
+	medium: "convention compliance + readability / maintainability",
+	heavy: "bug + security/logic review",
 };
 
 interface PrReviewConfig {
@@ -159,11 +164,11 @@ function finalAssistantText(messages: Message[]): string {
 
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
-		"You are a fast overview/summary reviewer. Produce a concise overview of what the change does and how, list the change's genuine strengths, and note risk areas worth a closer look. Do not deep-dive into defects.",
+		"You are a fast overview reviewer. Produce a concise overview of what the change does and how, list genuine strengths, and note high-level risk areas worth closer specialist review. Do not deep-dive into defects.",
 	medium:
-		"You are a convention-compliance reviewer. Audit changed lines against the in-scope repository convention files (CLAUDE.md / AGENTS.md and equivalents). Report clear rule violations (quote the rule) and also softer deviations from documented style as nits.",
+		"You are a balanced convention, readability, and maintainability reviewer. Follow the assigned objective exactly: apply only in-scope repository convention files and capture clear maintainability/readability issues without duplicating deep correctness or security analysis.",
 	heavy:
-		"You are a rigorous bug, security, logic, and maintainability reviewer. Hunt for defects at every severity in the changed code — from compile/parse failures and wrong results and security holes down to minor correctness smells, missing edge cases, and readability nits. Validate each candidate before reporting; drop only things that are actually correct or that you cannot substantiate.",
+		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
 function buildSubagentSystemPrompt(tier: Tier): string {
@@ -171,8 +176,8 @@ function buildSubagentSystemPrompt(tier: Tier): string {
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
 		"",
-		"Surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
-		"Stay strictly in scope: only report issues caused by or directly relevant to this PR's diff (the changed lines and the code they provably affect). Do NOT flag pre-existing issues in untouched code or audit the wider codebase; if a problem existed before this change, leave it out. Reading surrounding files/callers is for context and confirmation only.",
+		"Stay inside the assigned objective. Within that objective, surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
+		"Stay strictly in PR scope: only report issues caused by or directly relevant to this PR's diff (the changed lines and the code they provably affect). Do NOT flag pre-existing issues in untouched code or audit the wider codebase; if a problem existed before this change, leave it out. Reading surrounding files/callers is for context and confirmation only.",
 	];
 	if (tier === "light") {
 		lines.push(
@@ -285,6 +290,155 @@ function runReviewSubprocess(
 	});
 }
 
+interface SubagentPassRequest {
+	id?: string;
+	tier: Tier;
+	objective: string;
+	context?: string;
+}
+
+interface SubagentPassResult {
+	id: string;
+	tier: Tier;
+	usedTier?: Tier;
+	model?: string;
+	exitCode: number;
+	status: "completed" | "failed";
+	notice: string;
+	text: string;
+	stderr?: string;
+	stopReason?: string;
+	errorMessage?: string;
+}
+
+function noticeForTier(tier: Tier, spec: string | undefined, usedTier: Tier | undefined): string {
+	if (spec) {
+		return usedTier === tier
+			? `tier=${tier} model=${spec}`
+			: `tier=${tier} (not configured; using ${usedTier} model=${spec})`;
+	}
+	return `tier=${tier} (no tier configured; using pi default model — run /pr-review-config to set tiers)`;
+}
+
+function buildPassTask(objective: string, context: string | undefined): string {
+	return context ? `Objective: ${objective}\n\n--- PR context / diff ---\n${context}` : `Objective: ${objective}`;
+}
+
+async function runSubagentPass(
+	config: PrReviewConfig,
+	ctx: Pick<ExtensionContext, "cwd">,
+	pass: SubagentPassRequest,
+	signal: AbortSignal | undefined,
+	onText?: (text: string) => void,
+): Promise<SubagentPassResult> {
+	const tier = pass.tier;
+	const { spec, usedTier } = resolveModelSpec(config, tier);
+	const notice = noticeForTier(tier, spec, usedTier);
+	let tmp: { dir: string; filePath: string } | undefined;
+
+	try {
+		const args = ["--mode", "json", "-p", "--no-session"];
+		if (spec) args.push("--model", spec);
+		if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
+
+		tmp = await writeTempPrompt(tier, buildSubagentSystemPrompt(tier));
+		args.push("--append-system-prompt", tmp.filePath);
+		args.push(buildPassTask(pass.objective, pass.context));
+
+		const invocation = getPiInvocation(args);
+		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, signal, (text) => {
+			onText?.(text);
+		});
+
+		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+		return {
+			id: pass.id ?? tier,
+			tier,
+			usedTier,
+			model: result.model ?? spec,
+			exitCode: result.exitCode,
+			status: failed ? "failed" : "completed",
+			notice,
+			text: result.text || (failed ? "" : "NO FINDINGS."),
+			stderr: result.stderr || undefined,
+			stopReason: result.stopReason,
+			errorMessage: result.errorMessage,
+		};
+	} catch (e) {
+		return {
+			id: pass.id ?? tier,
+			tier,
+			usedTier,
+			model: spec,
+			exitCode: 1,
+			status: "failed",
+			notice,
+			text: "",
+			errorMessage: errMessage(e),
+		};
+	} finally {
+		if (tmp) {
+			try {
+				fs.rmSync(tmp.dir, { recursive: true, force: true });
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+}
+
+function normalizeMaxParallel(raw: unknown, count: number): number {
+	if (count <= 0) return 0;
+	const requested = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_BATCH_PARALLEL;
+	return Math.max(1, Math.min(count, MAX_BATCH_PARALLEL, requested > 0 ? requested : DEFAULT_BATCH_PARALLEL));
+}
+
+async function runWithConcurrency<T, R>(
+	items: T[],
+	limit: number,
+	worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (next < items.length) {
+			const index = next++;
+			results[index] = await worker(items[index]!, index);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+function formatBatchResults(results: SubagentPassResult[], maxParallel: number): string {
+	const failed = results.filter((r) => r.status === "failed");
+	const lines = [
+		`Review subagents completed: ${results.length - failed.length}/${results.length} succeeded (max_parallel=${maxParallel}).`,
+	];
+	if (failed.length) {
+		lines.push(
+			`WARNING: ${failed.length} pass(es) failed. Treat this as incomplete review evidence unless you rerun or cover the failed pass inline.`,
+		);
+	}
+	for (const result of results) {
+		lines.push("", `## Pass: ${result.id}`, `status: ${result.status}`, result.notice);
+		if (result.status === "failed") {
+			const detail = result.errorMessage || result.stderr || result.text || "(no output)";
+			lines.push(`error: ${detail}`);
+			continue;
+		}
+		lines.push(result.text || "NO FINDINGS.");
+	}
+	return lines.join("\n");
+}
+
+function combineContexts(shared: string | undefined, specific: string | undefined): string | undefined {
+	const parts: string[] = [];
+	if (shared?.trim()) parts.push(shared.trim());
+	if (specific?.trim()) parts.push(`--- Pass-specific context ---\n${specific.trim()}`);
+	return parts.length ? parts.join("\n\n") : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -292,7 +446,7 @@ function runReviewSubprocess(
 const ReviewSubagentParams = Type.Object({
 	tier: StringEnum(["light", "medium", "heavy"] as const, {
 		description:
-			"Model tier / subagent label. light = triage & change summary; medium = convention (CLAUDE.md/AGENTS.md) compliance; heavy = bug + security/logic review and validation.",
+			"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
 	}),
 	objective: Type.String({
 		description: "Precise instruction for this subagent — what to review and what to return.",
@@ -302,6 +456,44 @@ const ReviewSubagentParams = Type.Object({
 			description:
 				"Shared context for the subagent, typically the PR title/description plus the unified diff to review.",
 		}),
+	),
+});
+
+const ReviewSubagentsParams = Type.Object({
+	context: Type.Optional(
+		Type.String({
+			description:
+				"Shared PR context for every pass, typically PR title/body/metadata, in-scope convention-file summaries, and the unified diff.",
+		}),
+	),
+	max_parallel: Type.Optional(
+		Type.Number({
+			description: `Maximum pass subprocesses to run concurrently. Defaults to ${DEFAULT_BATCH_PARALLEL}; capped at ${MAX_BATCH_PARALLEL}.`,
+		}),
+	),
+	passes: Type.Array(
+		Type.Object({
+			id: Type.Optional(
+				Type.String({
+					description: "Stable pass label used in the ordered batch result, e.g. overview, conventions, correctness.",
+				}),
+			),
+			tier: StringEnum(["light", "medium", "heavy"] as const, {
+				description:
+					"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
+			}),
+			objective: Type.String({
+				description: "Precise instruction for this pass — what to review and what to return.",
+			}),
+			context: Type.Optional(
+				Type.String({
+					description: "Optional pass-specific context appended after the shared context.",
+				}),
+			),
+		}),
+		{
+			description: "Independent review passes to run concurrently. Results are returned in this same order.",
+		},
 	),
 });
 
@@ -318,66 +510,122 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet:
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
 		promptGuidelines: [
-			"Use review_subagent to fan a /pr-review pass out to the configured light/medium/heavy model instead of reviewing every pass inline.",
+			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable or when rerunning one failed batch pass.",
 			"When calling review_subagent, pass the unified diff and PR title/description in `context` so the subagent does not refetch it.",
 		],
 		parameters: ReviewSubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			const config = loadConfig(ctx);
 			const tier = params.tier as Tier;
-			const { spec, usedTier } = resolveModelSpec(config, tier);
+			const result = await runSubagentPass(
+				loadConfig(ctx),
+				ctx,
+				{ tier, objective: params.objective, context: params.context },
+				signal,
+				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
+			);
 
-			const args = ["--mode", "json", "-p", "--no-session"];
-			if (spec) args.push("--model", spec);
-			if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
-
-			const tmp = await writeTempPrompt(tier, buildSubagentSystemPrompt(tier));
-			args.push("--append-system-prompt", tmp.filePath);
-
-			const task = params.context
-				? `Objective: ${params.objective}\n\n--- PR context / diff ---\n${params.context}`
-				: `Objective: ${params.objective}`;
-			args.push(task);
-
-			const invocation = getPiInvocation(args);
-			const notice = spec
-				? usedTier === tier
-					? `tier=${tier} model=${spec}`
-					: `tier=${tier} (not configured; using ${usedTier} model=${spec})`
-				: `tier=${tier} (no tier configured; using pi default model — run /pr-review-config to set tiers)`;
-
-			try {
-				const result = await runReviewSubprocess(
-					invocation.command,
-					invocation.args,
-					ctx.cwd,
-					signal,
-					(text) => onUpdate?.({ content: [{ type: "text", text }] }),
-				);
-
-				const failed =
-					result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-				if (failed) {
-					const detail = result.errorMessage || result.stderr || result.text || "(no output)";
-					return {
-						content: [{ type: "text", text: `Review subagent failed [${notice}]: ${detail}` }],
-						isError: true,
-						details: { tier, usedTier, model: result.model ?? spec, exitCode: result.exitCode },
-					};
-				}
-
+			if (result.status === "failed") {
+				const detail = result.errorMessage || result.stderr || result.text || "(no output)";
 				return {
-					content: [{ type: "text", text: `[${notice}]\n\n${result.text || "NO FINDINGS."}` }],
-					details: { tier, usedTier, model: result.model ?? spec, exitCode: result.exitCode },
+					content: [{ type: "text", text: `Review subagent failed [${result.notice}]: ${detail}` }],
+					isError: true,
+					details: {
+						tier: result.tier,
+						usedTier: result.usedTier,
+						model: result.model,
+						exitCode: result.exitCode,
+					},
 				};
-			} finally {
-				try {
-					fs.rmSync(tmp.dir, { recursive: true, force: true });
-				} catch {
-					/* ignore */
-				}
 			}
+
+			return {
+				content: [{ type: "text", text: `[${result.notice}]\n\n${result.text || "NO FINDINGS."}` }],
+				details: {
+					tier: result.tier,
+					usedTier: result.usedTier,
+					model: result.model,
+					exitCode: result.exitCode,
+				},
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "review_subagents",
+		label: "Review Subagents Batch",
+		description: [
+			"Delegate multiple independent PR-review passes to isolated subagents and run them concurrently.",
+			"Pass shared PR context once plus ordered pass assignments with tier, objective, and optional pass-specific context.",
+			"Each pass uses the configured light/medium/heavy model tier from /pr-review-config.",
+			"Returns deterministic ordered per-pass outputs; partial failures are explicit so the orchestrator can rerun or cover them inline.",
+		].join(" "),
+		promptSnippet:
+			"Run independent light/medium/heavy PR-review passes concurrently in isolated subagents with shared PR context",
+		promptGuidelines: [
+			"Prefer review_subagents over separate review_subagent calls for independent /pr-review passes; it guarantees bounded parallel execution instead of relying on the orchestrator to emit concurrent tool calls.",
+			"Fetch PR metadata and the unified diff once, then pass that shared context in `context`; use per-pass `context` only for extra instructions or scoped convention-file excerpts.",
+			"If any pass reports status=failed, treat the review evidence as incomplete: rerun that pass or perform it inline before finalizing the JSON.",
+		],
+		parameters: ReviewSubagentsParams,
+
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
+			if (rawPasses.length === 0) {
+				return {
+					content: [{ type: "text", text: "review_subagents requires at least one pass assignment." }],
+					isError: true,
+					details: { passCount: 0 },
+				};
+			}
+
+			const sharedContext = typeof params.context === "string" ? params.context : undefined;
+			const passes: SubagentPassRequest[] = rawPasses.map((pass, index) => {
+				const tier = pass.tier as Tier;
+				return {
+					id: typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`,
+					tier,
+					objective: pass.objective,
+					context: combineContexts(sharedContext, typeof pass.context === "string" ? pass.context : undefined),
+				};
+			});
+			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
+			const config = loadConfig(ctx);
+
+			const results = await runWithConcurrency(passes, maxParallel, async (pass) => {
+				const result = await runSubagentPass(config, ctx, pass, signal);
+				onUpdate?.({
+					content: [
+						{
+							type: "text",
+							text: `review_subagents: pass ${result.id} ${result.status} (${result.notice})`,
+						},
+					],
+				});
+				return result;
+			});
+
+			const failed = results.filter((r) => r.status === "failed");
+			return {
+				content: [{ type: "text", text: formatBatchResults(results, maxParallel) }],
+				...(failed.length > 0 ? { isError: true } : {}),
+				details: {
+					maxParallel,
+					passCount: results.length,
+					failedCount: failed.length,
+					results: results.map((r) => ({
+						id: r.id,
+						tier: r.tier,
+						usedTier: r.usedTier,
+						model: r.model,
+						exitCode: r.exitCode,
+						status: r.status,
+						stopReason: r.stopReason,
+						errorMessage: r.errorMessage,
+						outputChars: r.text.length,
+					})),
+				},
+			};
 		},
 	});
 

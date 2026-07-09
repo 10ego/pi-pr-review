@@ -14,19 +14,24 @@ Your job: fetch the PR, review the diff between its base branch and its head (me
 
 Do **not** assume, name, or switch to any specific model. Model selection is configured by the user, never hardcoded here.
 
-### Reviewer topology (tiered subagents, with inline fallback)
+### Reviewer topology (parallel tiered subagents, with inline fallback)
 
-If the `review_subagent` tool is available, run the passes as isolated subagents on the user-configured model tiers, using the tier as the subagent label:
+You are the **orchestrator**. You own all GitHub access, skip decisions, convention-file discovery, verification worktrees, final validation/classification, JSON emission, and optional comment posting. Subagents are read-only reviewers: they receive PR context from you and return candidate evidence only.
 
-| Tier label | Runs which pass | Model |
-|------------|-----------------|-------|
-| `light`  | Step 3 overview + strengths, and Step 1 triage/skip judgement | user-configured `light` model |
-| `medium` | Step 5 convention-compliance pass | user-configured `medium` model |
-| `heavy`  | Step 5 bug + security/logic passes, Step 6 verification, Step 7 validation | user-configured `heavy` model |
+If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. This guarantees bounded parallel fan-out instead of depending on whether the tool interface runs separate calls concurrently. Use these pass assignments:
 
-Call `review_subagent` with `{ tier, objective, context }`. Always put the PR title/description and the unified diff in `context` so the subagent does not refetch them. You (the orchestrator, on the current session model) fetch the PR once, dispatch the passes, then merge, classify, and emit the final JSON. Tier→model mapping is set with `/pr-review-config`; if a tier is unset the subagent falls back to the pi default model.
+| Pass id | Tier label | Scope |
+|---------|------------|-------|
+| `overview` | `light` | Step 3 overview, strengths, and high-level risk areas |
+| `conventions-maintainability` | `medium` | Step 5 convention compliance, readability, maintainability, test gaps, and nits |
+| `correctness` | `heavy` | Step 5 compile/parse, logic, error handling, lifecycle, concurrency, and edge-case defects |
+| `security-performance` | `heavy` | Step 5 security vulnerabilities and performance regressions |
 
-If the `review_subagent` tool is **not** available, perform every pass yourself, inline, on the current session model. The steps below work either way — "the `<tier>` reviewer" means "a `review_subagent` call at that tier" when the tool exists, otherwise "you, performing that pass inline".
+Call `review_subagents` with `{ context, max_parallel: 4, passes: [...] }`. If any pass returns `status: failed`, treat the review evidence as incomplete: rerun the failed pass with `review_subagent` or perform that pass inline before finalizing. Always put the PR title/description, relevant metadata, convention-file excerpts, and unified diff in shared `context` so subagents do not refetch anything.
+
+If `review_subagents` is unavailable but `review_subagent` is available, run the same pass assignments as individual `review_subagent` calls; emit independent calls in the same turn when the interface supports parallel tool calls. If neither subagent tool is available, perform every pass yourself inline on the current session model.
+
+Tier→model mapping is set with `/pr-review-config`; if a tier is unset the subagent falls back to the nearest configured tier, then the pi default model.
 
 Arguments for this run: `$@`
 - `$1` is the PR number (required).
@@ -69,26 +74,29 @@ List (do not dump contents yet) the repository convention files that could gover
 - The root convention file (`CLAUDE.md`, and/or `AGENTS.md` if present).
 - Any convention file living in a directory that contains a file modified by this PR.
 
-When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope.
+When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope, and include the relevant rule excerpts (with file paths) in the shared context for the medium pass.
 
 ## Step 3 — Overview & strengths (`light` reviewer)
 
-Write a short **overview** (1–3 short paragraphs) of what the PR does and how, grounded in the diff and PR title/description — enough to understand author intent. Also collect a list of genuine **strengths** (good tests, nice consolidation, correct reuse of helpers, etc.). Strengths are part of the output, and understanding intent is what lets you tell an intentional change from a bug.
+Write a short **overview** (1–3 short paragraphs) of what the PR does and how, grounded in the diff and PR title/description — enough to understand author intent. Also collect a list of genuine **strengths** (good tests, nice consolidation, correct reuse of helpers, etc.) and any high-level risk areas for the specialist passes. Strengths are part of the output, and understanding intent is what lets you tell an intentional change from a bug.
+
+When `review_subagents` is available, include this as the `overview` pass in the same batch as the Step 5 review passes instead of waiting for a separate sequential call.
 
 ## Step 4 — (reserved)
 
 ## Step 5 — Review passes (dispatch by tier, then merge results)
 
-Run these passes over the diff, each on its tier reviewer (or inline if `review_subagent` is unavailable). Give every pass the PR title/description as `context`, and instruct each pass to report issues **at every severity, including nits**. Run independent passes in parallel where the tool allows, then combine their candidate findings.
+Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR context from Step 1 plus the relevant convention-file excerpts from Step 2, and instruct each pass to report issues **at every severity, including nits**, within its own scope. Do **not** ask every pass to audit everything; the objective boundaries below reduce duplicate work while preserving coverage.
 
-1. **Convention-compliance pass — `medium` reviewer.** Audit changed lines against the in-scope convention files from Step 2. Flag violations (quote the rule) and also softer deviations from documented style as nits.
-2. **Bug & correctness pass — `heavy` reviewer.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency. Include lower-severity correctness smells and missing edge cases as P2/P3.
-3. **Security & performance pass — `heavy` reviewer.** Look for security issues (injection, authz, secrets, unsafe deserialization) and performance regressions in the changed code. Note minor ones too.
-4. **Readability & maintainability pass.** Capture nits: naming, dead code, unclear comments, typos in identifiers/strings, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit").
+When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`, then combine the ordered outputs:
 
-## Step 6 — Verification (best-effort, `heavy` reviewer, non-destructive)
+1. **Convention, readability & maintainability pass — `medium` reviewer.** Audit changed lines against the in-scope convention files from Step 2. Flag violations (quote the rule), softer deviations from documented style as nits, naming/dead-code/comment/typo issues, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit"). Do not duplicate deep correctness or security analysis unless needed to explain a convention/maintainability issue.
+2. **Bug & correctness pass — `heavy` reviewer.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency, and edge cases. Include lower-severity correctness smells and missing edge cases as P2/P3. Do not duplicate pure style nits covered by the medium pass.
+3. **Security & performance pass — `heavy` reviewer.** Look for security issues (injection, authz, secrets, unsafe deserialization) and performance regressions in the changed code. Note minor ones too. Do not duplicate ordinary correctness/readability findings unless they are security/performance relevant.
 
-Try to verify the change without touching the user's checkout. This is best-effort — if the repo has no obvious build/test, or it would be slow or unsafe, skip it and record what you could not verify.
+## Step 6 — Verification (best-effort, orchestrator-owned, non-destructive)
+
+Try to verify the change without touching the user's checkout. This is best-effort — if the repo has no obvious build/test, or it would be slow or unsafe, skip it and record what you could not verify. Do not delegate worktree creation, `gh`, or final verification status to subagents.
 
 Safe recipe (adapt to the project's toolchain):
 
@@ -102,9 +110,9 @@ git worktree remove --force "$wt"        # always clean up
 
 Record in `verification` exactly what you ran and the result (e.g. "`go build ./...` ✅, `go test ./pkg/...` ✅ 130 passed"), or why verification was limited. Never push, never leave a worktree behind, never modify the primary working tree.
 
-## Step 7 — Validate, classify, and finalize
+## Step 7 — Validate, classify, and finalize (orchestrator-owned)
 
-For every candidate finding: confirm it is real (read surrounding code if needed), then assign a **severity** and whether it is **blocking**:
+Merge duplicate candidate findings across passes, then for every remaining candidate finding: confirm it is real (read surrounding code if needed), verify it is PR-scoped, then assign a **severity** and whether it is **blocking**:
 
 - `P0` — blocking. Will not compile/parse, or is definitely wrong regardless of input, or a clear security hole. Independent of assumptions.
 - `P1` — blocking. Serious bug/logic/security flaw that will bite under realistic inputs or conditions; should be fixed before merge.
