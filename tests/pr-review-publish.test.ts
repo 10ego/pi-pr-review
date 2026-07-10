@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+	authorizePullLifecycle,
 	bodyHasHeadMarker,
 	buildPullReviewPayload,
 	classifyAssistantCompletion,
@@ -104,12 +105,12 @@ describe("trusted invocation mode", () => {
 		const gate = new ReviewInvocationGate();
 		expect(gate.begin(parsePublishMode("/pr-review 7 --no-comment")).accepted).toBeTrue();
 		expect(gate.begin(parsePublishMode("/pr-review 8 --comment"))).toMatchObject({ accepted: false });
-		expect(gate.consume()).toEqual({ mode: "disabled", prNumber: 7 });
+		expect(gate.consume()).toEqual({ mode: "disabled", prNumber: 7, allowNonOpen: false });
 	});
 
 	test("final JSON must match the invocation PR", () => {
-		expect(validateReviewInvocation(review, { mode: "force", prNumber: 7 })).toBeUndefined();
-		expect(validateReviewInvocation(review, { mode: "force", prNumber: 8 })).toContain("does not match");
+		expect(validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false })).toBeUndefined();
+		expect(validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false })).toContain("does not match");
 	});
 
 	test("preserves authority for exactly one affirmative non-open confirmation turn", () => {
@@ -122,7 +123,7 @@ describe("trusted invocation mode", () => {
 		expect(gate.markAwaitingConfirmation()).toBeTrue();
 		expect(gate.resolveConfirmationInput("yes")).toBe("confirmed");
 		expect(gate.phase()).toBe("confirmed");
-		expect(gate.consume()).toEqual({ mode: "force", prNumber: 7 });
+		expect(gate.consume()).toEqual({ mode: "force", prNumber: 7, allowNonOpen: true });
 		expect(gate.peek()).toBeUndefined();
 	});
 
@@ -142,9 +143,26 @@ describe("trusted invocation mode", () => {
 		const gate = new ReviewInvocationGate();
 		gate.begin(parsePublishMode("/pr-review 7 --comment"));
 		const invocation = gate.consume();
-		expect(invocation).toEqual({ mode: "force", prNumber: 7 });
+		expect(invocation).toEqual({ mode: "force", prNumber: 7, allowNonOpen: false });
 		expect(parsePublishableReview("not json").review).toBeUndefined();
 		expect(gate.peek()).toBeUndefined();
+	});
+
+	test("trusted non-open flags bind authorization to the invocation", () => {
+		expect(parsePublishMode("/pr-review 7 --include-closed")).toMatchObject({ allowNonOpen: true });
+		expect(parsePublishMode("/pr-review 7 --review-closed --comment")).toMatchObject({ allowNonOpen: true });
+	});
+});
+
+describe("non-open publication authorization", () => {
+	test("rejects direct unconfirmed closed and unknown states", () => {
+		expect(authorizePullLifecycle("closed", null, false).error).toContain("not authorized");
+		expect(authorizePullLifecycle("mystery", null, true).error).toContain("unknown");
+	});
+
+	test("permits trusted override or confirmed authority for body-only review", () => {
+		expect(authorizePullLifecycle("closed", null, true)).toEqual({ lifecycle: "non_open" });
+		expect(authorizePullLifecycle("open", null, false)).toEqual({ lifecycle: "open" });
 	});
 });
 

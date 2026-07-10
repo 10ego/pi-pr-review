@@ -56,6 +56,7 @@ export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
 	prNumber?: number;
+	allowNonOpen?: boolean;
 	error?: string;
 }
 
@@ -77,12 +78,14 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 		matched: true,
 		mode: disabled ? "disabled" : force ? "force" : "auto",
 		prNumber: requested,
+		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
 	};
 }
 
 export interface ReviewInvocation {
 	mode: PublishMode;
 	prNumber: number;
+	allowNonOpen: boolean;
 }
 
 export type ReviewInvocationPhase = "reviewing" | "awaiting_confirmation" | "confirmed";
@@ -121,7 +124,11 @@ export class ReviewInvocationGate {
 		if (parsed.error || !parsed.mode || !parsed.prNumber) {
 			return { accepted: false, error: parsed.error ?? "missing PR number or publishing mode" };
 		}
-		this.active = { mode: parsed.mode, prNumber: parsed.prNumber };
+		this.active = {
+			mode: parsed.mode,
+			prNumber: parsed.prNumber,
+			allowNonOpen: parsed.allowNonOpen === true,
+		};
 		this.currentPhase = "reviewing";
 		return { accepted: true };
 	}
@@ -151,7 +158,12 @@ export class ReviewInvocationGate {
 	}
 
 	consume(): ReviewInvocation | undefined {
-		const value = this.active;
+		const value = this.active
+			? {
+					...this.active,
+					allowNonOpen: this.active.allowNonOpen || this.currentPhase === "confirmed",
+				}
+			: undefined;
 		this.clear();
 		return value;
 	}
@@ -668,6 +680,23 @@ interface PullState {
 	head?: { sha?: string };
 }
 
+export type PullLifecycle = "open" | "non_open";
+
+export function authorizePullLifecycle(
+	state: string | undefined,
+	mergedAt: string | null | undefined,
+	allowNonOpen: boolean,
+): { lifecycle?: PullLifecycle; error?: string } {
+	const normalized = state?.toLowerCase();
+	if (normalized === "open" && !mergedAt) return { lifecycle: "open" };
+	if (normalized === "closed" || !!mergedAt) {
+		return allowNonOpen
+			? { lifecycle: "non_open" }
+			: { error: "closed or merged PR publication was not authorized by the invocation" };
+	}
+	return { error: `unknown PR lifecycle state: ${state ?? "missing"}` };
+}
+
 export type PublishStatus =
 	| "skipped_duplicate"
 	| "posted"
@@ -706,9 +735,10 @@ export async function publishPullReview(input: {
 	cwd: string;
 	prNumber: number;
 	headSha: string;
+	allowNonOpen: boolean;
 	review: ReviewLike;
 }): Promise<PublishResult> {
-	const { cwd, prNumber, headSha, review } = input;
+	const { cwd, prNumber, headSha, allowNonOpen, review } = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
@@ -741,6 +771,8 @@ export async function publishPullReview(input: {
 				return { status: "failed", message: "PR head changed after review; refusing to publish stale results" };
 			}
 			if (pull.draft) return { status: "failed", message: "draft PR reviews are not automatically published" };
+			const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
+			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
 				return { status: "skipped_duplicate", message: "same head already reviewed by this GitHub identity" };
 			}
@@ -752,7 +784,9 @@ export async function publishPullReview(input: {
 		const bodyError = validateReviewBody(summary);
 		if (bodyError) return { status: "failed", message: bodyError };
 
-		const isOpen = pull.state?.toLowerCase() === "open" && !pull.merged_at;
+		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
+		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
+		const isOpen = lifecycle.lifecycle === "open";
 		const candidates = collectFoldedComments(review);
 		if (candidates.errors.length > 0) {
 			return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
@@ -793,8 +827,11 @@ export async function publishPullReview(input: {
 				return { status: "failed", message: "PR head changed during publish preflight" };
 			}
 			if (refreshed.draft) return { status: "failed", message: "PR became a draft during publish preflight" };
-			const refreshedOpen = refreshed.state?.toLowerCase() === "open" && !refreshed.merged_at;
-			if (refreshedOpen !== isOpen) {
+			const refreshedLifecycle = authorizePullLifecycle(refreshed.state, refreshed.merged_at, allowNonOpen);
+			if (!refreshedLifecycle.lifecycle) {
+				return { status: "failed", message: refreshedLifecycle.error ?? "invalid refreshed PR lifecycle" };
+			}
+			if ((refreshedLifecycle.lifecycle === "open") !== isOpen) {
 				return { status: "failed", message: "PR open/closed state changed during publish preflight" };
 			}
 		} catch (error) {

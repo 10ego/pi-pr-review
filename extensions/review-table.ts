@@ -340,6 +340,7 @@ async function maybePublishReview(text: string, invocation: ReviewInvocation, ct
 		cwd: ctx.cwd,
 		prNumber: invocation.prNumber,
 		headSha,
+		allowNonOpen: invocation.allowNonOpen,
 		review: parsed.review as ReviewLike,
 	});
 	const source = invocation.mode === "force" ? "--comment" : `${setting.source} config`;
