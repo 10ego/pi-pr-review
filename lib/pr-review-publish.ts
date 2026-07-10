@@ -3,6 +3,16 @@ import { spawn } from "node:child_process";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
+export type CompletionAction = "continue_tools" | "accept_final" | "clear_invocation";
+
+export function classifyAssistantCompletion(
+	stopReason: string | undefined,
+	hasToolCall: boolean,
+): CompletionAction {
+	if (stopReason === "toolUse" && hasToolCall) return "continue_tools";
+	if (stopReason === "stop" && !hasToolCall) return "accept_final";
+	return "clear_invocation";
+}
 
 export interface AutoPostResolution {
 	value: boolean;
@@ -505,9 +515,13 @@ export function foldInlineComments(summary: string, comments: PublishComment[]):
 	return lines.join("\n").trim();
 }
 
+export function containsReservedReviewMarker(body: string): boolean {
+	return body.toLowerCase().includes(RESERVED_MARKER_PREFIX);
+}
+
 function validateReviewBody(body: string): string | undefined {
 	if (!body.trim()) return "review body is empty";
-	if (body.includes(RESERVED_MARKER_PREFIX)) return "review content contains a reserved pi-pr-review marker";
+	if (containsReservedReviewMarker(body)) return "review content contains a reserved pi-pr-review marker";
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) return "review body exceeds 65536 UTF-8 bytes";
 	return undefined;
 }

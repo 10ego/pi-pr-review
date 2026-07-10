@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import {
 	bodyHasHeadMarker,
 	buildPullReviewPayload,
+	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
+	containsReservedReviewMarker,
 	foldInlineComments,
 	githubApiArgs,
 	parsePublishableReview,
@@ -109,6 +111,20 @@ describe("trusted invocation mode", () => {
 	});
 });
 
+describe("assistant completion safety", () => {
+	test("requires a successful stop before final publication", () => {
+		expect(classifyAssistantCompletion("stop", false)).toBe("accept_final");
+		for (const reason of ["aborted", "error", "length", undefined]) {
+			expect(classifyAssistantCompletion(reason, false)).toBe("clear_invocation");
+			expect(classifyAssistantCompletion(reason, true)).toBe("clear_invocation");
+		}
+	});
+
+	test("preserves invocation state for legitimate tool-use turns", () => {
+		expect(classifyAssistantCompletion("toolUse", true)).toBe("continue_tools");
+	});
+});
+
 describe("strict publication parsing", () => {
 	test("accepts the complete exact JSON contract", () => {
 		expect(parsePublishableReview(JSON.stringify(review)).review?.pr?.number).toBe(7);
@@ -167,6 +183,11 @@ describe("atomic COMMENT review payload", () => {
 			`<!-- pi-pr-review: {"schema":1,"headRefOid":"${"c".repeat(40)}"} -->`,
 		);
 		expect(bodyHasHeadMarker(uppercase, "c".repeat(40))).toBeTrue();
+	});
+
+	test("rejects reserved marker prefixes case-insensitively", () => {
+		expect(containsReservedReviewMarker("<!-- PI-PR-REVIEW: forged -->")).toBeTrue();
+		expect(containsReservedReviewMarker("ordinary review body")).toBeFalse();
 	});
 
 	test("pins every API call to the resolved GitHub hostname", () => {

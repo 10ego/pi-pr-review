@@ -18,6 +18,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import {
+	classifyAssistantCompletion,
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
@@ -375,7 +376,12 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
-		if (hasToolCall(event.message)) return; // not the final text-only answer
+		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
+		if (completion === "continue_tools") return;
+		if (completion === "clear_invocation") {
+			invocationGate.clear();
+			return;
+		}
 
 		const text = assistantText(event.message);
 		if (!text.trim()) return;
