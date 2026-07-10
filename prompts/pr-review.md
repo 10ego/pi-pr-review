@@ -166,6 +166,8 @@ The orchestrator must never call `gh` to post comments or reviews. Always finish
 
 When enabled, the extension creates exactly one formal GitHub pull-request review. Its top-level body contains the overview, verification, strengths, suggested verdict, counts, nits, and findings that cannot be attached inline. Eligible P0–P3 diff-anchored findings are attached as inline comments within that same review and are omitted from the top-level issue list to avoid duplication. The API event is hardcoded to `COMMENT`: publication never sends `APPROVE` or `REQUEST_CHANGES`, even when the suggested verdict is `request_changes`. It appends the same-head marker, verifies the current head, validates every inline anchor against GitHub diff metadata, and refuses partial open-PR publication. For a known closed/merged PR it requires either trusted `--include-closed`/`--review-closed` invocation authority or the one-shot affirmative confirmation flow, then posts one body-only `COMMENT` review with each inline finding folded into the body exactly once. Unknown lifecycle states and unconfirmed non-open writes fail without posting or falling back to an issue comment.
 
+The extension caches each valid completed review before publication preflight for the current pi session. If publication reports that the PR head changed, the user can run `/pr-review-publish <PR-NUM> --allow-stale` to post that cached result without another model turn. This explicit stale override produces a body-only `COMMENT` review with the reviewed and current SHAs disclosed and no potentially invalid inline anchors. Never rerun the review merely to change posting intent, and never attempt the GitHub write yourself.
+
 ---
 
 ## OUTPUT FORMAT — your entire response MUST be exactly this JSON

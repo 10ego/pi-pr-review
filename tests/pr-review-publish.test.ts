@@ -206,10 +206,15 @@ describe("publish-only completed review command", () => {
 		});
 	});
 
-	test("registers a direct command rather than delegating stale publication to the model", () => {
+	test("registers and documents a direct command rather than delegating stale publication to the model", () => {
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 		expect(extension).toContain('pi.registerCommand("pr-review-publish"');
 		expect(extension).toContain("This command never starts or reruns a review");
+		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
+		expect(readme).toContain("Inline comments are intentionally disabled");
+		expect(prompt).toContain("without another model turn");
 	});
 });
 

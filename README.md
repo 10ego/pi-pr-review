@@ -130,11 +130,13 @@ The orchestrator (which fetches the PR, merges findings, and emits the JSON) and
 Type `/` in the pi editor and pick `pr-review`, or:
 
 ```
-/pr-review 123                            # use autoPostReviews (false by default)
-/pr-review 123 --comment                  # force one COMMENT review for this run
-/pr-review 123 --no-comment               # suppress posting for this run
-/pr-review 123 --include-closed           # review a closed/merged PR without a confirmation prompt
-/pr-review 123 --review-closed --comment  # review and attempt a body-only COMMENT review
+/pr-review 123                                  # use autoPostReviews (false by default)
+/pr-review 123 --comment                        # force one COMMENT review for this run
+/pr-review 123 --no-comment                     # suppress posting for this run
+/pr-review 123 --include-closed                 # review a closed/merged PR without a confirmation prompt
+/pr-review 123 --review-closed --comment        # review and attempt a body-only COMMENT review
+/pr-review-publish 123                          # publish the completed review cached in this session
+/pr-review-publish 123 --allow-stale            # publish it after the PR head changed; never rerun the model
 ```
 
 `123` is the PR number in the current repo.
@@ -148,6 +150,18 @@ Closed/merged PRs no longer hard-skip. If you run `/pr-review 123` on a non-open
 `autoPostReviews` is a strict top-level boolean and defaults to `false`. A trusted project `.pi/pr-review.json` value overlays the user value; malformed effective values never enable posting. `/pr-review-config` edits user scope only and displays the effective value/source—if a trusted project overlay wins, edit that project file or use `--no-comment` for the run. Invocation flags are captured before prompt expansion: `--comment` forces posting for one run, `--no-comment` suppresses it, and using both is rejected.
 
 Publishing is extension-owned—the model never constructs the write request, and final JSON marked `disposition: "skipped"` is never published. It creates exactly one formal pull-request review. The top-level body contains overview/verdict information, inline-vs-summary counts, nits, and findings that cannot be posted inline; successfully attached P0–P3 findings appear only in their associated inline comments, not duplicated in the top-level body. The GitHub event is hardcoded to `COMMENT`; the publisher cannot send `APPROVE` or `REQUEST_CHANGES`, even when the review's suggested verdict is `request_changes`. It validates the current head and every inline diff anchor before the single POST, so an invalid open-PR inline comment fails without leaving a partial review. Closed/merged PRs require either `--include-closed`/`--review-closed` or the one-shot affirmative confirmation, then use one body-only `COMMENT` review with each formerly-inline finding folded into the body exactly once. Unknown or unconfirmed non-open lifecycle states fail without posting.
+
+### Publishing a completed review after a new commit
+
+Every valid, reviewed final result is cached before GitHub publication preflight for the remainder of the current pi session. If a commit lands after review generation and the normal stale-head guard refuses to post, do **not** rerun `/pr-review` with `--comment` and do not ask the model to bypass its write policy. Use the extension-owned publish-only command:
+
+```
+/pr-review-publish 123 --allow-stale
+```
+
+This command calls no review model and reuses the completed result for PR `123`. The default `/pr-review-publish 123` still rejects a stale head; `--allow-stale` is the explicit acknowledgement. A stale review is posted as one body-only formal `COMMENT` review against the current head, begins with a warning that shows both the reviewed and current full SHAs, and keeps every finding in the body. Inline comments are intentionally disabled because their original diff anchors may no longer be valid. Duplicate, draft, lifecycle, payload-size, identity, and final head-stability checks remain active. If another commit lands during the publish preflight, run the same publish-only command again to acknowledge that newer current head.
+
+The cache is session-scoped: `/pr-review-publish` cannot recover a result after restarting pi, and it explicitly refuses to start or rerun a review when no cached result exists.
 
 ### Duplicate review handling
 
