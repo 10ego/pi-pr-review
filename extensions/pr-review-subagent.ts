@@ -54,6 +54,17 @@ import {
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
 import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
+import {
+	appendTierThinkingArgs,
+	modelSpecThinkingLevel,
+	normalizeThinkingLevel,
+	normalizeTierThinkingLevels,
+	sharedThinkingInheritanceWarning,
+	THINKING_LEVELS,
+	thinkingShadowingWarning,
+	type ThinkingLevel,
+	type ThinkingShadow,
+} from "../lib/pr-review-thinking.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -63,6 +74,7 @@ type Tier = "light" | "medium" | "heavy";
 const TIERS: Tier[] = ["light", "medium", "heavy"];
 
 const UNSET = "(unset — pi default)";
+const INHERIT_THINKING = "(inherit — pi default)";
 const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
 const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
@@ -79,6 +91,8 @@ interface PrReviewConfig {
 	tiers: Partial<Record<Tier, string>>;
 	/** Tier label -> ordered fallback model specs used for quota/capacity failures. */
 	fallbacks: Partial<Record<Tier, string[]>>;
+	/** Optional child Pi thinking level. Model-spec :thinking takes precedence. */
+	thinkingLevels: Partial<Record<Tier, ThinkingLevel>>;
 	/** Optional tier-level policy used when a tool call does not override it. */
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
 	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
@@ -127,6 +141,13 @@ function normalizeFallbacks(
 	return out;
 }
 
+function normalizeThinkingLevels(
+	raw: Partial<Record<Tier, unknown>> | undefined,
+	source: string,
+): Partial<Record<Tier, ThinkingLevel>> {
+	return normalizeTierThinkingLevels(raw, source);
+}
+
 function normalizeToolPolicies(
 	raw: Partial<Record<Tier, unknown>> | undefined,
 ): Partial<Record<Tier, ToolPolicy>> {
@@ -163,6 +184,10 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
+		thinkingLevels: {
+			...normalizeThinkingLevels(user.thinkingLevels, "User pr-review config"),
+			...normalizeThinkingLevels(project.thinkingLevels, "Project pr-review config"),
+		},
 		toolPolicies: {
 			...normalizeToolPolicies(user.toolPolicies),
 			...normalizeToolPolicies(project.toolPolicies),
@@ -179,6 +204,7 @@ function readUserConfig(): PrReviewConfig {
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
+		thinkingLevels: normalizeThinkingLevels(raw.thinkingLevels, "User pr-review config"),
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
@@ -236,6 +262,35 @@ function resolveModelAttempts(config: PrReviewConfig, tier: Tier): ModelAttempt[
 	}
 
 	return attempts;
+}
+
+function thinkingWarnings(config: PrReviewConfig, tiers: readonly Tier[] = TIERS): string[] {
+	const warnings: string[] = [];
+	const inheritedTiers = tiers.filter(
+		(tier) =>
+			!config.thinkingLevels[tier] &&
+			resolveModelAttempts(config, tier).some((attempt) => !modelSpecThinkingLevel(attempt.spec)),
+	);
+	const inheritance = sharedThinkingInheritanceWarning(inheritedTiers);
+	if (inheritance) warnings.push(inheritance);
+
+	const shadows: ThinkingShadow[] = [];
+	const seen = new Set<string>();
+	for (const tier of tiers) {
+		const tierLevel = config.thinkingLevels[tier];
+		if (!tierLevel) continue;
+		for (const attempt of resolveModelAttempts(config, tier)) {
+			const modelLevel = modelSpecThinkingLevel(attempt.spec);
+			if (!attempt.spec || !modelLevel) continue;
+			const key = `${tier}\0${attempt.spec}\0${tierLevel}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			shadows.push({ tier, modelSpec: attempt.spec, tierLevel, modelLevel });
+		}
+	}
+	const shadowing = thinkingShadowingWarning(shadows);
+	if (shadowing) warnings.push(shadowing);
+	return warnings;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +540,7 @@ async function runSubagentAttempt(
 	try {
 		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
+		appendTierThinkingArgs(args, attempt.spec, config.thinkingLevels[pass.tier]);
 		appendToolPolicyArgs(args, toolPolicy, config.tools);
 
 		tmp = await writeTempPrompt(pass.tier, buildSubagentSystemPrompt(pass.tier));
@@ -630,10 +686,15 @@ function formatAttemptSummary(result: SubagentPassResult): string {
 		.join(" → ")}`;
 }
 
-function formatBatchResults(results: SubagentPassResult[], maxParallel: number): string {
+function formatBatchResults(
+	results: SubagentPassResult[],
+	maxParallel: number,
+	warnings: readonly string[] = [],
+): string {
 	const failed = results.filter((r) => r.status === "failed");
 	const lines = [
 		`Review subagents completed: ${results.length - failed.length}/${results.length} succeeded (max_parallel=${maxParallel}).`,
+		...warnings,
 	];
 	if (failed.length) {
 		lines.push(
@@ -758,8 +819,9 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const tier = params.tier as Tier;
+			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
-				loadConfig(ctx),
+				config,
 				ctx,
 				{
 					tier,
@@ -771,10 +833,11 @@ export default function (pi: ExtensionAPI) {
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
 			);
 
+			const warnings = thinkingWarnings(config, [tier]);
 			if (result.status === "failed") {
 				const detail = result.errorMessage || result.stderr || result.text || "(no output)";
 				return {
-					content: [{ type: "text", text: `Review subagent failed [${result.notice}]: ${detail}` }],
+					content: [{ type: "text", text: [`Review subagent failed [${result.notice}]: ${detail}`, ...warnings].join("\n") }],
 					isError: true,
 					details: {
 						tier: result.tier,
@@ -791,7 +854,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			return {
-				content: [{ type: "text", text: `[${result.notice}]\n\n${result.text || "NO FINDINGS."}` }],
+				content: [{ type: "text", text: [`[${result.notice}]`, ...warnings, "", result.text || "NO FINDINGS."].join("\n") }],
 				details: {
 					tier: result.tier,
 					usedTier: result.usedTier,
@@ -862,8 +925,9 @@ export default function (pi: ExtensionAPI) {
 			});
 
 			const failed = results.filter((r) => r.status === "failed");
+			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
-				content: [{ type: "text", text: formatBatchResults(results, maxParallel) }],
+				content: [{ type: "text", text: formatBatchResults(results, maxParallel, thinkingWarnings(config, usedTiers)) }],
 				...(failed.length > 0 ? { isError: true } : {}),
 				details: {
 					maxParallel,
@@ -891,7 +955,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("pr-review-config", {
-		description: "Open the review-tier settings menu, or show/set light/medium/heavy models and fallbacks for /pr-review",
+		description: "Open review-tier settings, or show/set models, thinking, and fallbacks for /pr-review",
 		handler: async (args, ctx) => {
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
@@ -967,6 +1031,10 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		label: `${t}_fallbacks=<model1,model2> — retry chain for quota/rate-limit failures`,
 	})),
 	...TIERS.map((t) => ({
+		value: `${t}_thinking=`,
+		label: `${t}_thinking=<${THINKING_LEVELS.join("|")}|unset> — child Pi thinking when model spec has no :thinking`,
+	})),
+	...TIERS.map((t) => ({
 		value: `${t}_tool_policy=`,
 		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
 	})),
@@ -1017,6 +1085,15 @@ function isFallbackKey(key: string): boolean {
 	return false;
 }
 
+function isThinkingKey(key: string): boolean {
+	for (const tier of TIERS) {
+		if (key === `${tier}_thinking` || key === `${tier}-thinking` || key === `${tier}.thinking`) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function isToolPolicyKey(key: string): boolean {
 	for (const tier of TIERS) {
 		if (
@@ -1037,13 +1114,14 @@ function tierFromCompoundKey(key: string): Tier {
 interface ConfigPatch {
 	tiers: Partial<Record<Tier, string | null>>;
 	fallbacks: Partial<Record<Tier, string[] | null>>;
+	thinkingLevels: Partial<Record<Tier, ThinkingLevel | null>>;
 	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
 	autoPostReviews?: boolean;
 	tools?: string[];
 }
 
 function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolean; errors: string[] } {
-	const patch: ConfigPatch = { tiers: {}, fallbacks: {}, toolPolicies: {} };
+	const patch: ConfigPatch = { tiers: {}, fallbacks: {}, thinkingLevels: {}, toolPolicies: {} };
 	const errors: string[] = [];
 	const tokens = splitConfigArgs(args).filter((t) => !["show", "get", "current"].includes(t.toLowerCase()));
 	for (const token of tokens) {
@@ -1059,6 +1137,14 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		} else if (isFallbackKey(key)) {
 			const tier = tierFromCompoundKey(key);
 			patch.fallbacks[tier] = value === "" || value === "unset" || value === "none" ? null : splitCommaList(value);
+		} else if (isThinkingKey(key)) {
+			const tier = tierFromCompoundKey(key);
+			if (value === "" || value === "unset" || value === "inherit") patch.thinkingLevels[tier] = null;
+			else {
+				const level = normalizeThinkingLevel(value);
+				if (level) patch.thinkingLevels[tier] = level;
+				else errors.push(`invalid ${key} "${value}" (expected ${THINKING_LEVELS.join("|")}|unset)`);
+			}
 		} else if (isToolPolicyKey(key)) {
 			const tier = tierFromCompoundKey(key);
 			if (value === "" || value === "unset" || value === "inherit") patch.toolPolicies[tier] = null;
@@ -1075,13 +1161,14 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_tool_policy|auto_post_reviews|tools)`,
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|tools)`,
 			);
 		}
 	}
 	const hasChanges =
 		Object.keys(patch.tiers).length > 0 ||
 		Object.keys(patch.fallbacks).length > 0 ||
+		Object.keys(patch.thinkingLevels).length > 0 ||
 		Object.keys(patch.toolPolicies).length > 0 ||
 		patch.autoPostReviews !== undefined ||
 		patch.tools !== undefined;
@@ -1092,6 +1179,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 	const next: PrReviewConfig = {
 		tiers: { ...base.tiers },
 		fallbacks: normalizeFallbacks(base.fallbacks),
+		thinkingLevels: normalizeThinkingLevels(base.thinkingLevels, "PR review config"),
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		autoPostReviews: base.autoPostReviews,
 		tools: [...base.tools],
@@ -1106,6 +1194,11 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 			const value = patch.fallbacks[tier];
 			if (value === null || value === undefined || value.length === 0) delete next.fallbacks[tier];
 			else next.fallbacks[tier] = [...new Set(value)];
+		}
+		if (tier in patch.thinkingLevels) {
+			const value = patch.thinkingLevels[tier];
+			if (value === null || value === undefined) delete next.thinkingLevels[tier];
+			else next.thinkingLevels[tier] = value;
 		}
 		if (tier in patch.toolPolicies) {
 			const value = patch.toolPolicies[tier];
@@ -1150,16 +1243,18 @@ function summarizeConfig(
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub \`COMMENT\` review; default \`false\` |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
-		"| Tier | Your fallbacks | Effective fallbacks | Tool policy |",
-		"|---|---|---|---|",
+		"| Tier | Your fallbacks | Effective fallbacks | Thinking | Tool policy |",
+		"|---|---|---|---|---|",
 		...TIERS.map(
 			(t) =>
-				`| \`${t}\` | ${formatModelList(user.fallbacks[t])} | ${formatModelList(effective.fallbacks[t])} | ${user.toolPolicies[t] ? `\`${user.toolPolicies[t]}\`` : "_inherit configured_"} → \`${effective.toolPolicies[t] ?? "configured"}\` |`,
+				`| \`${t}\` | ${formatModelList(user.fallbacks[t])} | ${formatModelList(effective.fallbacks[t])} | ${user.thinkingLevels[t] ? `\`${user.thinkingLevels[t]}\`` : "_inherit pi default_"} → ${effective.thinkingLevels[t] ? `\`${effective.thinkingLevels[t]}\`` : "_inherit pi default_"} | ${user.toolPolicies[t] ? `\`${user.toolPolicies[t]}\`` : "_inherit configured_"} → \`${effective.toolPolicies[t] ?? "configured"}\` |`,
 		),
 		"",
 		`User config: \`${userConfigPath()}\``,
 	];
 	if (projectPath) lines.push(`Project overlay (trusted): \`${projectPath}\``);
+	const warnings = thinkingWarnings(effective);
+	if (warnings.length) lines.push("", ...warnings);
 	if (!autoPost.valid) lines.push(`Automatic posting config error: ${autoPost.error}`);
 	else if (autoPost.source === "project") {
 		lines.push("Automatic posting is controlled by the trusted project overlay; this command edits user config only.");
@@ -1171,12 +1266,15 @@ function summarizeConfig(
 		"- Print this summary: `/pr-review-config show`",
 		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
 		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
+		"- Set tier thinking: `/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high`",
 		"- Enable automatic GitHub review posting: `/pr-review-config auto_post_reviews=true`",
 		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
+		"- Restore inherited Pi thinking: `/pr-review-config light_thinking=unset`",
 		"- Restore legacy tier tool behavior: `/pr-review-config light_tool_policy=unset`",
+		`- Thinking levels: \`${THINKING_LEVELS.join("\`, \`")}\`. A model spec's \`:thinking\` suffix takes precedence over tier thinking.`,
 		"- A `<model>` is any pi model pattern (`provider/model` or `provider/model:thinking`).",
 	);
 	return lines.join("\n");
@@ -1272,6 +1370,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			"Clear this tier's fallback chain. Use key=value form to set multiple fallbacks.",
 		),
 	}));
+	const thinkingItems: SettingItem[] = TIERS.map((tier) => ({
+		id: `${tier}_thinking`,
+		label: `${tier} thinking`,
+		description: "Child Pi thinking when the selected model spec has no :thinking suffix. Enter/Space cycles values.",
+		currentValue: cfg.thinkingLevels[tier] ?? INHERIT_THINKING,
+		values: [INHERIT_THINKING, ...THINKING_LEVELS],
+	}));
 	const policyItems: SettingItem[] = TIERS.map((tier) => ({
 		id: `${tier}_tool_policy`,
 		label: `${tier} tool policy`,
@@ -1284,6 +1389,7 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 	return [
 		...tierItems,
 		...fallbackItems,
+		...thinkingItems,
 		...policyItems,
 		{
 			id: "auto_post_reviews",
@@ -1321,6 +1427,7 @@ async function showConfigMenu(
 				for (const tier of TIERS) {
 					settingsList.updateValue(tier, draft.tiers[tier] ?? UNSET);
 					settingsList.updateValue(`${tier}_fallbacks`, draft.fallbacks[tier]?.join(",") || "(none)");
+					settingsList.updateValue(`${tier}_thinking`, draft.thinkingLevels[tier] ?? INHERIT_THINKING);
 					settingsList.updateValue(`${tier}_tool_policy`, draft.toolPolicies[tier] ?? INHERIT_TOOL_POLICY);
 				}
 				settingsList.updateValue("auto_post_reviews", String(draft.autoPostReviews));
@@ -1335,6 +1442,17 @@ async function showConfigMenu(
 					const tier = tierFromCompoundKey(id);
 					if (newValue === "__unset__") delete draft.fallbacks[tier];
 					else draft.fallbacks[tier] = [newValue];
+				} else if (isThinkingKey(id)) {
+					const tier = tierFromCompoundKey(id);
+					if (newValue === INHERIT_THINKING) delete draft.thinkingLevels[tier];
+					else {
+						const level = normalizeThinkingLevel(newValue);
+						if (!level) {
+							ctx.ui.notify(`Invalid thinking level: ${newValue}`, "error");
+							return;
+						}
+						draft.thinkingLevels[tier] = level;
+					}
 				} else if (isToolPolicyKey(id)) {
 					const tier = tierFromCompoundKey(id);
 					if (newValue === INHERIT_TOOL_POLICY) delete draft.toolPolicies[tier];
@@ -1358,9 +1476,11 @@ async function showConfigMenu(
 							? String(draft.autoPostReviews)
 							: isFallbackKey(id)
 								? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
-								: isToolPolicyKey(id)
-									? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
-									: (draft.tiers[id as Tier] ?? UNSET);
+								: isThinkingKey(id)
+									? (draft.thinkingLevels[tierFromCompoundKey(id)] ?? INHERIT_THINKING)
+									: isToolPolicyKey(id)
+										? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
+										: (draft.tiers[id as Tier] ?? UNSET);
 					if (id === "auto_post_reviews") {
 						const effective = resolveAutoPostForContext(ctx);
 						if (effective.source === "project") {
