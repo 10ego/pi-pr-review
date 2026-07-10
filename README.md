@@ -153,15 +153,15 @@ Publishing is extension-owned—the model never constructs the write request, an
 
 ### Publishing a completed review after a new commit
 
-Every valid, reviewed final result is cached before GitHub publication preflight for the remainder of the current pi session. If a commit lands after review generation and the normal stale-head guard refuses to post, do **not** rerun `/pr-review` with `--comment` and do not ask the model to bypass its write policy. Use the extension-owned publish-only command:
+The latest valid, reviewed final result for each repository and PR is cached before GitHub publication preflight for the current extension session. If a commit lands after review generation and the normal stale-head guard refuses to post, do **not** rerun `/pr-review` with `--comment` and do not ask the model to bypass its write policy. Use the extension-owned publish-only command:
 
 ```
 /pr-review-publish 123 --allow-stale
 ```
 
-This command calls no review model and reuses the completed result for PR `123`. The default `/pr-review-publish 123` still rejects a stale head; `--allow-stale` is the explicit acknowledgement. A stale review is posted as one body-only formal `COMMENT` review against the current head, begins with a warning that shows both the reviewed and current full SHAs, and keeps every finding in the body. Inline comments are intentionally disabled because their original diff anchors may no longer be valid. Duplicate, draft, lifecycle, payload-size, identity, and final head-stability checks remain active. If another commit lands during the publish preflight, run the same publish-only command again to acknowledge that newer current head.
+This command calls no review model and reuses the completed result for PR `123`. The default `/pr-review-publish 123` still rejects a stale head; `--allow-stale` is the explicit acknowledgement. A stale review is posted as one body-only formal `COMMENT` review against the head observed during preflight, begins with a warning that shows both the reviewed and observed full SHAs, and keeps every finding in the body. Inline comments are intentionally disabled because their original diff anchors may no longer be valid. Repository binding, duplicate, draft, lifecycle, payload-size, identity, and final head-stability checks remain active. If another commit lands during the publish preflight, run the same publish-only command again to acknowledge that newer observed head.
 
-The cache is session-scoped: `/pr-review-publish` cannot recover a result after restarting pi, and it explicitly refuses to start or rerun a review when no cached result exists.
+The in-memory cache is discarded when a new pi session starts or extensions reload. `/pr-review-publish` explicitly refuses to start or rerun a review when no cached result exists, and it will not publish an older cached result while a new review of the same PR is active.
 
 ### Duplicate review handling
 

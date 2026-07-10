@@ -266,26 +266,35 @@ export interface ReviewLike {
 	overall_confidence_score?: number;
 }
 
+export interface RepositoryBinding {
+	repository: string;
+	hostname: string;
+}
+
 export interface CompletedReviewRecord {
 	review: ReviewLike;
 	invocation: ReviewInvocation;
-	completedAt: string;
+	repository: RepositoryBinding;
 }
 
-/** Session-scoped completed reviews available to the direct publish-only command. */
-export class CompletedReviewCache {
-	private readonly reviews = new Map<number, CompletedReviewRecord>();
+function completedReviewKey(repository: RepositoryBinding, prNumber: number): string {
+	return `${repository.hostname.toLowerCase()}:${repository.repository.toLowerCase()}:${prNumber}`;
+}
 
-	remember(review: ReviewLike, invocation: ReviewInvocation, completedAt = new Date().toISOString()): void {
-		this.reviews.set(invocation.prNumber, {
+/** Session-scoped latest completed review per repository and PR. */
+export class CompletedReviewCache {
+	private readonly reviews = new Map<string, CompletedReviewRecord>();
+
+	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): void {
+		this.reviews.set(completedReviewKey(repository, invocation.prNumber), {
 			review,
 			invocation: { ...invocation },
-			completedAt,
+			repository: { ...repository },
 		});
 	}
 
-	get(prNumber: number): CompletedReviewRecord | undefined {
-		return this.reviews.get(prNumber);
+	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {
+		return this.reviews.get(completedReviewKey(repository, prNumber));
 	}
 
 	clear(): void {
@@ -712,6 +721,19 @@ async function ghJson<T>(args: string[], cwd: string): Promise<T> {
 	return JSON.parse(text) as T;
 }
 
+export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryBinding> {
+	const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
+		["repo", "view", "--json", "nameWithOwner,url"],
+		cwd,
+	);
+	const repository = String(repoInfo.nameWithOwner ?? "");
+	const hostname = new URL(String(repoInfo.url ?? "")).hostname;
+	if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || !/^[a-z0-9.-]+$/i.test(hostname)) {
+		throw new Error("invalid GitHub repository or hostname");
+	}
+	return { repository, hostname };
+}
+
 function flattenPages<T>(value: unknown): T[] {
 	if (!Array.isArray(value)) return [];
 	if (value.every(Array.isArray)) return value.flat() as T[];
@@ -801,7 +823,7 @@ export function planHeadPublication(
 export function buildStaleReviewNotice(reviewedHeadSha: string, currentHeadSha: string): string {
 	return [
 		"> [!WARNING]",
-		`> This review was generated for commit \`${reviewedHeadSha}\`. The PR currently points to \`${currentHeadSha}\`.`,
+		`> This review was generated for commit \`${reviewedHeadSha}\`. At publish preflight, the PR pointed to \`${currentHeadSha}\`.`,
 		"> Inline findings were folded into this body because their original diff anchors may be stale.",
 	].join("\n");
 }
@@ -863,9 +885,10 @@ export async function publishPullReview(input: {
 	headSha: string;
 	allowNonOpen: boolean;
 	allowStale?: boolean;
+	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
 }): Promise<PublishResult> {
-	const { cwd, prNumber, headSha, allowNonOpen, allowStale = false, review } = input;
+	const { cwd, prNumber, headSha, allowNonOpen, allowStale = false, expectedRepository, review } = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
@@ -874,19 +897,20 @@ export async function publishPullReview(input: {
 	let hostname: string;
 	let identity: string;
 	try {
-		const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
-			["repo", "view", "--json", "nameWithOwner,url"],
-			cwd,
-		);
-		repository = String(repoInfo.nameWithOwner ?? "");
-		hostname = new URL(String(repoInfo.url ?? "")).hostname;
+		const binding = await resolveRepositoryBinding(cwd);
+		repository = binding.repository;
+		hostname = binding.hostname;
+		if (
+			expectedRepository &&
+			completedReviewKey(expectedRepository, prNumber) !== completedReviewKey(binding, prNumber)
+		) {
+			return { status: "failed", message: "current GitHub repository does not match the cached review repository" };
+		}
 		identity = await ghText(githubApiArgs(hostname, "user", "--jq", ".login"), cwd);
 	} catch (error) {
 		return { status: "failed", message: `GitHub identity/repository lookup failed: ${String(error)}` };
 	}
-	if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || !/^[a-z0-9.-]+$/i.test(hostname) || !identity) {
-		return { status: "failed", message: "invalid GitHub repository, hostname, or identity" };
-	}
+	if (!identity) return { status: "failed", message: "invalid GitHub identity" };
 
 	const marker = canonicalReviewMarker(normalizedHeadSha);
 	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
