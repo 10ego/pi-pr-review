@@ -54,6 +54,7 @@ import {
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
 import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
+import { monotonicNow } from "../lib/pr-review-telemetry.ts";
 import {
 	appendTierThinkingArgs,
 	modelSpecThinkingLevel,
@@ -536,7 +537,7 @@ async function runSubagentAttempt(
 	onText?: (text: string) => void,
 ): Promise<{ result: RunResult; notice: string; elapsedMs: number }> {
 	let tmp: { dir: string; filePath: string } | undefined;
-	const startedAt = Date.now();
+	const startedAt = monotonicNow();
 	try {
 		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
@@ -551,12 +552,12 @@ async function runSubagentAttempt(
 		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, signal, (text) => {
 			onText?.(text);
 		});
-		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: Date.now() - startedAt };
+		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt };
 	} catch (e) {
 		return {
 			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e) },
 			notice: noticeForAttempt(pass.tier, attempt),
-			elapsedMs: Date.now() - startedAt,
+			elapsedMs: monotonicNow() - startedAt,
 		};
 	} finally {
 		if (tmp) {
@@ -576,7 +577,7 @@ async function runSubagentPass(
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
 ): Promise<SubagentPassResult> {
-	const startedAt = Date.now();
+	const startedAt = monotonicNow();
 	const tier = pass.tier;
 	const toolPolicy = resolveToolPolicy(pass.toolPolicy, config.toolPolicies[tier]);
 	const attempts = resolveModelAttempts(config, tier);
@@ -628,7 +629,7 @@ async function runSubagentPass(
 				fallbackUsed: attempt.kind === "fallback" || reports.length > 1,
 				retryableFailure: false,
 				toolPolicy,
-				elapsedMs: Date.now() - startedAt,
+				elapsedMs: monotonicNow() - startedAt,
 			};
 		}
 
@@ -652,7 +653,7 @@ async function runSubagentPass(
 		fallbackUsed: reports.length > 1,
 		retryableFailure: reports.at(-1)?.retryable ?? false,
 		toolPolicy,
-		elapsedMs: Date.now() - startedAt,
+		elapsedMs: monotonicNow() - startedAt,
 	};
 }
 
@@ -910,9 +911,12 @@ export default function (pi: ExtensionAPI) {
 			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
+			const batchStartedAt = monotonicNow();
 
-			const results = await runWithConcurrency(passes, maxParallel, async (pass) => {
+			const scheduledResults = await runWithConcurrency(passes, maxParallel, async (pass) => {
+				const startOffsetMs = monotonicNow() - batchStartedAt;
 				const result = await runSubagentPass(config, ctx, pass, signal);
+				const endOffsetMs = monotonicNow() - batchStartedAt;
 				onUpdate?.({
 					content: [
 						{
@@ -921,8 +925,10 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 				});
-				return result;
+				return { result, startOffsetMs, endOffsetMs };
 			});
+			const elapsedMs = monotonicNow() - batchStartedAt;
+			const results = scheduledResults.map((scheduled) => scheduled.result);
 
 			const failed = results.filter((r) => r.status === "failed");
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
@@ -933,7 +939,17 @@ export default function (pi: ExtensionAPI) {
 					maxParallel,
 					passCount: results.length,
 					failedCount: failed.length,
-					results: results.map((r) => ({
+					elapsedMs,
+					scheduling: {
+						clock: "monotonic",
+						label: "observable review_subagents scheduling",
+						intervals: scheduledResults.map((scheduled) => ({
+							id: scheduled.result.id,
+							startOffsetMs: scheduled.startOffsetMs,
+							endOffsetMs: scheduled.endOffsetMs,
+						})),
+					},
+					results: scheduledResults.map(({ result: r, startOffsetMs, endOffsetMs }) => ({
 						id: r.id,
 						tier: r.tier,
 						usedTier: r.usedTier,
@@ -946,6 +962,8 @@ export default function (pi: ExtensionAPI) {
 						retryableFailure: r.retryableFailure,
 						toolPolicy: r.toolPolicy,
 						elapsedMs: r.elapsedMs,
+						startOffsetMs,
+						endOffsetMs,
 						attempts: r.attempts,
 						outputChars: r.text.length,
 					})),

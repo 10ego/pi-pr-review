@@ -217,16 +217,18 @@ pi-pr-review/
 ├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
 ├─ lib/pr-review-policy.ts           # pure tool-policy resolution/argv helpers
 ├─ lib/pr-review-publish.ts          # safe COMMENT-review payload, validation, and gh publisher
+├─ lib/pr-review-telemetry.ts        # monotonic invocation intervals and overlap-safe summaries
 ├─ extensions/pr-review-subagent.ts  # review_subagents/review_subagent tools + /pr-review-config command
 ├─ extensions/review-table.ts        # renders JSON and triggers trusted configured publishing
 ├─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
-└─ tests/pr-review-publish.test.ts    # posting gate, payload, marker, and anchor tests
+├─ tests/pr-review-publish.test.ts    # posting gate, payload, marker, and anchor tests
+└─ tests/pr-review-telemetry.test.ts  # monotonic lifecycle and overlap accounting tests
 ```
 
 ## Speed, security & cost notes
 
 - The four independent review lenses remain intact. Only overview runs context-only with `--no-tools`; medium and both heavy specialists retain configured tools for surrounding-file validation. All subprocesses use `--no-context-files` because the orchestrator supplies the base review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
-- Tool results include effective `toolPolicy` and `elapsedMs` telemetry (plus per-attempt timing) so repeated representative runs can be compared at p50/p95 without guessing. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
+- Tool results include effective `toolPolicy` and monotonic `elapsedMs` telemetry (plus per-attempt timing). Batch details also retain observable pass scheduling offsets. Each accepted `/pr-review` appends a durable `pr-review-telemetry` session entry with truthful direct invocation wall time, active review time, interval-unioned review-tool and isolated baseline-verification time, their interval intersection, and the remaining active time labeled only as aggregate orchestration. For non-open PR confirmation, human wait is reported separately and removed from the active timeline and its interval offsets. Publication happens after the terminal boundary and is excluded. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
 - Project-local `pr-review.json` is only read when the project is trusted. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
 - GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried.

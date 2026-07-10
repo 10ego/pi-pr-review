@@ -35,6 +35,10 @@ import {
 	type ReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
+import {
+	ReviewTelemetryTracker,
+	type ReviewPerformanceTelemetry,
+} from "../lib/pr-review-telemetry.ts";
 
 type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
 
@@ -376,6 +380,16 @@ async function maybePublishReview(
 export default function (pi: ExtensionAPI) {
 	const invocationGate = new ReviewInvocationGate();
 	const completedReviews = new CompletedReviewCache();
+	const telemetryTracker = new ReviewTelemetryTracker();
+	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
+		const telemetry = telemetryTracker.finish(completion);
+		if (!telemetry) return;
+		try {
+			pi.appendEntry("pr-review-telemetry", telemetry);
+		} catch {
+			// Telemetry persistence must never block rendering or publication safety checks.
+		}
+	};
 
 	pi.registerCommand("pr-review-publish", {
 		description: "Publish a completed review from this session without rerunning the model",
@@ -436,25 +450,42 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", () => {
 		invocationGate.clear();
 		completedReviews.clear();
+		telemetryTracker.clear();
 	});
 
 	pi.on("input", (event, ctx) => {
 		if (invocationGate.phase() === "awaiting_confirmation") {
 			const confirmation = invocationGate.resolveConfirmationInput(event.text);
-			if (confirmation === "confirmed") return;
-			// Negative/unrelated input clears authority; a fresh /pr-review may bind below.
+			if (confirmation === "confirmed") {
+				telemetryTracker.resumeAfterConfirmation();
+				return;
+			}
+			// Finish while paused so negative/unrelated input cannot count human wait as active work.
+			// A fresh /pr-review in this same input may safely bind a new tracker below.
+			persistTelemetry("cleared");
 		}
 		const parsed = parsePublishMode(event.text);
 		if (!parsed.matched) return;
 		if (invocationGate.peek() && event.streamingBehavior === undefined) {
 			// Replace an abandoned/settled invocation, but never a queued/steering one.
 			invocationGate.clear();
+			persistTelemetry("replaced");
 		}
 		const gate = invocationGate.begin(parsed);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			return { action: "handled" as const };
 		}
+		telemetryTracker.begin(parsed.prNumber!);
+	});
+
+	pi.on("tool_execution_start", (event) => {
+		if (!invocationGate.peek()) return;
+		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
+	});
+
+	pi.on("tool_execution_end", (event) => {
+		telemetryTracker.toolEnded(event.toolCallId);
 	});
 
 	pi.on("message_end", async (event, ctx) => {
@@ -463,6 +494,7 @@ export default function (pi: ExtensionAPI) {
 		if (completion === "continue_tools") return;
 		if (completion === "clear_invocation") {
 			invocationGate.clear();
+			persistTelemetry("cleared");
 			return;
 		}
 
@@ -473,12 +505,14 @@ export default function (pi: ExtensionAPI) {
 			invocationGate.phase() === "reviewing" &&
 			isNonOpenConfirmationPrompt(text, active.prNumber)
 		) {
-			invocationGate.markAwaitingConfirmation();
+			if (invocationGate.markAwaitingConfirmation()) telemetryTracker.pauseForConfirmation();
 			return;
 		}
 
 		// Every other terminal response consumes authority, whether valid, empty, or unrelated.
+		// Persist timing before publication so network/write latency is never coupled to review wall time.
 		const invocation = active ? invocationGate.consume() : undefined;
+		if (invocation) persistTelemetry("terminal_response");
 		if (!text.trim()) return;
 		const review = parseReview(text);
 		if (!review) return; // not a /pr-review JSON payload — leave untouched
