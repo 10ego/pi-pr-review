@@ -65,25 +65,46 @@ The `/pr-review-config` command maps three labels to models:
 /pr-review-config show                              # print the current mapping
 /pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
 /pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
+/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
 /pr-review-config light_tool_policy=none            # tier default when a pass omits tool_policy
 /pr-review-config auto_post_reviews=true            # opt in to automatic GitHub COMMENT reviews
 /pr-review-config auto_post_reviews=false           # disable automatic posting (the default)
 /pr-review-config medium=unset                      # clear a tier (back to pi default)
 /pr-review-config heavy_fallbacks=unset             # clear a fallback chain
+/pr-review-config light_thinking=unset              # inherit the ambient pi default
 /pr-review-config light_tool_policy=unset           # restore legacy configured-tool behavior
 /pr-review-config tools=read,bash,grep,find,ls      # allowlist used by configured policy
 ```
 
 Running `/pr-review-config` with no arguments in the TUI opens an interactive settings menu that mirrors pi's `/settings` and the NERVous `/nervous:config`:
 
-- One primary-model, fallback-model, and tool-policy row per tier (`light` / `medium` / `heavy`), an automatic-posting toggle, plus a configured-tool allowlist row.
-- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space cycles tool policies and allowlist presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
+- One primary-model, fallback-model, thinking-level, and tool-policy row per tier (`light` / `medium` / `heavy`), an automatic-posting toggle, plus a configured-tool allowlist row.
+- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space cycles thinking levels, tool policies, and allowlist presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
 - Selections apply and persist **immediately**; Esc closes the menu.
 - Type to search, and tab-completion is available for the `key=value` form.
 
 Outside the TUI (or with `show`), the command posts a Markdown summary table of your settings and the effective values instead.
 
-A `<spec>` is any pi model pattern, e.g. `provider/model` or `provider/model:high` (with a thinking level). The mapping is stored in:
+A `<spec>` is any pi model pattern, e.g. `provider/model` or `provider/model:high` (with a thinking level). Each of `light_thinking`, `medium_thinking`, and `heavy_thinking` accepts every pi-supported level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`:
+
+```
+/pr-review-config light_thinking=off       # or minimal|low|medium|high|xhigh|max
+/pr-review-config medium_thinking=minimal  # or off|low|medium|high|xhigh|max
+/pr-review-config heavy_thinking=max       # or off|minimal|low|medium|high|xhigh
+/pr-review-config light_thinking=unset medium_thinking=unset heavy_thinking=unset
+```
+
+`unset` removes the tier override, so that child pi process inherits the ambient pi default; it does not mean `off`. When an effective tier or fallback model has no supported `:thinking` suffix and its tier thinking is unset, `/pr-review-config show` and review-tool output warn that the ambient default is inherited. If a model spec does include a supported suffix, such as `<model-spec>:xhigh`, its `:thinking` suffix takes precedence over `<tier>_thinking`; output warns when it shadows an explicit tier setting. This precedence applies to primary, nearest-tier, and fallback model attempts.
+
+A model-agnostic starting profile is:
+
+```
+/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
+```
+
+This is an opt-in cost/quality balance, not a speed guarantee: lower thinking can reduce reasoning work but may miss subtle risks, while higher thinking can improve depth at greater latency and token cost. Adjust against your own review results and model capabilities.
+
+The mapping is stored in:
 
 - **User:** `~/.pi/agent/pr-review.json`
 - **Project:** `<repo>/.pi/pr-review.json` (overlays user config; only read when the project is trusted)
@@ -102,6 +123,11 @@ Example `pr-review.json`:
     "medium": ["<backup-balanced-model>"],
     "heavy": ["<backup-strong-model:high>", "<balanced-model-spec>"]
   },
+  "thinkingLevels": {
+    "light": "low",
+    "medium": "medium",
+    "heavy": "high"
+  },
   "toolPolicies": {
     "light": "none",
     "medium": "configured",
@@ -114,7 +140,7 @@ Example `pr-review.json`:
 
 Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
 
-Tool policy is additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` only for overview because its complete evidence is supplied in context. Conventions/maintainability and both heavy specialist passes use `configured` repository-context tools so they can inspect surrounding files when needed. Fallback model attempts keep the original pass policy.
+Thinking resolution and tool policy are independent. For thinking, a supported model-spec `:thinking` suffix wins; otherwise `thinkingLevels[tier]` is passed to the child process, and an unset tier inherits the ambient pi default. Tool policy remains additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` only for overview because its complete evidence is supplied in context. Conventions/maintainability and both heavy specialist passes use `configured` repository-context tools so they can inspect surrounding files when needed. Fallback model attempts keep the original pass policy.
 
 ### 2. The orchestrator / inline-fallback model
 
@@ -227,17 +253,39 @@ pi-pr-review/
 
 ## Speed, security & cost notes
 
+### Concurrent review and verification
+
 - The four independent review lenses remain intact. Only overview runs context-only with `--no-tools`; medium and both heavy specialists retain configured tools for surrounding-file validation. All subprocesses use `--no-context-files` because the orchestrator supplies the base review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
-- Tool results include effective `toolPolicy` and monotonic `elapsedMs` telemetry (plus per-attempt timing). Batch details also retain observable pass scheduling offsets. Each accepted `/pr-review` appends a durable `pr-review-telemetry` session entry with truthful direct invocation wall time, active review time, interval-unioned review-tool and isolated baseline-verification time, their interval intersection, and the remaining active time labeled only as aggregate orchestration. For non-open PR confirmation, human wait is reported separately and removed from the active timeline and its interval offsets. Publication happens after the terminal boundary and is excluded. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
+- After gathering PR metadata, the complete diff, changed-package context, and applicable conventions, the orchestrator selects **zero or one** baseline command. It selects a command only when trusted repository configuration makes a non-interactive, reasonably bounded command obvious. It does not probe first. Commands that install dependencies, require secrets or services, access the network, publish, alter git state, or write outside the isolated checkout are skipped as unsafe; the review batch still starts and the final `verification` field records the reason.
+- When a safe baseline exists, the review batch and baseline `bash` call are emitted in the **same assistant turn** so they can run concurrently. Verification fetches the PR ref, rejects it if it no longer resolves to the captured full `headRefOid`, and adds a uniquely named detached worktree at that exact SHA—not a branch, `FETCH_HEAD`, or another mutable ref. It runs only the preselected command with an explicit short tool timeout. Cleanup traps are installed before fetch/worktree creation and attempt to remove both the worktree and temporary directory on success, failure, interruption, or timeout.
+- Once the batch and baseline return, the orchestrator records the exact command, head SHA, and result (or skip, stale-head, timeout, or failure reason). It then performs targeted reads and only narrowly justified follow-up checks to confirm or reject candidate findings. Baseline success does not replace candidate validation, and baseline failure does not suppress any review pass.
+
+### Performance telemetry
+
+Review-tool results expose the effective `toolPolicy`, monotonic `elapsedMs`, per-attempt timing, and observable batch scheduling offsets. In addition, when an accepted `/pr-review` reaches a recorded terminal, cleared, or replaced boundary, it appends a durable `pr-review-telemetry` session entry with these fields:
+
+- `schemaVersion`, `clock`, `prNumber`, and `completion` identify the schema, monotonic clock, PR, and terminal boundary (`terminal_response`, `cleared`, or `replaced`).
+- `totalWallMs` is measured directly from accepted input to that boundary and includes any human-confirmation wait. Publication occurs afterward and is excluded.
+- `activeReviewMs` is the active timeline after human-confirmation wait is removed.
+- `phases.humanConfirmationWait.elapsedMs` reports time paused after the one-shot question for a non-open PR until affirmative input resumes the review or the invocation reaches its recorded completion. This wait is also removed from active interval offsets rather than attributed to model or orchestration time.
+- `phases.reviewSubagentTools` and `phases.baselineVerificationBash` report interval-unioned `elapsedMs` plus observed tool intervals. Each interval contains `toolCallId`, `toolName`, `startOffsetMs`, `endOffsetMs`, `elapsedMs`, and `endObserved` on the active timeline.
+- `phases.overlapMs` is the intersection of those two phase interval sets. `phases.observableToolWallMs` is their union, so concurrent work is not double-counted.
+- `phases.aggregateOrchestration.elapsedMs` is the remaining active time. It intentionally groups metadata/context gathering, model orchestration, targeted checks, and final validation because their individual lifecycle boundaries are not directly observed; it is not a model-only timing claim.
+- `notes` records these accounting boundaries in the durable entry so downstream consumers do not have to infer them.
+
+These measurements describe observed execution and do not guarantee speed. Lower defaults, cache reordering, sharding, and further context/tool reduction remain deferred pending evidence that review quality is preserved. Restore tools for a custom pass with `tool_policy: "configured"`; omitted policy retains legacy behavior unless `toolPolicies` config says otherwise.
+
+### Security, cost, and publishing
+
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
 - Project-local `pr-review.json` is only read when the project is trusted. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
-- GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried.
+- GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried. The performance changes above do not alter these publishing gates or opt-in defaults.
 - **`gh api -f` caution:** `gh api ... -f body=@/tmp/file.md` posts the literal text `@/tmp/file.md`; unlike `gh pr comment --body-file`, `-f` does not expand `@file`. Use a JSON payload via `gh api ... --input -` for API requests. The built-in publisher already does this.
-- Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
+- Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a model suitable for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
 
 ## Design notes
 
 - **Process** is PR-number driven: confirm non-open PRs, skip draft/same-head-already-reviewed work, fan out four review lenses, verify, validate/classify, emit JSON, then optionally publish one extension-owned formal `COMMENT` review.
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
-- **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
+- **Verification is non-destructive:** any selected baseline build/test runs with a timeout in a cleanup-trapped, isolated `git worktree` pinned to the captured full PR head SHA—the prompt never checks out, commits, or pushes in your working tree. Unsafe or unclear baselines are skipped, and candidate-specific validation still happens after the concurrent batch.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.
