@@ -46,6 +46,13 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	appendToolPolicyArgs,
+	buildReviewBaseArgs,
+	normalizeToolPolicy,
+	resolveToolPolicy,
+	type ToolPolicy,
+} from "../lib/pr-review-policy.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -55,6 +62,8 @@ type Tier = "light" | "medium" | "heavy";
 const TIERS: Tier[] = ["light", "medium", "heavy"];
 
 const UNSET = "(unset — pi default)";
+const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
+const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const DEFAULT_BATCH_PARALLEL = 4;
 const MAX_BATCH_PARALLEL = 6;
@@ -69,7 +78,9 @@ interface PrReviewConfig {
 	tiers: Partial<Record<Tier, string>>;
 	/** Tier label -> ordered fallback model specs used for quota/capacity failures. */
 	fallbacks: Partial<Record<Tier, string[]>>;
-	/** Tools granted to each review subagent process. */
+	/** Optional tier-level policy used when a tool call does not override it. */
+	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
+	/** Tools granted to review subagents whose effective policy is configured. */
 	tools: string[];
 }
 
@@ -113,6 +124,18 @@ function normalizeFallbacks(
 	return out;
 }
 
+function normalizeToolPolicies(
+	raw: Partial<Record<Tier, unknown>> | undefined,
+): Partial<Record<Tier, ToolPolicy>> {
+	const out: Partial<Record<Tier, ToolPolicy>> = {};
+	if (!raw || typeof raw !== "object") return out;
+	for (const tier of TIERS) {
+		const policy = normalizeToolPolicy(raw[tier]);
+		if (policy) out[tier] = policy;
+	}
+	return out;
+}
+
 /** User config, overlaid by project config when the project is trusted. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
@@ -125,6 +148,10 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
+		toolPolicies: {
+			...normalizeToolPolicies(user.toolPolicies),
+			...normalizeToolPolicies(project.toolPolicies),
+		},
 		tools: project.tools ?? user.tools ?? DEFAULT_TOOLS,
 	};
 }
@@ -135,6 +162,7 @@ function readUserConfig(): PrReviewConfig {
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
+		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
 	};
 }
@@ -353,6 +381,7 @@ interface SubagentPassRequest {
 	tier: Tier;
 	objective: string;
 	context?: string;
+	toolPolicy?: ToolPolicy;
 }
 
 interface ModelAttemptReport {
@@ -363,6 +392,7 @@ interface ModelAttemptReport {
 	exitCode: number;
 	status: "completed" | "failed";
 	retryable: boolean;
+	elapsedMs: number;
 	stopReason?: string;
 	errorMessage?: string;
 }
@@ -382,6 +412,8 @@ interface SubagentPassResult {
 	attempts: ModelAttemptReport[];
 	fallbackUsed: boolean;
 	retryableFailure: boolean;
+	toolPolicy: ToolPolicy;
+	elapsedMs: number;
 }
 
 function noticeForAttempt(tier: Tier, attempt: ModelAttempt): string {
@@ -426,14 +458,16 @@ async function runSubagentAttempt(
 	ctx: Pick<ExtensionContext, "cwd">,
 	pass: SubagentPassRequest,
 	attempt: ModelAttempt,
+	toolPolicy: ToolPolicy,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
-): Promise<{ result: RunResult; notice: string }> {
+): Promise<{ result: RunResult; notice: string; elapsedMs: number }> {
 	let tmp: { dir: string; filePath: string } | undefined;
+	const startedAt = Date.now();
 	try {
-		const args = ["--mode", "json", "-p", "--no-session"];
+		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
-		if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
+		appendToolPolicyArgs(args, toolPolicy, config.tools);
 
 		tmp = await writeTempPrompt(pass.tier, buildSubagentSystemPrompt(pass.tier));
 		args.push("--append-system-prompt", tmp.filePath);
@@ -443,11 +477,12 @@ async function runSubagentAttempt(
 		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, signal, (text) => {
 			onText?.(text);
 		});
-		return { result, notice: noticeForAttempt(pass.tier, attempt) };
+		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: Date.now() - startedAt };
 	} catch (e) {
 		return {
 			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e) },
 			notice: noticeForAttempt(pass.tier, attempt),
+			elapsedMs: Date.now() - startedAt,
 		};
 	} finally {
 		if (tmp) {
@@ -467,14 +502,24 @@ async function runSubagentPass(
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
 ): Promise<SubagentPassResult> {
+	const startedAt = Date.now();
 	const tier = pass.tier;
+	const toolPolicy = resolveToolPolicy(pass.toolPolicy, config.toolPolicies[tier]);
 	const attempts = resolveModelAttempts(config, tier);
 	const reports: ModelAttemptReport[] = [];
 	let lastResult: RunResult | undefined;
 	let lastNotice = noticeForAttempt(tier, attempts[0]!);
 
 	for (const attempt of attempts) {
-		const { result, notice } = await runSubagentAttempt(config, ctx, pass, attempt, signal, onText);
+		const { result, notice, elapsedMs } = await runSubagentAttempt(
+			config,
+			ctx,
+			pass,
+			attempt,
+			toolPolicy,
+			signal,
+			onText,
+		);
 		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = failed && isRetryableModelFailure(result);
 		lastResult = result;
@@ -487,6 +532,7 @@ async function runSubagentPass(
 			exitCode: result.exitCode,
 			status: failed ? "failed" : "completed",
 			retryable,
+			elapsedMs,
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
 		});
@@ -507,6 +553,8 @@ async function runSubagentPass(
 				attempts: reports,
 				fallbackUsed: attempt.kind === "fallback" || reports.length > 1,
 				retryableFailure: false,
+				toolPolicy,
+				elapsedMs: Date.now() - startedAt,
 			};
 		}
 
@@ -529,6 +577,8 @@ async function runSubagentPass(
 		attempts: reports,
 		fallbackUsed: reports.length > 1,
 		retryableFailure: reports.at(-1)?.retryable ?? false,
+		toolPolicy,
+		elapsedMs: Date.now() - startedAt,
 	};
 }
 
@@ -573,7 +623,14 @@ function formatBatchResults(results: SubagentPassResult[], maxParallel: number):
 		);
 	}
 	for (const result of results) {
-		lines.push("", `## Pass: ${result.id}`, `status: ${result.status}`, result.notice);
+		lines.push(
+			"",
+			`## Pass: ${result.id}`,
+			`status: ${result.status}`,
+			`tool_policy: ${result.toolPolicy}`,
+			`elapsed_ms: ${result.elapsedMs}`,
+			result.notice,
+		);
 		const attemptSummary = formatAttemptSummary(result);
 		if (attemptSummary) lines.push(attemptSummary);
 		if (result.status === "failed") {
@@ -611,13 +668,19 @@ const ReviewSubagentParams = Type.Object({
 				"Shared context for the subagent, typically the PR title/description plus the unified diff to review.",
 		}),
 	),
+	tool_policy: Type.Optional(
+		StringEnum(["none", "configured"] as const, {
+			description:
+				"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. Request override wins over tier config; omission preserves configured legacy behavior unless tier policy is set.",
+		}),
+	),
 });
 
 const ReviewSubagentsParams = Type.Object({
 	context: Type.Optional(
 		Type.String({
 			description:
-				"Shared PR context for every pass, typically PR title/body/metadata, in-scope convention-file summaries, and the unified diff.",
+				"Shared PR context for every pass, typically PR title/body/metadata, cross-cutting requirements, and the unified diff. Put specialist-only convention excerpts in the medium pass context.",
 		}),
 	),
 	max_parallel: Type.Optional(
@@ -642,6 +705,12 @@ const ReviewSubagentsParams = Type.Object({
 			context: Type.Optional(
 				Type.String({
 					description: "Optional pass-specific context appended after the shared context.",
+				}),
+			),
+			tool_policy: Type.Optional(
+				StringEnum(["none", "configured"] as const, {
+					description:
+					"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. The resolved policy remains fixed across fallback model attempts.",
 				}),
 			),
 		}),
@@ -674,7 +743,12 @@ export default function (pi: ExtensionAPI) {
 			const result = await runSubagentPass(
 				loadConfig(ctx),
 				ctx,
-				{ tier, objective: params.objective, context: params.context },
+				{
+					tier,
+					objective: params.objective,
+					context: params.context,
+					toolPolicy: normalizeToolPolicy(params.tool_policy),
+				},
 				signal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
 			);
@@ -691,6 +765,8 @@ export default function (pi: ExtensionAPI) {
 						exitCode: result.exitCode,
 						fallbackUsed: result.fallbackUsed,
 						retryableFailure: result.retryableFailure,
+						toolPolicy: result.toolPolicy,
+						elapsedMs: result.elapsedMs,
 						attempts: result.attempts,
 					},
 				};
@@ -704,6 +780,8 @@ export default function (pi: ExtensionAPI) {
 					model: result.model,
 					exitCode: result.exitCode,
 					fallbackUsed: result.fallbackUsed,
+					toolPolicy: result.toolPolicy,
+					elapsedMs: result.elapsedMs,
 					attempts: result.attempts,
 				},
 			};
@@ -746,6 +824,7 @@ export default function (pi: ExtensionAPI) {
 					tier,
 					objective: pass.objective,
 					context: combineContexts(sharedContext, typeof pass.context === "string" ? pass.context : undefined),
+					toolPolicy: normalizeToolPolicy(pass.tool_policy),
 				};
 			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
@@ -783,6 +862,8 @@ export default function (pi: ExtensionAPI) {
 						errorMessage: r.errorMessage,
 						fallbackUsed: r.fallbackUsed,
 						retryableFailure: r.retryableFailure,
+						toolPolicy: r.toolPolicy,
+						elapsedMs: r.elapsedMs,
 						attempts: r.attempts,
 						outputChars: r.text.length,
 					})),
@@ -867,7 +948,11 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		value: `${t}_fallbacks=`,
 		label: `${t}_fallbacks=<model1,model2> — retry chain for quota/rate-limit failures`,
 	})),
-	{ value: "tools=", label: "tools=read,bash,grep,find,ls — tools granted to review subagents" },
+	...TIERS.map((t) => ({
+		value: `${t}_tool_policy=`,
+		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
+	})),
+	{ value: "tools=", label: "tools=read,bash,grep,find,ls — allowlist used by configured policy" },
 	{ value: "show", label: "show — print the current tier config" },
 ];
 
@@ -913,14 +998,32 @@ function isFallbackKey(key: string): boolean {
 	return false;
 }
 
+function isToolPolicyKey(key: string): boolean {
+	for (const tier of TIERS) {
+		if (
+			key === `${tier}_tool_policy` ||
+			key === `${tier}-tool-policy` ||
+			key === `${tier}.toolpolicy`
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function tierFromCompoundKey(key: string): Tier {
+	return key.split(/[_\-.]/)[0] as Tier;
+}
+
 interface ConfigPatch {
 	tiers: Partial<Record<Tier, string | null>>;
 	fallbacks: Partial<Record<Tier, string[] | null>>;
+	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
 	tools?: string[];
 }
 
 function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolean; errors: string[] } {
-	const patch: ConfigPatch = { tiers: {}, fallbacks: {} };
+	const patch: ConfigPatch = { tiers: {}, fallbacks: {}, toolPolicies: {} };
 	const errors: string[] = [];
 	const tokens = splitConfigArgs(args).filter((t) => !["show", "get", "current"].includes(t.toLowerCase()));
 	for (const token of tokens) {
@@ -934,16 +1037,29 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		if ((TIERS as string[]).includes(key)) {
 			patch.tiers[key as Tier] = value === "" || value === "unset" ? null : value;
 		} else if (isFallbackKey(key)) {
-			const tier = key.split(/[_\-.]/)[0] as Tier;
+			const tier = tierFromCompoundKey(key);
 			patch.fallbacks[tier] = value === "" || value === "unset" || value === "none" ? null : splitCommaList(value);
+		} else if (isToolPolicyKey(key)) {
+			const tier = tierFromCompoundKey(key);
+			if (value === "" || value === "unset" || value === "inherit") patch.toolPolicies[tier] = null;
+			else {
+				const policy = normalizeToolPolicy(value);
+				if (policy) patch.toolPolicies[tier] = policy;
+				else errors.push(`invalid ${key} "${value}" (expected none|configured|unset)`);
+			}
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
 		} else {
-			errors.push(`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|tools)`);
+			errors.push(
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_tool_policy|tools)`,
+			);
 		}
 	}
 	const hasChanges =
-		Object.keys(patch.tiers).length > 0 || Object.keys(patch.fallbacks).length > 0 || patch.tools !== undefined;
+		Object.keys(patch.tiers).length > 0 ||
+		Object.keys(patch.fallbacks).length > 0 ||
+		Object.keys(patch.toolPolicies).length > 0 ||
+		patch.tools !== undefined;
 	return { patch, hasChanges, errors };
 }
 
@@ -951,6 +1067,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 	const next: PrReviewConfig = {
 		tiers: { ...base.tiers },
 		fallbacks: normalizeFallbacks(base.fallbacks),
+		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		tools: [...base.tools],
 	};
 	for (const tier of TIERS) {
@@ -963,6 +1080,11 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 			const value = patch.fallbacks[tier];
 			if (value === null || value === undefined || value.length === 0) delete next.fallbacks[tier];
 			else next.fallbacks[tier] = [...new Set(value)];
+		}
+		if (tier in patch.toolPolicies) {
+			const value = patch.toolPolicies[tier];
+			if (value === null || value === undefined) delete next.toolPolicies[tier];
+			else next.toolPolicies[tier] = value;
 		}
 	}
 	if (patch.tools) next.tools = patch.tools;
@@ -997,11 +1119,14 @@ function summarizeConfig(
 			(t) =>
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
-		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | tools granted to each review subagent |`,
+		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
-		"| Tier | Your fallbacks | Effective fallbacks |",
-		"|---|---|---|",
-		...TIERS.map((t) => `| \`${t}\` | ${formatModelList(user.fallbacks[t])} | ${formatModelList(effective.fallbacks[t])} |`),
+		"| Tier | Your fallbacks | Effective fallbacks | Tool policy |",
+		"|---|---|---|---|",
+		...TIERS.map(
+			(t) =>
+				`| \`${t}\` | ${formatModelList(user.fallbacks[t])} | ${formatModelList(effective.fallbacks[t])} | ${user.toolPolicies[t] ? `\`${user.toolPolicies[t]}\`` : "_inherit configured_"} → \`${effective.toolPolicies[t] ?? "configured"}\` |`,
+		),
 		"",
 		`User config: \`${userConfigPath()}\``,
 	];
@@ -1013,8 +1138,10 @@ function summarizeConfig(
 		"- Print this summary: `/pr-review-config show`",
 		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
 		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
+		"- Set tier tool policy: `/pr-review-config medium_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
+		"- Restore legacy tier tool behavior: `/pr-review-config medium_tool_policy=unset`",
 		"- A `<model>` is any pi model pattern (`provider/model` or `provider/model:thinking`).",
 	);
 	return lines.join("\n");
@@ -1110,15 +1237,23 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			"Clear this tier's fallback chain. Use key=value form to set multiple fallbacks.",
 		),
 	}));
+	const policyItems: SettingItem[] = TIERS.map((tier) => ({
+		id: `${tier}_tool_policy`,
+		label: `${tier} tool policy`,
+		description: "Default when a pass does not explicitly set tool_policy. Enter/Space cycles values.",
+		currentValue: cfg.toolPolicies[tier] ?? INHERIT_TOOL_POLICY,
+		values: [INHERIT_TOOL_POLICY, ...TOOL_POLICIES],
+	}));
 	const current = cfg.tools.join(",");
 	const toolValues = [current, ...TOOLS_PRESETS.filter((p) => p !== current)];
 	return [
 		...tierItems,
 		...fallbackItems,
+		...policyItems,
 		{
 			id: "tools",
-			label: "subagent tools",
-			description: "Tools granted to each review subagent. Enter/Space cycles presets.",
+			label: "configured tool allowlist",
+			description: "Tools available when effective policy is configured. Enter/Space cycles presets.",
 			currentValue: current,
 			values: toolValues,
 		},
@@ -1144,6 +1279,7 @@ async function showConfigMenu(
 				for (const tier of TIERS) {
 					settingsList.updateValue(tier, draft.tiers[tier] ?? UNSET);
 					settingsList.updateValue(`${tier}_fallbacks`, draft.fallbacks[tier]?.join(",") || "(none)");
+					settingsList.updateValue(`${tier}_tool_policy`, draft.toolPolicies[tier] ?? INHERIT_TOOL_POLICY);
 				}
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
@@ -1153,9 +1289,16 @@ async function showConfigMenu(
 					if (newValue === "__unset__") delete draft.tiers[id as Tier];
 					else draft.tiers[id as Tier] = newValue;
 				} else if (isFallbackKey(id)) {
-					const tier = id.split(/[_\-.]/)[0] as Tier;
+					const tier = tierFromCompoundKey(id);
 					if (newValue === "__unset__") delete draft.fallbacks[tier];
 					else draft.fallbacks[tier] = [newValue];
+				} else if (isToolPolicyKey(id)) {
+					const tier = tierFromCompoundKey(id);
+					if (newValue === INHERIT_TOOL_POLICY) delete draft.toolPolicies[tier];
+					else {
+						const policy = normalizeToolPolicy(newValue);
+						if (policy) draft.toolPolicies[tier] = policy;
+					}
 				} else if (id === "tools") {
 					draft.tools = splitCommaList(newValue);
 				} else {
@@ -1167,8 +1310,10 @@ async function showConfigMenu(
 					const shown = id === "tools"
 						? draft.tools.join(",")
 						: isFallbackKey(id)
-							? (draft.fallbacks[id.split(/[_\-.]/)[0] as Tier]?.join(",") ?? "(none)")
-							: (draft.tiers[id as Tier] ?? UNSET);
+							? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
+							: isToolPolicyKey(id)
+								? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
+								: (draft.tiers[id as Tier] ?? UNSET);
 					ctx.ui.notify(`PR review config: ${id} = ${shown}`, "info");
 				} catch (e) {
 					ctx.ui.notify(`pr-review-config failed: ${errMessage(e)}`, "error");
@@ -1178,7 +1323,7 @@ async function showConfigMenu(
 
 			settingsList = new SettingsList(
 				configMenuItems(draft, available),
-				10,
+				12,
 				getSettingsListTheme(),
 				(id, newValue) => persist(id, newValue),
 				() => done(undefined),

@@ -20,14 +20,16 @@ You are the **orchestrator**. You own all GitHub access, skip decisions, convent
 
 If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. This guarantees bounded parallel fan-out instead of depending on whether the tool interface runs separate calls concurrently. Use these pass assignments:
 
-| Pass id | Tier label | Scope |
-|---------|------------|-------|
-| `overview` | `light` | Step 3 overview, strengths, and high-level risk areas |
-| `conventions-maintainability` | `medium` | Step 5 convention compliance, readability, maintainability, test gaps, and nits |
-| `correctness` | `heavy` | Step 5 compile/parse, logic, error handling, lifecycle, concurrency, and edge-case defects |
-| `security-performance` | `heavy` | Step 5 security vulnerabilities and performance regressions |
+| Pass id | Tier label | Tool policy | Scope |
+|---------|------------|-------------|-------|
+| `overview` | `light` | `none` | Step 3 overview, strengths, and high-level risk areas |
+| `conventions-maintainability` | `medium` | `none` | Step 5 convention compliance, readability, maintainability, test gaps, and nits |
+| `correctness` | `heavy` | `configured` | Step 5 compile/parse, logic, error handling, lifecycle, concurrency, and edge-case defects |
+| `security-performance` | `heavy` | `configured` | Step 5 security vulnerabilities and performance regressions |
 
-Call `review_subagents` with `{ context, max_parallel: 4, passes: [...] }`. If any pass returns `status: failed`, treat the review evidence as incomplete: rerun the failed pass with `review_subagent` or perform that pass inline before finalizing. Always put the PR title/description, relevant metadata, convention-file excerpts, and unified diff in shared `context` so subagents do not refetch anything.
+Call `review_subagents` with `{ context, max_parallel: 4, passes: [...] }`, setting each pass's `tool_policy` exactly as shown. Shared `context` contains the PR title/description, relevant metadata, complete unified diff, and strictly cross-cutting review requirements. Put convention-file paths and excerpts only in the `conventions-maintainability` pass's own `context`; they are appended to shared context by the tool. This avoids sending specialist-only material to every model and prevents redundant repository exploration by passes that already have all required evidence.
+
+If deterministic context assembly reports that required input is missing or truncated before dispatch (for example, an incomplete diff or unreadable applicable convention file), set `tool_policy: configured` for that affected pass instead of `none`. Do not ask the model to self-diagnose and rerun. If any pass returns `status: failed`, treat the review evidence as incomplete: rerun the failed pass with `review_subagent` using the same tool policy, or perform that pass inline before finalizing.
 
 If `review_subagents` is unavailable but `review_subagent` is available, run the same pass assignments as individual `review_subagent` calls; emit independent calls in the same turn when the interface supports parallel tool calls. If neither subagent tool is available, perform every pass yourself inline on the current session model.
 
@@ -78,25 +80,25 @@ List (do not dump contents yet) the repository convention files that could gover
 - The root convention file (`CLAUDE.md`, and/or `AGENTS.md` if present).
 - Any convention file living in a directory that contains a file modified by this PR.
 
-When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope, and include the relevant rule excerpts (with file paths) in the shared context for the medium pass.
+When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope, and include the relevant rule excerpts (with file paths) only in the `conventions-maintainability` pass-specific `context`, not the batch's shared context.
 
 ## Step 3 — Overview & strengths (`light` reviewer)
 
 Write a short **overview** (1–3 short paragraphs) of what the PR does and how, grounded in the diff and PR title/description — enough to understand author intent. Also collect a list of genuine **strengths** (good tests, nice consolidation, correct reuse of helpers, etc.) and any high-level risk areas for the specialist passes. Strengths are part of the output, and understanding intent is what lets you tell an intentional change from a bug.
 
-When `review_subagents` is available, include this as the `overview` pass in the same batch as the Step 5 review passes instead of waiting for a separate sequential call.
+When `review_subagents` is available, include this as the `overview` pass in the same batch as the Step 5 review passes instead of waiting for a separate sequential call. Set `tool_policy: none`; the complete PR metadata and diff are already supplied.
 
 ## Step 4 — (reserved)
 
 ## Step 5 — Review passes (dispatch by tier, then merge results)
 
-Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR context from Step 1 plus the relevant convention-file excerpts from Step 2, and instruct each pass to report issues **at every severity, including nits**, within its own scope. Do **not** ask every pass to audit everything; the objective boundaries below reduce duplicate work while preserving coverage.
+Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR metadata and complete diff from Step 1; give only the medium pass the relevant convention-file excerpts from Step 2. Instruct each pass to report issues **at every severity, including nits**, within its own scope. Do **not** ask every pass to audit everything; the objective and tool-policy boundaries below reduce duplicate work while preserving coverage.
 
 When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`, then combine the ordered outputs:
 
-1. **Convention, readability & maintainability pass — `medium` reviewer.** Audit changed lines against the in-scope convention files from Step 2. Flag violations (quote the rule), softer deviations from documented style as nits, naming/dead-code/comment/typo issues, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit"). Do not duplicate deep correctness or security analysis unless needed to explain a convention/maintainability issue.
-2. **Bug & correctness pass — `heavy` reviewer.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency, and edge cases. Include lower-severity correctness smells and missing edge cases as P2/P3. Do not duplicate pure style nits covered by the medium pass.
-3. **Security & performance pass — `heavy` reviewer.** Look for security issues (injection, authz, secrets, unsafe deserialization) and performance regressions in the changed code. Note minor ones too. Do not duplicate ordinary correctness/readability findings unless they are security/performance relevant.
+1. **Convention, readability & maintainability pass — `medium` reviewer, `tool_policy: none`.** Audit changed lines against the in-scope convention excerpts supplied in this pass's context. Flag violations (quote the rule), softer deviations from documented style as nits, naming/dead-code/comment/typo issues, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit"). Do not duplicate deep correctness or security analysis unless needed to explain a convention/maintainability issue.
+2. **Bug & correctness pass — `heavy` reviewer, `tool_policy: configured`.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency, and edge cases. Include lower-severity correctness smells and missing edge cases as P2/P3. Do not duplicate pure style nits covered by the medium pass. Use configured repository-context tools when surrounding files or callers are needed to confirm impact; reviewing remains non-modifying even if the allowlist includes `bash`.
+3. **Security & performance pass — `heavy` reviewer, `tool_policy: configured`.** Look for security issues (injection, authz, secrets, unsafe deserialization) and performance regressions in the changed code. Note minor ones too. Do not duplicate ordinary correctness/readability findings unless they are security/performance relevant. Use configured tools when repository context is needed to validate a candidate; do not modify files.
 
 ## Step 6 — Verification (best-effort, orchestrator-owned, non-destructive)
 

@@ -65,15 +65,17 @@ The `/pr-review-config` command maps three labels to models:
 /pr-review-config show                              # print the current mapping
 /pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
 /pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
+/pr-review-config medium_tool_policy=none           # tier default when a pass omits tool_policy
 /pr-review-config medium=unset                      # clear a tier (back to pi default)
 /pr-review-config heavy_fallbacks=unset             # clear a fallback chain
-/pr-review-config tools=read,bash,grep,find,ls      # tools granted to each subagent
+/pr-review-config medium_tool_policy=unset          # restore legacy configured-tool behavior
+/pr-review-config tools=read,bash,grep,find,ls      # allowlist used by configured policy
 ```
 
 Running `/pr-review-config` with no arguments in the TUI opens an interactive settings menu that mirrors pi's `/settings` and the NERVous `/nervous:config`:
 
-- One primary-model row and one fallback-model row per tier (`light` / `medium` / `heavy`) plus a `subagent tools` row.
-- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space on `subagent tools` cycles presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
+- One primary-model, fallback-model, and tool-policy row per tier (`light` / `medium` / `heavy`) plus a configured-tool allowlist row.
+- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space cycles tool policies and allowlist presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
 - Selections apply and persist **immediately**; Esc closes the menu.
 - Type to search, and tab-completion is available for the `key=value` form.
 
@@ -98,11 +100,18 @@ Example `pr-review.json`:
     "medium": ["<backup-balanced-model>"],
     "heavy": ["<backup-strong-model:high>", "<balanced-model-spec>"]
   },
+  "toolPolicies": {
+    "light": "none",
+    "medium": "none",
+    "heavy": "configured"
+  },
   "tools": ["read", "bash", "grep", "find", "ls"]
 }
 ```
 
 Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
+
+Tool policy is additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` for overview and conventions/maintainability because it supplies their complete evidence, while both heavy specialist passes retain `configured` repository-context tools. Fallback model attempts keep the original pass policy.
 
 ### 2. The orchestrator / inline-fallback model
 
@@ -181,15 +190,19 @@ Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2
 pi-pr-review/
 ├─ package.json                      # pi manifest: prompts + extensions
 ├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
+├─ lib/pr-review-policy.ts           # pure tool-policy resolution/argv helpers
 ├─ extensions/pr-review-subagent.ts  # review_subagents/review_subagent tools + /pr-review-config command
-└─ extensions/review-table.ts        # renders the final JSON as a table (TUI only)
+├─ extensions/review-table.ts        # renders the final JSON as a table (TUI only)
+└─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
 ```
 
-## Security & cost notes
+## Speed, security & cost notes
 
-- The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Subagents are read-only reviewers (`read,bash,grep,find,ls` by default) and never post comments or edit files.
+- The four independent review lenses remain intact. Overview and medium passes run context-only with `--no-tools`; both heavy specialists retain configured tools. All subprocesses use `--no-context-files` because the orchestrator supplies the complete review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
+- Tool results include effective `toolPolicy` and `elapsedMs` telemetry (plus per-attempt timing) so repeated representative runs can be compared at p50/p95 without guessing. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
+- The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
 - Project-local `pr-review.json` is only read when the project is trusted.
-- Tiered review calls multiple models per PR, now concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for the deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
+- Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
 
 ## Design notes
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-pr-review",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Model-agnostic GitHub PR code review prompt for pi. Pass a PR number; it derives the base and head branches from the PR in the current repo, reviews the diff, and returns structured JSON findings.",
   "keywords": [
     "pi-package",
@@ -13,6 +13,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/10ego/pi-pr-review.git"
+  },
+  "scripts": {
+    "test": "bun test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
