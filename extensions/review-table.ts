@@ -19,15 +19,19 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	classifyAssistantCompletion,
+	CompletedReviewCache,
 	isNonOpenConfirmationPrompt,
+	parsePublishExistingArgs,
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
 	resolveAutoPostSetting,
+	resolveRepositoryBinding,
 	ReviewInvocationGate,
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
+	type RepositoryBinding,
 	type ReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
@@ -310,7 +314,28 @@ function resolvePublishingConfig(ctx: ExtensionContext): AutoPostResolution {
 	return resolveAutoPostSetting(user.value, project?.value);
 }
 
-async function maybePublishReview(text: string, invocation: ReviewInvocation, ctx: ExtensionContext): Promise<void> {
+function notifyPublishResult(
+	result: Awaited<ReturnType<typeof publishPullReview>>,
+	source: string,
+	ctx: ExtensionContext,
+): void {
+	if (result.status === "posted") {
+		ctx.ui.notify(`PR review posted as COMMENT (${source})${result.url ? `: ${result.url}` : ""}`, "info");
+	} else if (result.status === "posted_degraded") {
+		ctx.ui.notify(`PR review posted (${source}): ${result.message}${result.url ? ` ${result.url}` : ""}`, "warning");
+	} else if (result.status === "skipped_duplicate") {
+		ctx.ui.notify("PR review not reposted: this reviewed head was already posted by the current GitHub identity", "info");
+	} else {
+		ctx.ui.notify(`PR review publish ${result.status}: ${result.message}`, "error");
+	}
+}
+
+async function maybePublishReview(
+	text: string,
+	invocation: ReviewInvocation,
+	ctx: ExtensionContext,
+	expectedRepository?: RepositoryBinding,
+): Promise<void> {
 	if (invocation.mode === "disabled") return;
 	const setting = resolvePublishingConfig(ctx);
 	if (invocation.mode === "auto") {
@@ -341,25 +366,76 @@ async function maybePublishReview(text: string, invocation: ReviewInvocation, ct
 		prNumber: invocation.prNumber,
 		headSha,
 		allowNonOpen: invocation.allowNonOpen,
+		expectedRepository,
 		review: parsed.review as ReviewLike,
 	});
 	const source = invocation.mode === "force" ? "--comment" : `${setting.source} config`;
-	if (result.status === "posted") {
-		ctx.ui.notify(`PR review posted as COMMENT (${source})${result.url ? `: ${result.url}` : ""}`, "info");
-	} else if (result.status === "posted_degraded") {
-		ctx.ui.notify(`PR review posted as body-only COMMENT for non-open PR (${source})`, "warning");
-	} else if (result.status === "skipped_duplicate") {
-		ctx.ui.notify("PR review not reposted: this head was already reviewed by the current GitHub identity", "info");
-	} else {
-		ctx.ui.notify(`PR review publish ${result.status}: ${result.message}`, "error");
-	}
+	notifyPublishResult(result, source, ctx);
 }
 
 export default function (pi: ExtensionAPI) {
 	const invocationGate = new ReviewInvocationGate();
+	const completedReviews = new CompletedReviewCache();
+
+	pi.registerCommand("pr-review-publish", {
+		description: "Publish a completed review from this session without rerunning the model",
+		handler: async (args, ctx) => {
+			const parsed = parsePublishExistingArgs(args ?? "");
+			if (parsed.error || !parsed.prNumber) {
+				ctx.ui.notify(
+					`Invalid /pr-review-publish command: ${parsed.error ?? "missing PR number"}. Usage: /pr-review-publish <PR-NUM> [--allow-stale]`,
+					"error",
+				);
+				return;
+			}
+			const active = invocationGate.peek();
+			if (active?.prNumber === parsed.prNumber) {
+				ctx.ui.notify(
+					`PR #${parsed.prNumber} is still being reviewed. The publish-only command will not post an older cached result while a new result is in progress.`,
+					"error",
+				);
+				return;
+			}
+			let repository: RepositoryBinding;
+			try {
+				repository = await resolveRepositoryBinding(ctx.cwd);
+			} catch (error) {
+				ctx.ui.notify(`Cannot resolve the current GitHub repository: ${String(error)}`, "error");
+				return;
+			}
+			const completed = completedReviews.get(parsed.prNumber, repository);
+			if (!completed) {
+				ctx.ui.notify(
+					`No completed review for PR #${parsed.prNumber} is cached for this repository in the current extension session. This command never starts or reruns a review.`,
+					"error",
+				);
+				return;
+			}
+			const headSha = completed.review.pr?.head_sha;
+			if (typeof headSha !== "string") {
+				ctx.ui.notify("Cached PR review is missing pr.head_sha", "error");
+				return;
+			}
+			const result = await publishPullReview({
+				cwd: ctx.cwd,
+				prNumber: parsed.prNumber,
+				headSha,
+				allowNonOpen: completed.invocation.allowNonOpen,
+				allowStale: parsed.allowStale,
+				expectedRepository: completed.repository,
+				review: completed.review,
+			});
+			notifyPublishResult(
+				result,
+				parsed.allowStale ? "publish-only --allow-stale" : "publish-only",
+				ctx,
+			);
+		},
+	});
 
 	pi.on("session_start", () => {
 		invocationGate.clear();
+		completedReviews.clear();
 	});
 
 	pi.on("input", (event, ctx) => {
@@ -406,7 +482,24 @@ export default function (pi: ExtensionAPI) {
 		if (!text.trim()) return;
 		const review = parseReview(text);
 		if (!review) return; // not a /pr-review JSON payload — leave untouched
-		if (invocation) await maybePublishReview(text, invocation, ctx);
+		if (invocation) {
+			const publishable = parsePublishableReview(text);
+			let repository: RepositoryBinding | undefined;
+			if (
+				publishable.review &&
+				!validateReviewInvocation(publishable.review, invocation) &&
+				shouldPublishReview(publishable.review)
+			) {
+				try {
+					repository = await resolveRepositoryBinding(ctx.cwd);
+					// Cache before publication preflight so a stale failure remains directly publishable.
+					completedReviews.remember(publishable.review, invocation, repository);
+				} catch (error) {
+					ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
+				}
+			}
+			await maybePublishReview(text, invocation, ctx, repository);
+		}
 
 		// Keep raw JSON for automation; only prettify for interactive terminals.
 		if (ctx.mode !== "tui") return;

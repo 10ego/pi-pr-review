@@ -88,6 +88,26 @@ export interface ReviewInvocation {
 	allowNonOpen: boolean;
 }
 
+export interface PublishExistingParseResult {
+	prNumber?: number;
+	allowStale: boolean;
+	error?: string;
+}
+
+/** Parse the direct, model-free `/pr-review-publish` command arguments. */
+export function parsePublishExistingArgs(input: string): PublishExistingParseResult {
+	const tokens = input.trim().split(/\s+/).filter(Boolean);
+	const requested = Number(tokens[0]);
+	if (!Number.isInteger(requested) || requested <= 0) {
+		return { allowStale: false, error: "a positive PR number must be the first argument" };
+	}
+	const unknown = tokens.slice(1).filter((token) => token !== "--allow-stale");
+	if (unknown.length > 0) {
+		return { allowStale: false, error: `unknown argument${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}` };
+	}
+	return { prNumber: requested, allowStale: tokens.includes("--allow-stale") };
+}
+
 export type ReviewInvocationPhase = "reviewing" | "awaiting_confirmation" | "confirmed";
 
 export function isNonOpenConfirmationPrompt(text: string, prNumber: number): boolean {
@@ -244,6 +264,42 @@ export interface ReviewLike {
 	overall_correctness?: string;
 	overall_explanation?: string;
 	overall_confidence_score?: number;
+}
+
+export interface RepositoryBinding {
+	repository: string;
+	hostname: string;
+}
+
+export interface CompletedReviewRecord {
+	review: ReviewLike;
+	invocation: ReviewInvocation;
+	repository: RepositoryBinding;
+}
+
+function completedReviewKey(repository: RepositoryBinding, prNumber: number): string {
+	return `${repository.hostname.toLowerCase()}:${repository.repository.toLowerCase()}:${prNumber}`;
+}
+
+/** Session-scoped latest completed review per repository and PR. */
+export class CompletedReviewCache {
+	private readonly reviews = new Map<string, CompletedReviewRecord>();
+
+	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): void {
+		this.reviews.set(completedReviewKey(repository, invocation.prNumber), {
+			review,
+			invocation: { ...invocation },
+			repository: { ...repository },
+		});
+	}
+
+	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {
+		return this.reviews.get(completedReviewKey(repository, prNumber));
+	}
+
+	clear(): void {
+		this.reviews.clear();
+	}
 }
 
 export interface PublishableReviewParseResult {
@@ -665,6 +721,19 @@ async function ghJson<T>(args: string[], cwd: string): Promise<T> {
 	return JSON.parse(text) as T;
 }
 
+export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryBinding> {
+	const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
+		["repo", "view", "--json", "nameWithOwner,url"],
+		cwd,
+	);
+	const repository = String(repoInfo.nameWithOwner ?? "");
+	const hostname = new URL(String(repoInfo.url ?? "")).hostname;
+	if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || !/^[a-z0-9.-]+$/i.test(hostname)) {
+		throw new Error("invalid GitHub repository or hostname");
+	}
+	return { repository, hostname };
+}
+
 function flattenPages<T>(value: unknown): T[] {
 	if (!Array.isArray(value)) return [];
 	if (value.every(Array.isArray)) return value.flat() as T[];
@@ -713,6 +782,50 @@ interface PullState {
 	draft?: boolean;
 	merged_at?: string | null;
 	head?: { sha?: string };
+}
+
+export interface HeadPublicationPlan {
+	reviewedHeadSha: string;
+	currentHeadSha: string;
+	stale: boolean;
+	commitId: string;
+	allowInlineComments: boolean;
+}
+
+/** Authorize a reviewed/current head pairing without silently weakening stale protection. */
+export function planHeadPublication(
+	reviewedHeadSha: string,
+	currentHeadSha: string | undefined,
+	allowStale: boolean,
+): { plan?: HeadPublicationPlan; error?: string } {
+	const reviewed = reviewedHeadSha.toLowerCase();
+	const current = currentHeadSha?.toLowerCase();
+	if (!current || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(current)) {
+		return { error: "GitHub returned an invalid current PR head SHA" };
+	}
+	const stale = current !== reviewed;
+	if (stale && !allowStale) {
+		return {
+			error: `PR head changed after review (${reviewed} -> ${current}); refusing to publish stale results. Use /pr-review-publish with --allow-stale to post the completed review without rerunning it`,
+		};
+	}
+	return {
+		plan: {
+			reviewedHeadSha: reviewed,
+			currentHeadSha: current,
+			stale,
+			commitId: stale ? current : reviewed,
+			allowInlineComments: !stale,
+		},
+	};
+}
+
+export function buildStaleReviewNotice(reviewedHeadSha: string, currentHeadSha: string): string {
+	return [
+		"> [!WARNING]",
+		`> This review was generated for commit \`${reviewedHeadSha}\`. At publish preflight, the PR pointed to \`${currentHeadSha}\`.`,
+		"> Inline findings were folded into this body because their original diff anchors may be stale.",
+	].join("\n");
 }
 
 export type PullLifecycle = "open" | "non_open";
@@ -771,9 +884,11 @@ export async function publishPullReview(input: {
 	prNumber: number;
 	headSha: string;
 	allowNonOpen: boolean;
+	allowStale?: boolean;
+	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
 }): Promise<PublishResult> {
-	const { cwd, prNumber, headSha, allowNonOpen, review } = input;
+	const { cwd, prNumber, headSha, allowNonOpen, allowStale = false, expectedRepository, review } = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
@@ -782,29 +897,31 @@ export async function publishPullReview(input: {
 	let hostname: string;
 	let identity: string;
 	try {
-		const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
-			["repo", "view", "--json", "nameWithOwner,url"],
-			cwd,
-		);
-		repository = String(repoInfo.nameWithOwner ?? "");
-		hostname = new URL(String(repoInfo.url ?? "")).hostname;
+		const binding = await resolveRepositoryBinding(cwd);
+		repository = binding.repository;
+		hostname = binding.hostname;
+		if (
+			expectedRepository &&
+			completedReviewKey(expectedRepository, prNumber) !== completedReviewKey(binding, prNumber)
+		) {
+			return { status: "failed", message: "current GitHub repository does not match the cached review repository" };
+		}
 		identity = await ghText(githubApiArgs(hostname, "user", "--jq", ".login"), cwd);
 	} catch (error) {
 		return { status: "failed", message: `GitHub identity/repository lookup failed: ${String(error)}` };
 	}
-	if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || !/^[a-z0-9.-]+$/i.test(hostname) || !identity) {
-		return { status: "failed", message: "invalid GitHub repository, hostname, or identity" };
-	}
+	if (!identity) return { status: "failed", message: "invalid GitHub identity" };
 
 	const marker = canonicalReviewMarker(normalizedHeadSha);
 	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
 	return withPublishLock(lockKey, async () => {
 		let pull: PullState;
+		let headPlan: HeadPublicationPlan;
 		try {
 			pull = await ghJson<PullState>(githubApiArgs(hostname, `repos/${repository}/pulls/${prNumber}`), cwd);
-			if (pull.head?.sha?.toLowerCase() !== normalizedHeadSha) {
-				return { status: "failed", message: "PR head changed after review; refusing to publish stale results" };
-			}
+			const planned = planHeadPublication(normalizedHeadSha, pull.head?.sha, allowStale);
+			if (!planned.plan) return { status: "failed", message: planned.error ?? "invalid PR head" };
+			headPlan = planned.plan;
 			if (pull.draft) return { status: "failed", message: "draft PR reviews are not automatically published" };
 			const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
@@ -818,36 +935,52 @@ export async function publishPullReview(input: {
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
-		const candidates = collectFoldedComments(review);
-		if (candidates.errors.length > 0) {
-			return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
-		}
-		let comments: PublishComment[] = candidates.comments;
-		if (isOpen && comments.length > 0) {
-			let filePages: unknown;
-			try {
-				filePages = await ghJson<unknown>(
-					githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
-					cwd,
-				);
-			} catch (error) {
-				return { status: "failed", message: `changed-file lookup failed: ${String(error)}` };
+		let comments: PublishComment[] = [];
+		if (!isOpen) {
+			const candidates = collectFoldedComments(review);
+			if (candidates.errors.length > 0) {
+				return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
 			}
-			const validated = validateInlineComments(review, flattenPages<ChangedFileLike>(filePages));
-			if (validated.errors.length > 0) {
-				return { status: "failed", message: `inline validation failed: ${validated.errors.join("; ")}` };
+			comments = candidates.comments;
+		} else if (headPlan.allowInlineComments) {
+			const candidates = collectFoldedComments(review);
+			if (candidates.errors.length > 0) {
+				return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
 			}
-			comments = validated.comments;
+			if (candidates.comments.length > 0) {
+				let filePages: unknown;
+				try {
+					filePages = await ghJson<unknown>(
+						githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
+						cwd,
+					);
+				} catch (error) {
+					return { status: "failed", message: `changed-file lookup failed: ${String(error)}` };
+				}
+				const validated = validateInlineComments(review, flattenPages<ChangedFileLike>(filePages));
+				if (validated.errors.length > 0) {
+					return { status: "failed", message: `inline validation failed: ${validated.errors.join("; ")}` };
+				}
+				comments = validated.comments;
+			}
 		}
 
 		const summary = buildReviewSummary(review, comments);
 		const bodyError = validateReviewBody(summary);
 		if (bodyError) return { status: "failed", message: bodyError };
-		const reviewBody = `${isOpen ? summary : foldInlineComments(summary, comments)}\n\n${marker}`;
+		const lifecycleBody = isOpen ? summary : foldInlineComments(summary, comments);
+		const disclosedBody = headPlan.stale
+			? `${buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha)}\n\n${lifecycleBody}`
+			: lifecycleBody;
+		const reviewBody = `${disclosedBody}\n\n${marker}`;
 		if (Buffer.byteLength(reviewBody, "utf8") > MAX_BODY_BYTES) {
 			return { status: "failed", message: "final review body exceeds 65536 UTF-8 bytes" };
 		}
-		const payload = buildPullReviewPayload(normalizedHeadSha, reviewBody, isOpen ? comments : []);
+		const payload = buildPullReviewPayload(
+			headPlan.commitId,
+			reviewBody,
+			isOpen && headPlan.allowInlineComments ? comments : [],
+		);
 		if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
 			return { status: "failed", message: "review payload is too large" };
 		}
@@ -857,8 +990,11 @@ export async function publishPullReview(input: {
 				githubApiArgs(hostname, `repos/${repository}/pulls/${prNumber}`),
 				cwd,
 			);
-			if (refreshed.head?.sha?.toLowerCase() !== normalizedHeadSha) {
-				return { status: "failed", message: "PR head changed during publish preflight" };
+			if (refreshed.head?.sha?.toLowerCase() !== headPlan.currentHeadSha) {
+				return {
+					status: "failed",
+					message: "PR head changed during publish preflight; run the publish-only command again to acknowledge the new current head",
+				};
 			}
 			if (refreshed.draft) return { status: "failed", message: "PR became a draft during publish preflight" };
 			const refreshedLifecycle = authorizePullLifecycle(refreshed.state, refreshed.merged_at, allowNonOpen);
@@ -884,9 +1020,14 @@ export async function publishPullReview(input: {
 			} catch {
 				/* accepted response without parseable metadata */
 			}
+			const degraded = !isOpen || headPlan.stale;
 			return {
-				status: isOpen ? "posted" : "posted_degraded",
-				message: isOpen ? "GitHub COMMENT review posted" : "body-only COMMENT review posted for non-open PR",
+				status: degraded ? "posted_degraded" : "posted",
+				message: headPlan.stale
+					? `body-only stale COMMENT review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
+					: isOpen
+						? "GitHub COMMENT review posted"
+						: "body-only COMMENT review posted for non-open PR",
 				reviewId: response.id,
 				url: response.html_url,
 			};
@@ -895,7 +1036,7 @@ export async function publishPullReview(input: {
 		try {
 			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
 				return {
-					status: isOpen ? "posted" : "posted_degraded",
+					status: !isOpen || headPlan.stale ? "posted_degraded" : "posted",
 					message: "GitHub review found during failure reconciliation",
 					reconciled: true,
 				};

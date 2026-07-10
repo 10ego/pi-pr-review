@@ -1,20 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	authorizePullLifecycle,
 	bodyHasHeadMarker,
 	buildPullReviewPayload,
 	buildReviewSummary,
+	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
+	CompletedReviewCache,
 	containsReservedReviewMarker,
 	foldInlineComments,
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
 	parsePublishableReview,
+	parsePublishExistingArgs,
 	parsePublishMode,
+	planHeadPublication,
+	publishPullReview,
 	resolveAutoPostSetting,
 	ReviewInvocationGate,
 	shouldPublishReview,
@@ -152,6 +159,140 @@ describe("trusted invocation mode", () => {
 	test("trusted non-open flags bind authorization to the invocation", () => {
 		expect(parsePublishMode("/pr-review 7 --include-closed")).toMatchObject({ allowNonOpen: true });
 		expect(parsePublishMode("/pr-review 7 --review-closed --comment")).toMatchObject({ allowNonOpen: true });
+	});
+});
+
+describe("publish-only completed review command", () => {
+	test("requires an explicit PR and recognizes only the stale override", () => {
+		expect(parsePublishExistingArgs("7")).toEqual({ prNumber: 7, allowStale: false });
+		expect(parsePublishExistingArgs("7 --allow-stale")).toEqual({ prNumber: 7, allowStale: true });
+		expect(parsePublishExistingArgs("").error).toContain("positive PR number");
+		expect(parsePublishExistingArgs("7 --comment").error).toContain("unknown argument");
+	});
+
+	test("retains the latest completed review under its repository and PR", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		cache.remember(review, invocation, repository);
+		expect(cache.get(7, repository)).toEqual({ review, invocation, repository });
+		expect(cache.get(7, { hostname: "github.com", repository: "other/repo" })).toBeUndefined();
+		expect(cache.get(8, repository)).toBeUndefined();
+		cache.clear();
+		expect(cache.get(7, repository)).toBeUndefined();
+	});
+
+	test("keeps stale protection by default and degrades an explicit override", () => {
+		const reviewed = "a".repeat(40);
+		const current = "b".repeat(40);
+		expect(planHeadPublication(reviewed, current, false).error).toContain("--allow-stale");
+		const plan = planHeadPublication(reviewed, current, true).plan!;
+		expect(plan).toMatchObject({
+			reviewedHeadSha: reviewed,
+			currentHeadSha: current,
+			stale: true,
+			commitId: current,
+			allowInlineComments: false,
+		});
+		const body = `${buildStaleReviewNotice(reviewed, current)}\n\n${buildReviewSummary(review, [])}`;
+		const payload = buildPullReviewPayload(plan.commitId, body, []);
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain(reviewed);
+		expect(payload.body).toContain(current);
+		expect(payload.body).toContain("[P2] Handle empty input");
+	});
+
+	test("posts an explicitly stale review body through gh without inline comments", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-gh-"));
+		const gh = join(dir, "gh");
+		const payloadPath = join(dir, "payload.json");
+		writeFileSync(
+			gh,
+			`#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+elif [[ "$args" == *" user --jq .login"* ]]; then
+  echo 'reviewer'
+elif [[ "$args" == *"--method POST"* ]]; then
+  cat > "$GH_FAKE_PAYLOAD"
+  echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  echo '[]'
+elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
+  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' "$GH_FAKE_CURRENT"
+else
+  echo "unexpected gh args: $args" >&2
+  exit 1
+fi
+`,
+		);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		const previousPayload = process.env.GH_FAKE_PAYLOAD;
+		const previousCurrent = process.env.GH_FAKE_CURRENT;
+		const current = "b".repeat(40);
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		process.env.GH_FAKE_PAYLOAD = payloadPath;
+		process.env.GH_FAKE_CURRENT = current;
+		try {
+			const input = {
+				cwd: dir,
+				prNumber: 7,
+				headSha: "a".repeat(40),
+				allowNonOpen: false,
+				expectedRepository: { hostname: "github.com", repository: "owner/repo" },
+				review,
+			};
+			const wrongRepository = await publishPullReview({
+				...input,
+				expectedRepository: { hostname: "github.com", repository: "other/repo" },
+				allowStale: true,
+			});
+			expect(wrongRepository.message).toContain("does not match the cached review repository");
+			const refused = await publishPullReview(input);
+			expect(refused.status).toBe("failed");
+			expect(refused.message).toContain("--allow-stale");
+			const posted = await publishPullReview({ ...input, allowStale: true });
+			expect(posted.status).toBe("posted_degraded");
+			const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+			expect(payload.commit_id).toBe(current);
+			expect(payload.comments).toBeUndefined();
+			expect(payload.body).toContain("a".repeat(40));
+			expect(payload.body).toContain(current);
+			expect(payload.body).toContain("At publish preflight");
+			expect(payload.body).toContain("[P2] Handle empty input");
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+			if (previousPayload === undefined) delete process.env.GH_FAKE_PAYLOAD;
+			else process.env.GH_FAKE_PAYLOAD = previousPayload;
+			if (previousCurrent === undefined) delete process.env.GH_FAKE_CURRENT;
+			else process.env.GH_FAKE_CURRENT = previousCurrent;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("preserves inline publication when the reviewed head is still current", () => {
+		const head = "a".repeat(40);
+		expect(planHeadPublication(head, head.toUpperCase(), false).plan).toMatchObject({
+			stale: false,
+			commitId: head,
+			allowInlineComments: true,
+		});
+	});
+
+	test("registers and documents a direct command rather than delegating stale publication to the model", () => {
+		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
+		expect(extension).toContain('pi.registerCommand("pr-review-publish"');
+		expect(extension).toContain("This command never starts or reruns a review");
+		expect(extension).toContain("still being reviewed");
+		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
+		expect(readme).toContain("Inline comments are intentionally disabled");
+		expect(prompt).toContain("without another model turn");
 	});
 });
 
