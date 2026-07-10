@@ -18,7 +18,7 @@ Do **not** assume, name, or switch to any specific model. Model selection is con
 
 You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery, verification worktrees, final validation/classification, and JSON emission. You never perform GitHub writes: the extension captures invocation publishing intent and, after valid final JSON, owns any configured review publication. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
 
-If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. This guarantees bounded parallel fan-out instead of depending on whether the tool interface runs separate calls concurrently. Use these pass assignments:
+If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, choose the optional safe baseline verification command described in Steps 2 and 6, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. When that command exists, emit the `review_subagents` call and the orchestrator-owned `bash` verification call in the **same assistant turn** so Pi can run them concurrently; when it does not, dispatch the batch without waiting and record the verification skip. This guarantees bounded parallel fan-out without reducing review coverage. Use these pass assignments:
 
 | Pass id | Tier label | Tool policy | Scope |
 |---------|------------|-------------|-------|
@@ -88,6 +88,8 @@ List (do not dump contents yet) the repository convention files that could gover
 
 When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope, and include the relevant rule excerpts (with file paths) only in the `conventions-maintainability` pass-specific `context`, not the batch's shared context.
 
+After metadata/diff capture and convention gathering are complete, make one baseline-verification scheduling decision. Choose **at most one** command only when it is obvious from trusted repository configuration or changed-package context, non-interactive, reasonably fast, and safe to run in an isolated checkout. Do not probe by running commands first. Commands that install dependencies, require secrets/services, access the network, publish, alter git state, or write outside the isolated worktree are not safe baseline candidates. If no command clearly qualifies, choose none; this must not delay or suppress the four-pass review batch, and `verification` must record the skip reason.
+
 ## Step 3 — Overview & strengths (`light` reviewer)
 
 Write a short **overview** (1–3 short paragraphs) of what the PR does and how, grounded in the diff and PR title/description — enough to understand author intent. Also collect a list of genuine **strengths** (good tests, nice consolidation, correct reuse of helpers, etc.) and any high-level risk areas for the specialist passes. Strengths are part of the output, and understanding intent is what lets you tell an intentional change from a bug.
@@ -100,7 +102,7 @@ When `review_subagents` is available, include this as the `overview` pass in the
 
 Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR metadata and complete diff from Step 1; give only the medium pass the relevant convention-file excerpts from Step 2. Instruct each pass to report issues **at every severity, including nits**, within its own scope. Do **not** ask every pass to audit everything; the objective and tool-policy boundaries below reduce duplicate work while preserving coverage.
 
-When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`, then combine the ordered outputs:
+When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`. If Step 2 selected a baseline command, emit that batch call and the Step 6 `bash` call in the same assistant turn; do not await one before emitting the other. Then combine the ordered pass outputs and the independent verification result:
 
 1. **Convention, readability & maintainability pass — `medium` reviewer, `tool_policy: configured`.** Audit changed lines against the in-scope convention excerpts supplied in this pass's context. Flag violations (quote the rule), softer deviations from documented style as nits, naming/dead-code/comment/typo issues, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit"). Use configured tools to inspect surrounding files, tests, callers, or generated-file context when needed; do not modify files or duplicate deep correctness/security analysis unless needed to explain a convention/maintainability issue.
 2. **Bug & correctness pass — `heavy` reviewer, `tool_policy: configured`.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency, and edge cases. Include lower-severity correctness smells and missing edge cases as P2/P3. Do not duplicate pure style nits covered by the medium pass. Use configured repository-context tools when surrounding files or callers are needed to confirm impact; reviewing remains non-modifying even if the allowlist includes `bash`.
@@ -108,23 +110,39 @@ When `review_subagents` is available, dispatch the Step 3 `overview` pass and th
 
 ## Step 6 — Verification (best-effort, orchestrator-owned, non-destructive)
 
-Try to verify the change without touching the user's checkout. This is best-effort — if the repo has no obvious build/test, or it would be slow or unsafe, skip it and record what you could not verify. Do not delegate worktree creation, `gh`, or final verification status to subagents.
+Use only the zero-or-one baseline command selected after Step 2. Do not touch the user's checkout, and do not delegate worktree creation, `gh`, or final verification status to subagents. If there is no obvious safe command, do not make a verification `bash` call: let the four-pass batch proceed immediately and record why baseline verification was skipped.
 
-Safe recipe (adapt to the project's toolchain):
+When a safe command was selected, emit one `bash` tool call in the **same assistant turn** as `review_subagents` (or as the same-turn individual fallback calls when supported). Give the bash tool an explicit, reasonably short timeout. The command must pin the exact full `headRefOid` captured in Step 1, reject a fetched PR ref that no longer equals that SHA, create a uniquely named detached worktree, run only the selected baseline command there, and install cleanup traps before fetch/worktree creation. Adapt this shell skeleton without weakening its pinning, bounds, or cleanup:
 
 ```
-git fetch origin pull/$1/head            # fetch the PR head without switching branches
-wt=$(mktemp -d)
-git worktree add --detach "$wt" FETCH_HEAD
-# in "$wt": run the project's build and the tests for the affected packages/dirs
-git worktree remove --force "$wt"        # always clean up
+set -Eeuo pipefail
+repo_root=$(git rev-parse --show-toplevel)
+head_sha='<exact full headRefOid captured in Step 1>'
+wt=$(mktemp -d "${TMPDIR:-/tmp}/pi-pr-review-$1-${head_sha}.XXXXXX")
+cleanup() {
+  git -C "$repo_root" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  rm -rf -- "$wt"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+git -C "$repo_root" fetch --no-tags origin "pull/$1/head"
+fetched_sha=$(git -C "$repo_root" rev-parse --verify 'FETCH_HEAD^{commit}')
+test "$fetched_sha" = "$head_sha"
+git -C "$repo_root" worktree add --detach "$wt" "$head_sha"
+(
+  cd "$wt"
+  <the one selected non-interactive baseline command>
+)
 ```
 
-Record in `verification` exactly what you ran and the result (e.g. "`go build ./...` ✅, `go test ./pkg/...` ✅ 130 passed"), or why verification was limited. Never push, never leave a worktree behind, never modify the primary working tree.
+The tool timeout is part of the safety policy, not an optional optimization. Keep the shell trap even when the tool supplies timeout handling so normal success, command failure, interruption, and timeout termination all attempt cleanup. Never use `FETCH_HEAD`, a branch name, or another mutable ref as the `git worktree add` revision. Never push, and never run package installation or more than the one preselected baseline command in this concurrent call.
+
+After both concurrent calls return, record in `verification` the exact command, captured head SHA, and result, or the explicit skip/stale-head/timeout/failure reason. Baseline failure is evidence for review, not permission to omit any pass or to classify unvalidated candidates automatically.
 
 ## Step 7 — Validate, classify, and finalize (orchestrator-owned)
 
-Merge duplicate candidate findings across passes, then for every remaining candidate finding: confirm it is real (read surrounding code if needed), verify it is PR-scoped, then assign a **severity** and whether it is **blocking**:
+Only after the batch results (and any concurrently scheduled baseline result) are available, merge duplicate candidate findings across passes. Perform targeted candidate validation now: read the relevant surrounding code/callers and run only narrowly justified follow-up checks when needed to confirm or reject specific candidates. Baseline verification never replaces this post-batch validation. For every remaining candidate finding, confirm it is real, verify it is PR-scoped, then assign a **severity** and whether it is **blocking**:
 
 - `P0` — blocking. Will not compile/parse, or is definitely wrong regardless of input, or a clear security hole. Independent of assumptions.
 - `P1` — blocking. Serious bug/logic/security flaw that will bite under realistic inputs or conditions; should be fixed before merge.
