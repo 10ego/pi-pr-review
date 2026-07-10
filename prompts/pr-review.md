@@ -49,6 +49,7 @@ Arguments for this run: `$@`
 
 - All tools are functional. Do not test tools or make exploratory/throwaway calls. Every tool call must have a clear purpose.
 - Use the `gh` CLI (already authenticated) for all GitHub access. Do **not** use web fetch. `gh` auto-detects the repo from the current directory's git remote, so run commands from the cwd.
+- **`gh api -f` file-body trap:** `gh api ... -f body=@/tmp/file.md` does **not** read that file; it sends the literal string `@/tmp/file.md`. Never use `-f body=@file` for review/comment content. For an API request, construct JSON with the file contents and pipe it through `gh api ... --input -`; for a standalone PR issue comment, use `gh pr comment --body-file /tmp/file.md`. The extension-owned review publisher already uses JSON on stdin—do not replace it with `-f body=@file`.
 - Read what you need to review thoroughly: the diff is the primary artifact, but open surrounding files, callers, and convention files whenever it improves the review or lets you confirm a finding.
 - **Never disturb the user's working tree.** Do not `git checkout`/`gh pr checkout`, do not modify tracked files, do not commit or push. Any verification happens in an isolated worktree (Step 6).
 - Create a short todo list before you start, then work the steps in order.

@@ -216,6 +216,7 @@ pi-pr-review/
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
 - Project-local `pr-review.json` is only read when the project is trusted. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
 - GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried.
+- **`gh api -f` caution:** `gh api ... -f body=@/tmp/file.md` posts the literal text `@/tmp/file.md`; unlike `gh pr comment --body-file`, `-f` does not expand `@file`. Use a JSON payload via `gh api ... --input -` for API requests. The built-in publisher already does this.
 - Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
 
 ## Design notes
