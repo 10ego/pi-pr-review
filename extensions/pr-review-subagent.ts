@@ -4,7 +4,8 @@
  * Adds configurable, tiered review subagents to the /pr-review workflow.
  *
  * - Config surface: `pr-review.json` (user: ~/.pi/agent, project: <repo>/.pi) maps
- *   the labels `light` / `medium` / `heavy` to whatever models you choose.
+ *   the labels `light` / `medium` / `heavy` to whatever models you choose,
+ *   plus optional per-tier fallback chains for quota/capacity failures.
  *   No model names are hardcoded here — you configure them.
  * - Tool: `review_subagent` spawns one isolated `pi` subprocess on the model
  *   bound to the requested tier and returns its review report.
@@ -66,6 +67,8 @@ const TIER_PURPOSE: Record<Tier, string> = {
 interface PrReviewConfig {
 	/** Tier label -> model spec (e.g. "anthropic/model", "openai/model:high"). */
 	tiers: Partial<Record<Tier, string>>;
+	/** Tier label -> ordered fallback model specs used for quota/capacity failures. */
+	fallbacks: Partial<Record<Tier, string[]>>;
 	/** Tools granted to each review subagent process. */
 	tools: string[];
 }
@@ -91,6 +94,25 @@ function readConfigFile(filePath: string): Partial<PrReviewConfig> {
 	}
 }
 
+function normalizeFallbacks(
+	raw: Partial<Record<Tier, unknown>> | undefined,
+	preserveEmpty = false,
+): Partial<Record<Tier, string[]>> {
+	const out: Partial<Record<Tier, string[]>> = {};
+	if (!raw || typeof raw !== "object") return out;
+	for (const tier of TIERS) {
+		const value = raw[tier];
+		if (value === undefined) continue;
+		const list = Array.isArray(value)
+			? value.map((v) => String(v).trim()).filter(Boolean)
+			: typeof value === "string"
+				? value.split(",").map((v) => v.trim()).filter(Boolean)
+				: [];
+		if (list.length > 0 || preserveEmpty) out[tier] = [...new Set(list)];
+	}
+	return out;
+}
+
 /** User config, overlaid by project config when the project is trusted. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
@@ -102,6 +124,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	}
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
+		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
 		tools: project.tools ?? user.tools ?? DEFAULT_TOOLS,
 	};
 }
@@ -109,7 +132,11 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 /** User-level config only (the scope the config command edits), with defaults. */
 function readUserConfig(): PrReviewConfig {
 	const raw = readConfigFile(userConfigPath());
-	return { tiers: { ...(raw.tiers ?? {}) }, tools: raw.tools ?? [...DEFAULT_TOOLS] };
+	return {
+		tiers: { ...(raw.tiers ?? {}) },
+		fallbacks: normalizeFallbacks(raw.fallbacks),
+		tools: raw.tools ?? [...DEFAULT_TOOLS],
+	};
 }
 
 function writeUserConfig(next: PrReviewConfig): string {
@@ -119,19 +146,50 @@ function writeUserConfig(next: PrReviewConfig): string {
 	return filePath;
 }
 
-/** Resolve the model spec for a tier, falling back to the nearest configured tier. */
-function resolveModelSpec(config: PrReviewConfig, tier: Tier): { spec?: string; usedTier?: Tier } {
-	if (config.tiers[tier]) return { spec: config.tiers[tier], usedTier: tier };
-	// Preference order: search outward from the requested tier.
-	const order: Record<Tier, Tier[]> = {
-		light: ["light", "medium", "heavy"],
-		medium: ["medium", "heavy", "light"],
-		heavy: ["heavy", "medium", "light"],
+interface ModelAttempt {
+	spec?: string;
+	usedTier?: Tier;
+	kind: "primary" | "fallback" | "nearest" | "default";
+	fallbackIndex?: number;
+}
+
+const NEAREST_TIER_ORDER: Record<Tier, Tier[]> = {
+	light: ["light", "medium", "heavy"],
+	medium: ["medium", "heavy", "light"],
+	heavy: ["heavy", "medium", "light"],
+};
+
+/** Resolve the ordered model attempts for a tier, preserving nearest-tier/default behavior when the tier is unset. */
+function resolveModelAttempts(config: PrReviewConfig, tier: Tier): ModelAttempt[] {
+	const attempts: ModelAttempt[] = [];
+	const seen = new Set<string>();
+	const add = (attempt: ModelAttempt) => {
+		const key = attempt.spec ?? "__pi_default__";
+		if (seen.has(key)) return;
+		seen.add(key);
+		attempts.push(attempt);
 	};
-	for (const candidate of order[tier]) {
-		if (config.tiers[candidate]) return { spec: config.tiers[candidate], usedTier: candidate };
+
+	const primary = config.tiers[tier];
+	if (primary) {
+		add({ spec: primary, usedTier: tier, kind: "primary" });
+	} else {
+		let foundNearest = false;
+		for (const candidate of NEAREST_TIER_ORDER[tier]) {
+			const spec = config.tiers[candidate];
+			if (!spec) continue;
+			add({ spec, usedTier: candidate, kind: "nearest" });
+			foundNearest = true;
+			break;
+		}
+		if (!foundNearest) add({ kind: "default" });
 	}
-	return {};
+
+	for (const [index, spec] of (config.fallbacks[tier] ?? []).entries()) {
+		add({ spec, usedTier: tier, kind: "fallback", fallbackIndex: index });
+	}
+
+	return attempts;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +355,18 @@ interface SubagentPassRequest {
 	context?: string;
 }
 
+interface ModelAttemptReport {
+	kind: ModelAttempt["kind"];
+	spec?: string;
+	usedTier?: Tier;
+	model?: string;
+	exitCode: number;
+	status: "completed" | "failed";
+	retryable: boolean;
+	stopReason?: string;
+	errorMessage?: string;
+}
+
 interface SubagentPassResult {
 	id: string;
 	tier: Tier;
@@ -309,39 +379,63 @@ interface SubagentPassResult {
 	stderr?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	attempts: ModelAttemptReport[];
+	fallbackUsed: boolean;
+	retryableFailure: boolean;
 }
 
-function noticeForTier(tier: Tier, spec: string | undefined, usedTier: Tier | undefined): string {
-	if (spec) {
-		return usedTier === tier
-			? `tier=${tier} model=${spec}`
-			: `tier=${tier} (not configured; using ${usedTier} model=${spec})`;
+function noticeForAttempt(tier: Tier, attempt: ModelAttempt): string {
+	if (!attempt.spec) {
+		return `tier=${tier} (no tier configured; using pi default model — run /pr-review-config to set tiers)`;
 	}
-	return `tier=${tier} (no tier configured; using pi default model — run /pr-review-config to set tiers)`;
+	if (attempt.kind === "fallback") {
+		return `tier=${tier} fallback #${(attempt.fallbackIndex ?? 0) + 1} model=${attempt.spec}`;
+	}
+	if (attempt.usedTier && attempt.usedTier !== tier) {
+		return `tier=${tier} (not configured; using ${attempt.usedTier} model=${attempt.spec})`;
+	}
+	return `tier=${tier} model=${attempt.spec}`;
+}
+
+function noticeForResult(tier: Tier, attempts: ModelAttemptReport[], finalNotice: string): string {
+	const failedBeforeSuccess = attempts.filter((a) => a.status === "failed").length;
+	if (failedBeforeSuccess > 0 && attempts.some((a) => a.status === "completed")) {
+		return `${finalNotice} (after ${failedBeforeSuccess} retry${failedBeforeSuccess === 1 ? "" : "ies"})`;
+	}
+	return finalNotice;
 }
 
 function buildPassTask(objective: string, context: string | undefined): string {
 	return context ? `Objective: ${objective}\n\n--- PR context / diff ---\n${context}` : `Objective: ${objective}`;
 }
 
-async function runSubagentPass(
+function isRetryableModelFailure(result: RunResult): boolean {
+	if (result.stopReason === "aborted") return false;
+	const haystack = [result.errorMessage, result.stderr, result.text, result.stopReason]
+		.filter(Boolean)
+		.join("\n")
+		.toLowerCase();
+	if (!haystack) return false;
+	return /(?:\b429\b|rate[\s_-]*limit(?:ed)?|too many requests|quota|usage[\s_-]*limit|insufficient[\s_-]*quota|resource[\s_-]*exhausted|out of credits|insufficient credits|credit limit|billing quota|billing hard limit|at capacity|overloaded|temporarily unavailable|model (?:is )?(?:temporarily|currently) unavailable|service unavailable|try again later)/i.test(
+		haystack,
+	);
+}
+
+async function runSubagentAttempt(
 	config: PrReviewConfig,
 	ctx: Pick<ExtensionContext, "cwd">,
 	pass: SubagentPassRequest,
+	attempt: ModelAttempt,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
-): Promise<SubagentPassResult> {
-	const tier = pass.tier;
-	const { spec, usedTier } = resolveModelSpec(config, tier);
-	const notice = noticeForTier(tier, spec, usedTier);
+): Promise<{ result: RunResult; notice: string }> {
 	let tmp: { dir: string; filePath: string } | undefined;
-
 	try {
 		const args = ["--mode", "json", "-p", "--no-session"];
-		if (spec) args.push("--model", spec);
+		if (attempt.spec) args.push("--model", attempt.spec);
 		if (config.tools.length > 0) args.push("--tools", config.tools.join(","));
 
-		tmp = await writeTempPrompt(tier, buildSubagentSystemPrompt(tier));
+		tmp = await writeTempPrompt(pass.tier, buildSubagentSystemPrompt(pass.tier));
 		args.push("--append-system-prompt", tmp.filePath);
 		args.push(buildPassTask(pass.objective, pass.context));
 
@@ -349,32 +443,11 @@ async function runSubagentPass(
 		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, signal, (text) => {
 			onText?.(text);
 		});
-
-		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-		return {
-			id: pass.id ?? tier,
-			tier,
-			usedTier,
-			model: result.model ?? spec,
-			exitCode: result.exitCode,
-			status: failed ? "failed" : "completed",
-			notice,
-			text: result.text || (failed ? "" : "NO FINDINGS."),
-			stderr: result.stderr || undefined,
-			stopReason: result.stopReason,
-			errorMessage: result.errorMessage,
-		};
+		return { result, notice: noticeForAttempt(pass.tier, attempt) };
 	} catch (e) {
 		return {
-			id: pass.id ?? tier,
-			tier,
-			usedTier,
-			model: spec,
-			exitCode: 1,
-			status: "failed",
-			notice,
-			text: "",
-			errorMessage: errMessage(e),
+			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e) },
+			notice: noticeForAttempt(pass.tier, attempt),
 		};
 	} finally {
 		if (tmp) {
@@ -385,6 +458,78 @@ async function runSubagentPass(
 			}
 		}
 	}
+}
+
+async function runSubagentPass(
+	config: PrReviewConfig,
+	ctx: Pick<ExtensionContext, "cwd">,
+	pass: SubagentPassRequest,
+	signal: AbortSignal | undefined,
+	onText?: (text: string) => void,
+): Promise<SubagentPassResult> {
+	const tier = pass.tier;
+	const attempts = resolveModelAttempts(config, tier);
+	const reports: ModelAttemptReport[] = [];
+	let lastResult: RunResult | undefined;
+	let lastNotice = noticeForAttempt(tier, attempts[0]!);
+
+	for (const attempt of attempts) {
+		const { result, notice } = await runSubagentAttempt(config, ctx, pass, attempt, signal, onText);
+		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+		const retryable = failed && isRetryableModelFailure(result);
+		lastResult = result;
+		lastNotice = notice;
+		reports.push({
+			kind: attempt.kind,
+			spec: attempt.spec,
+			usedTier: attempt.usedTier,
+			model: result.model ?? attempt.spec,
+			exitCode: result.exitCode,
+			status: failed ? "failed" : "completed",
+			retryable,
+			stopReason: result.stopReason,
+			errorMessage: result.errorMessage,
+		});
+
+		if (!failed) {
+			return {
+				id: pass.id ?? tier,
+				tier,
+				usedTier: attempt.usedTier,
+				model: result.model ?? attempt.spec,
+				exitCode: result.exitCode,
+				status: "completed",
+				notice: noticeForResult(tier, reports, notice),
+				text: result.text || "NO FINDINGS.",
+				stderr: result.stderr || undefined,
+				stopReason: result.stopReason,
+				errorMessage: result.errorMessage,
+				attempts: reports,
+				fallbackUsed: attempt.kind === "fallback" || reports.length > 1,
+				retryableFailure: false,
+			};
+		}
+
+		if (!retryable || signal?.aborted) break;
+	}
+
+	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available." };
+	return {
+		id: pass.id ?? tier,
+		tier,
+		usedTier: reports.at(-1)?.usedTier,
+		model: reports.at(-1)?.model,
+		exitCode: final.exitCode,
+		status: "failed",
+		notice: noticeForResult(tier, reports, lastNotice),
+		text: final.text || "",
+		stderr: final.stderr || undefined,
+		stopReason: final.stopReason,
+		errorMessage: final.errorMessage,
+		attempts: reports,
+		fallbackUsed: reports.length > 1,
+		retryableFailure: reports.at(-1)?.retryable ?? false,
+	};
 }
 
 function normalizeMaxParallel(raw: unknown, count: number): number {
@@ -410,6 +555,13 @@ async function runWithConcurrency<T, R>(
 	return results;
 }
 
+function formatAttemptSummary(result: SubagentPassResult): string {
+	if (result.attempts.length <= 1) return "";
+	return `attempts: ${result.attempts
+		.map((a) => `${a.status === "completed" ? "✓" : a.retryable ? "↻" : "✗"} ${a.spec ?? "pi default"}`)
+		.join(" → ")}`;
+}
+
 function formatBatchResults(results: SubagentPassResult[], maxParallel: number): string {
 	const failed = results.filter((r) => r.status === "failed");
 	const lines = [
@@ -422,6 +574,8 @@ function formatBatchResults(results: SubagentPassResult[], maxParallel: number):
 	}
 	for (const result of results) {
 		lines.push("", `## Pass: ${result.id}`, `status: ${result.status}`, result.notice);
+		const attemptSummary = formatAttemptSummary(result);
+		if (attemptSummary) lines.push(attemptSummary);
 		if (result.status === "failed") {
 			const detail = result.errorMessage || result.stderr || result.text || "(no output)";
 			lines.push(`error: ${detail}`);
@@ -535,6 +689,9 @@ export default function (pi: ExtensionAPI) {
 						usedTier: result.usedTier,
 						model: result.model,
 						exitCode: result.exitCode,
+						fallbackUsed: result.fallbackUsed,
+						retryableFailure: result.retryableFailure,
+						attempts: result.attempts,
 					},
 				};
 			}
@@ -546,6 +703,8 @@ export default function (pi: ExtensionAPI) {
 					usedTier: result.usedTier,
 					model: result.model,
 					exitCode: result.exitCode,
+					fallbackUsed: result.fallbackUsed,
+					attempts: result.attempts,
 				},
 			};
 		},
@@ -622,6 +781,9 @@ export default function (pi: ExtensionAPI) {
 						status: r.status,
 						stopReason: r.stopReason,
 						errorMessage: r.errorMessage,
+						fallbackUsed: r.fallbackUsed,
+						retryableFailure: r.retryableFailure,
+						attempts: r.attempts,
 						outputChars: r.text.length,
 					})),
 				},
@@ -630,7 +792,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("pr-review-config", {
-		description: "Open the review-tier settings menu, or show/set light/medium/heavy models for /pr-review",
+		description: "Open the review-tier settings menu, or show/set light/medium/heavy models and fallbacks for /pr-review",
 		handler: async (args, ctx) => {
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
@@ -640,7 +802,7 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			try {
-				// Direct set: `/pr-review-config light=... heavy=...`
+				// Direct set: `/pr-review-config light=... heavy=... heavy_fallbacks=...`
 				if (parsed.hasChanges) {
 					const next = applyConfigPatch(readUserConfig(), parsed.patch);
 					writeUserConfig(next);
@@ -701,6 +863,10 @@ function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
 
 const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	...TIERS.map((t) => ({ value: `${t}=`, label: `${t}=<model> — ${TIER_PURPOSE[t]}` })),
+	...TIERS.map((t) => ({
+		value: `${t}_fallbacks=`,
+		label: `${t}_fallbacks=<model1,model2> — retry chain for quota/rate-limit failures`,
+	})),
 	{ value: "tools=", label: "tools=read,bash,grep,find,ls — tools granted to review subagents" },
 	{ value: "show", label: "show — print the current tier config" },
 ];
@@ -734,13 +900,27 @@ function splitConfigArgs(input: string): string[] {
 	return tokens;
 }
 
+function splitCommaList(value: string): string[] {
+	return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function isFallbackKey(key: string): boolean {
+	for (const tier of TIERS) {
+		if (key === `${tier}_fallbacks` || key === `${tier}-fallbacks` || key === `${tier}.fallbacks`) {
+			return true;
+		}
+	}
+	return false;
+}
+
 interface ConfigPatch {
 	tiers: Partial<Record<Tier, string | null>>;
+	fallbacks: Partial<Record<Tier, string[] | null>>;
 	tools?: string[];
 }
 
 function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolean; errors: string[] } {
-	const patch: ConfigPatch = { tiers: {} };
+	const patch: ConfigPatch = { tiers: {}, fallbacks: {} };
 	const errors: string[] = [];
 	const tokens = splitConfigArgs(args).filter((t) => !["show", "get", "current"].includes(t.toLowerCase()));
 	for (const token of tokens) {
@@ -753,26 +933,44 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		const value = token.slice(eq + 1);
 		if ((TIERS as string[]).includes(key)) {
 			patch.tiers[key as Tier] = value === "" || value === "unset" ? null : value;
+		} else if (isFallbackKey(key)) {
+			const tier = key.split(/[_\-.]/)[0] as Tier;
+			patch.fallbacks[tier] = value === "" || value === "unset" || value === "none" ? null : splitCommaList(value);
 		} else if (key === "tools") {
-			patch.tools = value.split(",").map((s) => s.trim()).filter(Boolean);
+			patch.tools = splitCommaList(value);
 		} else {
-			errors.push(`unknown key "${key}" (expected light|medium|heavy|tools)`);
+			errors.push(`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|tools)`);
 		}
 	}
-	const hasChanges = Object.keys(patch.tiers).length > 0 || patch.tools !== undefined;
+	const hasChanges =
+		Object.keys(patch.tiers).length > 0 || Object.keys(patch.fallbacks).length > 0 || patch.tools !== undefined;
 	return { patch, hasChanges, errors };
 }
 
 function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewConfig {
-	const next: PrReviewConfig = { tiers: { ...base.tiers }, tools: [...base.tools] };
+	const next: PrReviewConfig = {
+		tiers: { ...base.tiers },
+		fallbacks: normalizeFallbacks(base.fallbacks),
+		tools: [...base.tools],
+	};
 	for (const tier of TIERS) {
-		if (!(tier in patch.tiers)) continue;
-		const value = patch.tiers[tier];
-		if (value === null || value === undefined) delete next.tiers[tier];
-		else next.tiers[tier] = value;
+		if (tier in patch.tiers) {
+			const value = patch.tiers[tier];
+			if (value === null || value === undefined) delete next.tiers[tier];
+			else next.tiers[tier] = value;
+		}
+		if (tier in patch.fallbacks) {
+			const value = patch.fallbacks[tier];
+			if (value === null || value === undefined || value.length === 0) delete next.fallbacks[tier];
+			else next.fallbacks[tier] = [...new Set(value)];
+		}
 	}
 	if (patch.tools) next.tools = patch.tools;
 	return next;
+}
+
+function formatModelList(models: string[] | undefined): string {
+	return models && models.length > 0 ? `\`${models.join(",")}\`` : "_none_";
 }
 
 function summarizeConfig(
@@ -801,6 +999,10 @@ function summarizeConfig(
 		),
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | tools granted to each review subagent |`,
 		"",
+		"| Tier | Your fallbacks | Effective fallbacks |",
+		"|---|---|---|",
+		...TIERS.map((t) => `| \`${t}\` | ${formatModelList(user.fallbacks[t])} | ${formatModelList(effective.fallbacks[t])} |`),
+		"",
 		`User config: \`${userConfigPath()}\``,
 	];
 	if (projectPath) lines.push(`Project overlay (trusted): \`${projectPath}\``);
@@ -810,7 +1012,9 @@ function summarizeConfig(
 		"- Open the settings menu: `/pr-review-config`",
 		"- Print this summary: `/pr-review-config show`",
 		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
+		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
+		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
 		"- A `<model>` is any pi model pattern (`provider/model` or `provider/model:thinking`).",
 	);
 	return lines.join("\n");
@@ -828,10 +1032,14 @@ const MODEL_LIST_ROWS = 10;
  * search UX and fuzzyFilter's slash-token matching, so typing a model name substring
  * finds `provider/model`). The SelectList is rebuilt as the query changes.
  */
-function buildModelSubmenu(available: string[], currentSpec: string | undefined) {
+function buildModelSubmenu(
+	available: string[],
+	currentSpec: string | undefined,
+	unsetDescription = "Fall back to the nearest configured tier, then the pi default.",
+) {
 	return (_currentValue: string, done: (selectedValue?: string) => void) => {
 		const allItems: SelectItem[] = [
-			{ value: "__unset__", label: UNSET, description: "Fall back to the nearest configured tier, then the pi default." },
+			{ value: "__unset__", label: UNSET, description: unsetDescription },
 			...available.map((spec) => ({ value: spec, label: spec })),
 		];
 		const theme = getSelectListTheme();
@@ -890,10 +1098,23 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 		currentValue: cfg.tiers[tier] ?? UNSET,
 		submenu: buildModelSubmenu(available, cfg.tiers[tier]),
 	}));
+	const fallbackItems: SettingItem[] = TIERS.map((tier) => ({
+		id: `${tier}_fallbacks`,
+		label: `${tier} fallback model`,
+		description:
+			"Retry model for quota/rate-limit/capacity failures. Press Enter to set one fallback; use key=value for chains.",
+		currentValue: cfg.fallbacks[tier]?.join(",") || "(none)",
+		submenu: buildModelSubmenu(
+			available,
+			cfg.fallbacks[tier]?.[0],
+			"Clear this tier's fallback chain. Use key=value form to set multiple fallbacks.",
+		),
+	}));
 	const current = cfg.tools.join(",");
 	const toolValues = [current, ...TOOLS_PRESETS.filter((p) => p !== current)];
 	return [
 		...tierItems,
+		...fallbackItems,
 		{
 			id: "tools",
 			label: "subagent tools",
@@ -920,7 +1141,10 @@ async function showConfigMenu(
 
 			let settingsList: SettingsList;
 			const refresh = () => {
-				for (const tier of TIERS) settingsList.updateValue(tier, draft.tiers[tier] ?? UNSET);
+				for (const tier of TIERS) {
+					settingsList.updateValue(tier, draft.tiers[tier] ?? UNSET);
+					settingsList.updateValue(`${tier}_fallbacks`, draft.fallbacks[tier]?.join(",") || "(none)");
+				}
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
 
@@ -928,15 +1152,23 @@ async function showConfigMenu(
 				if ((TIERS as string[]).includes(id)) {
 					if (newValue === "__unset__") delete draft.tiers[id as Tier];
 					else draft.tiers[id as Tier] = newValue;
+				} else if (isFallbackKey(id)) {
+					const tier = id.split(/[_\-.]/)[0] as Tier;
+					if (newValue === "__unset__") delete draft.fallbacks[tier];
+					else draft.fallbacks[tier] = [newValue];
 				} else if (id === "tools") {
-					draft.tools = newValue.split(",").map((s) => s.trim()).filter(Boolean);
+					draft.tools = splitCommaList(newValue);
 				} else {
 					return;
 				}
 				try {
 					writeUserConfig(draft);
 					refresh();
-					const shown = id === "tools" ? draft.tools.join(",") : (draft.tiers[id as Tier] ?? UNSET);
+					const shown = id === "tools"
+						? draft.tools.join(",")
+						: isFallbackKey(id)
+							? (draft.fallbacks[id.split(/[_\-.]/)[0] as Tier]?.join(",") ?? "(none)")
+							: (draft.tiers[id as Tier] ?? UNSET);
 					ctx.ui.notify(`PR review config: ${id} = ${shown}`, "info");
 				} catch (e) {
 					ctx.ui.notify(`pr-review-config failed: ${errMessage(e)}`, "error");
@@ -946,7 +1178,7 @@ async function showConfigMenu(
 
 			settingsList = new SettingsList(
 				configMenuItems(draft, available),
-				6,
+				10,
 				getSettingsListTheme(),
 				(id, newValue) => persist(id, newValue),
 				() => done(undefined),

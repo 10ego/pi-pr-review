@@ -63,15 +63,17 @@ The `/pr-review-config` command maps three labels to models:
 ```
 /pr-review-config                                   # open the settings menu (like /settings & /nervous:config)
 /pr-review-config show                              # print the current mapping
-/pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set non-interactively
+/pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
+/pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
 /pr-review-config medium=unset                      # clear a tier (back to pi default)
+/pr-review-config heavy_fallbacks=unset             # clear a fallback chain
 /pr-review-config tools=read,bash,grep,find,ls      # tools granted to each subagent
 ```
 
 Running `/pr-review-config` with no arguments in the TUI opens an interactive settings menu that mirrors pi's `/settings` and the NERVous `/nervous:config`:
 
-- One row per tier (`light` / `medium` / `heavy` model) plus a `subagent tools` row.
-- Press Enter on a tier to pick a model from a searchable list (or `(unset — pi default)`); Enter/Space on `subagent tools` cycles presets.
+- One primary-model row and one fallback-model row per tier (`light` / `medium` / `heavy`) plus a `subagent tools` row.
+- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space on `subagent tools` cycles presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
 - Selections apply and persist **immediately**; Esc closes the menu.
 - Type to search, and tab-completion is available for the `key=value` form.
 
@@ -91,15 +93,20 @@ Example `pr-review.json`:
     "medium": "<balanced-model-spec>",
     "heavy": "<strong-model-spec:high>"
   },
+  "fallbacks": {
+    "light": ["<backup-fast-model>"],
+    "medium": ["<backup-balanced-model>"],
+    "heavy": ["<backup-strong-model:high>", "<balanced-model-spec>"]
+  },
   "tools": ["read", "bash", "grep", "find", "ls"]
 }
 ```
 
-Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
+Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
 
-### 2. The orchestrator / fallback model
+### 2. The orchestrator / inline-fallback model
 
-The orchestrator (which fetches the PR, merges findings, and emits the JSON) and the inline-fallback path both run on your pi session model:
+The orchestrator (which fetches the PR, merges findings, and emits the JSON) and the inline fallback path both run on your pi session model:
 
 - **Per run:** `pi --model <model-id> "/pr-review 123"`
 - **Persistent default (user):** `~/.pi/agent/settings.json` → `{ "defaultModel": "<model-id>", "defaultThinkingLevel": "high" }`
@@ -182,7 +189,7 @@ pi-pr-review/
 
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Subagents are read-only reviewers (`read,bash,grep,find,ls` by default) and never post comments or edit files.
 - Project-local `pr-review.json` is only read when the project is trusted.
-- Tiered review calls multiple models per PR, now concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for the deep passes.
+- Tiered review calls multiple models per PR, now concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for the deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
 
 ## Design notes
 
