@@ -21,11 +21,11 @@
     "typebox": "*"
   },
   "pi": {
-    "prompts": [
-      "./prompts"
-    ],
     "extensions": [
       "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
     ]
   }
 }
