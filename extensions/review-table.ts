@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	classifyAssistantCompletion,
+	isNonOpenConfirmationPrompt,
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
@@ -361,6 +362,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
+		if (invocationGate.phase() === "awaiting_confirmation") {
+			const confirmation = invocationGate.resolveConfirmationInput(event.text);
+			if (confirmation === "confirmed") return;
+			// Negative/unrelated input clears authority; a fresh /pr-review may bind below.
+		}
 		const parsed = parsePublishMode(event.text);
 		if (!parsed.matched) return;
 		if (invocationGate.peek() && event.streamingBehavior === undefined) {
@@ -384,12 +390,21 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const text = assistantText(event.message);
-		if (!text.trim()) return;
+		const active = invocationGate.peek();
+		if (
+			active &&
+			invocationGate.phase() === "reviewing" &&
+			isNonOpenConfirmationPrompt(text, active.prNumber)
+		) {
+			invocationGate.markAwaitingConfirmation();
+			return;
+		}
 
+		// Every other terminal response consumes authority, whether valid, empty, or unrelated.
+		const invocation = active ? invocationGate.consume() : undefined;
+		if (!text.trim()) return;
 		const review = parseReview(text);
 		if (!review) return; // not a /pr-review JSON payload — leave untouched
-
-		const invocation = invocationGate.consume();
 		if (invocation) await maybePublishReview(text, invocation, ctx);
 
 		// Keep raw JSON for automation; only prettify for interactive terminals.

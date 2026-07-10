@@ -85,6 +85,23 @@ export interface ReviewInvocation {
 	prNumber: number;
 }
 
+export type ReviewInvocationPhase = "reviewing" | "awaiting_confirmation" | "confirmed";
+
+export function isNonOpenConfirmationPrompt(text: string, prNumber: number): boolean {
+	const escaped = String(prNumber).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = text.trim().match(
+		new RegExp(
+			`^PR #${escaped} is ([A-Z_]+) \\(head [0-9a-f]{40}(?:[0-9a-f]{24})?\\)\\. Review it anyway\\? Reply yes, or rerun with --include-closed to proceed non-interactively\\.$`,
+			"i",
+		),
+	);
+	return !!match && ["CLOSED", "MERGED"].includes(match[1]?.toUpperCase() ?? "");
+}
+
+export function isAffirmativeReviewConfirmation(text: string): boolean {
+	return /^(?:y|yes)[.!]?$/i.test(text.trim());
+}
+
 export function validateReviewInvocation(review: ReviewLike, invocation: ReviewInvocation): string | undefined {
 	return review.pr?.number === invocation.prNumber
 		? undefined
@@ -94,6 +111,7 @@ export function validateReviewInvocation(review: ReviewLike, invocation: ReviewI
 /** One active invocation per extension session; queued reviews cannot overwrite its write intent. */
 export class ReviewInvocationGate {
 	private active?: ReviewInvocation;
+	private currentPhase?: ReviewInvocationPhase;
 
 	begin(parsed: PublishModeParseResult): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
@@ -104,6 +122,7 @@ export class ReviewInvocationGate {
 			return { accepted: false, error: parsed.error ?? "missing PR number or publishing mode" };
 		}
 		this.active = { mode: parsed.mode, prNumber: parsed.prNumber };
+		this.currentPhase = "reviewing";
 		return { accepted: true };
 	}
 
@@ -111,14 +130,35 @@ export class ReviewInvocationGate {
 		return this.active;
 	}
 
+	phase(): ReviewInvocationPhase | undefined {
+		return this.currentPhase;
+	}
+
+	markAwaitingConfirmation(): boolean {
+		if (!this.active || this.currentPhase !== "reviewing") return false;
+		this.currentPhase = "awaiting_confirmation";
+		return true;
+	}
+
+	resolveConfirmationInput(text: string): "not_awaiting" | "confirmed" | "cleared" {
+		if (!this.active || this.currentPhase !== "awaiting_confirmation") return "not_awaiting";
+		if (isAffirmativeReviewConfirmation(text)) {
+			this.currentPhase = "confirmed";
+			return "confirmed";
+		}
+		this.clear();
+		return "cleared";
+	}
+
 	consume(): ReviewInvocation | undefined {
 		const value = this.active;
-		this.active = undefined;
+		this.clear();
 		return value;
 	}
 
 	clear(): void {
 		this.active = undefined;
+		this.currentPhase = undefined;
 	}
 }
 

@@ -9,6 +9,8 @@ import {
 	containsReservedReviewMarker,
 	foldInlineComments,
 	githubApiArgs,
+	isAffirmativeReviewConfirmation,
+	isNonOpenConfirmationPrompt,
 	parsePublishableReview,
 	parsePublishMode,
 	resolveAutoPostSetting,
@@ -108,6 +110,41 @@ describe("trusted invocation mode", () => {
 	test("final JSON must match the invocation PR", () => {
 		expect(validateReviewInvocation(review, { mode: "force", prNumber: 7 })).toBeUndefined();
 		expect(validateReviewInvocation(review, { mode: "force", prNumber: 8 })).toContain("does not match");
+	});
+
+	test("preserves authority for exactly one affirmative non-open confirmation turn", () => {
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7 --comment"));
+		const prompt = `PR #7 is MERGED (head ${"a".repeat(40)}). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.`;
+		expect(isNonOpenConfirmationPrompt(prompt, 7)).toBeTrue();
+		expect(isNonOpenConfirmationPrompt(prompt.replace("MERGED", "OPEN"), 7)).toBeFalse();
+		expect(isNonOpenConfirmationPrompt(prompt.replace("MERGED", "UNKNOWN"), 7)).toBeFalse();
+		expect(gate.markAwaitingConfirmation()).toBeTrue();
+		expect(gate.resolveConfirmationInput("yes")).toBe("confirmed");
+		expect(gate.phase()).toBe("confirmed");
+		expect(gate.consume()).toEqual({ mode: "force", prNumber: 7 });
+		expect(gate.peek()).toBeUndefined();
+	});
+
+	test("negative, empty, and unrelated confirmation inputs clear authority", () => {
+		for (const answer of ["no", "", "tell me something else"]) {
+			const gate = new ReviewInvocationGate();
+			gate.begin(parsePublishMode("/pr-review 7 --comment"));
+			gate.markAwaitingConfirmation();
+			expect(gate.resolveConfirmationInput(answer)).toBe("cleared");
+			expect(gate.peek()).toBeUndefined();
+		}
+		expect(isAffirmativeReviewConfirmation("yes.")).toBeTrue();
+		expect(isAffirmativeReviewConfirmation("yes, but explain first")).toBeFalse();
+	});
+
+	test("parse or publication failures cannot retain consumed authority", () => {
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7 --comment"));
+		const invocation = gate.consume();
+		expect(invocation).toEqual({ mode: "force", prNumber: 7 });
+		expect(parsePublishableReview("not json").review).toBeUndefined();
+		expect(gate.peek()).toBeUndefined();
 	});
 });
 
