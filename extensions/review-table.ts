@@ -1,15 +1,34 @@
 /**
  * review-table
  *
- * Renders the /pr-review final JSON response as a full, readable review in the TUI:
- * header, verification, overview, strengths, a findings table (nit → P0) with
- * per-finding details, correctness/security/performance notes, and the verdict.
+ * Renders the /pr-review final JSON response as a readable TUI review and owns
+ * configured GitHub publication after valid final JSON. Publishing is bound to raw
+ * invocation flags/config, validates current PR state and anchors, and can emit only
+ * one formal COMMENT review with associated inline comments.
  *
- * Only rewrites in interactive TUI mode. In print / json / rpc modes the raw JSON is
- * left untouched so piping and automation keep a machine-readable payload.
+ * Rendering only rewrites interactive TUI output. Print/json/rpc modes retain raw JSON.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import {
+	CONFIG_DIR_NAME,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent";
+import {
+	parsePublishMode,
+	parsePublishableReview,
+	publishPullReview,
+	resolveAutoPostSetting,
+	ReviewInvocationGate,
+	shouldPublishReview,
+	validateReviewInvocation,
+	type AutoPostResolution,
+	type ReviewInvocation,
+	type ReviewLike,
+} from "../lib/pr-review-publish.ts";
 
 type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
 
@@ -29,7 +48,8 @@ interface Finding {
 }
 
 interface Review {
-	pr?: { number?: number | null; title?: string | null } | null;
+	pr?: { number?: number | null; title?: string | null; head_sha?: string | null } | null;
+	disposition?: "reviewed" | "skipped";
 	verification?: string;
 	overview?: string;
 	strengths?: string[];
@@ -256,10 +276,104 @@ function renderReviewMarkdown(r: Review): string {
 	return out.join("\n").trimEnd();
 }
 
+interface ConfigReadResult {
+	value: Record<string, unknown>;
+	error?: string;
+}
+
+function readJsonObject(filePath: string): ConfigReadResult {
+	try {
+		if (!fs.existsSync(filePath)) return { value: {} };
+		const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+		return parsed && typeof parsed === "object"
+			? { value: parsed as Record<string, unknown> }
+			: { value: {}, error: `${filePath} must contain a JSON object` };
+	} catch (error) {
+		return { value: {}, error: `${filePath} is invalid JSON: ${String(error)}` };
+	}
+}
+
+function resolvePublishingConfig(ctx: ExtensionContext): AutoPostResolution {
+	const user = readJsonObject(path.join(getAgentDir(), "pr-review.json"));
+	if (user.error) return { value: false, valid: false, source: "user", error: user.error };
+	let project: ConfigReadResult | undefined;
+	try {
+		if (ctx.isProjectTrusted()) {
+			project = readJsonObject(path.join(ctx.cwd, CONFIG_DIR_NAME, "pr-review.json"));
+			if (project.error) return { value: false, valid: false, source: "project", error: project.error };
+		}
+	} catch {
+		/* user config only */
+	}
+	return resolveAutoPostSetting(user.value, project?.value);
+}
+
+async function maybePublishReview(text: string, invocation: ReviewInvocation, ctx: ExtensionContext): Promise<void> {
+	if (invocation.mode === "disabled") return;
+	const setting = resolvePublishingConfig(ctx);
+	if (invocation.mode === "auto") {
+		if (!setting.valid) {
+			ctx.ui.notify(`PR review was not posted: ${setting.error}`, "error");
+			return;
+		}
+		if (!setting.value) return;
+	}
+	const parsed = parsePublishableReview(text);
+	if (!parsed.review) {
+		ctx.ui.notify(`PR review was not posted: ${parsed.error}`, "error");
+		return;
+	}
+	const bindingError = validateReviewInvocation(parsed.review, invocation);
+	if (bindingError) {
+		ctx.ui.notify(`PR review was not posted: ${bindingError}`, "error");
+		return;
+	}
+	if (!shouldPublishReview(parsed.review)) return;
+	const headSha = parsed.review.pr?.head_sha;
+	if (typeof headSha !== "string") {
+		ctx.ui.notify("PR review was not posted: final JSON is missing pr.head_sha", "error");
+		return;
+	}
+	const result = await publishPullReview({
+		cwd: ctx.cwd,
+		prNumber: invocation.prNumber,
+		headSha,
+		review: parsed.review as ReviewLike,
+	});
+	const source = invocation.mode === "force" ? "--comment" : `${setting.source} config`;
+	if (result.status === "posted") {
+		ctx.ui.notify(`PR review posted as COMMENT (${source})${result.url ? `: ${result.url}` : ""}`, "info");
+	} else if (result.status === "posted_degraded") {
+		ctx.ui.notify(`PR review posted as body-only COMMENT for non-open PR (${source})`, "warning");
+	} else if (result.status === "skipped_duplicate") {
+		ctx.ui.notify("PR review not reposted: this head was already reviewed by the current GitHub identity", "info");
+	} else {
+		ctx.ui.notify(`PR review publish ${result.status}: ${result.message}`, "error");
+	}
+}
+
 export default function (pi: ExtensionAPI) {
+	const invocationGate = new ReviewInvocationGate();
+
+	pi.on("session_start", () => {
+		invocationGate.clear();
+	});
+
+	pi.on("input", (event, ctx) => {
+		const parsed = parsePublishMode(event.text);
+		if (!parsed.matched) return;
+		if (invocationGate.peek() && event.streamingBehavior === undefined) {
+			// Replace an abandoned/settled invocation, but never a queued/steering one.
+			invocationGate.clear();
+		}
+		const gate = invocationGate.begin(parsed);
+		if (!gate.accepted) {
+			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
+			return { action: "handled" as const };
+		}
+	});
+
 	pi.on("message_end", async (event, ctx) => {
-		// Keep raw JSON for automation; only prettify for interactive terminals.
-		if (ctx.mode !== "tui") return;
 		if (event.message.role !== "assistant") return;
 		if (hasToolCall(event.message)) return; // not the final text-only answer
 
@@ -269,6 +383,11 @@ export default function (pi: ExtensionAPI) {
 		const review = parseReview(text);
 		if (!review) return; // not a /pr-review JSON payload — leave untouched
 
+		const invocation = invocationGate.consume();
+		if (invocation) await maybePublishReview(text, invocation, ctx);
+
+		// Keep raw JSON for automation; only prettify for interactive terminals.
+		if (ctx.mode !== "tui") return;
 		const nonText = (event.message.content as MessagePart[]).filter((p) => p.type !== "text");
 		return {
 			message: {

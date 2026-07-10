@@ -1,0 +1,185 @@
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import {
+	bodyHasHeadMarker,
+	buildPullReviewPayload,
+	canonicalReviewMarker,
+	collectFoldedComments,
+	foldInlineComments,
+	githubApiArgs,
+	parsePublishableReview,
+	parsePublishMode,
+	resolveAutoPostSetting,
+	ReviewInvocationGate,
+	shouldPublishReview,
+	validateInlineComments,
+	validateReviewInvocation,
+	type ReviewLike,
+} from "../lib/pr-review-publish.ts";
+
+const review: ReviewLike = {
+	pr: { number: 7, title: "Test review", head_sha: "a".repeat(40) },
+	disposition: "reviewed",
+	verification: "Tests passed.",
+	overview: "Updates the parser.",
+	strengths: [],
+	findings: [
+		{
+			title: "[P2] Handle empty input",
+			severity: "P2",
+			blocking: false,
+			body: "Empty input currently returns the wrong value.",
+			confidence_score: 0.9,
+			code_location: {
+				absolute_file_path: "src/parser.ts",
+				line_range: { start: 2, end: 3 },
+				side: "RIGHT",
+				commentable: true,
+			},
+		},
+		{
+			title: "[nit] Rename tmp",
+			severity: "nit",
+			blocking: false,
+			body: "Optional naming cleanup.",
+			confidence_score: 0.8,
+			code_location: {
+				absolute_file_path: "src/parser.ts",
+				line_range: { start: 3, end: 3 },
+				side: "RIGHT",
+				commentable: true,
+			},
+		},
+	],
+	notes: { correctness: "Issue found.", security: "", performance: "" },
+	verdict: "request_changes",
+	overall_correctness: "patch is incorrect",
+	overall_explanation: "The empty-input case is incorrect.",
+	overall_confidence_score: 0.9,
+};
+
+const changedFiles = [
+	{
+		filename: "src/parser.ts",
+		patch: "@@ -1,2 +1,3 @@\n context\n-old\n+new\n+more",
+	},
+];
+
+describe("automatic posting configuration", () => {
+	test("defaults to disabled", () => {
+		expect(resolveAutoPostSetting({})).toEqual({ value: false, valid: true, source: "default" });
+	});
+
+	test("trusted project boolean overlays user boolean", () => {
+		expect(resolveAutoPostSetting({ autoPostReviews: false }, { autoPostReviews: true })).toEqual({
+			value: true,
+			valid: true,
+			source: "project",
+		});
+	});
+
+	test("malformed effective value never enables posting", () => {
+		const result = resolveAutoPostSetting({ autoPostReviews: "true" });
+		expect(result.value).toBeFalse();
+		expect(result.valid).toBeFalse();
+	});
+});
+
+describe("trusted invocation mode", () => {
+	test("defaults to auto and binds force/disable to the requested PR", () => {
+		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", prNumber: 7 });
+		expect(parsePublishMode("/pr-review 8 --comment")).toMatchObject({ mode: "force", prNumber: 8 });
+		expect(parsePublishMode("/pr-review 9 --no-comment")).toMatchObject({ mode: "disabled", prNumber: 9 });
+	});
+
+	test("rejects contradictory flags", () => {
+		expect(parsePublishMode("/pr-review 7 --comment --no-comment").error).toContain("cannot be used together");
+	});
+
+	test("queued invocation cannot override active publishing intent", () => {
+		const gate = new ReviewInvocationGate();
+		expect(gate.begin(parsePublishMode("/pr-review 7 --no-comment")).accepted).toBeTrue();
+		expect(gate.begin(parsePublishMode("/pr-review 8 --comment"))).toMatchObject({ accepted: false });
+		expect(gate.consume()).toEqual({ mode: "disabled", prNumber: 7 });
+	});
+
+	test("final JSON must match the invocation PR", () => {
+		expect(validateReviewInvocation(review, { mode: "force", prNumber: 7 })).toBeUndefined();
+		expect(validateReviewInvocation(review, { mode: "force", prNumber: 8 })).toContain("does not match");
+	});
+});
+
+describe("strict publication parsing", () => {
+	test("accepts the complete exact JSON contract", () => {
+		expect(parsePublishableReview(JSON.stringify(review)).review?.pr?.number).toBe(7);
+	});
+
+	test("rejects prose, fenced drafts, and partial objects", () => {
+		expect(parsePublishableReview(`review follows\n${JSON.stringify(review)}`).review).toBeUndefined();
+		expect(parsePublishableReview(`\`\`\`json\n${JSON.stringify(review)}\n\`\`\``).review).toBeUndefined();
+		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
+	});
+
+	test("suppresses publication for validated skipped outcomes", () => {
+		expect(shouldPublishReview(review)).toBeTrue();
+		expect(shouldPublishReview({ ...review, disposition: "skipped" })).toBeFalse();
+	});
+});
+
+describe("atomic COMMENT review payload", () => {
+	test("groups validated inline comments under one hardcoded COMMENT review", () => {
+		const validated = validateInlineComments(review, changedFiles);
+		expect(validated.errors).toEqual([]);
+		expect(validated.comments).toHaveLength(1); // nits remain in the top-level summary
+		const payload = buildPullReviewPayload("a".repeat(40), "Top-level review", validated.comments);
+		expect(payload.event).toBe("COMMENT");
+		expect(payload).not.toHaveProperty("event", "REQUEST_CHANGES");
+		expect(payload.comments?.[0]).toMatchObject({
+			path: "src/parser.ts",
+			start_line: 2,
+			line: 3,
+			side: "RIGHT",
+		});
+	});
+
+	test("rejects anchors outside changed diff metadata", () => {
+		const invalid: ReviewLike = JSON.parse(JSON.stringify(review));
+		invalid.findings![0]!.code_location!.line_range = { start: 20, end: 20 };
+		const result = validateInlineComments(invalid, changedFiles);
+		expect(result.comments).toEqual([]);
+		expect(result.errors[0]).toContain("not inside one diff hunk");
+	});
+
+	test("folds inline findings into a body-only non-open review", () => {
+		const folded = collectFoldedComments(review);
+		expect(folded.errors).toEqual([]);
+		expect(folded.comments).toHaveLength(1);
+		const body = foldInlineComments("Top-level review", folded.comments);
+		const payload = buildPullReviewPayload("b".repeat(40), body, []);
+		expect(payload.event).toBe("COMMENT");
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain("Inline findings (folded for a non-open PR)");
+	});
+
+	test("uses and reconciles a case-insensitive canonical same-head marker", () => {
+		const uppercase = `<!-- pi-pr-review: {"schema":1,"headRefOid":"${"C".repeat(40)}"} -->`;
+		expect(canonicalReviewMarker("C".repeat(40))).toBe(
+			`<!-- pi-pr-review: {"schema":1,"headRefOid":"${"c".repeat(40)}"} -->`,
+		);
+		expect(bodyHasHeadMarker(uppercase, "c".repeat(40))).toBeTrue();
+	});
+
+	test("pins every API call to the resolved GitHub hostname", () => {
+		expect(githubApiArgs("ghe.example.com", "user", "--jq", ".login")).toEqual([
+			"api",
+			"--hostname",
+			"ghe.example.com",
+			"user",
+			"--jq",
+			".login",
+		]);
+		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
+		expect(prompt).toContain('gh api --hostname "$repo_host" user --jq .login');
+		expect(prompt).not.toContain("\ngh api user --jq .login");
+	});
+});

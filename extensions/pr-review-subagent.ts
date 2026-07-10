@@ -53,6 +53,7 @@ import {
 	resolveToolPolicy,
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
+import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -80,6 +81,8 @@ interface PrReviewConfig {
 	fallbacks: Partial<Record<Tier, string[]>>;
 	/** Optional tier-level policy used when a tool call does not override it. */
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
+	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
+	autoPostReviews: boolean;
 	/** Tools granted to review subagents whose effective policy is configured. */
 	tools: string[];
 }
@@ -136,6 +139,17 @@ function normalizeToolPolicies(
 	return out;
 }
 
+function resolveAutoPostForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
+	const user = readConfigFile(userConfigPath());
+	let project: Partial<PrReviewConfig> | undefined;
+	try {
+		if (ctx.isProjectTrusted()) project = readConfigFile(projectConfigPath(ctx.cwd));
+	} catch {
+		/* user config only */
+	}
+	return resolveAutoPostSetting(user, project);
+}
+
 /** User config, overlaid by project config when the project is trusted. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
@@ -145,6 +159,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	} catch {
 		/* trust check unavailable -> user config only */
 	}
+	const autoPost = resolveAutoPostSetting(user, project);
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
@@ -152,6 +167,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 			...normalizeToolPolicies(user.toolPolicies),
 			...normalizeToolPolicies(project.toolPolicies),
 		},
+		autoPostReviews: autoPost.valid ? autoPost.value : false,
 		tools: project.tools ?? user.tools ?? DEFAULT_TOOLS,
 	};
 }
@@ -159,10 +175,12 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 /** User-level config only (the scope the config command edits), with defaults. */
 function readUserConfig(): PrReviewConfig {
 	const raw = readConfigFile(userConfigPath());
+	const autoPost = resolveAutoPostSetting(raw);
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
+		autoPostReviews: autoPost.valid ? autoPost.value : false,
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
 	};
 }
@@ -952,8 +970,9 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		value: `${t}_tool_policy=`,
 		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
 	})),
+	{ value: "auto_post_reviews=", label: "auto_post_reviews=<true|false> — automatically post COMMENT reviews (default false)" },
 	{ value: "tools=", label: "tools=read,bash,grep,find,ls — allowlist used by configured policy" },
-	{ value: "show", label: "show — print the current tier config" },
+	{ value: "show", label: "show — print the current review config" },
 ];
 
 /** Split respecting single/double quotes so `evidence`-style values with spaces survive. */
@@ -1019,6 +1038,7 @@ interface ConfigPatch {
 	tiers: Partial<Record<Tier, string | null>>;
 	fallbacks: Partial<Record<Tier, string[] | null>>;
 	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
+	autoPostReviews?: boolean;
 	tools?: string[];
 }
 
@@ -1047,11 +1067,15 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 				if (policy) patch.toolPolicies[tier] = policy;
 				else errors.push(`invalid ${key} "${value}" (expected none|configured|unset)`);
 			}
+		} else if (key === "auto_post_reviews" || key === "autopostreviews" || key === "auto-post-reviews") {
+			if (value === "true") patch.autoPostReviews = true;
+			else if (value === "false") patch.autoPostReviews = false;
+			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_tool_policy|tools)`,
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_tool_policy|auto_post_reviews|tools)`,
 			);
 		}
 	}
@@ -1059,6 +1083,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		Object.keys(patch.tiers).length > 0 ||
 		Object.keys(patch.fallbacks).length > 0 ||
 		Object.keys(patch.toolPolicies).length > 0 ||
+		patch.autoPostReviews !== undefined ||
 		patch.tools !== undefined;
 	return { patch, hasChanges, errors };
 }
@@ -1068,6 +1093,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		tiers: { ...base.tiers },
 		fallbacks: normalizeFallbacks(base.fallbacks),
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
+		autoPostReviews: base.autoPostReviews,
 		tools: [...base.tools],
 	};
 	for (const tier of TIERS) {
@@ -1087,6 +1113,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 			else next.toolPolicies[tier] = value;
 		}
 	}
+	if (patch.autoPostReviews !== undefined) next.autoPostReviews = patch.autoPostReviews;
 	if (patch.tools) next.tools = patch.tools;
 	return next;
 }
@@ -1110,6 +1137,7 @@ function summarizeConfig(
 	} catch {
 		/* ignore */
 	}
+	const autoPost = resolveAutoPostForContext(ctx);
 	const lines = [
 		`# PR review config${changed ? " updated" : ""}`,
 		"",
@@ -1119,6 +1147,7 @@ function summarizeConfig(
 			(t) =>
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
+		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub \`COMMENT\` review; default \`false\` |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
 		"| Tier | Your fallbacks | Effective fallbacks | Tool policy |",
@@ -1131,6 +1160,10 @@ function summarizeConfig(
 		`User config: \`${userConfigPath()}\``,
 	];
 	if (projectPath) lines.push(`Project overlay (trusted): \`${projectPath}\``);
+	if (!autoPost.valid) lines.push(`Automatic posting config error: ${autoPost.error}`);
+	else if (autoPost.source === "project") {
+		lines.push("Automatic posting is controlled by the trusted project overlay; this command edits user config only.");
+	}
 	lines.push(
 		"",
 		"## Usage",
@@ -1138,6 +1171,8 @@ function summarizeConfig(
 		"- Print this summary: `/pr-review-config show`",
 		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
 		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
+		"- Enable automatic GitHub review posting: `/pr-review-config auto_post_reviews=true`",
+		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
@@ -1251,6 +1286,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 		...fallbackItems,
 		...policyItems,
 		{
+			id: "auto_post_reviews",
+			label: "user automatic posting setting",
+			description: "Post one GitHub COMMENT review after final JSON. Disabled by default.",
+			currentValue: String(cfg.autoPostReviews),
+			values: ["false", "true"],
+		},
+		{
 			id: "tools",
 			label: "configured tool allowlist",
 			description: "Tools available when effective policy is configured. Enter/Space cycles presets.",
@@ -1281,6 +1323,7 @@ async function showConfigMenu(
 					settingsList.updateValue(`${tier}_fallbacks`, draft.fallbacks[tier]?.join(",") || "(none)");
 					settingsList.updateValue(`${tier}_tool_policy`, draft.toolPolicies[tier] ?? INHERIT_TOOL_POLICY);
 				}
+				settingsList.updateValue("auto_post_reviews", String(draft.autoPostReviews));
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
 
@@ -1299,6 +1342,8 @@ async function showConfigMenu(
 						const policy = normalizeToolPolicy(newValue);
 						if (policy) draft.toolPolicies[tier] = policy;
 					}
+				} else if (id === "auto_post_reviews") {
+					draft.autoPostReviews = newValue === "true";
 				} else if (id === "tools") {
 					draft.tools = splitCommaList(newValue);
 				} else {
@@ -1309,12 +1354,26 @@ async function showConfigMenu(
 					refresh();
 					const shown = id === "tools"
 						? draft.tools.join(",")
-						: isFallbackKey(id)
-							? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
-							: isToolPolicyKey(id)
-								? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
-								: (draft.tiers[id as Tier] ?? UNSET);
-					ctx.ui.notify(`PR review config: ${id} = ${shown}`, "info");
+						: id === "auto_post_reviews"
+							? String(draft.autoPostReviews)
+							: isFallbackKey(id)
+								? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
+								: isToolPolicyKey(id)
+									? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
+									: (draft.tiers[id as Tier] ?? UNSET);
+					if (id === "auto_post_reviews") {
+						const effective = resolveAutoPostForContext(ctx);
+						if (effective.source === "project") {
+							ctx.ui.notify(
+								`User autoPostReviews saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)} or use --no-comment.`,
+								"warning",
+							);
+						} else {
+							ctx.ui.notify(`PR review config: ${id} = ${shown} (effective ${effective.value})`, "info");
+						}
+					} else {
+						ctx.ui.notify(`PR review config: ${id} = ${shown}`, "info");
+					}
 				} catch (e) {
 					ctx.ui.notify(`pr-review-config failed: ${errMessage(e)}`, "error");
 				}
@@ -1323,7 +1382,7 @@ async function showConfigMenu(
 
 			settingsList = new SettingsList(
 				configMenuItems(draft, available),
-				12,
+				13,
 				getSettingsListTheme(),
 				(id, newValue) => persist(id, newValue),
 				() => done(undefined),

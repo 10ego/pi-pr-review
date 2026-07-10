@@ -8,7 +8,7 @@ Pass a PR number and pi will:
 2. Derive the **base branch** and **head (merging) branch** automatically from the PR.
 3. Review the base↔head diff with disciplined passes (overview, convention compliance, bugs, security/perf, readability), best-effort build/test verification, then validate each candidate.
 4. Return a **full structured review**: overview, strengths, verification, findings at **every** severity (`nit → P3 → P2 → P1 → P0`) with a blocking flag, correctness/security/performance notes, and a verdict.
-5. Optionally post the review + inline PR comments (`--comment`).
+5. Optionally publish one formal GitHub `COMMENT` review with a top-level body and associated inline comments.
 
 **Captures everything, then ranks it.** Unlike a high-signal-only reviewer, it does not discard minor issues — nits, style, naming, missing edge cases, and "worth confirming" observations are all reported as low-severity findings. The **verdict** depends only on *blocking* (P0/P1) findings, so a clean PR is still approved while its nits are still recorded.
 
@@ -66,6 +66,8 @@ The `/pr-review-config` command maps three labels to models:
 /pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
 /pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
 /pr-review-config light_tool_policy=none            # tier default when a pass omits tool_policy
+/pr-review-config auto_post_reviews=true            # opt in to automatic GitHub COMMENT reviews
+/pr-review-config auto_post_reviews=false           # disable automatic posting (the default)
 /pr-review-config medium=unset                      # clear a tier (back to pi default)
 /pr-review-config heavy_fallbacks=unset             # clear a fallback chain
 /pr-review-config light_tool_policy=unset           # restore legacy configured-tool behavior
@@ -74,7 +76,7 @@ The `/pr-review-config` command maps three labels to models:
 
 Running `/pr-review-config` with no arguments in the TUI opens an interactive settings menu that mirrors pi's `/settings` and the NERVous `/nervous:config`:
 
-- One primary-model, fallback-model, and tool-policy row per tier (`light` / `medium` / `heavy`) plus a configured-tool allowlist row.
+- One primary-model, fallback-model, and tool-policy row per tier (`light` / `medium` / `heavy`), an automatic-posting toggle, plus a configured-tool allowlist row.
 - Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space cycles tool policies and allowlist presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
 - Selections apply and persist **immediately**; Esc closes the menu.
 - Type to search, and tab-completion is available for the `key=value` form.
@@ -105,6 +107,7 @@ Example `pr-review.json`:
     "medium": "configured",
     "heavy": "configured"
   },
+  "autoPostReviews": false,
   "tools": ["read", "bash", "grep", "find", "ls"]
 }
 ```
@@ -127,21 +130,28 @@ The orchestrator (which fetches the PR, merges findings, and emits the JSON) and
 Type `/` in the pi editor and pick `pr-review`, or:
 
 ```
-/pr-review 123                            # analysis only — prints the JSON report, no GitHub writes
-/pr-review 123 --comment                  # also posts inline review comments to the PR
+/pr-review 123                            # use autoPostReviews (false by default)
+/pr-review 123 --comment                  # force one COMMENT review for this run
+/pr-review 123 --no-comment               # suppress posting for this run
 /pr-review 123 --include-closed           # review a closed/merged PR without a confirmation prompt
-/pr-review 123 --review-closed --comment  # review/comment on a closed/merged PR when GitHub accepts it
+/pr-review 123 --review-closed --comment  # review and attempt a body-only COMMENT review
 ```
 
 `123` is the PR number in the current repo.
 
 ### Closed or merged PRs
 
-Closed/merged PRs no longer hard-skip. If you run `/pr-review 123` on a non-open PR, the prompt asks whether to continue before producing a review. Use `--include-closed` or `--review-closed` to proceed non-interactively. If `--comment` is also used and GitHub rejects inline comments on the non-open PR, findings should be folded into the summary comment instead.
+Closed/merged PRs no longer hard-skip. If you run `/pr-review 123` on a non-open PR, the prompt asks whether to continue before producing a review. Use `--include-closed` or `--review-closed` to proceed non-interactively. When publication is enabled, the extension preemptively folds inline findings into one body-only formal `COMMENT` review; if GitHub rejects it, publication fails explicitly without creating an issue comment.
+
+### Automatic GitHub review posting
+
+`autoPostReviews` is a strict top-level boolean and defaults to `false`. A trusted project `.pi/pr-review.json` value overlays the user value; malformed effective values never enable posting. `/pr-review-config` edits user scope only and displays the effective value/source—if a trusted project overlay wins, edit that project file or use `--no-comment` for the run. Invocation flags are captured before prompt expansion: `--comment` forces posting for one run, `--no-comment` suppresses it, and using both is rejected.
+
+Publishing is extension-owned—the model never constructs the write request, and final JSON marked `disposition: "skipped"` is never published. It creates exactly one formal pull-request review containing a top-level body and associated P0–P3 inline comments. The GitHub event is hardcoded to `COMMENT`; the publisher cannot send `APPROVE` or `REQUEST_CHANGES`, even when the review's suggested verdict is `request_changes`. It validates the current head and every inline diff anchor before the single POST, so an invalid open-PR inline comment fails without leaving a partial review. Closed/merged PRs use one body-only `COMMENT` review with inline findings folded into the body.
 
 ### Duplicate review handling
 
-`--comment` summary comments include a hidden `pi-pr-review` marker with the reviewed `headRefOid`. A later run skips only when it finds a marker for the **current** head SHA. If new commits were pushed after the previous review, the head SHA changes and `/pr-review` reviews the PR again. Older unmarked comments are treated as unknown/stale, not proof that the current head was already reviewed.
+Published reviews include a hidden `pi-pr-review` marker with the reviewed `headRefOid`. A later run skips only when it finds a same-head marker authored by the current authenticated GitHub identity in either formal reviews or legacy issue comments. If new commits were pushed, the head SHA changes and `/pr-review` reviews the PR again. Older or unmarked content is not proof that the current head was reviewed.
 
 ### Response format
 
@@ -153,7 +163,8 @@ Example payload:
 
 ```json
 {
-  "pr": { "number": 33, "title": "fix(logs): parse date-time log timestamps" },
+  "pr": { "number": 33, "title": "fix(logs): parse date-time log timestamps", "head_sha": "0123456789abcdef0123456789abcdef01234567" },
+  "disposition": "reviewed",
   "verification": "`go build ./...` ✅, `go test ./...` ✅ (130 passed)",
   "overview": "Migrates log timestamps from epoch-ms to RFC3339 to match the endpoint contract.",
   "strengths": ["Reuses FormatTimestamp instead of ad-hoc formatting; net -3 lines."],
@@ -182,7 +193,7 @@ Example payload:
 
 Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2]` normal · `[P3]` low · `[nit]` trivial/optional. Verdict is `approve` (no blocking findings), `request_changes` (a blocking finding exists), or `comment`.
 
-**Inline-comment ready.** Each finding's `code_location` is diff-anchored — repo-relative `absolute_file_path`, `line_range` on `side` (`RIGHT` for added/context lines, `LEFT` for removed), and `commentable` (whether the lines are inside a diff hunk). The rendered table shows an **Inline** ✎ column for findings that can be posted as GitHub inline review comments. With `--comment`, a summary review is posted plus inline comments (single- or multi-line, using each finding's anchor) for every commentable blocking/P2/P3 finding; nits and off-diff/repo-wide observations fold into the summary.
+**Inline-comment ready.** Each finding's `code_location` is diff-anchored — repo-relative `absolute_file_path`, `line_range` on `side` (`RIGHT` for added/context lines, `LEFT` for removed), and `commentable` (whether the lines are inside a diff hunk). The rendered table shows an **Inline** ✎ column. When publishing is enabled, the extension validates these anchors against current GitHub diff metadata and attaches eligible P0–P3 findings under the single formal review; nits and off-diff observations stay in the top-level body.
 
 ## What's in the package
 
@@ -191,9 +202,11 @@ pi-pr-review/
 ├─ package.json                      # pi manifest: prompts + extensions
 ├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
 ├─ lib/pr-review-policy.ts           # pure tool-policy resolution/argv helpers
+├─ lib/pr-review-publish.ts          # safe COMMENT-review payload, validation, and gh publisher
 ├─ extensions/pr-review-subagent.ts  # review_subagents/review_subagent tools + /pr-review-config command
-├─ extensions/review-table.ts        # renders the final JSON as a table (TUI only)
-└─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
+├─ extensions/review-table.ts        # renders JSON and triggers trusted configured publishing
+├─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
+└─ tests/pr-review-publish.test.ts    # posting gate, payload, marker, and anchor tests
 ```
 
 ## Speed, security & cost notes
@@ -201,12 +214,13 @@ pi-pr-review/
 - The four independent review lenses remain intact. Only overview runs context-only with `--no-tools`; medium and both heavy specialists retain configured tools for surrounding-file validation. All subprocesses use `--no-context-files` because the orchestrator supplies the base review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
 - Tool results include effective `toolPolicy` and `elapsedMs` telemetry (plus per-attempt timing) so repeated representative runs can be compared at p50/p95 without guessing. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
-- Project-local `pr-review.json` is only read when the project is trusted.
+- Project-local `pr-review.json` is only read when the project is trusted. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
+- GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried.
 - Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a cheap model for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
 
 ## Design notes
 
-- **Process** mirrors the Claude review workflow (PR-number driven, confirm-before-reviewing closed/merged PRs, skip draft/same-head-already-reviewed, overview + strengths, convention/readability/maintainability, best-effort build/test verification, validate-then-classify, optional comment posting with strict GitHub permalink rules) with bounded parallel multi-model fan-out (configurable light/medium/heavy tiers).
+- **Process** is PR-number driven: confirm non-open PRs, skip draft/same-head-already-reviewed work, fan out four review lenses, verify, validate/classify, emit JSON, then optionally publish one extension-owned formal `COMMENT` review.
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
 - **Verification is non-destructive:** any build/test runs in an isolated `git worktree` on the PR head — the prompt never checks out, commits, or pushes in your working tree.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.

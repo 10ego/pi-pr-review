@@ -1,6 +1,6 @@
 ---
 description: Review a GitHub Pull Request and return a structured JSON review (nit → P0)
-argument-hint: "<PR-NUM> [--comment]"
+argument-hint: "<PR-NUM> [--comment|--no-comment]"
 ---
 You are acting as a senior code reviewer for pull request **#$1** in the GitHub repository of the current working directory.
 
@@ -16,7 +16,7 @@ Do **not** assume, name, or switch to any specific model. Model selection is con
 
 ### Reviewer topology (parallel tiered subagents, with inline fallback)
 
-You are the **orchestrator**. You own all GitHub access, skip decisions, convention-file discovery, verification worktrees, final validation/classification, JSON emission, and optional comment posting. Subagents are read-only reviewers: they receive PR context from you and return candidate evidence only.
+You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery, verification worktrees, final validation/classification, and JSON emission. You never perform GitHub writes: the extension captures invocation publishing intent and, after valid final JSON, owns any configured review publication. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
 
 If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. This guarantees bounded parallel fan-out instead of depending on whether the tool interface runs separate calls concurrently. Use these pass assignments:
 
@@ -37,7 +37,10 @@ Tier→model mapping is set with `/pr-review-config`; if a tier is unset the sub
 
 Arguments for this run: `$@`
 - `$1` is the PR number (required).
-- If the token `--comment` appears anywhere in the arguments, "comment mode" is ON. Otherwise it is OFF (analysis only, no writes to GitHub).
+- `--comment` explicitly requests one GitHub `COMMENT` review for this run, even when automatic posting is disabled.
+- `--no-comment` suppresses posting for this run, even when automatic posting is enabled.
+- Using `--comment` and `--no-comment` together is invalid; the extension rejects the invocation before review starts.
+- With neither posting flag, the extension follows `autoPostReviews` (default `false`). These flags are captured before template expansion; do not perform posting yourself.
 - If `--include-closed` or `--review-closed` appears anywhere in the arguments, review closed/merged PRs without asking for confirmation.
 
 ---
@@ -57,22 +60,24 @@ Arguments for this run: `$@`
 The orchestrator (you) always runs these — subagents never call `gh`:
 
 ```
-gh pr view $1 --json number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,url,files,comments
+gh pr view $1 --json number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,url,files,comments,reviews
 gh pr diff $1
+repo_host=$(gh repo view --json url --jq .url | sed -E 's#https?://([^/]+)/.*#\1#')
+gh api --hostname "$repo_host" user --jq .login
 ```
 
 `baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA (needed for duplicate-review reconciliation, verification, and permalinks/inline comments). `gh pr diff $1` is the base↔head diff and is the review artifact you pass to every subagent as `context`.
 
 **Non-open PR confirmation.** If `state` is not `OPEN` and neither `--include-closed` nor `--review-closed` was supplied, do **not** hard-skip and do **not** emit the review JSON yet. Pause and ask exactly one confirmation question: `PR #$1 is <state> (head <headRefOid>). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.` This pre-review confirmation prompt is the only allowed non-JSON response. If the user confirms, continue from Step 2; if needed, rerun Step 1 first to refresh metadata/diff.
 
-**Skip conditions.** Stop immediately (emit the empty-findings JSON with `verdict: "approve"`, `overall_correctness: "patch is correct"`, and an explanation noting the skip) if any is true:
+**Skip conditions.** Stop immediately (emit the empty-findings JSON with `disposition: "skipped"`, `verdict: "approve"`, `overall_correctness: "patch is correct"`, and an explanation noting the skip) if any is true:
 - The PR is a draft (`isDraft` == true).
 - The change obviously does not need review (automated/bot PR, or a trivial change that is clearly correct).
-- A prior `pi-pr-review` summary comment exists with a hidden marker whose `headRefOid` exactly matches the current `headRefOid` (same PR head already reviewed). Do **not** skip for older markers with a different SHA, unmarked prior comments/reviews, or because the PR was AI-authored — review those normally.
+- A prior `pi-pr-review` issue comment or formal review authored by the current `gh` identity exists with a hidden marker whose `headRefOid` exactly matches the current `headRefOid` (same PR head already reviewed by this identity). Do **not** skip for markers from another author, older markers with a different SHA, unmarked prior comments/reviews, or because the PR was AI-authored — review those normally.
 
-**Duplicate-review reconciliation.** Prior comments are only authoritative when they contain the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If comments contain older unmarked review text, treat it as unknown/stale and continue; unmarked comments cannot prove the current head was reviewed.
+**Duplicate-review reconciliation.** Prior issue comments and formal review bodies are authoritative only when authored by the current `gh` identity and containing the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If prior content is unmarked, treat it as unknown/stale and continue; it cannot prove the current head was reviewed. The publishing extension performs an additional identity-scoped, paginated duplicate check immediately before any write.
 
-Otherwise continue. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally; in `--comment` mode, still anchor inline comments to `headRefOid`, but if GitHub rejects inline comments on a non-open PR, fold those findings into the summary comment instead.
+Otherwise continue and set final `disposition: "reviewed"`. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally. If publication is enabled, the extension folds inline findings into one body-only formal `COMMENT` review; the orchestrator still emits only JSON.
 
 ## Step 2 — Gather project convention files
 
@@ -150,30 +155,15 @@ Merge duplicate candidate findings across passes, then for every remaining candi
 
 ---
 
-## Comment mode (only when `--comment` was passed)
+## GitHub review publication (extension-owned)
 
-Analysis-only is the default. When comment mode is ON, after finalizing, also post to the PR via `gh`. Your terminal reply is still the JSON below — comment mode only controls GitHub writes.
+The orchestrator must never call `gh` to post comments or reviews. Always finish by emitting the JSON contract below, regardless of posting configuration or flags. After valid final JSON, the extension decides whether to publish using trusted invocation state:
 
-- Post **one summary review comment** with `gh pr comment $1 --body "..."` containing the overview, verification line, strengths, a findings table, and the verdict. End the comment body with this exact hidden reconciliation marker using the current PR head SHA: `<!-- pi-pr-review: {"schema":1,"headRefOid":"<headRefOid>"} -->`. This marker is what future runs use to skip only an already-reviewed identical head.
-- Post **inline comments** for each blocking, `P2`, and `P3` finding whose `code_location.commentable` is `true`, anchored to the head SHA. Fold `nit`s and any non-commentable findings into the summary comment rather than spamming inline (you may still leave an inline `nit` when it is location-specific and useful). Never post duplicate inline comments for the same finding on the same `headRefOid`; comments attached to older SHAs do not make the current head a duplicate. Use the finding's own anchor fields:
+- no posting flag → follow `autoPostReviews` (default `false`)
+- `--comment` → force publication for this run, but never bypass validation, stale-head checks, or duplicate checks
+- `--no-comment` → suppress publication for this run
 
-  ```
-  # single line  (line_range.start == line_range.end)
-  gh api repos/{owner}/{repo}/pulls/$1/comments \
-    -f body='<comment>' -f commit_id='<headRefOid>' \
-    -f path='<absolute_file_path>' -F line=<line_range.end> -f side='<side>'
-
-  # multi-line  (line_range.start < line_range.end)
-  gh api repos/{owner}/{repo}/pulls/$1/comments \
-    -f body='<comment>' -f commit_id='<headRefOid>' -f path='<absolute_file_path>' \
-    -F start_line=<line_range.start> -f start_side='<side>' \
-    -F line=<line_range.end> -f side='<side>'
-  ```
-
-  - `path` = `absolute_file_path`, `side`/`start_side` = the finding's `side`, and the line numbers come straight from `line_range`. If an inline post is rejected (e.g. the line is not part of the diff), fold that finding into the summary comment instead.
-  - For small self-contained fixes, include a ` ```suggestion ` block, but only if committing it fixes the issue entirely; preserve exact leading whitespace and add/remove no indentation unless that is the fix. For larger fixes, describe them in prose.
-  - When linking to code in a comment body, use this exact permalink form or GitHub Markdown won't render it: `https://github.com/{owner}/{repo}/blob/<full-head-SHA>/path/to/file#Lstart-Lend` — full commit SHA, matching repo, `#` after the filename, `Lstart-Lend` range, with a line of context on each side.
-- If there are no findings, post the summary comment with the overview, verification, strengths, an "Approve — no issues found" verdict, and the same hidden reconciliation marker.
+When enabled, the extension creates exactly one formal GitHub pull-request review. Its top-level body contains the overview, verification, strengths, findings summary, and suggested verdict; eligible P0–P3 diff-anchored findings are attached as inline comments within that same review. The API event is hardcoded to `COMMENT`: publication never sends `APPROVE` or `REQUEST_CHANGES`, even when the suggested verdict is `request_changes`. It appends the same-head marker, verifies the current head, validates every inline anchor against GitHub diff metadata, and refuses partial open-PR publication. For a known closed/merged PR it posts one body-only `COMMENT` review with inline findings folded into the body, or reports failure without falling back to an issue comment.
 
 ---
 
@@ -183,7 +173,8 @@ Your final message must be **exactly one JSON object** matching the shape below 
 
 ```json
 {
-  "pr": { "number": 0, "title": "<PR title>" },
+  "pr": { "number": 0, "title": "<PR title>", "head_sha": "<full headRefOid reviewed>" },
+  "disposition": "reviewed",
   "verification": "<what you built/ran and the result, or why verification was limited>",
   "overview": "<1-3 short Markdown paragraphs describing what the PR does>",
   "strengths": ["<Markdown bullet>", "<Markdown bullet>"],
@@ -210,6 +201,8 @@ Your final message must be **exactly one JSON object** matching the shape below 
 }
 ```
 
+- `pr.head_sha` is the exact full `headRefOid` reviewed; the publisher rejects stale or missing head SHAs.
+- `disposition` is exactly `"reviewed"` or `"skipped"`. The extension never publishes `skipped` results.
 - `verdict` is exactly `"approve"`, `"request_changes"`, or `"comment"`.
 - `overall_correctness` is exactly `"patch is correct"` or `"patch is incorrect"`.
 - Each finding's `severity` is one of `P0|P1|P2|P3|nit` and must match its `[..]` title tag; `blocking` is `true` only for `P0`/`P1`.
