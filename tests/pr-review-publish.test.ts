@@ -5,16 +5,20 @@ import {
 	bodyHasHeadMarker,
 	buildPullReviewPayload,
 	buildReviewSummary,
+	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
+	CompletedReviewCache,
 	containsReservedReviewMarker,
 	foldInlineComments,
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
 	parsePublishableReview,
+	parsePublishExistingArgs,
 	parsePublishMode,
+	planHeadPublication,
 	resolveAutoPostSetting,
 	ReviewInvocationGate,
 	shouldPublishReview,
@@ -152,6 +156,60 @@ describe("trusted invocation mode", () => {
 	test("trusted non-open flags bind authorization to the invocation", () => {
 		expect(parsePublishMode("/pr-review 7 --include-closed")).toMatchObject({ allowNonOpen: true });
 		expect(parsePublishMode("/pr-review 7 --review-closed --comment")).toMatchObject({ allowNonOpen: true });
+	});
+});
+
+describe("publish-only completed review command", () => {
+	test("requires an explicit PR and recognizes only the stale override", () => {
+		expect(parsePublishExistingArgs("7")).toEqual({ prNumber: 7, allowStale: false });
+		expect(parsePublishExistingArgs("7 --allow-stale")).toEqual({ prNumber: 7, allowStale: true });
+		expect(parsePublishExistingArgs("").error).toContain("positive PR number");
+		expect(parsePublishExistingArgs("7 --comment").error).toContain("unknown argument");
+	});
+
+	test("retains a completed review after invocation authority is consumed", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false };
+		cache.remember(review, invocation, "2026-07-10T00:00:00.000Z");
+		expect(cache.get(7)).toEqual({ review, invocation, completedAt: "2026-07-10T00:00:00.000Z" });
+		expect(cache.get(8)).toBeUndefined();
+		cache.clear();
+		expect(cache.get(7)).toBeUndefined();
+	});
+
+	test("keeps stale protection by default and degrades an explicit override", () => {
+		const reviewed = "a".repeat(40);
+		const current = "b".repeat(40);
+		expect(planHeadPublication(reviewed, current, false).error).toContain("--allow-stale");
+		const plan = planHeadPublication(reviewed, current, true).plan!;
+		expect(plan).toMatchObject({
+			reviewedHeadSha: reviewed,
+			currentHeadSha: current,
+			stale: true,
+			commitId: current,
+			allowInlineComments: false,
+		});
+		const body = `${buildStaleReviewNotice(reviewed, current)}\n\n${buildReviewSummary(review, [])}`;
+		const payload = buildPullReviewPayload(plan.commitId, body, []);
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain(reviewed);
+		expect(payload.body).toContain(current);
+		expect(payload.body).toContain("[P2] Handle empty input");
+	});
+
+	test("preserves inline publication when the reviewed head is still current", () => {
+		const head = "a".repeat(40);
+		expect(planHeadPublication(head, head.toUpperCase(), false).plan).toMatchObject({
+			stale: false,
+			commitId: head,
+			allowInlineComments: true,
+		});
+	});
+
+	test("registers a direct command rather than delegating stale publication to the model", () => {
+		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		expect(extension).toContain('pi.registerCommand("pr-review-publish"');
+		expect(extension).toContain("This command never starts or reruns a review");
 	});
 });
 
