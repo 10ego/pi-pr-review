@@ -1138,10 +1138,10 @@ function summarizeConfig(
 		"- Print this summary: `/pr-review-config show`",
 		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
 		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
-		"- Set tier tool policy: `/pr-review-config medium_tool_policy=none`",
+		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
-		"- Restore legacy tier tool behavior: `/pr-review-config medium_tool_policy=unset`",
+		"- Restore legacy tier tool behavior: `/pr-review-config light_tool_policy=unset`",
 		"- A `<model>` is any pi model pattern (`provider/model` or `provider/model:thinking`).",
 	);
 	return lines.join("\n");

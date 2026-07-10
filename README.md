@@ -65,10 +65,10 @@ The `/pr-review-config` command maps three labels to models:
 /pr-review-config show                              # print the current mapping
 /pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
 /pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
-/pr-review-config medium_tool_policy=none           # tier default when a pass omits tool_policy
+/pr-review-config light_tool_policy=none            # tier default when a pass omits tool_policy
 /pr-review-config medium=unset                      # clear a tier (back to pi default)
 /pr-review-config heavy_fallbacks=unset             # clear a fallback chain
-/pr-review-config medium_tool_policy=unset          # restore legacy configured-tool behavior
+/pr-review-config light_tool_policy=unset           # restore legacy configured-tool behavior
 /pr-review-config tools=read,bash,grep,find,ls      # allowlist used by configured policy
 ```
 
@@ -102,7 +102,7 @@ Example `pr-review.json`:
   },
   "toolPolicies": {
     "light": "none",
-    "medium": "none",
+    "medium": "configured",
     "heavy": "configured"
   },
   "tools": ["read", "bash", "grep", "find", "ls"]
@@ -111,7 +111,7 @@ Example `pr-review.json`:
 
 Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
 
-Tool policy is additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` for overview and conventions/maintainability because it supplies their complete evidence, while both heavy specialist passes retain `configured` repository-context tools. Fallback model attempts keep the original pass policy.
+Tool policy is additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` only for overview because its complete evidence is supplied in context. Conventions/maintainability and both heavy specialist passes use `configured` repository-context tools so they can inspect surrounding files when needed. Fallback model attempts keep the original pass policy.
 
 ### 2. The orchestrator / inline-fallback model
 
@@ -198,7 +198,7 @@ pi-pr-review/
 
 ## Speed, security & cost notes
 
-- The four independent review lenses remain intact. Overview and medium passes run context-only with `--no-tools`; both heavy specialists retain configured tools. All subprocesses use `--no-context-files` because the orchestrator supplies the complete review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
+- The four independent review lenses remain intact. Only overview runs context-only with `--no-tools`; medium and both heavy specialists retain configured tools for surrounding-file validation. All subprocesses use `--no-context-files` because the orchestrator supplies the base review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
 - Tool results include effective `toolPolicy` and `elapsedMs` telemetry (plus per-attempt timing) so repeated representative runs can be compared at p50/p95 without guessing. Restore tools for a custom pass by sending `tool_policy: "configured"`; callers that omit policy retain legacy behavior unless `toolPolicies` config says otherwise.
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
 - Project-local `pr-review.json` is only read when the project is trusted.

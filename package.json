@@ -1,6 +1,6 @@
 {
   "name": "pi-pr-review",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Model-agnostic GitHub PR code review prompt for pi. Pass a PR number; it derives the base and head branches from the PR in the current repo, reviews the diff, and returns structured JSON findings.",
   "keywords": [
     "pi-package",
