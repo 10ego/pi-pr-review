@@ -349,7 +349,23 @@ function findingLocation(finding: ReviewFindingLike): string {
 	return `${location.absolute_file_path}:${start}${end !== start ? `-${end}` : ""} ${(location.side ?? "RIGHT").toUpperCase()}`;
 }
 
-export function buildReviewSummary(review: ReviewLike): string {
+function publishCommentAnchor(comment: PublishComment): string {
+	return `${comment.path}:${comment.side}:${comment.start_line ?? comment.line}:${comment.line}`;
+}
+
+function findingAnchor(finding: ReviewFindingLike): string | undefined {
+	const location = finding.code_location;
+	const path = location?.absolute_file_path;
+	const side = location?.side?.toUpperCase();
+	const start = location?.line_range?.start;
+	const end = location?.line_range?.end;
+	if (!path || (side !== "LEFT" && side !== "RIGHT") || !Number.isInteger(start) || !Number.isInteger(end)) {
+		return undefined;
+	}
+	return `${path}:${side}:${start}:${end}`;
+}
+
+export function buildReviewSummary(review: ReviewLike, inlineComments: PublishComment[] = []): string {
 	const lines: string[] = [];
 	const number = review.pr?.number;
 	const title = String(review.pr?.title ?? "").replace(/\r?\n/g, " ").trim();
@@ -360,18 +376,29 @@ export function buildReviewSummary(review: ReviewLike): string {
 		lines.push("### Strengths", "", ...review.strengths.map((strength) => `- ${String(strength).replace(/^\s*-\s*/, "").trim()}`), "");
 	}
 	const findings = Array.isArray(review.findings) ? review.findings : [];
-	lines.push(`### Findings — ${findings.length}`, "");
+	const inlineAnchors = new Set(inlineComments.map(publishCommentAnchor));
+	const summaryFindings = findings.filter((finding) => {
+		if (!finding.code_location?.commentable || !isInlineSeverity(finding)) return true;
+		const anchor = findingAnchor(finding);
+		return !anchor || !inlineAnchors.has(anchor);
+	});
+	lines.push(
+		`### Findings — ${findings.length} total (${inlineComments.length} inline, ${summaryFindings.length} summary-only)`,
+		"",
+	);
 	if (findings.length === 0) {
 		lines.push("_No issues found._", "");
+	} else if (summaryFindings.length === 0) {
+		lines.push(`_All ${inlineComments.length} findings are attached inline below this review._`, "");
 	} else {
-		lines.push("| Severity | Finding | Location |", "|---|---|---|");
-		for (const finding of findings) {
+		lines.push("| Severity | Summary-only finding | Location |", "|---|---|---|");
+		for (const finding of summaryFindings) {
 			lines.push(
 				`| ${cell(String(finding.severity ?? "—"))} | ${cell(String(finding.title ?? "(untitled)"))} | \`${cell(findingLocation(finding))}\` |`,
 			);
 		}
 		lines.push("");
-		for (const finding of findings) {
+		for (const finding of summaryFindings) {
 			lines.push(`#### ${String(finding.title ?? "Finding")}`, `\`${findingLocation(finding)}\``, "");
 			if (finding.body?.trim()) lines.push(finding.body.trim(), "");
 		}
@@ -506,6 +533,10 @@ export function validateInlineComments(
 			errors.push(`${label}: comment body is empty or too large`);
 			continue;
 		}
+		if (containsReservedReviewMarker(body)) {
+			errors.push(`${label}: comment body contains a reserved pi-pr-review marker`);
+			continue;
+		}
 		comments.push({
 			path,
 			body,
@@ -544,6 +575,10 @@ export function collectFoldedComments(review: ReviewLike): CommentValidationResu
 			.join("\n\n");
 		if (!body || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 			errors.push(`${label}: folded comment body is empty or too large`);
+			continue;
+		}
+		if (containsReservedReviewMarker(body)) {
+			errors.push(`${label}: folded comment body contains a reserved pi-pr-review marker`);
 			continue;
 		}
 		comments.push({
@@ -780,10 +815,6 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `GitHub preflight failed: ${String(error)}` };
 		}
 
-		const summary = buildReviewSummary(review);
-		const bodyError = validateReviewBody(summary);
-		if (bodyError) return { status: "failed", message: bodyError };
-
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
@@ -809,6 +840,9 @@ export async function publishPullReview(input: {
 			comments = validated.comments;
 		}
 
+		const summary = buildReviewSummary(review, comments);
+		const bodyError = validateReviewBody(summary);
+		if (bodyError) return { status: "failed", message: bodyError };
 		const reviewBody = `${isOpen ? summary : foldInlineComments(summary, comments)}\n\n${marker}`;
 		if (Buffer.byteLength(reviewBody, "utf8") > MAX_BODY_BYTES) {
 			return { status: "failed", message: "final review body exceeds 65536 UTF-8 bytes" };
