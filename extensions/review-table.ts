@@ -20,6 +20,7 @@ import {
 import {
 	classifyAssistantCompletion,
 	CompletedReviewCache,
+	decideReviewPublication,
 	isNonOpenConfirmationPrompt,
 	parsePublishExistingArgs,
 	parsePublishMode,
@@ -340,15 +341,12 @@ async function maybePublishReview(
 	ctx: ExtensionContext,
 	expectedRepository?: RepositoryBinding,
 ): Promise<void> {
-	if (invocation.mode === "disabled") return;
-	const setting = resolvePublishingConfig(ctx);
-	if (invocation.mode === "auto") {
-		if (!setting.valid) {
-			ctx.ui.notify(`PR review was not posted: ${setting.error}`, "error");
-			return;
-		}
-		if (!setting.value) return;
+	const authority = decideReviewPublication(invocation);
+	if (authority.error) {
+		ctx.ui.notify(`PR review was not posted: ${authority.error}`, "error");
+		return;
 	}
+	if (!authority.publish) return;
 	const parsed = parsePublishableReview(text);
 	if (!parsed.review) {
 		ctx.ui.notify(`PR review was not posted: ${parsed.error}`, "error");
@@ -373,8 +371,7 @@ async function maybePublishReview(
 		expectedRepository,
 		review: parsed.review as ReviewLike,
 	});
-	const source = invocation.mode === "force" ? "--comment" : `${setting.source} config`;
-	notifyPublishResult(result, source, ctx);
+	notifyPublishResult(result, authority.source ?? "frozen invocation", ctx);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -471,7 +468,8 @@ export default function (pi: ExtensionAPI) {
 			invocationGate.clear();
 			persistTelemetry("replaced");
 		}
-		const gate = invocationGate.begin(parsed);
+		// Freeze trusted publication config before review tools or optional PR code can run.
+		const gate = invocationGate.begin(parsed, resolvePublishingConfig(ctx));
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			return { action: "handled" as const };

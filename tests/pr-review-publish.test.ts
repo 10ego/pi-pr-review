@@ -12,6 +12,7 @@ import {
 	canonicalReviewMarker,
 	collectFoldedComments,
 	CompletedReviewCache,
+	decideReviewPublication,
 	containsReservedReviewMarker,
 	foldInlineComments,
 	githubApiArgs,
@@ -78,6 +79,8 @@ const changedFiles = [
 	},
 ];
 
+const autoOff = resolveAutoPostSetting({ autoPostReviews: false });
+
 describe("automatic posting configuration", () => {
 	test("defaults to disabled", () => {
 		expect(resolveAutoPostSetting({})).toEqual({ value: false, valid: true, source: "default" });
@@ -96,6 +99,98 @@ describe("automatic posting configuration", () => {
 		expect(result.value).toBeFalse();
 		expect(result.valid).toBeFalse();
 	});
+
+	test("captures config in the input gate and never resolves it during final publication", () => {
+		const renderer = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		expect(renderer).toContain("invocationGate.begin(parsed, resolvePublishingConfig(ctx))");
+		const publisher = renderer.slice(
+			renderer.indexOf("async function maybePublishReview"),
+			renderer.indexOf("export default function"),
+		);
+		expect(publisher).not.toContain("resolvePublishingConfig");
+		expect(publisher).toContain("decideReviewPublication(invocation)");
+	});
+});
+
+describe("invocation publication snapshot", () => {
+	test("keeps false after later config mutation to true", () => {
+		const config: { autoPostReviews: unknown } = { autoPostReviews: false };
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting(config));
+		config.autoPostReviews = true;
+		const invocation = gate.consume()!;
+		expect(invocation.autoPost).toEqual({ value: false, valid: true, source: "user" });
+		expect(Object.isFrozen(invocation.autoPost)).toBeTrue();
+		expect(decideReviewPublication(invocation)).toEqual({ publish: false });
+	});
+
+	test("keeps true after later config mutation to false", () => {
+		const config: { autoPostReviews: unknown } = { autoPostReviews: true };
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting(config));
+		config.autoPostReviews = false;
+		const invocation = gate.consume()!;
+		expect(invocation.autoPost).toEqual({ value: true, valid: true, source: "user" });
+		expect(decideReviewPublication(invocation)).toEqual({ publish: true, source: "user config" });
+	});
+
+	test("keeps a malformed snapshot fail-closed after config correction", () => {
+		const config: { autoPostReviews: unknown } = { autoPostReviews: "true" };
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting(config));
+		config.autoPostReviews = true;
+		const invocation = gate.consume()!;
+		expect(invocation.autoPost).toEqual({
+			value: false,
+			valid: false,
+			source: "user",
+			error: "user autoPostReviews must be a boolean",
+		});
+		expect(decideReviewPublication(invocation)).toEqual({
+			publish: false,
+			error: "user autoPostReviews must be a boolean",
+		});
+	});
+
+	test("replaces a cleared invocation with a fresh snapshot", () => {
+		const config: { autoPostReviews: unknown } = { autoPostReviews: false };
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting(config));
+		const abandoned = gate.peek()!;
+		gate.clear();
+		config.autoPostReviews = true;
+		gate.begin(parsePublishMode("/pr-review 8"), resolveAutoPostSetting(config));
+		expect(decideReviewPublication(abandoned)).toEqual({ publish: false });
+		const replacement = gate.consume()!;
+		expect(replacement).toMatchObject({
+			prNumber: 8,
+			autoPost: { value: true, valid: true, source: "user" },
+		});
+		expect(decideReviewPublication(replacement)).toEqual({ publish: true, source: "user config" });
+	});
+
+	test("preserves the snapshot across non-open confirmation", () => {
+		const config: { autoPostReviews: unknown } = { autoPostReviews: true };
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting(config));
+		expect(gate.markAwaitingConfirmation()).toBeTrue();
+		config.autoPostReviews = false;
+		expect(gate.resolveConfirmationInput("yes")).toBe("confirmed");
+		const invocation = gate.consume()!;
+		expect(invocation.allowNonOpen).toBeTrue();
+		expect(decideReviewPublication(invocation)).toEqual({ publish: true, source: "user config" });
+	});
+
+	test("force and disabled flags remain independent of malformed auto config", () => {
+		const malformed = resolveAutoPostSetting({ autoPostReviews: "true" });
+		const forceGate = new ReviewInvocationGate();
+		forceGate.begin(parsePublishMode("/pr-review 7 --comment"), malformed);
+		expect(decideReviewPublication(forceGate.consume()!)).toEqual({ publish: true, source: "--comment" });
+
+		const disabledGate = new ReviewInvocationGate();
+		disabledGate.begin(parsePublishMode("/pr-review 7 --no-comment"), malformed);
+		expect(decideReviewPublication(disabledGate.consume()!)).toEqual({ publish: false });
+	});
 });
 
 describe("trusted invocation mode", () => {
@@ -111,19 +206,28 @@ describe("trusted invocation mode", () => {
 
 	test("queued invocation cannot override active publishing intent", () => {
 		const gate = new ReviewInvocationGate();
-		expect(gate.begin(parsePublishMode("/pr-review 7 --no-comment")).accepted).toBeTrue();
-		expect(gate.begin(parsePublishMode("/pr-review 8 --comment"))).toMatchObject({ accepted: false });
-		expect(gate.consume()).toEqual({ mode: "disabled", prNumber: 7, allowNonOpen: false });
+		expect(gate.begin(parsePublishMode("/pr-review 7 --no-comment"), autoOff).accepted).toBeTrue();
+		expect(gate.begin(parsePublishMode("/pr-review 8 --comment"), autoOff)).toMatchObject({ accepted: false });
+		expect(gate.consume()).toEqual({
+			mode: "disabled",
+			prNumber: 7,
+			allowNonOpen: false,
+			autoPost: autoOff,
+		});
 	});
 
 	test("final JSON must match the invocation PR", () => {
-		expect(validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false })).toBeUndefined();
-		expect(validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false })).toContain("does not match");
+		expect(
+			validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false, autoPost: autoOff }),
+		).toBeUndefined();
+		expect(
+			validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false, autoPost: autoOff }),
+		).toContain("does not match");
 	});
 
 	test("preserves authority for exactly one affirmative non-open confirmation turn", () => {
 		const gate = new ReviewInvocationGate();
-		gate.begin(parsePublishMode("/pr-review 7 --comment"));
+		gate.begin(parsePublishMode("/pr-review 7 --comment"), autoOff);
 		const prompt = `PR #7 is MERGED (head ${"a".repeat(40)}). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.`;
 		expect(isNonOpenConfirmationPrompt(prompt, 7)).toBeTrue();
 		expect(isNonOpenConfirmationPrompt(prompt.replace("MERGED", "OPEN"), 7)).toBeFalse();
@@ -131,14 +235,19 @@ describe("trusted invocation mode", () => {
 		expect(gate.markAwaitingConfirmation()).toBeTrue();
 		expect(gate.resolveConfirmationInput("yes")).toBe("confirmed");
 		expect(gate.phase()).toBe("confirmed");
-		expect(gate.consume()).toEqual({ mode: "force", prNumber: 7, allowNonOpen: true });
+		expect(gate.consume()).toEqual({
+			mode: "force",
+			prNumber: 7,
+			allowNonOpen: true,
+			autoPost: autoOff,
+		});
 		expect(gate.peek()).toBeUndefined();
 	});
 
 	test("negative, empty, and unrelated confirmation inputs clear authority", () => {
 		for (const answer of ["no", "", "tell me something else"]) {
 			const gate = new ReviewInvocationGate();
-			gate.begin(parsePublishMode("/pr-review 7 --comment"));
+			gate.begin(parsePublishMode("/pr-review 7 --comment"), autoOff);
 			gate.markAwaitingConfirmation();
 			expect(gate.resolveConfirmationInput(answer)).toBe("cleared");
 			expect(gate.peek()).toBeUndefined();
@@ -149,9 +258,14 @@ describe("trusted invocation mode", () => {
 
 	test("parse or publication failures cannot retain consumed authority", () => {
 		const gate = new ReviewInvocationGate();
-		gate.begin(parsePublishMode("/pr-review 7 --comment"));
+		gate.begin(parsePublishMode("/pr-review 7 --comment"), autoOff);
 		const invocation = gate.consume();
-		expect(invocation).toEqual({ mode: "force", prNumber: 7, allowNonOpen: false });
+		expect(invocation).toEqual({
+			mode: "force",
+			prNumber: 7,
+			allowNonOpen: false,
+			autoPost: autoOff,
+		});
 		expect(parsePublishableReview("not json").review).toBeUndefined();
 		expect(gate.peek()).toBeUndefined();
 	});

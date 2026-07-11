@@ -15,10 +15,10 @@ export function classifyAssistantCompletion(
 }
 
 export interface AutoPostResolution {
-	value: boolean;
-	valid: boolean;
-	source: AutoPostSource;
-	error?: string;
+	readonly value: boolean;
+	readonly valid: boolean;
+	readonly source: AutoPostSource;
+	readonly error?: string;
 }
 
 function hasOwn(value: unknown, key: string): boolean {
@@ -83,9 +83,32 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 }
 
 export interface ReviewInvocation {
-	mode: PublishMode;
-	prNumber: number;
-	allowNonOpen: boolean;
+	readonly mode: PublishMode;
+	readonly prNumber: number;
+	readonly allowNonOpen: boolean;
+	/** Trusted automatic-posting decision captured before review execution begins. */
+	readonly autoPost: Readonly<AutoPostResolution>;
+}
+
+export interface ReviewPublicationDecision {
+	readonly publish: boolean;
+	readonly source?: "--comment" | `${AutoPostSource} config`;
+	readonly error?: string;
+}
+
+/** Derive write authority exclusively from invocation flags and its frozen config snapshot. */
+export function decideReviewPublication(invocation: ReviewInvocation): ReviewPublicationDecision {
+	if (invocation.mode === "disabled") return { publish: false };
+	if (invocation.mode === "force") return { publish: true, source: "--comment" };
+	if (!invocation.autoPost.valid) {
+		return {
+			publish: false,
+			error: invocation.autoPost.error ?? `${invocation.autoPost.source} autoPostReviews is invalid`,
+		};
+	}
+	return invocation.autoPost.value
+		? { publish: true, source: `${invocation.autoPost.source} config` }
+		: { publish: false };
 }
 
 export interface PublishExistingParseResult {
@@ -136,7 +159,7 @@ export class ReviewInvocationGate {
 	private active?: ReviewInvocation;
 	private currentPhase?: ReviewInvocationPhase;
 
-	begin(parsed: PublishModeParseResult): { accepted: boolean; error?: string } {
+	begin(parsed: PublishModeParseResult, autoPost: AutoPostResolution): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
 			return { accepted: false, error: `PR #${this.active.prNumber} review is still active` };
@@ -144,11 +167,18 @@ export class ReviewInvocationGate {
 		if (parsed.error || !parsed.mode || !parsed.prNumber) {
 			return { accepted: false, error: parsed.error ?? "missing PR number or publishing mode" };
 		}
-		this.active = {
+		const snapshot = Object.freeze({
+			value: autoPost.value,
+			valid: autoPost.valid,
+			source: autoPost.source,
+			...(autoPost.error === undefined ? {} : { error: autoPost.error }),
+		});
+		this.active = Object.freeze({
 			mode: parsed.mode,
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
-		};
+			autoPost: snapshot,
+		});
 		this.currentPhase = "reviewing";
 		return { accepted: true };
 	}
