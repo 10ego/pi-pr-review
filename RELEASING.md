@@ -6,10 +6,9 @@
 
 The squash-merged PR title becomes the commit Release Please evaluates:
 
-- `fix: ...`, `perf: ...`, and `revert: ...` create a patch release.
 - `feat: ...` creates a minor release.
 - `feat!: ...`, `fix!: ...`, or a `BREAKING CHANGE:` footer creates a major release.
-- `chore:`, `docs:`, `refactor:`, `style:`, and `test:` do not create a release by themselves.
+- Every other allowed type—`fix:`, `perf:`, `revert:`, `chore:`, `docs:`, `refactor:`, `style:`, and `test:`—creates a patch release.
 
 All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title, and the required `Test` check runs the Bun test suite. Direct pushes, force pushes, branch deletion, and administrator bypass are disabled.
 
