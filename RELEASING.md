@@ -1,0 +1,27 @@
+# Releasing
+
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version change, `CHANGELOG.md`, and release manifest. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `pi-pr-review` to npm with signed provenance.
+
+## Semver
+
+The squash-merged PR title becomes the commit Release Please evaluates:
+
+- `fix: ...`, `perf: ...`, and `revert: ...` create a patch release.
+- `feat: ...` creates a minor release.
+- `feat!: ...`, `fix!: ...`, or a `BREAKING CHANGE:` footer creates a major release.
+- `chore:`, `docs:`, `refactor:`, `style:`, and `test:` do not create a release by themselves.
+
+All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title, and the required `Test` check runs the Bun test suite. Direct pushes, force pushes, branch deletion, and administrator bypass are disabled.
+
+## One-time setup
+
+1. Install the private [`nerv-ops`](https://github.com/settings/apps/nerv-ops) GitHub App on this repository with **Contents: read and write** and **Pull requests: read and write** permissions.
+2. Add the App ID as the repository Actions variable `NERV_OPS_APP_ID`, and add a generated PEM private key as the repository Actions secret `NERV_OPS_PRIVATE_KEY`.
+3. In the npm settings for [`pi-pr-review`](https://www.npmjs.com/package/pi-pr-review), add a GitHub Actions trusted publisher with:
+   - organization/user: `10ego`
+   - repository: `pi-pr-review`
+   - workflow filename: `release-please.yml`
+   - environment: leave blank
+4. Use conventional titles for squash-merged PRs.
+
+No npm token is stored in GitHub. The workflow exchanges the App credentials for a short-lived repository installation token and uses npm trusted publishing through GitHub OIDC.

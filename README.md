@@ -35,6 +35,8 @@ pi install -l npm:pi-pr-review
 
 For local development only, you can point pi at a checkout with `pi install ./pi-pr-review` (add `-l` for project scope).
 
+Releases are versioned from conventional squash-merged PR titles and published automatically through npm trusted publishing. See [RELEASING.md](RELEASING.md) for the release and merge policy.
+
 ### Alternative: use the template without packaging
 
 The prompt is a plain template — just copy it into a prompts directory pi already scans:
