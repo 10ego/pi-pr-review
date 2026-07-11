@@ -16,9 +16,9 @@ Do **not** assume, name, or switch to any specific model. Model selection is con
 
 ### Reviewer topology (parallel tiered subagents, with inline fallback)
 
-You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery, verification worktrees, final validation/classification, and JSON emission. You never perform GitHub writes: the extension captures invocation publishing intent and, after valid final JSON, owns any configured review publication. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
+You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery, selecting at most one discovered trusted baseline name, final validation/classification, and JSON emission. The extension owns verification profile resolution, argv, deadlines, worktree, original-POSIX-group supervision, and cleanup. You never perform GitHub writes: the extension captures invocation publishing intent and, after valid final JSON, owns any configured review publication. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
 
-If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, choose the optional safe baseline verification command described in Steps 2 and 6, then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. When that command exists, emit the `review_subagents` call and the orchestrator-owned `bash` verification call in the **same assistant turn** so Pi can run them concurrently; when it does not, dispatch the batch without waiting and record the verification skip. This guarantees bounded parallel fan-out without reducing review coverage. Use these pass assignments:
+If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, and use `pr_review_verify` with `action: "list"` to discover optional trusted user-level baseline names as described in Steps 2 and 6. Then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. When an applicable name exists, emit the `review_subagents` call and one `pr_review_verify` `action: "run"` call in the **same assistant turn** so Pi can run them concurrently; otherwise dispatch the batch without waiting and record why verification was skipped. Never supply or invent command/timeout overrides, and never replace an unavailable `pr_review_verify` with a prompt-owned `bash` worktree lifecycle. This guarantees bounded parallel fan-out without reducing review coverage. Use these pass assignments:
 
 | Pass id | Tier label | Tool policy | Scope |
 |---------|------------|-------------|-------|
@@ -88,7 +88,7 @@ List (do not dump contents yet) the repository convention files that could gover
 
 When you evaluate compliance for a given changed file, only apply convention files that share that file's path or a parent path. Read a convention file's contents when a changed file falls under its scope, and include the relevant rule excerpts (with file paths) only in the `conventions-maintainability` pass-specific `context`, not the batch's shared context.
 
-After metadata/diff capture and convention gathering are complete, make one baseline-verification scheduling decision. Choose **at most one** command only when it is obvious from trusted repository configuration or changed-package context, non-interactive, reasonably fast, and safe to run in an isolated checkout. Do not probe by running commands first. Commands that install dependencies, require secrets/services, access the network, publish, alter git state, or write outside the isolated worktree are not safe baseline candidates. If no command clearly qualifies, choose none; this must not delay or suppress the four-pass review batch, and `verification` must record the skip reason.
+After metadata/diff capture and convention gathering are complete, make one discovery call to `pr_review_verify` with exactly `{ "action": "list" }`. This reads only strict named `verificationBaselines` from trusted user-level config; project-local definitions are ignored, and missing config disables verification. Select **at most one** applicable name returned by the tool based on its description. Do not inspect, supply, infer, or override its fixed argv or total timeout. If no applicable name is returned, choose none; this must not delay or suppress the four-pass review batch, and `verification` must record the skip reason and the disclosed unsandboxed-PR-code risk when relevant.
 
 ## Step 3 — Overview & strengths (`light` reviewer)
 
@@ -102,43 +102,32 @@ When `review_subagents` is available, include this as the `overview` pass in the
 
 Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR metadata and complete diff from Step 1; give only the medium pass the relevant convention-file excerpts from Step 2. Instruct each pass to report issues **at every severity, including nits**, within its own scope. Do **not** ask every pass to audit everything; the objective and tool-policy boundaries below reduce duplicate work while preserving coverage.
 
-When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`. If Step 2 selected a baseline command, emit that batch call and the Step 6 `bash` call in the same assistant turn; do not await one before emitting the other. Then combine the ordered pass outputs and the independent verification result:
+When `review_subagents` is available, dispatch the Step 3 `overview` pass and these Step 5 passes in one batch with `max_parallel: 4`. If Step 2 selected a discovered baseline name, emit that batch call and the Step 6 `action: "run"` call in the same assistant turn; do not await one before emitting the other. Then combine the ordered pass outputs and the independent verification result:
 
 1. **Convention, readability & maintainability pass — `medium` reviewer, `tool_policy: configured`.** Audit changed lines against the in-scope convention excerpts supplied in this pass's context. Flag violations (quote the rule), softer deviations from documented style as nits, naming/dead-code/comment/typo issues, minor duplication, test gaps, and "worth confirming" observations (e.g. "no current callers — confirm intended", "confirm this generated file came from codegen not a hand-edit"). Use configured tools to inspect surrounding files, tests, callers, or generated-file context when needed; do not modify files or duplicate deep correctness/security analysis unless needed to explain a convention/maintainability issue.
 2. **Bug & correctness pass — `heavy` reviewer, `tool_policy: configured`.** Hunt for defects in the introduced code: compile/parse failures, logic errors, wrong results, off-by-one, error handling, resource/lifecycle, concurrency, and edge cases. Include lower-severity correctness smells and missing edge cases as P2/P3. Do not duplicate pure style nits covered by the medium pass. Use configured repository-context tools when surrounding files or callers are needed to confirm impact; reviewing remains non-modifying even if the allowlist includes `bash`.
 3. **Security & performance pass — `heavy` reviewer, `tool_policy: configured`.** Look for security issues (injection, authz, secrets, unsafe deserialization) and performance regressions in the changed code. Note minor ones too. Do not duplicate ordinary correctness/readability findings unless they are security/performance relevant. Use configured tools when repository context is needed to validate a candidate; do not modify files.
 
-## Step 6 — Verification (best-effort, orchestrator-owned, non-destructive)
+## Step 6 — Verification (best-effort, extension-owned, non-destructive)
 
-Use only the zero-or-one baseline command selected after Step 2. Do not touch the user's checkout, and do not delegate worktree creation, `gh`, or final verification status to subagents. If there is no obvious safe command, do not make a verification `bash` call: let the four-pass batch proceed immediately and record why baseline verification was skipped.
+Use only the zero-or-one baseline **name** returned by the Step 2 `action: "list"` discovery. Do not touch the user's checkout, and do not delegate baseline selection, `gh`, or final verification status to subagents. If no profile is configured/applicable, or if `pr_review_verify` is unavailable, do not substitute a `bash` lifecycle: let the four-pass batch proceed immediately and record the explicit disabled/unavailable skip reason.
 
-When a safe command was selected, emit one `bash` tool call in the **same assistant turn** as `review_subagents` (or as the same-turn individual fallback calls when supported). Give the bash tool an explicit, reasonably short timeout. The command must pin the exact full `headRefOid` captured in Step 1, reject a fetched PR ref that no longer equals that SHA, create a uniquely named detached worktree, run only the selected baseline command there, and install cleanup traps before fetch/worktree creation. Adapt this shell skeleton without weakening its pinning, bounds, or cleanup:
+When a name was selected, emit one call in the **same assistant turn** as `review_subagents` (or as the same-turn individual fallback calls when supported) with exactly:
 
-```
-set -Eeuo pipefail
-repo_root=$(git rev-parse --show-toplevel)
-head_sha='<exact full headRefOid captured in Step 1>'
-wt=$(mktemp -d "${TMPDIR:-/tmp}/pi-pr-review-$1-${head_sha}.XXXXXX")
-cleanup() {
-  git -C "$repo_root" worktree remove --force "$wt" >/dev/null 2>&1 || true
-  rm -rf -- "$wt"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' HUP TERM
-git -C "$repo_root" fetch --no-tags origin "pull/$1/head"
-fetched_sha=$(git -C "$repo_root" rev-parse --verify 'FETCH_HEAD^{commit}')
-test "$fetched_sha" = "$head_sha"
-git -C "$repo_root" worktree add --detach "$wt" "$head_sha"
-(
-  cd "$wt"
-  <the one selected non-interactive baseline command>
-)
-```
+- `action`: `"run"`.
+- `pr_number`: the PR number from Step 1.
+- `head_sha`: the exact full lowercase `headRefOid` captured in Step 1.
+- `baseline_name`: the exact applicable name returned by `action: "list"`.
 
-The tool timeout is part of the safety policy, not an optional optimization. Keep the shell trap even when the tool supplies timeout handling so normal success, command failure, interruption, and timeout termination all attempt cleanup. Never use `FETCH_HEAD`, a branch name, or another mutable ref as the `git worktree add` revision. Never push, and never run package installation or more than the one preselected baseline command in this concurrent call.
+Never send legacy `command` or `timeout_ms` fields. Verification is disabled by default and can be enabled only by a strict user-level profile with matching repository host/owner/repo, a canonical absolute executable and fixed argv, applicable POSIX platforms, a fixed total deadline, and explicit `acknowledgeUnsandboxedPrCodeRisk=true`; project-local profiles are ignored. It fails closed on Windows. Before any PR-code setup or execution, it resolves canonical `git` and `gh` executables from the trusted extension-startup PATH, reads current head and cross-repository status from the profile's canonical repository, rejects a changed head, and rejects a fork unless the trusted profile has `allowForks: true`.
 
-After both concurrent calls return, record in `verification` the exact command, captured head SHA, and result, or the explicit skip/stale-head/timeout/failure reason. Baseline failure is evidence for review, not permission to omit any pass or to classify unvalidated candidates automatically.
+The only network fetch runs inside a freshly initialized extension-owned bare staging repository under the temporary directory, without system/global/local Git config or installed hooks. For private HTTPS fetches, the extension obtains the host token through `gh` within the total setup deadline and passes it only to that staging fetch through a mode-0700 temporary askpass helper/environment. Whenever a gh token is used, all captured fetch stdout and stderr is zeroed and suppressed, every observed byte is accounted as dropped, and failures expose only generic trusted context rather than raw fetch diagnostics. After destroying the token/helper, it verifies the staged ref's exact SHA, imports that already-fetched ref into the original repository over a local path with a secret-free minimal Git environment and `--no-write-fetch-head`, then verifies the imported SHA again. Original local hooks and URL rewrites therefore never receive the token, and `FETCH_HEAD` is preserved. If no token is available, an unauthenticated public fetch remains permitted with bounded diagnostics and observed/dropped-byte accounting even on timeout or abort; a private authentication failure is reported explicitly.
+
+The baseline runs with a separate minimal secret-scrubbed environment and temporary HOME/cache. **The PR's code still executes without a filesystem or network sandbox.** Lifecycle supervision signals only the original POSIX process group. PR code can deliberately call `setsid` or otherwise create a new session and survive that supervision and cleanup. Do not describe this as full process-tree containment; use an external sandbox or container wrapper for untrusted pull requests.
+
+`totalTimeoutMs` bounds the normal monotonic setup, command, termination, and reserved-cleanup lifecycle. A fixed 2-second emergency cleanup allowance is unconditionally available to bounded cleanup beyond that budget, so pathological wall time can extend by up to 2 seconds. Output uses shared raw-output accounting, UTF-8/control sanitization, and a final serialized cap; timeout/abort and residual members of the original process group after normal leader exit use POSIX group TERM followed by unconditional KILL after grace and bounded drain; already-gone groups add no grace delay. The extension reports `primaryOutcome`, `terminationOutcome`, and `cleanupOutcome` independently. The orchestrator must not reproduce or weaken this lifecycle in `bash`.
+
+Never push and never select more than one discovered profile. After both concurrent calls return, record in `verification` the baseline name, fixed argv reported by the result, captured head SHA, structured outcomes/timing, unsandboxed-code disclosure, and any termination/cleanup error, or the explicit disabled/stale-head/timeout/failure reason. Baseline failure is evidence for review, not permission to omit any pass or to classify unvalidated candidates automatically.
 
 ## Step 7 — Validate, classify, and finalize (orchestrator-owned)
 

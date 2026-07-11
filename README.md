@@ -6,7 +6,7 @@ Pass a PR number and pi will:
 
 1. Resolve the PR in the **current directory's git repo** via `gh`.
 2. Derive the **base branch** and **head (merging) branch** automatically from the PR.
-3. Review the base↔head diff with disciplined passes (overview, convention compliance, bugs, security/perf, readability), best-effort build/test verification, then validate each candidate.
+3. Review the base↔head diff with disciplined passes (overview, convention compliance, bugs, security/perf, readability), optional trusted user-level named baseline verification, then validate each candidate.
 4. Return a **full structured review**: overview, strengths, verification, findings at **every** severity (`nit → P3 → P2 → P1 → P0`) with a blocking flag, correctness/security/performance notes, and a verdict.
 5. Optionally publish one formal GitHub `COMMENT` review with a top-level body and associated inline comments.
 
@@ -104,10 +104,12 @@ A model-agnostic starting profile is:
 
 This is an opt-in cost/quality balance, not a speed guarantee: lower thinking can reduce reasoning work but may miss subtle risks, while higher thinking can improve depth at greater latency and token cost. Adjust against your own review results and model capabilities.
 
-The mapping is stored in:
+Review-model settings are stored in:
 
 - **User:** `~/.pi/agent/pr-review.json`
-- **Project:** `<repo>/.pi/pr-review.json` (overlays user config; only read when the project is trusted)
+- **Project:** `<repo>/.pi/pr-review.json` (overlays model/tool/publication settings only when the project is trusted)
+
+Verification profiles are different: `verificationBaselines` is read **only** from the user file. A project-local field with that name is always ignored, including in trusted projects.
 
 Example `pr-review.json`:
 
@@ -134,6 +136,17 @@ Example `pr-review.json`:
     "heavy": "configured"
   },
   "autoPostReviews": false,
+  "verificationBaselines": {
+    "unit": {
+      "description": "Run the fixed unit-test entry point",
+      "repository": { "host": "github.com", "owner": "YOUR-ORG", "repo": "YOUR-REPO" },
+      "argv": ["/canonical/absolute/path/to/bun", "test"],
+      "platforms": ["darwin", "linux"],
+      "totalTimeoutMs": 120000,
+      "allowForks": false,
+      "acknowledgeUnsandboxedPrCodeRisk": true
+    }
+  },
   "tools": ["read", "bash", "grep", "find", "ls"]
 }
 ```
@@ -141,6 +154,18 @@ Example `pr-review.json`:
 Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 6) and returns ordered per-pass results; the older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
 
 Thinking resolution and tool policy are independent. For thinking, a supported model-spec `:thinking` suffix wins; otherwise `thinkingLevels[tier]` is passed to the child process, and an unset tier inherits the ambient pi default. Tool policy remains additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` only for overview because its complete evidence is supplied in context. Conventions/maintainability and both heavy specialist passes use `configured` repository-context tools so they can inspect surrounding files when needed. Fallback model attempts keep the original pass policy.
+
+### Optional trusted verification baselines
+
+Verification is disabled when the user config has no `verificationBaselines`. The orchestrator first calls `pr_review_verify` with `action: "list"`; it may then call `action: "run"` with only `pr_number`, the exact 40-character `head_sha`, and one returned `baseline_name`. The tool schema rejects legacy model-supplied `command` and `timeout_ms` overrides.
+
+Every profile is strict: a repository `{host, owner, repo}` identity, a nonempty fixed `argv` whose executable is an absolute canonical executable file, one or more applicable POSIX `platforms`, `totalTimeoutMs`, optional `description`, optional `allowForks` (default `false`), and `acknowledgeUnsandboxedPrCodeRisk: true`. Unknown fields invalidate the profile. Verification is disabled by default, profiles are user-file-only, and this acknowledgement must be exactly `true`; project config cannot enable or acknowledge it. Windows fails closed. Before fetching or executing PR code, the extension resolves canonical `git` and `gh` executables from the PATH captured when the extension starts and queries the profile's canonical repository for the current PR head and cross-repository status. It fails clearly if either trusted executable is unavailable. A cross-repository/fork PR is rejected unless that trusted profile explicitly sets `allowForks: true`.
+
+The only network fetch runs in a freshly initialized extension-owned bare staging repository under the verification temporary directory. Its fetch has no system, global, or local Git config and no installed hooks. Private HTTPS setup fetches use `gh auth token --hostname <profile-host>` inside the profile's total setup deadline. The token and mode-0700 askpass helper exist only for that staging fetch; all authenticated stdout/stderr is zeroed and suppressed, every observed byte is counted as dropped, and failures return only generic trusted context. After deleting the token/helper, the extension verifies the staged ref against the exact captured SHA, imports only that already-fetched ref into the original repository over a local path with a secret-free minimal Git environment and `--no-write-fetch-head`, and verifies the imported SHA again. Original local hooks or URL rewrites may observe this secret-free local import, but never the token. `FETCH_HEAD` remains unchanged. If `gh` has no token, public repositories still get an unauthenticated HTTPS staging fetch and retain bounded diagnostics plus observed/dropped-byte accounting, including on timeout or abort; private fetch failures explicitly identify missing authentication.
+
+`totalTimeoutMs` bounds the normal setup, command, termination, and reserved-cleanup lifecycle. A fixed 2-second emergency cleanup allowance is unconditionally available to bounded cleanup beyond that budget, so a pathological run may take up to 2 seconds longer than `totalTimeoutMs`.
+
+**Risk disclosure:** the command executes code from the pull request without a filesystem or network sandbox. The lifecycle code supervises only the original POSIX process group; PR code can deliberately call `setsid` or otherwise create a new session and survive supervision and cleanup. This is not full process-tree containment. Use an external sandbox or container wrapper for untrusted pull requests, and configure a profile only when you explicitly accept this residual risk.
 
 ### 2. The orchestrator / inline-fallback model
 
@@ -244,11 +269,16 @@ pi-pr-review/
 ├─ lib/pr-review-policy.ts           # pure tool-policy resolution/argv helpers
 ├─ lib/pr-review-publish.ts          # safe COMMENT-review payload, validation, and gh publisher
 ├─ lib/pr-review-telemetry.ts        # monotonic invocation intervals and overlap-safe summaries
-├─ extensions/pr-review-subagent.ts  # review_subagents/review_subagent tools + /pr-review-config command
+├─ lib/pr-review-thinking.ts         # tier thinking resolution and warnings
+├─ lib/pr-review-verify.ts           # strict profiles, exact-head verification, group supervision + cleanup
+├─ extensions/pr-review-subagent.ts  # review tools, named verification + /pr-review-config
 ├─ extensions/review-table.ts        # renders JSON and triggers trusted configured publishing
 ├─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
+├─ tests/pr-review-prompt.test.ts     # orchestrator scheduling and safety contract tests
 ├─ tests/pr-review-publish.test.ts    # posting gate, payload, marker, and anchor tests
-└─ tests/pr-review-telemetry.test.ts  # monotonic lifecycle and overlap accounting tests
+├─ tests/pr-review-telemetry.test.ts  # monotonic lifecycle and overlap accounting tests
+├─ tests/pr-review-thinking.test.ts   # tier thinking compatibility tests
+└─ tests/pr-review-verify.test.ts     # verification success/failure/timeout/abort cleanup tests
 ```
 
 ## Speed, security & cost notes
@@ -256,19 +286,21 @@ pi-pr-review/
 ### Concurrent review and verification
 
 - The four independent review lenses remain intact. Only overview runs context-only with `--no-tools`; medium and both heavy specialists retain configured tools for surrounding-file validation. All subprocesses use `--no-context-files` because the orchestrator supplies the base review context explicitly, and convention excerpts are sent only to the medium pass instead of every model.
-- After gathering PR metadata, the complete diff, changed-package context, and applicable conventions, the orchestrator selects **zero or one** baseline command. It selects a command only when trusted repository configuration makes a non-interactive, reasonably bounded command obvious. It does not probe first. Commands that install dependencies, require secrets or services, access the network, publish, alter git state, or write outside the isolated checkout are skipped as unsafe; the review batch still starts and the final `verification` field records the reason.
-- When a safe baseline exists, the review batch and baseline `bash` call are emitted in the **same assistant turn** so they can run concurrently. Verification fetches the PR ref, rejects it if it no longer resolves to the captured full `headRefOid`, and adds a uniquely named detached worktree at that exact SHA—not a branch, `FETCH_HEAD`, or another mutable ref. It runs only the preselected command with an explicit short tool timeout. Cleanup traps are installed before fetch/worktree creation and attempt to remove both the worktree and temporary directory on success, failure, interruption, or timeout.
-- Once the batch and baseline return, the orchestrator records the exact command, head SHA, and result (or skip, stale-head, timeout, or failure reason). It then performs targeted reads and only narrowly justified follow-up checks to confirm or reject candidate findings. Baseline success does not replace candidate validation, and baseline failure does not suppress any review pass.
+- After gathering PR metadata, the complete diff, and applicable conventions, the orchestrator uses `pr_review_verify` `action=list` to discover zero or more applicable **user-level** names, then selects at most one. Missing config means verification is disabled; project-local profiles are ignored. The model never supplies argv or a timeout.
+- When a profile is selected, the review batch and `action=run` are emitted in the **same assistant turn**. Run accepts only `pr_number`, exact `head_sha`, and `baseline_name`. Before PR-code setup, the extension resolves canonical Git/gh from its startup PATH, uses trusted `gh` metadata to revalidate the exact head, and rejects cross-repository PRs unless `allowForks` is true.
+- The sole network fetch is isolated in a fresh extension-owned bare staging repository with config and hooks absent. Authentication and askpass exist only during that staging fetch, whose output is fully suppressed and accounted. After exact staged-SHA verification, a secret-free local-path fetch imports the ref into the original repository with `--no-write-fetch-head`, followed by a second exact-SHA check. Original hooks/URL rewrites never see the token. Unauthenticated timeout/abort paths retain bounded diagnostics and byte accounting.
+- The fixed argv runs without a shell/stdin, with a minimal secret-scrubbed environment and temporary HOME/cache. `totalTimeoutMs` bounds the normal setup+command+termination+reserved-cleanup lifecycle; a fixed 2-second emergency cleanup allowance is unconditionally available to bounded cleanup beyond it. Output uses a shared raw-byte cap, UTF-8/control sanitization, exact dropped-byte counts, and a final serialized cap. Timeout/abort or residual members of the original process group trigger group TERM, then unconditional group KILL after grace, followed by bounded drain. `primaryOutcome`, `terminationOutcome`, and `cleanupOutcome` remain independent.
+- Verification still executes unsandboxed PR code. Supervision covers only the original POSIX process group; deliberate `setsid`/session escape can survive. Use an external sandbox/container wrapper for untrusted PRs. If no profile applies or the tool is unavailable, verification is skipped rather than replaced with prompt-owned bash.
 
 ### Performance telemetry
 
 Review-tool results expose the effective `toolPolicy`, monotonic `elapsedMs`, per-attempt timing, and observable batch scheduling offsets. In addition, when an accepted `/pr-review` reaches a recorded terminal, cleared, or replaced boundary, it appends a durable `pr-review-telemetry` session entry with these fields:
 
-- `schemaVersion`, `clock`, `prNumber`, and `completion` identify the schema, monotonic clock, PR, and terminal boundary (`terminal_response`, `cleared`, or `replaced`).
+- `schemaVersion` (currently `2`), `clock`, `prNumber`, and `completion` identify the schema, monotonic clock, PR, and terminal boundary (`terminal_response`, `cleared`, or `replaced`).
 - `totalWallMs` is measured directly from accepted input to that boundary and includes any human-confirmation wait. Publication occurs afterward and is excluded.
 - `activeReviewMs` is the active timeline after human-confirmation wait is removed.
 - `phases.humanConfirmationWait.elapsedMs` reports time paused after the one-shot question for a non-open PR until affirmative input resumes the review or the invocation reaches its recorded completion. This wait is also removed from active interval offsets rather than attributed to model or orchestration time.
-- `phases.reviewSubagentTools` and `phases.baselineVerificationBash` report interval-unioned `elapsedMs` plus observed tool intervals. Each interval contains `toolCallId`, `toolName`, `startOffsetMs`, `endOffsetMs`, `elapsedMs`, and `endObserved` on the active timeline.
+- `phases.reviewSubagentTools` and `phases.baselineVerificationTool` report interval-unioned `elapsedMs` plus observed tool intervals. Baseline timing is attributed only to `pr_review_verify` calls with `action=run`; `action=list` discovery and bash calls remain aggregate orchestration. Each interval contains `toolCallId`, `toolName`, `startOffsetMs`, `endOffsetMs`, `elapsedMs`, and `endObserved` on the active timeline.
 - `phases.overlapMs` is the intersection of those two phase interval sets. `phases.observableToolWallMs` is their union, so concurrent work is not double-counted.
 - `phases.aggregateOrchestration.elapsedMs` is the remaining active time. It intentionally groups metadata/context gathering, model orchestration, targeted checks, and final validation because their individual lifecycle boundaries are not directly observed; it is not a model-only timing claim.
 - `notes` records these accounting boundaries in the durable entry so downstream consumers do not have to infer them.
@@ -278,7 +310,7 @@ These measurements describe observed execution and do not guarantee speed. Lower
 ### Security, cost, and publishing
 
 - The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
-- Project-local `pr-review.json` is only read when the project is trusted. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
+- Project-local model/tool/publication settings in `pr-review.json` are read only when the project is trusted; project-local `verificationBaselines` is always ignored. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, the effective setting and source are surfaced when publication occurs.
 - GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried. The performance changes above do not alter these publishing gates or opt-in defaults.
 - **`gh api -f` caution:** `gh api ... -f body=@/tmp/file.md` posts the literal text `@/tmp/file.md`; unlike `gh pr comment --body-file`, `-f` does not expand `@file`. Use a JSON payload via `gh api ... --input -` for API requests. The built-in publisher already does this.
 - Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a model suitable for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
@@ -287,5 +319,5 @@ These measurements describe observed execution and do not guarantee speed. Lower
 
 - **Process** is PR-number driven: confirm non-open PRs, skip draft/same-head-already-reviewed work, fan out four review lenses, verify, validate/classify, emit JSON, then optionally publish one extension-owned formal `COMMENT` review.
 - **Captures every severity** (`nit → P0`) with a `blocking` flag; the verdict depends only on blocking findings, so nothing minor is lost but a clean PR still gets approved.
-- **Verification is non-destructive:** any selected baseline build/test runs with a timeout in a cleanup-trapped, isolated `git worktree` pinned to the captured full PR head SHA—the prompt never checks out, commits, or pushes in your working tree. Unsafe or unclear baselines are skipped, and candidate-specific validation still happens after the concurrent batch.
+- **Verification is non-destructive to Git state:** a selected user-level named baseline runs through `pr_review_verify` in an extension-owned worktree pinned to the captured full PR SHA. Staging and local import use `--no-write-fetch-head`; cleanup reports worktree/ref/temp removal separately. The prompt never owns cleanup and never checks out, commits, or pushes in your working tree. Verification is nevertheless unsandboxed PR-code execution, so it is disabled by default and requires explicit user acknowledgement plus an external sandbox/container wrapper when the PR is untrusted.
 - pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.

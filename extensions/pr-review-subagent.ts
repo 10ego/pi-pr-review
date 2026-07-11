@@ -12,6 +12,8 @@
  * - Tool: `review_subagents` accepts multiple pass assignments with shared PR
  *   context and runs those isolated subprocesses concurrently with bounded
  *   parallelism, returning deterministic per-pass results.
+ * - Tool: `pr_review_verify` discovers and runs trusted user-level named
+ *   baselines in a detached worktree with bounded process-group lifecycle.
  * - Command: `/pr-review-config` shows or edits the tier→model mapping.
  *
  * The orchestrating /pr-review prompt dispatches passes by tier label:
@@ -56,6 +58,13 @@ import {
 import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
 import { monotonicNow } from "../lib/pr-review-telemetry.ts";
 import {
+	discoverVerificationBaselines,
+	resolveUserVerificationBaselines,
+	verificationLifecycleFailed,
+	verifyPullRequestHead,
+	type VerificationBaselines,
+} from "../lib/pr-review-verify.ts";
+import {
 	appendTierThinkingArgs,
 	modelSpecThinkingLevel,
 	normalizeThinkingLevel,
@@ -98,6 +107,8 @@ interface PrReviewConfig {
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
 	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
 	autoPostReviews: boolean;
+	/** Trusted user-level named verification profiles. Project config never overlays these. */
+	verificationBaselines: VerificationBaselines;
 	/** Tools granted to review subagents whose effective policy is configured. */
 	tools: string[];
 }
@@ -172,7 +183,7 @@ function resolveAutoPostForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjec
 	return resolveAutoPostSetting(user, project);
 }
 
-/** User config, overlaid by project config when the project is trusted. */
+/** User config overlaid by a trusted project, except user-only verification profiles. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
 	let project: Partial<PrReviewConfig> = {};
@@ -194,6 +205,9 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 			...normalizeToolPolicies(project.toolPolicies),
 		},
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		// Verification is intentionally user-owned. Never accept a profile from
+		// the repository-controlled project overlay, even for trusted projects.
+		verificationBaselines: resolveUserVerificationBaselines(user, project),
 		tools: project.tools ?? user.tools ?? DEFAULT_TOOLS,
 	};
 }
@@ -208,6 +222,7 @@ function readUserConfig(): PrReviewConfig {
 		thinkingLevels: normalizeThinkingLevels(raw.thinkingLevels, "User pr-review config"),
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		verificationBaselines: resolveUserVerificationBaselines(raw),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
 	};
 }
@@ -734,6 +749,36 @@ function combineContexts(shared: string | undefined, specific: string | undefine
 // Extension
 // ---------------------------------------------------------------------------
 
+const PrReviewVerifyParams = Type.Union([
+	Type.Object(
+		{
+			action: Type.Literal("list", {
+				description: "Discover applicable trusted user-level baseline profile names for the current repository.",
+			}),
+		},
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{
+			action: Type.Literal("run"),
+			pr_number: Type.Integer({
+				minimum: 1,
+				description: "GitHub pull request number whose pull ref must be fetched.",
+			}),
+			head_sha: Type.String({
+				pattern: "^[0-9a-f]{40}$",
+				description: "Exact full lowercase headRefOid captured from current PR metadata.",
+			}),
+			baseline_name: Type.String({
+				pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+				description: "Exact name returned by action=list. The command and timeout come only from user config.",
+			}),
+		},
+		// Explicitly reject legacy command/timeout override fields and all other extras.
+		{ additionalProperties: false },
+	),
+]);
+
 const ReviewSubagentParams = Type.Object({
 	tier: StringEnum(["light", "medium", "heavy"] as const, {
 		description:
@@ -801,6 +846,55 @@ const ReviewSubagentsParams = Type.Object({
 });
 
 export default function (pi: ExtensionAPI) {
+	// Resolve security-sensitive executables only from the PATH trusted when this
+	// extension starts, never from a later mutable process environment.
+	const trustedStartupPath = process.env.PATH ?? "";
+
+	pi.registerTool({
+		name: "pr_review_verify",
+		label: "PR Review Verify",
+		description: [
+			"Discover or run one trusted user-level named PR verification baseline.",
+			"Project-local profile definitions are ignored. Run accepts only the PR number, exact head SHA, and a name returned by list; command argv and total timeout are fixed by user config.",
+			"Execution is unsandboxed PR code. Lifecycle supervision signals only the original POSIX process group; a deliberate setsid/session escape can survive. Use an external sandbox or container wrapper for untrusted PRs.",
+		].join(" "),
+		promptSnippet: "List trusted user-level verification baselines, then optionally run one by name against an exact PR head",
+		promptGuidelines: [
+			"Call action=list after resolving PR metadata. If it returns an applicable name, select at most one without inventing argv or timeout overrides.",
+			"Emit action=run concurrently with review_subagents using only pr_number, exact full headRefOid, and baseline_name.",
+			"If list returns no applicable profile, skip verification; never substitute a prompt-owned bash worktree lifecycle.",
+			"Disclose that baseline execution is unsandboxed, supervises only its original POSIX process group, and cannot stop a deliberate setsid/session escape; recommend an external sandbox/container for untrusted PRs.",
+		],
+		parameters: PrReviewVerifyParams,
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const config = loadConfig(ctx);
+			if (params.action === "list") {
+				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, signal, { startupPath: trustedStartupPath });
+				return {
+					content: [{ type: "text", text: JSON.stringify(discovery, null, 2) }],
+					details: discovery,
+				};
+			}
+			const result = await verifyPullRequestHead(
+				ctx.cwd,
+				{
+					prNumber: params.pr_number,
+					headSha: params.head_sha,
+					baselineName: params.baseline_name,
+				},
+				config.verificationBaselines,
+				signal,
+				{ startupPath: trustedStartupPath },
+			);
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				...(verificationLifecycleFailed(result) ? { isError: true } : {}),
+				details: result,
+			};
+		},
+	});
+
 	pi.registerTool({
 		name: "review_subagent",
 		label: "Review Subagent",
@@ -1200,6 +1294,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		thinkingLevels: normalizeThinkingLevels(base.thinkingLevels, "PR review config"),
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		autoPostReviews: base.autoPostReviews,
+		verificationBaselines: { ...base.verificationBaselines },
 		tools: [...base.tools],
 	};
 	for (const tier of TIERS) {
@@ -1259,6 +1354,7 @@ function summarizeConfig(
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub \`COMMENT\` review; default \`false\` |`,
+		`| \`verificationBaselines\` | \`${Object.keys(user.verificationBaselines).length} configured\` | user scope only | strict named argv profiles; project overlays ignored |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
 		"| Tier | Your fallbacks | Effective fallbacks | Thinking | Tool policy |",

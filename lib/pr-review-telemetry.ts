@@ -10,7 +10,7 @@ export interface TimeInterval {
 
 export interface ReviewToolInterval {
 	toolCallId: string;
-	toolName: "review_subagent" | "review_subagents" | "bash";
+	toolName: "review_subagent" | "review_subagents" | "pr_review_verify";
 	startOffsetMs: number;
 	endOffsetMs: number;
 	elapsedMs: number;
@@ -18,7 +18,7 @@ export interface ReviewToolInterval {
 }
 
 export interface ReviewPerformanceTelemetry {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	clock: "monotonic";
 	prNumber: number;
 	completion: "terminal_response" | "cleared" | "replaced";
@@ -35,7 +35,7 @@ export interface ReviewPerformanceTelemetry {
 			elapsedMs: number;
 			intervals: ReviewToolInterval[];
 		};
-		baselineVerificationBash: {
+		baselineVerificationTool: {
 			elapsedMs: number;
 			intervals: ReviewToolInterval[];
 		};
@@ -112,24 +112,6 @@ export function intervalIntersectionMs(left: readonly TimeInterval[], right: rea
 	return total;
 }
 
-/**
- * Recognize only the isolated-worktree baseline shape required by the bundled
- * /pr-review prompt. Ordinary metadata and targeted-validation bash calls are
- * intentionally left in aggregate orchestration.
- */
-export function isBaselineVerificationBash(args: unknown): boolean {
-	if (!args || typeof args !== "object") return false;
-	const command = (args as { command?: unknown }).command;
-	if (typeof command !== "string") return false;
-	return [
-		"head_sha=",
-		"pi-pr-review-",
-		"trap cleanup EXIT",
-		"fetch --no-tags origin",
-		"worktree add --detach",
-	].every((marker) => command.includes(marker));
-}
-
 function roundMs(value: number): number {
 	return Math.round(Math.max(0, value) * 1000) / 1000;
 }
@@ -195,7 +177,12 @@ export class ReviewTelemetryTracker {
 		if (!invocation || invocation.confirmationPaused || invocation.active.has(toolCallId)) return;
 		let kind: TrackedKind | undefined;
 		if (toolName === "review_subagent" || toolName === "review_subagents") kind = "review";
-		else if (toolName === "bash" && isBaselineVerificationBash(args)) kind = "baseline";
+		else if (
+			toolName === "pr_review_verify" &&
+			args !== null &&
+			typeof args === "object" &&
+			(args as { action?: unknown }).action === "run"
+		) kind = "baseline";
 		if (!kind) return;
 		invocation.active.set(toolCallId, {
 			kind,
@@ -253,7 +240,7 @@ export class ReviewTelemetryTracker {
 		const confirmationWaitMs = roundMs(totalWallMs - activeReviewMs);
 		const observableToolWallMs = roundMs(intervalUnionMs([...reviewRaw, ...baselineRaw]));
 		const result: ReviewPerformanceTelemetry = {
-			schemaVersion: 1,
+			schemaVersion: 2,
 			clock: "monotonic",
 			prNumber: invocation.prNumber,
 			completion,
@@ -268,7 +255,7 @@ export class ReviewTelemetryTracker {
 					elapsedMs: roundMs(intervalUnionMs(reviewRaw)),
 					intervals: review,
 				},
-				baselineVerificationBash: {
+				baselineVerificationTool: {
 					elapsedMs: roundMs(intervalUnionMs(baselineRaw)),
 					intervals: baseline,
 				},

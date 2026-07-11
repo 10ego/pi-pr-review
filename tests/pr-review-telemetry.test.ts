@@ -3,19 +3,8 @@ import { readFileSync } from "node:fs";
 import {
 	intervalIntersectionMs,
 	intervalUnionMs,
-	isBaselineVerificationBash,
 	ReviewTelemetryTracker,
 } from "../lib/pr-review-telemetry.ts";
-
-const baselineCommand = `set -Eeuo pipefail
-repo_root=$(git rev-parse --show-toplevel)
-head_sha='${"a".repeat(40)}'
-wt=$(mktemp -d "\${TMPDIR:-/tmp}/pi-pr-review-7-\${head_sha}.XXXXXX")
-cleanup() { git -C "$repo_root" worktree remove --force "$wt" || true; }
-trap cleanup EXIT
-git -C "$repo_root" fetch --no-tags origin "pull/7/head"
-git -C "$repo_root" worktree add --detach "$wt" "$head_sha"
-(cd "$wt" && bun test)`;
 
 describe("overlap-aware interval math", () => {
 	test("unions each phase and computes only their interval intersection", () => {
@@ -42,7 +31,14 @@ describe("review invocation telemetry", () => {
 		clock = 20;
 		tracker.toolStarted("batch", "review_subagents", { passes: [] });
 		clock = 30;
-		tracker.toolStarted("verify", "bash", { command: baselineCommand });
+		tracker.toolStarted("verify-list", "pr_review_verify", { action: "list" });
+		tracker.toolEnded("verify-list");
+		tracker.toolStarted("verify", "pr_review_verify", {
+			action: "run",
+			pr_number: 7,
+			head_sha: "a".repeat(40),
+			baseline_name: "unit",
+		});
 		clock = 50;
 		tracker.toolEnded("verify");
 		clock = 80;
@@ -55,7 +51,9 @@ describe("review invocation telemetry", () => {
 		expect(telemetry.activeReviewMs).toBe(100);
 		expect(telemetry.phases.humanConfirmationWait.elapsedMs).toBe(0);
 		expect(telemetry.phases.reviewSubagentTools.elapsedMs).toBe(60);
-		expect(telemetry.phases.baselineVerificationBash.elapsedMs).toBe(20);
+		expect(telemetry.schemaVersion).toBe(2);
+		expect(telemetry.phases.baselineVerificationTool.elapsedMs).toBe(20);
+		expect(telemetry.phases.baselineVerificationTool.intervals[0]?.toolName).toBe("pr_review_verify");
 		expect(telemetry.phases.overlapMs).toBe(20);
 		expect(telemetry.phases.observableToolWallMs).toBe(60);
 		expect(telemetry.phases.aggregateOrchestration).toEqual({
@@ -64,11 +62,7 @@ describe("review invocation telemetry", () => {
 		});
 	});
 
-	test("does not guess that ordinary metadata or targeted-check bash is baseline verification", () => {
-		expect(isBaselineVerificationBash({ command: "gh pr view 7 --json title && gh pr diff 7" })).toBeFalse();
-		expect(isBaselineVerificationBash({ command: "bun test tests/parser.test.ts" })).toBeFalse();
-		expect(isBaselineVerificationBash({ command: baselineCommand })).toBeTrue();
-
+	test("attributes only action=run, never discovery or bash command markers", () => {
 		let clock = 0;
 		const tracker = new ReviewTelemetryTracker(() => clock);
 		tracker.begin(7);
@@ -76,9 +70,12 @@ describe("review invocation telemetry", () => {
 		tracker.toolStarted("metadata", "bash", { command: "gh pr view 7 --json title" });
 		clock = 25;
 		tracker.toolEnded("metadata");
+		tracker.toolStarted("discover", "pr_review_verify", { action: "list" });
+		clock = 29;
+		tracker.toolEnded("discover");
 		clock = 30;
 		const telemetry = tracker.finish("terminal_response")!;
-		expect(telemetry.phases.baselineVerificationBash.intervals).toEqual([]);
+		expect(telemetry.phases.baselineVerificationTool.intervals).toEqual([]);
 		expect(telemetry.phases.aggregateOrchestration.elapsedMs).toBe(30);
 	});
 
