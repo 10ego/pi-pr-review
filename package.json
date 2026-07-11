@@ -1,13 +1,28 @@
 {
   "name": "pi-pr-review",
-  "version": "1.6.0",
-  "description": "Model-agnostic GitHub PR code review prompt for pi. Pass a PR number; it derives the base and head branches from the PR in the current repo, reviews the diff, and returns structured JSON findings.",
+  "version": "1.6.1",
+  "description": "Parallel AI code review for GitHub pull requests in the Pi coding agent, with model-agnostic tiered subagents, structured findings, optional verification, and safe COMMENT-only publishing.",
   "keywords": [
     "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "pr-review",
     "code-review",
+    "ai-code-review",
+    "ai-review",
     "github",
+    "github-pr",
     "pull-request",
-    "prompt-template"
+    "pull-request-review",
+    "code-reviewer",
+    "code-quality",
+    "automation",
+    "llm",
+    "subagents",
+    "parallel",
+    "multi-agent",
+    "developer-tools"
   ],
   "license": "MIT",
   "repository": {

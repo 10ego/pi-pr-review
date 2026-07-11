@@ -1,6 +1,6 @@
 # pi-pr-review
 
-A model-agnostic GitHub pull-request review prompt for [pi](https://pi.dev).
+A parallel, model-agnostic AI code reviewer for GitHub pull requests in the [Pi coding agent](https://pi.dev).
 
 Pass a PR number and pi will:
 
