@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,6 +57,7 @@ const invocation = {
 	mode: "disabled" as const,
 	prNumber: 7,
 	allowNonOpen: false,
+	allowStalePublish: true,
 	autoPost: resolveAutoPostSetting({ autoPostReviews: false }),
 };
 
@@ -105,10 +106,11 @@ fi
 	return dir;
 }
 
-function installFakePublishingGh(): void {
+function installFakePublishingGh(currentHead = "a".repeat(40)): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-publish-tool-"));
 	tempDirs.push(dir);
 	const gh = join(dir, "gh");
+	const payloadPath = join(dir, "payload.json");
 	writeFileSync(
 		gh,
 		`#!/usr/bin/env bash
@@ -121,10 +123,10 @@ elif [[ "$args" == *" user --jq .login"* ]]; then
 elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
   echo '[[]]'
 elif [[ "$args" == *"--method POST"* ]]; then
-  cat >/dev/null
+  cat > '${payloadPath}'
   echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
 elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
-  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' '${"a".repeat(40)}'
+  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' '${currentHead}'
 else
   echo "unexpected gh args: $args" >&2
   exit 1
@@ -133,6 +135,7 @@ fi
 	);
 	chmodSync(gh, 0o755);
 	process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+	return payloadPath;
 }
 
 function createHarness(initialBranch: any[] = [], identity = session): Harness {
@@ -213,9 +216,13 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	};
 }
 
-function persistedInlineReview(identity = session): any {
+function persistedInlineReview(identity = session, allowStalePublish = true): any {
 	const cache = new CompletedReviewCache();
-	const record = cache.remember(review, invocation, repository);
+	const record = cache.remember(
+		review,
+		{ ...invocation, allowStalePublish },
+		repository,
+	);
 	return cache.persist(record, identity);
 }
 
@@ -305,18 +312,46 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).not.toContain("review_subagent");
 	});
 
-	test("publishes a cached current-head review through the narrow agent tool", async () => {
-		const persisted = persistedInlineReview();
+	test("publishes a stale cached review through the agent tool with SHA disclosure", async () => {
+		const persisted = persistedInlineReview(session, false);
 		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
 		const harness = createHarness([cacheEntry]);
 		await harness.emit("session_start", { reason: "reload" });
 		const tool = harness.tools.get("pr_review_publish");
 		expect(tool).toBeDefined();
 		expect(Object.keys(tool.parameters.properties)).toEqual(["pr_number"]);
-		installFakePublishingGh();
+		const currentHead = "b".repeat(40);
+		const payloadPath = installFakePublishingGh(currentHead);
 		const result = await tool.execute("publish-1", { pr_number: 7 }, undefined, undefined, harness.ctx);
 		expect(result.isError).toBeUndefined();
-		expect(result.details).toMatchObject({ status: "posted" });
+		expect(result.details).toMatchObject({ status: "posted_degraded" });
+		const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain("[!WARNING]");
+		expect(payload.body).toContain("This review was generated for commit");
+		expect(payload.body).toContain("a".repeat(40));
+		expect(payload.body).toContain(currentHead);
+	});
+
+	test("publish command follows captured stale config unless explicitly overridden", async () => {
+		const persisted = persistedInlineReview(session, false);
+		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		const currentHead = "b".repeat(40);
+		const payloadPath = installFakePublishingGh(currentHead);
+
+		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
+		expect(harness.notifications.some((message) => message.includes("--allow-stale"))).toBeTrue();
+		expect(() => readFileSync(payloadPath, "utf8")).toThrow();
+
+		harness.notifications.splice(0);
+		await harness.commands.get("pr-review-publish")!("7 --allow-stale", harness.ctx);
+		expect(harness.notifications.some((message) => message.includes("posted"))).toBeTrue();
+		const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain("a".repeat(40));
+		expect(payload.body).toContain(currentHead);
 	});
 
 	test("registered commands explicitly revoke an active review", async () => {

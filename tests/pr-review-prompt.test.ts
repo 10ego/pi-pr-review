@@ -13,6 +13,8 @@ describe("PR review prompt scheduling policy", () => {
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
 		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
 		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+		expect(extension).toContain("allow_stale_publish");
+		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");
 	});
 
 	test("uses balanced five-pass coverage by default", () => {

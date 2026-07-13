@@ -62,7 +62,10 @@ import {
 	resolveToolPolicy,
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
-import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
+import {
+	resolveAllowStalePublishSetting,
+	resolveAutoPostSetting,
+} from "../lib/pr-review-publish.ts";
 import { monotonicNow } from "../lib/pr-review-telemetry.ts";
 import {
 	discoverVerificationBaselines,
@@ -114,6 +117,8 @@ interface PrReviewConfig {
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
 	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
 	autoPostReviews: boolean;
+	/** Permit stale publication as body-only with reviewed/current SHAs disclosed. Enabled by default. */
+	allowStalePublish: boolean;
 	/** Trusted user-level named verification profiles. Project config never overlays these. */
 	verificationBaselines: VerificationBaselines;
 	/** Tools granted to review subagents whose effective policy is configured. */
@@ -190,6 +195,17 @@ function resolveAutoPostForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjec
 	return resolveAutoPostSetting(user, project);
 }
 
+function resolveAllowStaleForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
+	const user = readConfigFile(userConfigPath());
+	let project: Partial<PrReviewConfig> | undefined;
+	try {
+		if (ctx.isProjectTrusted()) project = readConfigFile(projectConfigPath(ctx.cwd));
+	} catch {
+		/* user config only */
+	}
+	return resolveAllowStalePublishSetting(user, project);
+}
+
 /** User config overlaid by a trusted project, except user-only verification profiles. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
@@ -200,6 +216,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 		/* trust check unavailable -> user config only */
 	}
 	const autoPost = resolveAutoPostSetting(user, project);
+	const allowStale = resolveAllowStalePublishSetting(user, project);
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
@@ -212,6 +229,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 			...normalizeToolPolicies(project.toolPolicies),
 		},
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		allowStalePublish: allowStale.valid ? allowStale.value : false,
 		// Verification is intentionally user-owned. Never accept a profile from
 		// the repository-controlled project overlay, even for trusted projects.
 		verificationBaselines: resolveUserVerificationBaselines(user, project),
@@ -223,12 +241,14 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 function readUserConfig(): PrReviewConfig {
 	const raw = readConfigFile(userConfigPath());
 	const autoPost = resolveAutoPostSetting(raw);
+	const allowStale = resolveAllowStalePublishSetting(raw);
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
 		thinkingLevels: normalizeThinkingLevels(raw.thinkingLevels, "User pr-review config"),
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		allowStalePublish: allowStale.valid ? allowStale.value : false,
 		verificationBaselines: resolveUserVerificationBaselines(raw),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
 	};
@@ -1390,6 +1410,7 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
 	})),
 	{ value: "auto_post_reviews=", label: "auto_post_reviews=<true|false> — automatically post COMMENT reviews (default false)" },
+	{ value: "allow_stale_publish=", label: "allow_stale_publish=<true|false> — permit disclosed body-only stale publication (default true)" },
 	{ value: "tools=", label: "tools=read,bash,grep,find,ls — allowlist used by configured policy" },
 	{ value: "show", label: "show — print the current review config" },
 ];
@@ -1468,6 +1489,7 @@ interface ConfigPatch {
 	thinkingLevels: Partial<Record<Tier, ThinkingLevel | null>>;
 	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
 	autoPostReviews?: boolean;
+	allowStalePublish?: boolean;
 	tools?: string[];
 }
 
@@ -1508,11 +1530,15 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			if (value === "true") patch.autoPostReviews = true;
 			else if (value === "false") patch.autoPostReviews = false;
 			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
+		} else if (key === "allow_stale_publish" || key === "allowstalepublish" || key === "allow-stale-publish") {
+			if (value === "true") patch.allowStalePublish = true;
+			else if (value === "false") patch.allowStalePublish = false;
+			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|tools)`,
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|tools)`,
 			);
 		}
 	}
@@ -1522,6 +1548,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		Object.keys(patch.thinkingLevels).length > 0 ||
 		Object.keys(patch.toolPolicies).length > 0 ||
 		patch.autoPostReviews !== undefined ||
+		patch.allowStalePublish !== undefined ||
 		patch.tools !== undefined;
 	return { patch, hasChanges, errors };
 }
@@ -1533,6 +1560,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		thinkingLevels: normalizeThinkingLevels(base.thinkingLevels, "PR review config"),
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		autoPostReviews: base.autoPostReviews,
+		allowStalePublish: base.allowStalePublish,
 		verificationBaselines: { ...base.verificationBaselines },
 		tools: [...base.tools],
 	};
@@ -1559,6 +1587,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		}
 	}
 	if (patch.autoPostReviews !== undefined) next.autoPostReviews = patch.autoPostReviews;
+	if (patch.allowStalePublish !== undefined) next.allowStalePublish = patch.allowStalePublish;
 	if (patch.tools) next.tools = patch.tools;
 	return next;
 }
@@ -1583,6 +1612,7 @@ function summarizeConfig(
 		/* ignore */
 	}
 	const autoPost = resolveAutoPostForContext(ctx);
+	const allowStale = resolveAllowStaleForContext(ctx);
 	const lines = [
 		`# PR review config${changed ? " updated" : ""}`,
 		"",
@@ -1593,6 +1623,7 @@ function summarizeConfig(
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub \`COMMENT\` review; default \`false\` |`,
+		`| \`allowStalePublish\` | \`${user.allowStalePublish}\` | \`${effective.allowStalePublish}\` (${allowStale.source}) | permit body-only stale publication with reviewed/current SHAs; default \`true\` |`,
 		`| \`verificationBaselines\` | \`${Object.keys(user.verificationBaselines).length} configured\` | user scope only | strict named argv profiles; project overlays ignored |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
@@ -1612,6 +1643,10 @@ function summarizeConfig(
 	else if (autoPost.source === "project") {
 		lines.push("Automatic posting is controlled by the trusted project overlay; this command edits user config only.");
 	}
+	if (!allowStale.valid) lines.push(`Stale publication config error: ${allowStale.error}`);
+	else if (allowStale.source === "project") {
+		lines.push("Stale publication is controlled by the trusted project overlay; this command edits user config only.");
+	}
 	lines.push(
 		"",
 		"## Usage",
@@ -1622,6 +1657,8 @@ function summarizeConfig(
 		"- Set tier thinking: `/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high`",
 		"- Enable automatic GitHub review posting: `/pr-review-config auto_post_reviews=true`",
 		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
+		"- Disable stale publication: `/pr-review-config allow_stale_publish=false`",
+		"- Enable stale publication (default): `/pr-review-config allow_stale_publish=true`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
@@ -1752,6 +1789,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			values: ["false", "true"],
 		},
 		{
+			id: "allow_stale_publish",
+			label: "user stale publication setting",
+			description: "Permit body-only stale reviews with reviewed/current commit disclosure. Enabled by default.",
+			currentValue: String(cfg.allowStalePublish),
+			values: ["true", "false"],
+		},
+		{
 			id: "tools",
 			label: "configured tool allowlist",
 			description: "Tools available when effective policy is configured. Enter/Space cycles presets.",
@@ -1784,6 +1828,7 @@ async function showConfigMenu(
 					settingsList.updateValue(`${tier}_tool_policy`, draft.toolPolicies[tier] ?? INHERIT_TOOL_POLICY);
 				}
 				settingsList.updateValue("auto_post_reviews", String(draft.autoPostReviews));
+				settingsList.updateValue("allow_stale_publish", String(draft.allowStalePublish));
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
 
@@ -1815,6 +1860,8 @@ async function showConfigMenu(
 					}
 				} else if (id === "auto_post_reviews") {
 					draft.autoPostReviews = newValue === "true";
+				} else if (id === "allow_stale_publish") {
+					draft.allowStalePublish = newValue === "true";
 				} else if (id === "tools") {
 					draft.tools = splitCommaList(newValue);
 				} else {
@@ -1827,7 +1874,9 @@ async function showConfigMenu(
 						? draft.tools.join(",")
 						: id === "auto_post_reviews"
 							? String(draft.autoPostReviews)
-							: isFallbackKey(id)
+							: id === "allow_stale_publish"
+								? String(draft.allowStalePublish)
+								: isFallbackKey(id)
 								? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
 								: isThinkingKey(id)
 									? (draft.thinkingLevels[tierFromCompoundKey(id)] ?? INHERIT_THINKING)
@@ -1839,6 +1888,16 @@ async function showConfigMenu(
 						if (effective.source === "project") {
 							ctx.ui.notify(
 								`User autoPostReviews saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)} or use --no-comment.`,
+								"warning",
+							);
+						} else {
+							ctx.ui.notify(`PR review config: ${id} = ${shown} (effective ${effective.value})`, "info");
+						}
+					} else if (id === "allow_stale_publish") {
+						const effective = resolveAllowStaleForContext(ctx);
+						if (effective.source === "project") {
+							ctx.ui.notify(
+								`User allowStalePublish saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)}.`,
 								"warning",
 							);
 						} else {

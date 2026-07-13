@@ -53,6 +53,36 @@ export function resolveAutoPostSetting(user: unknown, trustedProject?: unknown):
 	return { value: false, valid: true, source: "default" };
 }
 
+/** Resolve whether stale cached reviews may publish, enabled by default. */
+export function resolveAllowStalePublishSetting(
+	user: unknown,
+	trustedProject?: unknown,
+): AutoPostResolution {
+	if (hasOwn(trustedProject, "allowStalePublish")) {
+		const value = (trustedProject as { allowStalePublish?: unknown }).allowStalePublish;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "project" }
+			: {
+					value: false,
+					valid: false,
+					source: "project",
+					error: "project allowStalePublish must be a boolean",
+				};
+	}
+	if (hasOwn(user, "allowStalePublish")) {
+		const value = (user as { allowStalePublish?: unknown }).allowStalePublish;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "user" }
+			: {
+					value: false,
+					valid: false,
+					source: "user",
+					error: "user allowStalePublish must be a boolean",
+				};
+	}
+	return { value: true, valid: true, source: "default" };
+}
+
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
@@ -93,6 +123,8 @@ export interface ReviewInvocation {
 	readonly mode: PublishMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Trusted stale-publication setting captured before review execution begins. */
+	readonly allowStalePublish: boolean;
 	/** Trusted automatic-posting decision captured before review execution begins. */
 	readonly autoPost: Readonly<AutoPostResolution>;
 }
@@ -166,7 +198,11 @@ export class ReviewInvocationGate {
 	private active?: ReviewInvocation;
 	private currentPhase?: ReviewInvocationPhase;
 
-	begin(parsed: PublishModeParseResult, autoPost: AutoPostResolution): { accepted: boolean; error?: string } {
+	begin(
+		parsed: PublishModeParseResult,
+		autoPost: AutoPostResolution,
+		allowStalePublish = true,
+	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
 			return { accepted: false, error: `PR #${this.active.prNumber} review is still active` };
@@ -184,6 +220,7 @@ export class ReviewInvocationGate {
 			mode: parsed.mode,
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			allowStalePublish,
 			autoPost: snapshot,
 		});
 		this.currentPhase = "reviewing";
@@ -375,7 +412,12 @@ function reviewHash(review: ReviewLike): string {
 function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined {
 	if (!isObject(value)) return undefined;
 	if (!new Set(["auto", "force", "disabled"]).has(String(value.mode))) return undefined;
-	if (!Number.isInteger(value.prNumber) || Number(value.prNumber) <= 0 || typeof value.allowNonOpen !== "boolean") {
+	if (
+		!Number.isInteger(value.prNumber) ||
+		Number(value.prNumber) <= 0 ||
+		typeof value.allowNonOpen !== "boolean" ||
+		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean")
+	) {
 		return undefined;
 	}
 	const autoPost = value.autoPost;
@@ -392,6 +434,9 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		mode: value.mode as PublishMode,
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		// Schema v2 records created before this setting existed inherit the new
+		// safe default: stale publication is body-only with both SHAs disclosed.
+		allowStalePublish: typeof value.allowStalePublish === "boolean" ? value.allowStalePublish : true,
 		autoPost: {
 			value: autoPost.value,
 			valid: autoPost.valid,

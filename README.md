@@ -88,6 +88,7 @@ Common settings:
 /pr-review-config heavy_tool_policy=configured
 /pr-review-config tools=read,bash,grep,find,ls
 /pr-review-config auto_post_reviews=true
+/pr-review-config allow_stale_publish=false
 /pr-review-config medium=unset
 ```
 
@@ -125,7 +126,8 @@ Example:
     "heavy": "configured"
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
-  "autoPostReviews": false
+  "autoPostReviews": false,
+  "allowStalePublish": true
 }
 ```
 
@@ -145,15 +147,15 @@ The extension—not the model—owns publishing. It creates one formal review wi
 
 Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
 
-After a review completes, you can ask the agent to “post the inline review.” It uses the extension-owned `pr_review_publish` tool, which accepts only the PR number and publishes the validated current-head review from the extension cache. The model cannot supply replacement review text or use this tool to rerun review agents.
+After a review completes, you can ask the agent to “post the inline review.” It uses the extension-owned `pr_review_publish` tool, which accepts only the PR number and publishes the validated review from the extension cache. An explicit user request permits stale publication. The model cannot supply replacement review text or use this tool to rerun review agents.
 
-If a new commit makes a completed review stale, publish the cached result without rerunning the model:
+Stale publication is also enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` without an override use the setting captured when the review starts. The explicit `--allow-stale` flag remains available when the captured setting disabled stale publication:
 
 ```text
 /pr-review-publish 123 --allow-stale
 ```
 
-Inline comments are intentionally disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and identifies both the reviewed and current SHAs. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is bound to that session instance's ID and creation metadata as well as the repository.
+Inline comments are always disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and displays a warning containing both the reviewed and current commit hashes. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is bound to that session instance's ID and creation metadata as well as the repository.
 
 ## Optional verification
 

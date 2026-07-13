@@ -88,11 +88,12 @@ export class ReviewLoopCoordinator {
 		autoPost: AutoPostResolution,
 		source: ReviewLoopInputSource,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+		allowStalePublish = true,
 	): { accepted: boolean; error?: string } {
 		if (source !== "interactive" && source !== "rpc") {
 			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
 		}
-		const started = this.invocationGate.begin(parsed, autoPost);
+		const started = this.invocationGate.begin(parsed, autoPost, allowStalePublish);
 		if (!started.accepted) return started;
 		const current = sessionBinding(ctx);
 		this.binding = {

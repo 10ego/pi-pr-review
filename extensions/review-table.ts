@@ -30,6 +30,7 @@ import {
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
+	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveRepositoryBinding,
 	restoreCompletedReviewBranch,
@@ -333,19 +334,32 @@ function readJsonObject(filePath: string): ConfigReadResult {
 	}
 }
 
-function resolvePublishingConfig(ctx: ExtensionContext): AutoPostResolution {
+interface PublishingConfigResolution {
+	autoPost: AutoPostResolution;
+	allowStale: AutoPostResolution;
+}
+
+function invalidPublishingConfig(source: "user" | "project", error: string): PublishingConfigResolution {
+	const invalid = { value: false, valid: false, source, error } as const;
+	return { autoPost: invalid, allowStale: invalid };
+}
+
+function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolution {
 	const user = readJsonObject(path.join(getAgentDir(), "pr-review.json"));
-	if (user.error) return { value: false, valid: false, source: "user", error: user.error };
+	if (user.error) return invalidPublishingConfig("user", user.error);
 	let project: ConfigReadResult | undefined;
 	try {
 		if (ctx.isProjectTrusted()) {
 			project = readJsonObject(path.join(ctx.cwd, CONFIG_DIR_NAME, "pr-review.json"));
-			if (project.error) return { value: false, valid: false, source: "project", error: project.error };
+			if (project.error) return invalidPublishingConfig("project", project.error);
 		}
 	} catch {
 		/* user config only */
 	}
-	return resolveAutoPostSetting(user.value, project?.value);
+	return {
+		autoPost: resolveAutoPostSetting(user.value, project?.value),
+		allowStale: resolveAllowStalePublishSetting(user.value, project?.value),
+	};
 }
 
 function notifyPublishResult(
@@ -404,6 +418,7 @@ async function maybePublishReview(
 		prNumber: invocation.prNumber,
 		headSha,
 		allowNonOpen: invocation.allowNonOpen,
+		allowStale: invocation.allowStalePublish,
 		expectedRepository,
 		review: parsed.review as ReviewLike,
 	});
@@ -455,7 +470,7 @@ export default function registerReviewTable(
 		| { error: string };
 	const publishCachedReview = async (
 		prNumber: number,
-		allowStale: boolean,
+		allowStaleOverride: boolean | undefined,
 		ctx: ExtensionContext,
 	): Promise<CachedPublication> => {
 		let repository: RepositoryBinding;
@@ -472,6 +487,7 @@ export default function registerReviewTable(
 		}
 		const headSha = completed.review.pr?.head_sha;
 		if (typeof headSha !== "string") return { error: "Cached PR review is missing pr.head_sha" };
+		const allowStale = allowStaleOverride ?? completed.invocation.allowStalePublish;
 		return {
 			result: await publishPullReview({
 				cwd: ctx.cwd,
@@ -491,19 +507,19 @@ export default function registerReviewTable(
 		description: [
 			"Publish a completed PR review cached by this extension after the user explicitly asks to post it.",
 			"Accepts only a PR number: review content, repository binding, and reviewed head come from the validated extension cache.",
-			"Never starts or reruns review agents and never forces stale publication; use /pr-review-publish --allow-stale for that explicit override.",
+			"Never starts or reruns review agents. An explicit user request authorizes safe stale publication as a body-only review with the reviewed and current commit hashes disclosed.",
 		].join(" "),
 		promptSnippet: "Publish an extension-cached completed PR review when the user explicitly asks to post it",
 		promptGuidelines: [
 			"Call pr_review_publish only after the user explicitly asks to publish or post a completed review.",
 			"Do not call it during the /pr-review run itself; --comment and autoPostReviews are handled by the extension after final JSON.",
-			"This tool cannot accept model-authored review text or a stale override.",
+			"This tool cannot accept model-authored review text; stale inline anchors are never posted.",
 		],
 		parameters: Type.Object(
 			{
 				pr_number: Type.Integer({
 					minimum: 1,
-					description: "PR number whose completed cached review should be published at its current reviewed head.",
+					description: "PR number whose completed cached review should be published; stale reviews degrade to disclosed body-only comments.",
 				}),
 			},
 			{ additionalProperties: false },
@@ -516,7 +532,7 @@ export default function registerReviewTable(
 					details: { status: "active_review" },
 				};
 			}
-			const published = await publishCachedReview(params.pr_number, false, ctx);
+			const published = await publishCachedReview(params.pr_number, true, ctx);
 			if ("error" in published) {
 				return {
 					content: [{ type: "text", text: published.error }],
@@ -561,7 +577,11 @@ export default function registerReviewTable(
 				);
 				return;
 			}
-			const published = await publishCachedReview(parsed.prNumber, parsed.allowStale, ctx);
+			const published = await publishCachedReview(
+				parsed.prNumber,
+				parsed.allowStale ? true : undefined,
+				ctx,
+			);
 			if ("error" in published) {
 				ctx.ui.notify(published.error, "error");
 				return;
@@ -640,7 +660,14 @@ export default function registerReviewTable(
 		}
 
 		// Freeze trusted publication config before review tools or optional PR code can run.
-		const gate = loopCoordinator.begin(parsed, resolvePublishingConfig(ctx), source, ctx);
+		const publishingConfig = resolvePublishingConfig(ctx);
+		const gate = loopCoordinator.begin(
+			parsed,
+			publishingConfig.autoPost,
+			source,
+			ctx,
+			publishingConfig.allowStale.valid && publishingConfig.allowStale.value,
+		);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			return { action: "handled" as const };
