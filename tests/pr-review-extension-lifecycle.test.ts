@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { REVIEW_LOOP_TOOL_NAMES } from "../lib/pr-review-loop.ts";
 import {
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
@@ -18,6 +19,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 }));
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
+const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
 
 const review: ReviewLike = {
 	pr: { number: 7, title: "Lifecycle review", head_sha: "a".repeat(40) },
@@ -51,6 +53,7 @@ interface Harness {
 	branch: any[];
 	notifications: string[];
 	activeTools(): string[];
+	setPromptPath(path: string): void;
 	ctx: any;
 	appendMessage(message: any, id?: string): any;
 	emit(name: string, event: any): Promise<any[]>;
@@ -94,6 +97,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	const branch = [...initialBranch];
 	const notifications: string[] = [];
 	let activeTools = ["read", "bash", ...REVIEW_LOOP_TOOL_NAMES];
+	let promptPath = ownPromptPath;
 	const sessionManager = {
 		getBranch: () => [...branch],
 		getSessionId: () => identity.id,
@@ -123,6 +127,11 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		setActiveTools: (next: string[]) => {
 			activeTools = [...next];
 		},
+		getCommands: () => [{
+			name: "pr-review",
+			source: "prompt",
+			sourceInfo: { path: promptPath },
+		}],
 	};
 	reviewTable(pi as any);
 	return {
@@ -131,6 +140,9 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		branch,
 		notifications,
 		activeTools: () => [...activeTools],
+		setPromptPath: (next: string) => {
+			promptPath = next;
+		},
 		ctx,
 		appendMessage(message: any, id = `message-${nextId++}`) {
 			const entry = { type: "message", id, message };
@@ -216,6 +228,32 @@ describe("completed review extension lifecycle", () => {
 		const denied = await harness.emit("input", { text: "/pr-review 8", source: "extension" });
 		expect(denied).toContainEqual({ action: "handled" });
 		expect(harness.activeTools()).toEqual(["read", "bash"]);
+	});
+
+	test("rejects queued and shadowed prompt invocations", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { reason: "startup" });
+		const queued = await harness.emit("input", {
+			text: "/pr-review 7",
+			source: "interactive",
+			streamingBehavior: "followUp",
+		});
+		expect(queued).toContainEqual({ action: "handled" });
+		expect(harness.activeTools()).not.toContain("review_subagent");
+
+		harness.setPromptPath("/tmp/other-package/prompts/pr-review.md");
+		const shadowed = await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(shadowed).toContainEqual({ action: "handled" });
+		expect(harness.activeTools()).not.toContain("review_subagent");
+	});
+
+	test("registered commands explicitly revoke an active review", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(harness.activeTools()).toContain("review_subagent");
+		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
+		expect(harness.activeTools()).not.toContain("review_subagent");
+		expect(harness.notifications.some((message) => message.includes("review was cancelled"))).toBeTrue();
 	});
 
 	test("suspends review tools while awaiting non-open confirmation", async () => {

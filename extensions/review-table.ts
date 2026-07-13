@@ -11,6 +11,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	CONFIG_DIR_NAME,
 	type ExtensionAPI,
@@ -81,6 +82,25 @@ interface Review {
 }
 
 type MessagePart = { type: string; text?: string };
+
+const OWN_REVIEW_PROMPT = fs.realpathSync(
+	fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url)),
+);
+
+function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
+	try {
+		return pi.getCommands().some((command) => {
+			if (command.name !== "pr-review" || command.source !== "prompt") return false;
+			try {
+				return fs.realpathSync(command.sourceInfo.path) === OWN_REVIEW_PROMPT;
+			} catch {
+				return false;
+			}
+		});
+	} catch {
+		return false;
+	}
+}
 
 function assistantText(message: { content?: MessagePart[] }): string {
 	if (!Array.isArray(message.content)) return "";
@@ -441,9 +461,13 @@ export default function registerReviewTable(
 				return;
 			}
 			const active = loopCoordinator.peek();
+			if (active) {
+				loopCoordinator.clear();
+				persistTelemetry("cleared");
+			}
 			if (active?.prNumber === parsed.prNumber) {
 				ctx.ui.notify(
-					`PR #${parsed.prNumber} is still being reviewed. The publish-only command will not post an older cached result while a new result is in progress.`,
+					`PR #${parsed.prNumber} review was cancelled. The publish-only command will not post an older cached result in its place.`,
 					"error",
 				);
 				return;
@@ -532,12 +556,20 @@ export default function registerReviewTable(
 		const parsed = parsePublishMode(event.text);
 		if (loopCoordinator.peek()) {
 			// Any independent user/extension input revokes the current generation.
-			// Only an idle, non-streaming /pr-review input may begin the replacement.
+			// Only a fresh idle /pr-review command may begin the replacement.
 			loopCoordinator.clear();
 			persistTelemetry(parsed.matched && event.streamingBehavior === undefined ? "replaced" : "cleared");
-			if (event.streamingBehavior !== undefined || !parsed.matched) return;
+			if (!parsed.matched) return;
 		}
 		if (!parsed.matched) return;
+		if (event.streamingBehavior !== undefined) {
+			ctx.ui.notify("Invalid /pr-review invocation: queued or steering input cannot start a review loop", "error");
+			return { action: "handled" as const };
+		}
+		if (!isOwnReviewPrompt(pi)) {
+			ctx.ui.notify("Invalid /pr-review invocation: the active prompt is not the pi-pr-review package prompt", "error");
+			return { action: "handled" as const };
+		}
 
 		// Freeze trusted publication config before review tools or optional PR code can run.
 		const gate = loopCoordinator.begin(parsed, resolvePublishingConfig(ctx), source, ctx);

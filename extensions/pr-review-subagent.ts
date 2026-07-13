@@ -437,6 +437,8 @@ function runReviewSubprocess(
 		const startedAt = monotonicNow();
 		let buffer = "";
 		let aborted = false;
+		let closed = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let activeTools = 0;
 		let activeToolsStartedAt = 0;
 
@@ -444,6 +446,20 @@ function runReviewSubprocess(
 		// Keep the complete review task off argv: macOS rejects a single argument
 		// near 1 MiB, while context_file intentionally supports up to 16 MiB.
 		const proc = spawn(command, args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+		const kill = () => {
+			if (closed || aborted) return;
+			aborted = true;
+			proc.kill("SIGTERM");
+			killTimer = setTimeout(() => {
+				// ChildProcess.killed only means a signal was sent; it does not mean
+				// the process exited. Escalate based on the observed close event.
+				if (!closed) proc.kill("SIGKILL");
+			}, 5000);
+		};
+		const cleanupAbort = () => {
+			if (killTimer) clearTimeout(killTimer);
+			signal?.removeEventListener("abort", kill);
+		};
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
@@ -491,6 +507,8 @@ function runReviewSubprocess(
 		proc.stdin.on("error", () => {});
 		proc.stdin.end(input, "utf8");
 		proc.on("close", (code) => {
+			closed = true;
+			cleanupAbort();
 			if (buffer.trim()) processLine(buffer);
 			if (activeTools > 0) {
 				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
@@ -502,6 +520,8 @@ function runReviewSubprocess(
 			resolve(result);
 		});
 		proc.on("error", (err) => {
+			closed = true;
+			cleanupAbort();
 			if (activeTools > 0) result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 			result.exitCode = 1;
 			result.errorMessage = err.message;
@@ -509,13 +529,6 @@ function runReviewSubprocess(
 		});
 
 		if (signal) {
-			const kill = () => {
-				aborted = true;
-				proc.kill("SIGTERM");
-				setTimeout(() => {
-					if (!proc.killed) proc.kill("SIGKILL");
-				}, 5000);
-			};
 			if (signal.aborted) kill();
 			else signal.addEventListener("abort", kill, { once: true });
 		}
@@ -1293,6 +1306,8 @@ export default function registerPrReviewSubagents(
 	pi.registerCommand("pr-review-config", {
 		description: "Open review-tier settings, or show/set models, thinking, and fallbacks for /pr-review",
 		handler: async (args, ctx) => {
+			// Extension commands execute before input events, so revoke explicitly.
+			loopCoordinator.clear();
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
 			if (parsed.errors.length) {

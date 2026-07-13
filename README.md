@@ -14,6 +14,7 @@ The default review prioritizes P0–P2 defects and allows up to three minor find
 
 ## Requirements
 
+- Pi `0.77.0` or newer.
 - [`gh`](https://cli.github.com/) installed and authenticated with `gh auth login`.
 - Pi running inside the repository that owns the PR.
 

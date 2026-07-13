@@ -482,7 +482,7 @@ fi
 		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 		expect(extension).toContain('pi.registerCommand("pr-review-publish"');
 		expect(extension).toContain("This command never starts or reruns a review");
-		expect(extension).toContain("still being reviewed");
+		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are intentionally disabled");
 		expect(prompt).toContain("without another model turn");

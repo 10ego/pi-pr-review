@@ -29,6 +29,12 @@ describe("review subprocess policy and task transport", () => {
 		expect(extension).not.toContain('pass.majorOnly && pass.tier === "heavy"');
 	});
 
+	test("escalates aborted reviewer children based on observed exit, not signal delivery", () => {
+		expect(extension).toContain('proc.kill("SIGTERM")');
+		expect(extension).toContain('if (!closed) proc.kill("SIGKILL")');
+		expect(extension).not.toContain("if (!proc.killed)");
+	});
+
 	test("pipes multi-megabyte review tasks instead of placing them on argv", async () => {
 		const input = "x".repeat(2 * 1024 * 1024);
 		expect(await countPipedBytes(input)).toBe(Buffer.byteLength(input));

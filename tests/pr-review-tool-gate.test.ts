@@ -36,27 +36,36 @@ mock.module("typebox", () => {
 });
 
 const registerPrReviewSubagents = (await import("../extensions/pr-review-subagent.ts")).default;
+const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
+const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
 
 function harness() {
 	const tools = new Map<string, any>();
+	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
 	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
-		registerCommand: () => {},
+		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
 		getActiveTools: () => [...activeTools],
 		setActiveTools: (next: string[]) => {
 			activeTools = [...next];
 		},
 	};
-	registerPrReviewSubagents(pi as any);
+	const coordinator = new ReviewLoopCoordinator(pi as any);
+	registerPrReviewSubagents(pi as any, coordinator);
+	const notifications: string[] = [];
 	const ctx = {
 		cwd: "/tmp/repo",
+		hasUI: false,
+		mode: "json",
+		isProjectTrusted: () => false,
+		ui: { notify: (message: string) => notifications.push(message) },
 		sessionManager: {
 			getSessionId: () => "session-1",
 			getHeader: () => ({ id: "session-1", timestamp: "2026-07-13T00:00:00.000Z" }),
 		},
 	};
-	return { tools, ctx };
+	return { tools, commands, coordinator, ctx, activeTools: () => [...activeTools] };
 }
 
 describe("review tool execution gate", () => {
@@ -68,5 +77,20 @@ describe("review tool execution gate", () => {
 			expect(result.details).toEqual({ authorized: false });
 			expect(result.content[0].text).toContain("active user-initiated /pr-review loop");
 		}
+	});
+
+	test("the config command revokes authority even though extension commands bypass input events", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(lease.signal.aborted).toBeFalse();
+		await h.commands.get("pr-review-config")!("show", h.ctx);
+		expect(lease.signal.aborted).toBeTrue();
+		expect(h.activeTools()).toEqual(["read"]);
 	});
 });
