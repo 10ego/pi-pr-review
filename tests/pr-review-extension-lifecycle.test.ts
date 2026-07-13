@@ -16,6 +16,8 @@ import {
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
 	getAgentDir: () => join(tmpdir(), "pi-pr-review-empty-agent-dir"),
+	getSelectListTheme: () => ({}),
+	getSettingsListTheme: () => ({}),
 }));
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
