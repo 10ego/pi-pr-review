@@ -166,8 +166,14 @@ describe("extension telemetry boundaries", () => {
 		expect(renderer).toContain('pi.appendEntry("pr-review-telemetry", telemetry)');
 		expect(renderer).toContain("telemetryTracker.pauseForConfirmation()");
 		expect(renderer).toContain("telemetryTracker.resumeAfterConfirmation()");
-		expect(renderer.indexOf('persistTelemetry("terminal_response")')).toBeLessThan(
-			renderer.indexOf("await maybePublishReview"),
+		const turnEnd = renderer.slice(
+			renderer.indexOf('pi.on("turn_end"'),
+			renderer.indexOf('pi.on("message_end"'),
 		);
+		const messageEnd = renderer.slice(renderer.indexOf('pi.on("message_end"'));
+		expect(messageEnd.indexOf('persistTelemetry("terminal_response")')).toBeLessThan(
+			messageEnd.indexOf("pendingCompletion ="),
+		);
+		expect(turnEnd.indexOf("pi.appendEntry(")).toBeLessThan(turnEnd.indexOf("await maybePublishReview"));
 	});
 });

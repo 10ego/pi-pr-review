@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -313,20 +314,164 @@ export interface CompletedReviewRecord {
 	repository: RepositoryBinding;
 }
 
+export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
+export const COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE = "pr-review-cache-branch";
+
+export interface CompletedReviewSessionIdentity {
+	id: string;
+	startedAt: string;
+}
+
+export interface PersistedCompletedReview {
+	schemaVersion: 2;
+	session: CompletedReviewSessionIdentity;
+	invocation: ReviewInvocation;
+	repository: RepositoryBinding;
+	reviewHash: string;
+	reviewEntryId?: string;
+	review?: ReviewLike;
+}
+
+export interface CompletedReviewSessionEntryLike {
+	type: string;
+	id?: string;
+	customType?: string;
+	data?: unknown;
+	message?: unknown;
+}
+
 function completedReviewKey(repository: RepositoryBinding, prNumber: number): string {
 	return `${repository.hostname.toLowerCase()}:${repository.repository.toLowerCase()}:${prNumber}`;
+}
+
+export function validRepositoryBinding(value: unknown): value is RepositoryBinding {
+	if (!isObject(value)) return false;
+	return (
+		typeof value.repository === "string" &&
+		/^[^/\s]+\/[^/\s]+$/.test(value.repository) &&
+		typeof value.hostname === "string" &&
+		/^[a-z0-9.-]+$/i.test(value.hostname)
+	);
+}
+
+function validSessionIdentity(value: unknown): value is CompletedReviewSessionIdentity {
+	return (
+		isObject(value) &&
+		typeof value.id === "string" &&
+		value.id.length > 0 &&
+		typeof value.startedAt === "string" &&
+		value.startedAt.length > 0
+	);
+}
+
+function sameSessionIdentity(left: CompletedReviewSessionIdentity, right: CompletedReviewSessionIdentity): boolean {
+	return left.id === right.id && left.startedAt === right.startedAt;
+}
+
+function reviewHash(review: ReviewLike): string {
+	return createHash("sha256").update(JSON.stringify(review)).digest("hex");
+}
+
+function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined {
+	if (!isObject(value)) return undefined;
+	if (!new Set(["auto", "force", "disabled"]).has(String(value.mode))) return undefined;
+	if (!Number.isInteger(value.prNumber) || Number(value.prNumber) <= 0 || typeof value.allowNonOpen !== "boolean") {
+		return undefined;
+	}
+	const autoPost = value.autoPost;
+	if (
+		!isObject(autoPost) ||
+		typeof autoPost.value !== "boolean" ||
+		typeof autoPost.valid !== "boolean" ||
+		!new Set(["default", "user", "project"]).has(String(autoPost.source)) ||
+		(autoPost.error !== undefined && typeof autoPost.error !== "string")
+	) {
+		return undefined;
+	}
+	return {
+		mode: value.mode as PublishMode,
+		prNumber: Number(value.prNumber),
+		allowNonOpen: value.allowNonOpen,
+		autoPost: {
+			value: autoPost.value,
+			valid: autoPost.valid,
+			source: autoPost.source as AutoPostSource,
+			...(typeof autoPost.error === "string" ? { error: autoPost.error } : {}),
+		},
+	};
 }
 
 /** Session-scoped latest completed review per repository and PR. */
 export class CompletedReviewCache {
 	private readonly reviews = new Map<string, CompletedReviewRecord>();
 
-	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): void {
-		this.reviews.set(completedReviewKey(repository, invocation.prNumber), {
+	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): CompletedReviewRecord {
+		const record = {
 			review,
-			invocation: { ...invocation },
+			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
-		});
+		};
+		this.reviews.set(completedReviewKey(repository, invocation.prNumber), record);
+		return record;
+	}
+
+	persist(
+		record: CompletedReviewRecord,
+		session: CompletedReviewSessionIdentity,
+		reviewEntryId?: string,
+		referencedReview?: ReviewLike,
+	): PersistedCompletedReview {
+		const digest = reviewHash(record.review);
+		const useReference = !!reviewEntryId && !!referencedReview && reviewHash(referencedReview) === digest;
+		return {
+			schemaVersion: 2,
+			session: { ...session },
+			invocation: { ...record.invocation, autoPost: { ...record.invocation.autoPost } },
+			repository: { ...record.repository },
+			reviewHash: digest,
+			...(useReference ? { reviewEntryId } : { review: record.review }),
+		};
+	}
+
+	/** Restore only strictly validated state created by this exact Pi session instance. */
+	restore(
+		value: unknown,
+		session: CompletedReviewSessionIdentity,
+		referencedReview?: ReviewLike,
+	): boolean {
+		if (
+			!isObject(value) ||
+			value.schemaVersion !== 2 ||
+			!validSessionIdentity(value.session) ||
+			!sameSessionIdentity(value.session, session) ||
+			!validRepositoryBinding(value.repository)
+		) {
+			return false;
+		}
+		const invocation = parsePersistedInvocation(value.invocation);
+		if (!invocation || typeof value.reviewHash !== "string" || !/^[0-9a-f]{64}$/.test(value.reviewHash)) {
+			return false;
+		}
+		const hasReference = typeof value.reviewEntryId === "string" && value.reviewEntryId.length > 0;
+		const hasInlineReview = Object.prototype.hasOwnProperty.call(value, "review");
+		if (hasReference === hasInlineReview) return false;
+		const candidate = hasReference ? referencedReview : value.review;
+		let parsed: PublishableReviewParseResult;
+		try {
+			parsed = parsePublishableReview(JSON.stringify(candidate));
+		} catch {
+			return false;
+		}
+		if (
+			!parsed.review ||
+			reviewHash(parsed.review) !== value.reviewHash ||
+			!shouldPublishReview(parsed.review) ||
+			validateReviewInvocation(parsed.review, invocation)
+		) {
+			return false;
+		}
+		this.remember(parsed.review, invocation, value.repository);
+		return true;
 	}
 
 	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {
@@ -336,6 +481,45 @@ export class CompletedReviewCache {
 	clear(): void {
 		this.reviews.clear();
 	}
+}
+
+function reviewFromSessionMessage(entry: CompletedReviewSessionEntryLike | undefined): ReviewLike | undefined {
+	if (!entry || entry.type !== "message" || !isObject(entry.message) || entry.message.role !== "assistant") {
+		return undefined;
+	}
+	const content = entry.message.content;
+	const text = typeof content === "string"
+		? content
+		: Array.isArray(content)
+			? content
+					.filter((part) => isObject(part) && part.type === "text" && typeof part.text === "string")
+					.map((part) => String(part.text))
+					.join("")
+			: "";
+	return parsePublishableReview(text).review;
+}
+
+/** Rebuild cache state after session load, reload, resume, or tree navigation. */
+export function restoreCompletedReviewBranch(
+	cache: CompletedReviewCache,
+	entries: CompletedReviewSessionEntryLike[],
+	session: CompletedReviewSessionIdentity,
+): number {
+	cache.clear();
+	const seenEntries = new Map<string, CompletedReviewSessionEntryLike>();
+	let restored = 0;
+	for (const entry of entries) {
+		if (typeof entry.id === "string") seenEntries.set(entry.id, entry);
+		if (entry.type !== "custom" || entry.customType !== COMPLETED_REVIEW_ENTRY_TYPE) continue;
+		const reviewEntryId = isObject(entry.data) && typeof entry.data.reviewEntryId === "string"
+			? entry.data.reviewEntryId
+			: undefined;
+		const referencedReview = reviewEntryId
+			? reviewFromSessionMessage(seenEntries.get(reviewEntryId))
+			: undefined;
+		if (cache.restore(entry.data, session, referencedReview)) restored++;
+	}
+	return restored;
 }
 
 export interface PublishableReviewParseResult {
@@ -764,10 +948,9 @@ export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryB
 	);
 	const repository = String(repoInfo.nameWithOwner ?? "");
 	const hostname = new URL(String(repoInfo.url ?? "")).hostname;
-	if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || !/^[a-z0-9.-]+$/i.test(hostname)) {
-		throw new Error("invalid GitHub repository or hostname");
-	}
-	return { repository, hostname };
+	const binding = { repository, hostname };
+	if (!validRepositoryBinding(binding)) throw new Error("invalid GitHub repository or hostname");
+	return binding;
 }
 
 function flattenPages<T>(value: unknown): T[] {

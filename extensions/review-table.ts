@@ -19,6 +19,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	classifyAssistantCompletion,
+	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
+	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	isNonOpenConfirmationPrompt,
@@ -28,10 +30,13 @@ import {
 	publishPullReview,
 	resolveAutoPostSetting,
 	resolveRepositoryBinding,
+	restoreCompletedReviewBranch,
 	ReviewInvocationGate,
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
+	type CompletedReviewRecord,
+	type CompletedReviewSessionIdentity,
 	type RepositoryBinding,
 	type ReviewInvocation,
 	type ReviewLike,
@@ -363,6 +368,13 @@ async function maybePublishReview(
 		ctx.ui.notify("PR review was not posted: final JSON is missing pr.head_sha", "error");
 		return;
 	}
+	if (!expectedRepository) {
+		ctx.ui.notify(
+			"PR review was not posted because its repository identity could not be established before caching; no publish-only cache is available. Rerun /pr-review when GitHub repository lookup is working.",
+			"error",
+		);
+		return;
+	}
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: invocation.prNumber,
@@ -377,6 +389,30 @@ async function maybePublishReview(
 export default function (pi: ExtensionAPI) {
 	const invocationGate = new ReviewInvocationGate();
 	const completedReviews = new CompletedReviewCache();
+	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
+		const header = ctx.sessionManager.getHeader();
+		const id = ctx.sessionManager.getSessionId();
+		return header?.id === id && typeof header.timestamp === "string"
+			? { id, startedAt: header.timestamp }
+			: undefined;
+	};
+	const restoreCompletedReviews = (ctx: ExtensionContext) => {
+		const session = sessionIdentity(ctx);
+		if (!session) {
+			completedReviews.clear();
+			return;
+		}
+		restoreCompletedReviewBranch(completedReviews, ctx.sessionManager.getBranch(), session);
+	};
+	let pendingCompletion:
+		| {
+				text: string;
+				invocation: ReviewInvocation;
+				repository?: RepositoryBinding;
+				record?: CompletedReviewRecord;
+				session?: CompletedReviewSessionIdentity;
+		  }
+		| undefined;
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -444,10 +480,26 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		invocationGate.clear();
-		completedReviews.clear();
+		pendingCompletion = undefined;
+		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
+	});
+
+	pi.on("session_tree", (event, ctx) => {
+		invocationGate.clear();
+		pendingCompletion = undefined;
+		restoreCompletedReviews(ctx);
+		telemetryTracker.clear();
+		const session = sessionIdentity(ctx);
+		if (event.summaryEntry || !session) return;
+		try {
+			// Pi otherwise resumes at the JSONL tail, not a no-summary /tree selection.
+			pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE, { schemaVersion: 2, session });
+		} catch (error) {
+			ctx.ui.notify(`PR review cache branch selection will not survive session resume: ${String(error)}`, "warning");
+		}
 	});
 
 	pi.on("input", (event, ctx) => {
@@ -486,6 +538,41 @@ export default function (pi: ExtensionAPI) {
 		telemetryTracker.toolEnded(event.toolCallId);
 	});
 
+	pi.on("turn_end", async (_event, ctx) => {
+		const pending = pendingCompletion;
+		pendingCompletion = undefined;
+		if (!pending) return;
+		if (pending.record && pending.session) {
+			const currentSession = sessionIdentity(ctx);
+			if (
+				!currentSession ||
+				currentSession.id !== pending.session.id ||
+				currentSession.startedAt !== pending.session.startedAt
+			) {
+				ctx.ui.notify("Completed review was not persisted or posted because the session identity changed", "warning");
+				return;
+			}
+			const leaf = ctx.sessionManager.getLeafEntry();
+			const leafText = leaf?.type === "message" && leaf.message.role === "assistant"
+				? assistantText(leaf.message as { content?: MessagePart[] })
+				: "";
+			const leafReview = parsePublishableReview(leafText).review;
+			const reviewEntryId = leaf?.type === "message" && leaf.message.role === "assistant" && leafReview
+				? leaf.id
+				: undefined;
+			try {
+				// Persist before any GitHub preflight so a failed post always remains retryable.
+				pi.appendEntry(
+					COMPLETED_REVIEW_ENTRY_TYPE,
+					completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview),
+				);
+			} catch (error) {
+				ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");
+			}
+		}
+		await maybePublishReview(pending.text, pending.invocation, ctx, pending.repository);
+	});
+
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
@@ -517,6 +604,8 @@ export default function (pi: ExtensionAPI) {
 		if (invocation) {
 			const publishable = parsePublishableReview(text);
 			let repository: RepositoryBinding | undefined;
+			let record: CompletedReviewRecord | undefined;
+			let session: CompletedReviewSessionIdentity | undefined;
 			if (
 				publishable.review &&
 				!validateReviewInvocation(publishable.review, invocation) &&
@@ -524,13 +613,17 @@ export default function (pi: ExtensionAPI) {
 			) {
 				try {
 					repository = await resolveRepositoryBinding(ctx.cwd);
-					// Cache before publication preflight so a stale failure remains directly publishable.
-					completedReviews.remember(publishable.review, invocation, repository);
+					// Cache before publication preflight; persist after Pi stores the assistant message.
+					record = completedReviews.remember(publishable.review, invocation, repository);
+					session = sessionIdentity(ctx);
+					if (!session) {
+						ctx.ui.notify("Completed review cache will not survive reload: session identity is unavailable", "warning");
+					}
 				} catch (error) {
 					ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
 				}
 			}
-			await maybePublishReview(text, invocation, ctx, repository);
+			pendingCompletion = { text, invocation, repository, record, session };
 		}
 
 		// Keep raw JSON for automation; only prettify for interactive terminals.
