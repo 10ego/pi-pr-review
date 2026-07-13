@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.6](https://github.com/10ego/pi-pr-review/compare/v1.6.5...v1.6.6) (2026-07-13)
+
+
+### Bug Fixes
+
+* **publish:** persist completed review cache ([#10](https://github.com/10ego/pi-pr-review/issues/10)) ([e5a1f33](https://github.com/10ego/pi-pr-review/commit/e5a1f333ce6a4bbf624d889a0954bdd251e7d902))
+
 ## [1.6.5](https://github.com/10ego/pi-pr-review/compare/v1.6.4...v1.6.5) (2026-07-13)
 
 
