@@ -7,13 +7,13 @@ const entrypoint = readFileSync(new URL("../extensions/index.ts", import.meta.ur
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 describe("PR review prompt scheduling policy", () => {
-	test("registers tools and publication behind one shared loop coordinator", () => {
+	test("registers review tools and publication behind one shared loop coordinator", () => {
 		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
 		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.77.0");
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
-		expect(entrypoint).toContain("const publishAuthorization = new CachedPublishAuthorizationGate()");
-		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator, () => publishAuthorization.clear())");
-		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator, publishAuthorization)");
+		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
+		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+		expect(entrypoint).not.toContain("CachedPublishAuthorizationGate");
 		expect(extension).toContain("allow_stale_publish");
 		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");
 	});

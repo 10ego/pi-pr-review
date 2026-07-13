@@ -987,7 +987,6 @@ const ReviewSubagentsParams = Type.Object({
 export default function registerPrReviewSubagents(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
-	revokePublishAuthorization: () => void = () => {},
 ) {
 	// Resolve security-sensitive executables only from the PATH trusted when this
 	// extension starts, never from a later mutable process environment.
@@ -1329,7 +1328,6 @@ export default function registerPrReviewSubagents(
 		handler: async (args, ctx) => {
 			// Extension commands execute before input events, so revoke explicitly.
 			loopCoordinator.clear();
-			revokePublishAuthorization();
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
 			if (parsed.errors.length) {

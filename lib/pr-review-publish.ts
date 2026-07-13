@@ -1,7 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import * as path from "node:path";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -161,7 +160,7 @@ export function parseDirectPublishRequest(input: string): DirectPublishRequestPa
 	const trimmed = input.trim();
 	if (!trimmed || /[\r\n]/.test(trimmed)) return { matched: false };
 	const match = trimmed.match(
-		/^(?:(?:please|kindly)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:post|publish|submit)\s+(?:(?:the|this|that|my|our)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?)(?:\s+(?:for|on|to)\s+(?:(?:the\s+)?(?:pull\s+request|pr)\s*)?#?(\d+))?(?:\s+please)?[.!?]*$/i,
+		/^(?:(?:please|kindly)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:post|publish|submit)\s+(?:(?:(?:the|this|that|my|our)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?)|(?:it|this|that)\s+as\s+(?:(?:an?|the)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?))(?:\s+(?:for|on|to)\s+(?:(?:the\s+)?(?:pull\s+request|pr)\s*)?#?(\d+))?(?:\s+please)?[.!?]*$/i,
 	);
 	if (!match) return { matched: false };
 	if (match[1] === undefined) return { matched: true };
@@ -169,75 +168,6 @@ export function parseDirectPublishRequest(input: string): DirectPublishRequestPa
 	return Number.isInteger(prNumber) && prNumber > 0
 		? { matched: true, prNumber }
 		: { matched: false };
-}
-
-interface PublishAuthorizationContext {
-	cwd: string;
-	sessionManager: {
-		getSessionId(): string;
-		getHeader(): { id?: string; timestamp?: unknown } | undefined;
-	};
-}
-
-interface PendingPublishAuthorization {
-	cwd: string;
-	sessionId: string;
-	sessionStartedAt?: string;
-	prNumber?: number;
-}
-
-function publishAuthorizationBinding(ctx: PublishAuthorizationContext) {
-	const sessionId = ctx.sessionManager.getSessionId();
-	const header = ctx.sessionManager.getHeader();
-	return {
-		cwd: path.resolve(ctx.cwd),
-		sessionId,
-		...(header?.id === sessionId && typeof header.timestamp === "string"
-			? { sessionStartedAt: header.timestamp }
-			: {}),
-	};
-}
-
-/** One pending model-tool publication authorized by one direct user input. */
-export class CachedPublishAuthorizationGate {
-	private pending?: PendingPublishAuthorization;
-
-	observe(
-		input: string,
-		source: "interactive" | "rpc" | "extension",
-		streamingBehavior: "steer" | "followUp" | undefined,
-		ctx: PublishAuthorizationContext,
-	): DirectPublishRequestParseResult {
-		this.clear();
-		if ((source !== "interactive" && source !== "rpc") || streamingBehavior !== undefined) {
-			return { matched: false };
-		}
-		const parsed = parseDirectPublishRequest(input);
-		if (!parsed.matched) return parsed;
-		this.pending = { ...publishAuthorizationBinding(ctx), ...(parsed.prNumber ? { prNumber: parsed.prNumber } : {}) };
-		return parsed;
-	}
-
-	consume(
-		prNumber: number,
-		ctx: PublishAuthorizationContext,
-	): { authorized: boolean; requireLatest: boolean } {
-		const pending = this.pending;
-		this.clear();
-		if (!pending) return { authorized: false, requireLatest: false };
-		const current = publishAuthorizationBinding(ctx);
-		const sameContext = pending.cwd === current.cwd &&
-			pending.sessionId === current.sessionId &&
-			pending.sessionStartedAt === current.sessionStartedAt;
-		if (!sameContext || (pending.prNumber !== undefined && pending.prNumber !== prNumber)) {
-			return { authorized: false, requireLatest: false };
-		}
-		return { authorized: true, requireLatest: pending.prNumber === undefined };
-	}
-
-	clear(): void {
-		this.pending = undefined;
-	}
 }
 
 export interface PublishExistingParseResult {
