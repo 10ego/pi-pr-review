@@ -313,20 +313,93 @@ export interface CompletedReviewRecord {
 	repository: RepositoryBinding;
 }
 
+export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
+
+export interface PersistedCompletedReview extends CompletedReviewRecord {
+	schemaVersion: 1;
+}
+
 function completedReviewKey(repository: RepositoryBinding, prNumber: number): string {
 	return `${repository.hostname.toLowerCase()}:${repository.repository.toLowerCase()}:${prNumber}`;
+}
+
+function validRepositoryBinding(value: unknown): value is RepositoryBinding {
+	if (!isObject(value)) return false;
+	return (
+		typeof value.repository === "string" &&
+		/^[^/\s]+\/[^/\s]+$/.test(value.repository) &&
+		typeof value.hostname === "string" &&
+		/^[a-z0-9.-]+$/i.test(value.hostname)
+	);
+}
+
+function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined {
+	if (!isObject(value)) return undefined;
+	if (!new Set(["auto", "force", "disabled"]).has(String(value.mode))) return undefined;
+	if (!Number.isInteger(value.prNumber) || Number(value.prNumber) <= 0 || typeof value.allowNonOpen !== "boolean") {
+		return undefined;
+	}
+	const autoPost = value.autoPost;
+	if (
+		!isObject(autoPost) ||
+		typeof autoPost.value !== "boolean" ||
+		typeof autoPost.valid !== "boolean" ||
+		!new Set(["default", "user", "project"]).has(String(autoPost.source)) ||
+		(autoPost.error !== undefined && typeof autoPost.error !== "string")
+	) {
+		return undefined;
+	}
+	return {
+		mode: value.mode as PublishMode,
+		prNumber: Number(value.prNumber),
+		allowNonOpen: value.allowNonOpen,
+		autoPost: {
+			value: autoPost.value,
+			valid: autoPost.valid,
+			source: autoPost.source as AutoPostSource,
+			...(typeof autoPost.error === "string" ? { error: autoPost.error } : {}),
+		},
+	};
 }
 
 /** Session-scoped latest completed review per repository and PR. */
 export class CompletedReviewCache {
 	private readonly reviews = new Map<string, CompletedReviewRecord>();
 
-	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): void {
-		this.reviews.set(completedReviewKey(repository, invocation.prNumber), {
+	remember(
+		review: ReviewLike,
+		invocation: ReviewInvocation,
+		repository: RepositoryBinding,
+	): PersistedCompletedReview {
+		const record = {
 			review,
-			invocation: { ...invocation },
+			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
-		});
+		};
+		this.reviews.set(completedReviewKey(repository, invocation.prNumber), record);
+		return { schemaVersion: 1, ...record };
+	}
+
+	/** Restore only strictly validated state from the current Pi session branch. */
+	restore(value: unknown): boolean {
+		if (!isObject(value) || value.schemaVersion !== 1 || !validRepositoryBinding(value.repository)) return false;
+		const invocation = parsePersistedInvocation(value.invocation);
+		if (!invocation) return false;
+		let parsed: PublishableReviewParseResult;
+		try {
+			parsed = parsePublishableReview(JSON.stringify(value.review));
+		} catch {
+			return false;
+		}
+		if (
+			!parsed.review ||
+			!shouldPublishReview(parsed.review) ||
+			validateReviewInvocation(parsed.review, invocation)
+		) {
+			return false;
+		}
+		this.remember(parsed.review, invocation, value.repository);
+		return true;
 	}
 
 	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {

@@ -11,6 +11,7 @@ import {
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
+	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	containsReservedReviewMarker,
@@ -292,7 +293,7 @@ describe("publish-only completed review command", () => {
 
 	test("retains the latest completed review under its repository and PR", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		cache.remember(review, invocation, repository);
 		expect(cache.get(7, repository)).toEqual({ review, invocation, repository });
@@ -300,6 +301,36 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(8, repository)).toBeUndefined();
 		cache.clear();
 		expect(cache.get(7, repository)).toBeUndefined();
+	});
+
+	test("restores a completed review from validated session state", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const persisted = cache.remember(review, invocation, repository);
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted)).toBeTrue();
+		expect(restored.get(7, repository)).toEqual({ review, invocation, repository });
+		expect(restored.restore({ ...persisted, schemaVersion: 2 })).toBeFalse();
+		expect(restored.restore({ ...persisted, repository: { hostname: "invalid host", repository: "owner/repo" } })).toBeFalse();
+	});
+
+	test("persists cache entries and restores them on extension reload", () => {
+		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		expect(COMPLETED_REVIEW_ENTRY_TYPE).toBe("pr-review-completed");
+		expect(extension).toContain("pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted)");
+		expect(extension).toContain("ctx.sessionManager.getBranch()");
+		expect(extension).toContain("completedReviews.restore(entry.data)");
+	});
+
+	test("does not retry publication without the repository binding used for caching", () => {
+		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		const publisher = extension.slice(
+			extension.indexOf("async function maybePublishReview"),
+			extension.indexOf("export default function"),
+		);
+		expect(publisher).toContain("if (!expectedRepository)");
+		expect(publisher).toContain("no publish-only cache is available");
 	});
 
 	test("keeps stale protection by default and degrades an explicit override", () => {

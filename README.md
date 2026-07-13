@@ -150,7 +150,7 @@ If a new commit makes a completed review stale, publish the cached result withou
 /pr-review-publish 123 --allow-stale
 ```
 
-Inline comments are intentionally disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and identifies both the reviewed and current SHAs. The cache lasts for the current Pi session.
+Inline comments are intentionally disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and identifies both the reviewed and current SHAs. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is not shared with other sessions or repositories.
 
 ## Optional verification
 

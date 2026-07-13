@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	classifyAssistantCompletion,
+	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	isNonOpenConfirmationPrompt,
@@ -363,6 +364,13 @@ async function maybePublishReview(
 		ctx.ui.notify("PR review was not posted: final JSON is missing pr.head_sha", "error");
 		return;
 	}
+	if (!expectedRepository) {
+		ctx.ui.notify(
+			"PR review was not posted because its repository identity could not be established before caching; no publish-only cache is available. Rerun /pr-review when GitHub repository lookup is working.",
+			"error",
+		);
+		return;
+	}
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: invocation.prNumber,
@@ -444,9 +452,14 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
 		invocationGate.clear();
 		completedReviews.clear();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE) {
+				completedReviews.restore(entry.data);
+			}
+		}
 		telemetryTracker.clear();
 	});
 
@@ -524,8 +537,13 @@ export default function (pi: ExtensionAPI) {
 			) {
 				try {
 					repository = await resolveRepositoryBinding(ctx.cwd);
-					// Cache before publication preflight so a stale failure remains directly publishable.
-					completedReviews.remember(publishable.review, invocation, repository);
+					// Cache and persist before publication preflight so stale failures survive reloads.
+					const persisted = completedReviews.remember(publishable.review, invocation, repository);
+					try {
+						pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted);
+					} catch (error) {
+						ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");
+					}
 				} catch (error) {
 					ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
 				}
