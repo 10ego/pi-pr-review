@@ -2,7 +2,16 @@ export type ToolPolicy = "none" | "configured";
 
 /** Isolated review subprocesses receive all review context explicitly. */
 export function buildReviewBaseArgs(): string[] {
-	return ["--mode", "json", "-p", "--no-session", "--no-context-files"];
+	return [
+		"--mode",
+		"json",
+		"-p",
+		"--no-session",
+		"--no-context-files",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+	];
 }
 
 export function normalizeToolPolicy(value: unknown): ToolPolicy | undefined {

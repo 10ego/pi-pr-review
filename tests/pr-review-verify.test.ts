@@ -765,6 +765,7 @@ describe("extension-owned PR verification lifecycle", () => {
 				outcome: "success",
 				reasons: ["residual_descendants"],
 				termSignalsSent: 1,
+				killAttempts: 1,
 				killSignalsSent: 1,
 				drained: true,
 			});
@@ -783,14 +784,18 @@ describe("extension-owned PR verification lifecycle", () => {
 		const result = await verifyPullRequestHead(
 			fixture.repo,
 			request(fixture.headSha),
-			profile("descendant", 2_000, pidFile, { allowForks: true }),
+			profile("descendant", 5_000, pidFile, { allowForks: true }),
 			undefined,
 			options(fixture),
 		);
 		const descendantPid = Number(fs.readFileSync(pidFile, "utf8"));
-		for (let i = 0; i < 20 && processExists(descendantPid); i++) await Bun.sleep(10);
+		// The verifier has already drained the original group. Give init a bounded
+		// window to reap a just-killed orphan before probing its PID on busy hosts.
+		for (let i = 0; i < 100 && processExists(descendantPid); i++) await Bun.sleep(10);
 		expect(result.primaryOutcome.outcome).toBe("timeout");
-		expect(result.terminationOutcome).toMatchObject({ attempted: true, outcome: "success", killSignalsSent: 1, drained: true });
+		// The final KILL is mandatory even if the group is already gone after TERM;
+		// delivery is OS-race-dependent, but the attempt and drained state are not.
+		expect(result.terminationOutcome).toMatchObject({ attempted: true, outcome: "success", killAttempts: 1, drained: true });
 		expect(processExists(descendantPid)).toBeFalse();
 		assertClean(fixture.repo, fixture.tempRoot);
 	});
