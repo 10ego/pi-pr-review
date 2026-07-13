@@ -11,8 +11,9 @@ describe("PR review prompt scheduling policy", () => {
 		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
 		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.77.0");
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
-		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
-		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+		expect(entrypoint).toContain("const publishAuthorization = new CachedPublishAuthorizationGate()");
+		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator, () => publishAuthorization.clear())");
+		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator, publishAuthorization)");
 		expect(extension).toContain("allow_stale_publish");
 		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");
 	});

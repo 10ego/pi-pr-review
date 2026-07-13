@@ -21,6 +21,7 @@ import {
 import { Type } from "typebox";
 import {
 	classifyAssistantCompletion,
+	CachedPublishAuthorizationGate,
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
@@ -428,6 +429,7 @@ async function maybePublishReview(
 export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
+	publishAuthorization = new CachedPublishAuthorizationGate(),
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -472,6 +474,7 @@ export default function registerReviewTable(
 		prNumber: number,
 		allowStaleOverride: boolean | undefined,
 		ctx: ExtensionContext,
+		requireLatest = false,
 	): Promise<CachedPublication> => {
 		let repository: RepositoryBinding;
 		try {
@@ -480,6 +483,11 @@ export default function registerReviewTable(
 			return { error: `Cannot resolve the current GitHub repository: ${String(error)}` };
 		}
 		const completed = completedReviews.get(prNumber, repository);
+		if (requireLatest && completedReviews.latest(repository)?.invocation.prNumber !== prNumber) {
+			return {
+				error: `PR #${prNumber} is not the latest completed review cached for this repository. Name the PR number in the direct publish request to select it explicitly.`,
+			};
+		}
 		if (!completed) {
 			return {
 				error: `No completed review for PR #${prNumber} is cached for this repository in the current extension session. Publishing never starts or reruns a review.`,
@@ -505,13 +513,13 @@ export default function registerReviewTable(
 		name: "pr_review_publish",
 		label: "Publish Cached PR Review",
 		description: [
-			"Publish a completed PR review cached by this extension after the user explicitly asks to post it.",
+			"Publish a completed PR review cached by this extension after a fresh direct interactive or RPC user request authorizes one call.",
 			"Accepts only a PR number: review content, repository binding, and reviewed head come from the validated extension cache.",
 			"Never starts or reruns review agents. An explicit user request authorizes safe stale publication as a body-only review with the reviewed and current commit hashes disclosed.",
 		].join(" "),
 		promptSnippet: "Publish an extension-cached completed PR review when the user explicitly asks to post it",
 		promptGuidelines: [
-			"Call pr_review_publish only after the user explicitly asks to publish or post a completed review.",
+			"Call pr_review_publish only in the agent turn started by the user's direct publish request; the extension enforces a one-shot host-side authorization.",
 			"Do not call it during the /pr-review run itself; --comment and autoPostReviews are handled by the extension after final JSON.",
 			"This tool cannot accept model-authored review text; stale inline anchors are never posted.",
 		],
@@ -532,7 +540,23 @@ export default function registerReviewTable(
 					details: { status: "active_review" },
 				};
 			}
-			const published = await publishCachedReview(params.pr_number, true, ctx);
+			const authorization = publishAuthorization.consume(params.pr_number, ctx);
+			if (!authorization.authorized) {
+				return {
+					content: [{
+						type: "text",
+						text: "Cached review publication requires a fresh direct user request such as ‘post the inline review’ or ‘publish the review for PR #123’.",
+					}],
+					isError: true,
+					details: { status: "unauthorized" },
+				};
+			}
+			const published = await publishCachedReview(
+				params.pr_number,
+				true,
+				ctx,
+				authorization.requireLatest,
+			);
 			if ("error" in published) {
 				return {
 					content: [{ type: "text", text: published.error }],
@@ -556,7 +580,8 @@ export default function registerReviewTable(
 		description: "Publish a completed review from this session without rerunning the model",
 		handler: async (args, ctx) => {
 			// Extension commands execute before input hooks, so every invocation —
-			// including malformed arguments — must revoke active review authority.
+			// including malformed arguments — must revoke active review and model-tool authority.
+			publishAuthorization.clear();
 			const active = loopCoordinator.peek();
 			if (active) {
 				loopCoordinator.clear();
@@ -596,6 +621,7 @@ export default function registerReviewTable(
 
 	const revokeActiveLoop = () => {
 		loopCoordinator.clear();
+		publishAuthorization.clear();
 		pendingCompletion = undefined;
 		telemetryTracker.clear();
 	};
@@ -612,6 +638,7 @@ export default function registerReviewTable(
 
 	pi.on("session_tree", (event, ctx) => {
 		loopCoordinator.clear();
+		publishAuthorization.clear();
 		pendingCompletion = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
@@ -627,6 +654,8 @@ export default function registerReviewTable(
 
 	pi.on("input", (event, ctx) => {
 		const source = event.source as ReviewLoopInputSource;
+		if (loopCoordinator.peek()) publishAuthorization.clear();
+		else publishAuthorization.observe(event.text, source, event.streamingBehavior, ctx);
 		if (loopCoordinator.phase() === "awaiting_confirmation") {
 			const confirmation = loopCoordinator.resolveConfirmationInput(event.text, source, ctx);
 			if (confirmation === "confirmed") {
@@ -725,12 +754,14 @@ export default function registerReviewTable(
 		if (completion === "continue_tools") return;
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
+			publishAuthorization.clear();
 			persistTelemetry("cleared");
 			return;
 		}
 
 		const text = assistantText(event.message);
 		const active = loopCoordinator.peek();
+		if (!active) publishAuthorization.clear();
 		if (
 			active &&
 			loopCoordinator.phase() === "reviewing" &&

@@ -320,6 +320,10 @@ describe("completed review extension lifecycle", () => {
 		const tool = harness.tools.get("pr_review_publish");
 		expect(tool).toBeDefined();
 		expect(Object.keys(tool.parameters.properties)).toEqual(["pr_number"]);
+		const unauthorized = await tool.execute("publish-0", { pr_number: 7 }, undefined, undefined, harness.ctx);
+		expect(unauthorized.isError).toBeTrue();
+		expect(unauthorized.details).toEqual({ status: "unauthorized" });
+		await harness.emit("input", { text: "post the inline review", source: "interactive" });
 		const currentHead = "b".repeat(40);
 		const payloadPath = installFakePublishingGh(currentHead);
 		const result = await tool.execute("publish-1", { pr_number: 7 }, undefined, undefined, harness.ctx);
@@ -331,6 +335,9 @@ describe("completed review extension lifecycle", () => {
 		expect(payload.body).toContain("This review was generated for commit");
 		expect(payload.body).toContain("a".repeat(40));
 		expect(payload.body).toContain(currentHead);
+		const replay = await tool.execute("publish-2", { pr_number: 7 }, undefined, undefined, harness.ctx);
+		expect(replay.isError).toBeTrue();
+		expect(replay.details).toEqual({ status: "unauthorized" });
 	});
 
 	test("publish command follows captured stale config unless explicitly overridden", async () => {

@@ -147,7 +147,7 @@ The extension—not the model—owns publishing. It creates one formal review wi
 
 Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
 
-After a review completes, you can ask the agent to “post the inline review.” It uses the extension-owned `pr_review_publish` tool, which accepts only the PR number and publishes the validated review from the extension cache. An explicit user request permits stale publication. The model cannot supply replacement review text or use this tool to rerun review agents.
+After a review completes, you can directly ask the agent to “post the inline review.” That interactive/RPC input creates one host-side, session- and repository-bound authorization for the extension-owned `pr_review_publish` tool. The authorization is consumed by one matching call; an unnumbered request is restricted to the latest cached review, while “publish the review for PR #123” binds the named PR. The model cannot self-authorize, supply replacement review text, replay the request, or use this tool to rerun review agents. An explicit authorized request permits stale publication.
 
 Stale publication is also enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` without an override use the setting captured when the review starts. The explicit `--allow-stale` flag remains available when the captured setting disabled stale publication:
 
@@ -214,7 +214,7 @@ The verdict is `request_changes` only when a validated P0 or P1 finding exists. 
 - Reviewer subprocesses start with extension discovery disabled, so they cannot recursively invoke this package's agents or verification tool.
 - Reviewers receive the captured diff and are instructed not to modify files.
 - The orchestrator does not check out, commit, or push PR code.
-- GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, or an explicit user request that the agent fulfills through the cache-only `pr_review_publish` tool.
+- GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, or a fresh direct user request that grants one host-side call to the cache-only `pr_review_publish` tool. `allowStalePublish` controls whether an authorized/configured write may be stale; it does not independently authorize a write.
 - Publication authority is captured before review or optional verification begins, so PR code cannot enable it mid-run.
 - Multiple model calls run per PR. Use a cheaper `light` model and reserve stronger models for `heavy` passes to control cost.
 - Same-head review markers prevent duplicate publication by the same GitHub identity.
