@@ -1,131 +1,117 @@
 # pi-pr-review
 
-A parallel, model-agnostic AI code reviewer for GitHub pull requests in the [Pi coding agent](https://pi.dev).
+Parallel, model-agnostic AI code review for GitHub pull requests in the [Pi coding agent](https://pi.dev).
 
-Pass a PR number and pi will:
+Give it a PR number and it will:
 
-1. Resolve the PR in the **current directory's git repo** via `gh`.
-2. Derive the **base branch** and **head (merging) branch** automatically from the PR.
-3. Review the base↔head diff with four focused heavy lenses plus a light overview/minor scan, optional trusted user-level named baseline verification, then validate each candidate. Use `--full` to add convention/maintainability review.
-4. Return a **structured review**: overview, strengths, verification, P0–P2 findings plus at most three direct-diff P3/nits by default, correctness/security/performance notes, and a verdict. `--full` reports every qualifying severity (`nit → P0`).
-5. Optionally publish one formal GitHub `COMMENT` review with a top-level body and associated inline comments.
+- fetch the PR metadata and diff with `gh`;
+- run focused review passes in parallel using models you choose;
+- validate candidate findings before reporting them;
+- render a structured review with severity, location, confidence, and verdict;
+- optionally publish one safe GitHub `COMMENT` review with inline comments.
 
-**Major coverage by default, exhaustive minors on demand.** The default runs four independent heavy P0–P2 lenses and permits at most three direct-diff P3/nits from the light overview, reducing model and validation work without dropping lifecycle, contracts, security, or resource coverage. Use `--full` for exhaustive conventions, maintainability, style, naming, and minor findings. The **verdict** always depends only on blocking P0/P1 findings.
-
-No model name is hardcoded anywhere. The package ships an extension that adds **tiered review subagents** — `light` / `medium` / `heavy` — that you map to whatever models you like. Independent review passes fan out through a batch tool so overview, conventions/maintainability, correctness, and security/performance can run in parallel. If the extension isn't loaded, the same prompt runs every pass inline on your current session model, so it always works.
+The default review prioritizes P0–P2 defects and allows up to three minor findings. Use `--full` for exhaustive convention, maintainability, and minor coverage.
 
 ## Requirements
 
-- [`gh`](https://cli.github.com/) installed and authenticated (`gh auth login`).
-- Run pi from inside the git repository that hosts the PR (so `gh` auto-detects the repo).
+- [`gh`](https://cli.github.com/) installed and authenticated with `gh auth login`.
+- Pi running inside the repository that owns the PR.
 
 ## Install
 
-Install the published npm package in user scope:
-
 ```bash
+# User scope
 pi install npm:pi-pr-review
-```
 
-Or install it in project scope so the dependency is shareable with your team and automatically installed when the project is trusted:
-
-```bash
+# Project scope
 pi install -l npm:pi-pr-review
 ```
 
-For local development only, you can point pi at a checkout with `pi install ./pi-pr-review` (add `-l` for project scope).
+For local development, replace the package name with a checkout path such as `./pi-pr-review`.
 
-Releases are versioned from conventional squash-merged PR titles and published automatically through npm trusted publishing. See [RELEASING.md](RELEASING.md) for the release and merge policy.
+## Quick start
 
-### Alternative: use the template without packaging
+Configure the reviewer models:
 
-The prompt is a plain template — just copy it into a prompts directory pi already scans:
-
-```bash
-# global (all projects)
-cp prompts/pr-review.md ~/.pi/agent/prompts/
-# or per-project
-mkdir -p .pi/prompts && cp prompts/pr-review.md .pi/prompts/
-```
-
-## Configure the review models
-
-Model selection is configuration, not code. There are two layers:
-
-### 1. Tiered subagent models (recommended)
-
-The `/pr-review-config` command maps three labels to models:
-
-| Tier | Used for | Pick a model that is… |
-|------|----------|----------------------|
-| `light`  | overview / strengths / high-level risk scan | fast + cheap |
-| `medium` | `--full` convention compliance + readability / maintainability | balanced |
-| `heavy`  | bug + security/logic review | strongest |
-
-```
-/pr-review-config                                   # open the settings menu (like /settings & /nervous:config)
-/pr-review-config show                              # print the current mapping
-/pr-review-config light=<spec> medium=<spec> heavy=<spec>   # set primary tier models
-/pr-review-config heavy_fallbacks=<spec>,<spec>     # retry chain for quota/rate-limit failures
-/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
-/pr-review-config light_tool_policy=none            # tier default when a pass omits tool_policy
-/pr-review-config auto_post_reviews=true            # opt in to automatic GitHub COMMENT reviews
-/pr-review-config auto_post_reviews=false           # disable automatic posting (the default)
-/pr-review-config medium=unset                      # clear a tier (back to pi default)
-/pr-review-config heavy_fallbacks=unset             # clear a fallback chain
-/pr-review-config light_thinking=unset              # inherit the ambient pi default
-/pr-review-config light_tool_policy=unset           # restore legacy configured-tool behavior
-/pr-review-config tools=read,bash,grep,find,ls      # allowlist used by configured policy
-```
-
-Running `/pr-review-config` with no arguments in the TUI opens an interactive settings menu that mirrors pi's `/settings` and the NERVous `/nervous:config`:
-
-- One primary-model, fallback-model, thinking-level, and tool-policy row per tier (`light` / `medium` / `heavy`), an automatic-posting toggle, plus a configured-tool allowlist row.
-- Press Enter on a primary or fallback row to pick a model from a searchable list (or unset it); Enter/Space cycles thinking levels, tool policies, and allowlist presets. The menu sets one fallback model at a time; use the `key=value` form for longer fallback chains.
-- Selections apply and persist **immediately**; Esc closes the menu.
-- Type to search, and tab-completion is available for the `key=value` form.
-
-Outside the TUI (or with `show`), the command posts a Markdown summary table of your settings and the effective values instead.
-
-A `<spec>` is any pi model pattern, e.g. `provider/model` or `provider/model:high` (with a thinking level). Each of `light_thinking`, `medium_thinking`, and `heavy_thinking` accepts every pi-supported level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`:
-
-```
-/pr-review-config light_thinking=off       # or minimal|low|medium|high|xhigh|max
-/pr-review-config medium_thinking=minimal  # or off|low|medium|high|xhigh|max
-/pr-review-config heavy_thinking=max       # or off|minimal|low|medium|high|xhigh
-/pr-review-config light_thinking=unset medium_thinking=unset heavy_thinking=unset
-```
-
-`unset` removes the tier override, so that child pi process inherits the ambient pi default; it does not mean `off`. When an effective tier or fallback model has no supported `:thinking` suffix and its tier thinking is unset, `/pr-review-config show` and review-tool output warn that the ambient default is inherited. If a model spec does include a supported suffix, such as `<model-spec>:xhigh`, its `:thinking` suffix takes precedence over `<tier>_thinking`; output warns when it shadows an explicit tier setting. This precedence applies to primary, nearest-tier, and fallback model attempts.
-
-A model-agnostic starting profile is:
-
-```
+```text
+/pr-review-config light=<fast-model> medium=<balanced-model> heavy=<strong-model>
 /pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
 ```
 
-This is an opt-in cost/quality balance, not a speed guarantee: lower thinking can reduce reasoning work but may miss subtle risks, while higher thinking can improve depth at greater latency and token cost. Adjust against your own review results and model capabilities.
+Then review a PR in the current repository:
 
-Review-model settings are stored in:
+```text
+/pr-review 123
+```
 
-- **User:** `~/.pi/agent/pr-review.json`
-- **Project:** `<repo>/.pi/pr-review.json` (overlays model/tool/publication settings only when the project is trusted)
+In the TUI, the result is rendered as a readable review. In `print`, `json`, and `rpc` modes, Pi returns the raw JSON payload.
 
-Verification profiles are different: `verificationBaselines` is read **only** from the user file. A project-local field with that name is always ignored, including in trusted projects.
+## Review modes
 
-Example `pr-review.json`:
+| Command | Behavior |
+|---|---|
+| `/pr-review 123` | Balanced default: all validated P0–P2 findings plus up to three direct-diff P3/nits. |
+| `/pr-review 123 --major-only` | P0–P2 only. |
+| `/pr-review 123 --full` | Adds convention/maintainability review and reports all qualifying severities. |
+| `/pr-review 123 --balanced` | Explicit alias for the default mode. |
+| `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
+
+`--full`, `--major-only`, and `--balanced` are mutually exclusive. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
+
+A review uses five focused passes by default:
+
+1. overview and minor hygiene (`light`);
+2. state, lifecycle, and concurrency correctness (`heavy`);
+3. contracts, data, and integration correctness (`heavy`);
+4. security (`heavy`);
+5. performance and resource ownership (`heavy`).
+
+`--full` adds a convention and maintainability pass (`medium`). Large multi-file diffs are split by whole-file boundaries and reviewed in parallel. If the extension is unavailable, the prompt falls back to the current Pi session model.
+
+## Configure models
+
+`/pr-review-config` opens an interactive settings menu in the TUI. Use `/pr-review-config show` for a text summary or `key=value` arguments for direct changes.
+
+| Tier | Purpose |
+|---|---|
+| `light` | Fast overview and risk scan. |
+| `medium` | Convention and maintainability review in `--full` mode. |
+| `heavy` | Correctness, security, and performance review. |
+
+Common settings:
+
+```text
+/pr-review-config light=provider/model heavy=provider/model:high
+/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2
+/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
+/pr-review-config heavy_tool_policy=configured
+/pr-review-config tools=read,bash,grep,find,ls
+/pr-review-config auto_post_reviews=true
+/pr-review-config medium=unset
+```
+
+Supported thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. A thinking suffix in a model spec, such as `provider/model:xhigh`, takes precedence over the tier's thinking setting. `unset` restores inherited behavior.
+
+Tool policy can be `none` or `configured`. `configured` uses the `tools` allowlist; because an allowlist containing `bash` is not technically read-only, remove it if you need stricter reviewer isolation.
+
+Configuration is stored in:
+
+- user scope: `~/.pi/agent/pr-review.json`;
+- project scope: `<repo>/.pi/pr-review.json`, applied only when the project is trusted.
+
+A trusted project can override model, tool, and publication settings. Verification profiles are always user-only.
+
+Example:
 
 ```json
 {
   "tiers": {
-    "light": "<fast-model-spec>",
-    "medium": "<balanced-model-spec>",
-    "heavy": "<strong-model-spec:high>"
+    "light": "provider/fast-model",
+    "medium": "provider/balanced-model",
+    "heavy": "provider/strong-model:high"
   },
   "fallbacks": {
-    "light": ["<backup-fast-model>"],
-    "medium": ["<backup-balanced-model>"],
-    "heavy": ["<backup-strong-model:high>", "<balanced-model-spec>"]
+    "heavy": ["provider/backup-model:high"]
   },
   "thinkingLevels": {
     "light": "low",
@@ -137,194 +123,105 @@ Example `pr-review.json`:
     "medium": "configured",
     "heavy": "configured"
   },
-  "autoPostReviews": false,
+  "tools": ["read", "bash", "grep", "find", "ls"],
+  "autoPostReviews": false
+}
+```
+
+Tier subprocesses retry configured fallbacks only for retryable quota, rate-limit, or capacity failures. If a tier is unset, it uses the nearest configured tier and then Pi's default model.
+
+## Publish to GitHub
+
+Publishing is off by default.
+
+```text
+/pr-review 123 --comment       # publish this run
+/pr-review 123 --no-comment    # never publish this run
+/pr-review-config auto_post_reviews=true
+```
+
+The extension—not the model—owns publishing. It creates one formal review with the event hardcoded to `COMMENT`; it never submits `APPROVE` or `REQUEST_CHANGES`. Before writing, it verifies the current PR head, validates inline anchors, and checks for a review of the same head by the current GitHub identity.
+
+Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
+
+If a new commit makes a completed review stale, publish the cached result without rerunning the model:
+
+```text
+/pr-review-publish 123 --allow-stale
+```
+
+Inline comments are intentionally disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and identifies both the reviewed and current SHAs. The cache lasts for the current Pi session.
+
+## Optional verification
+
+You can define fixed test commands in `verificationBaselines` in the **user** config. Project config cannot add or override these profiles. The reviewer may select at most one applicable profile and runs it against the exact captured PR head.
+
+```json
+{
   "verificationBaselines": {
     "unit": {
-      "description": "Run the fixed unit-test entry point",
-      "repository": { "host": "github.com", "owner": "YOUR-ORG", "repo": "YOUR-REPO" },
-      "argv": ["/canonical/absolute/path/to/bun", "test"],
+      "description": "Run the unit tests",
+      "repository": {
+        "host": "github.com",
+        "owner": "YOUR-ORG",
+        "repo": "YOUR-REPO"
+      },
+      "argv": ["/absolute/canonical/path/to/bun", "test"],
       "platforms": ["darwin", "linux"],
       "totalTimeoutMs": 120000,
       "allowForks": false,
       "acknowledgeUnsandboxedPrCodeRisk": true
     }
-  },
-  "tools": ["read", "bash", "grep", "find", "ls"]
+  }
 }
 ```
 
-Each tier runs in an **isolated `pi` subprocess** on its configured model. The `review_subagents` batch tool runs independent passes concurrently (default `max_parallel: 4`, capped at 18) and returns ordered per-pass results. `/pr-review` defaults to 5 slots for overview, two focused correctness specialists, security, and performance; at 200–399 KB it uses two balanced whole-file shards (10 concurrent passes), and at 400 KB or larger it uses three (15 concurrent passes). `--full` adds conventions/maintainability and uses 6/12/18 slots. When a caller requests a lower cap and passes must queue, heavy specialists dispatch before medium/light work while results remain in deterministic request order. The complete diff is captured once in a mode-0600 temporary file and loaded by the extension through `context_file`; the assembled child task is piped over stdin instead of expanded into process argv, keeping large diffs out of the parent conversation, tool arguments, and platform argument-size limits. Ordinary passes receive the full diff; sharded passes collectively cover every changed file, and configured specialists can inspect the full path for concrete cross-shard interactions. The two correctness specialists preserve cross-file analysis while narrowing their objectives to reduce critical-path reasoning; error propagation belongs to contracts/data, while ownership/cleanup belongs to the resource specialist and remains correctness-significant. The older single-pass `review_subagent` tool remains available as a compatibility fallback. If a tier model fails with a retryable quota/rate-limit/capacity error, the subprocess retries that tier's configured `fallbacks` in order. Non-quota failures do not blindly cycle through fallbacks. If a tier is unset, that subagent falls back to the nearest configured tier, then to your pi default model.
+Profiles require an exact repository identity, a canonical absolute executable, an applicable POSIX platform, a total timeout, and explicit risk acknowledgement. Fork PRs are rejected unless `allowForks` is `true`; Windows fails closed.
 
-Thinking resolution and tool policy are independent. For thinking, a supported model-spec `:thinking` suffix wins; otherwise `thinkingLevels[tier]` is passed to the child process, and an unset tier inherits the ambient pi default. Tool policy remains additive and backward compatible: `none` emits Pi's explicit `--no-tools`; `configured` uses the existing `tools` allowlist. A tool call's optional `tool_policy` overrides `toolPolicies[tier]`, which in turn falls back to legacy `configured` behavior. The shipped `/pr-review` prompt explicitly uses `none` only for overview because its complete evidence is supplied in context. The `--full` conventions/maintainability pass and all heavy specialist passes use `configured` repository-context tools so they can inspect surrounding files when needed. Fallback model attempts keep the original pass policy.
+> **Risk:** verification executes PR code without a filesystem or network sandbox. Cleanup supervises the original POSIX process group, but deliberately detached processes can escape it. Use an external sandbox or container for untrusted PRs.
 
-### Optional trusted verification baselines
+Verification fetches into extension-owned temporary Git state, checks the exact SHA before and after importing it, runs in a detached worktree with a minimal secret-scrubbed environment, and leaves the user's checkout and `FETCH_HEAD` unchanged.
 
-Verification is disabled when the user config has no `verificationBaselines`. The orchestrator first calls `pr_review_verify` with `action: "list"`; it may then call `action: "run"` with only `pr_number`, the exact 40-character `head_sha`, and one returned `baseline_name`. The tool schema rejects legacy model-supplied `command` and `timeout_ms` overrides.
+## Review output
 
-Every profile is strict: a repository `{host, owner, repo}` identity, a nonempty fixed `argv` whose executable is an absolute canonical executable file, one or more applicable POSIX `platforms`, `totalTimeoutMs`, optional `description`, optional `allowForks` (default `false`), and `acknowledgeUnsandboxedPrCodeRisk: true`. Unknown fields invalidate the profile. Verification is disabled by default, profiles are user-file-only, and this acknowledgement must be exactly `true`; project config cannot enable or acknowledge it. Windows fails closed. Before fetching or executing PR code, the extension resolves canonical `git` and `gh` executables from the PATH captured when the extension starts and queries the profile's canonical repository for the current PR head and cross-repository status. It fails clearly if either trusted executable is unavailable. A cross-repository/fork PR is rejected unless that trusted profile explicitly sets `allowForks: true`.
+Each finding includes:
 
-The only network fetch runs in a freshly initialized extension-owned bare staging repository under the verification temporary directory. Its fetch has no system, global, or local Git config and no installed hooks. Private HTTPS setup fetches use `gh auth token --hostname <profile-host>` inside the profile's total setup deadline. The token and mode-0700 askpass helper exist only for that staging fetch; all authenticated stdout/stderr is zeroed and suppressed, every observed byte is counted as dropped, and failures return only generic trusted context. After deleting the token/helper, the extension verifies the staged ref against the exact captured SHA, imports only that already-fetched ref into the original repository over a local path with a secret-free minimal Git environment and `--no-write-fetch-head`, and verifies the imported SHA again. Original local hooks or URL rewrites may observe this secret-free local import, but never the token. `FETCH_HEAD` remains unchanged. If `gh` has no token, public repositories still get an unauthenticated HTTPS staging fetch and retain bounded diagnostics plus observed/dropped-byte accounting, including on timeout or abort; private fetch failures explicitly identify missing authentication.
+- severity: `P0`, `P1`, `P2`, `P3`, or `nit`;
+- whether it blocks the verdict;
+- an explanation and confidence score;
+- a diff-anchored file and line range when available.
 
-`totalTimeoutMs` bounds the normal setup, command, termination, and reserved-cleanup lifecycle. A fixed 2-second emergency cleanup allowance is unconditionally available to bounded cleanup beyond that budget, so a pathological run may take up to 2 seconds longer than `totalTimeoutMs`.
+| Severity | Meaning |
+|---|---|
+| `P0` | Drop everything; blocking. |
+| `P1` | Urgent; blocking. |
+| `P2` | Normal defect. |
+| `P3` | Low-priority improvement. |
+| `nit` | Trivial or optional. |
 
-**Risk disclosure:** the command executes code from the pull request without a filesystem or network sandbox. The lifecycle code supervises only the original POSIX process group; PR code can deliberately call `setsid` or otherwise create a new session and survive supervision and cleanup. This is not full process-tree containment. Use an external sandbox or container wrapper for untrusted pull requests, and configure a profile only when you explicitly accept this residual risk.
+The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. The displayed verdict is advisory even when the review is published, because publication always uses the GitHub `COMMENT` event.
 
-### 2. The orchestrator / inline-fallback model
+## Safety and cost
 
-The orchestrator (which fetches the PR, merges findings, and emits the JSON) and the inline fallback path both run on your pi session model:
+- Reviewers receive the captured diff and are instructed not to modify files.
+- The orchestrator does not check out, commit, or push PR code.
+- GitHub writes require `--comment` or an effective `autoPostReviews: true` setting.
+- Publication authority is captured before review or optional verification begins, so PR code cannot enable it mid-run.
+- Multiple model calls run per PR. Use a cheaper `light` model and reserve stronger models for `heavy` passes to control cost.
+- Same-head review markers prevent duplicate publication by the same GitHub identity.
 
-- **Per run:** `pi --model <model-id> "/pr-review 123"`
-- **Persistent default (user):** `~/.pi/agent/settings.json` → `{ "defaultModel": "<model-id>", "defaultThinkingLevel": "high" }`
-- **Persistent default (project):** the same keys in `.pi/settings.json`
-- **Switch mid-session:** `/model`, or `Ctrl+P` to cycle.
+## Development
 
-## Usage
+Run the test suite with:
 
-Type `/` in the pi editor and pick `pr-review`, or:
-
-```
-/pr-review 123                                  # balanced default: P0-P2 plus up to three P3/nits
-/pr-review 123 --full                           # comprehensive six-pass, all-severity review
-/pr-review 123 --comment                        # force one COMMENT review for this run
-/pr-review 123 --no-comment                     # suppress posting for this run
-/pr-review 123 --major-only                     # P0-P2 only; omits style/nit discovery
-/pr-review 123 --balanced                       # explicit alias for the balanced default
-/pr-review 123 --include-closed                 # review a closed/merged PR without a confirmation prompt
-/pr-review 123 --review-closed --comment        # review and attempt a body-only COMMENT review
-/pr-review-publish 123                          # publish the completed review cached in this session
-/pr-review-publish 123 --allow-stale            # publish it after the PR head changed; never rerun the model
-```
-
-`123` is the PR number in the current repo.
-
-The no-flag default retains four independent heavy full-diff lenses (lifecycle, contracts, security, and resources), configured repository tools, model/thinking settings, and source-grounded validation. Heavy passes report P0–P2, while the light overview may contribute at most three direct-diff P3/nits. `--balanced` is an explicit backward-compatible alias for this default. `--major-only` removes minor discovery entirely. `--full` adds the conventions/maintainability pass and exhaustive all-severity reporting. These three flags are mutually exclusive.
-
-### Closed or merged PRs
-
-Closed/merged PRs no longer hard-skip. If you run `/pr-review 123` on a non-open PR, the prompt asks whether to continue before producing a review. Use `--include-closed` or `--review-closed` to proceed non-interactively. When publication is enabled, the extension preemptively folds inline findings into one body-only formal `COMMENT` review; if GitHub rejects it, publication fails explicitly without creating an issue comment.
-
-### Automatic GitHub review posting
-
-`autoPostReviews` is a strict top-level boolean and defaults to `false`. A trusted project `.pi/pr-review.json` value overlays the user value; malformed effective values never enable posting. `/pr-review-config` edits user scope only and displays the effective value/source—if a trusted project overlay wins, edit that project file or use `--no-comment` for the run. The full effective automatic-posting decision (value, validity, source, and error) is frozen when the invocation is accepted, before review tools or optional verification can execute, and is never reread at publication time. Later config changes therefore cannot grant or revoke that invocation's automatic authority; an initially malformed value remains fail-closed. Invocation flags are captured before prompt expansion: `--comment` forces posting for one run independently of automatic config, `--no-comment` suppresses it, and using both is rejected.
-
-Publishing is extension-owned—the model never constructs the write request, and final JSON marked `disposition: "skipped"` is never published. It creates exactly one formal pull-request review. The top-level body contains overview/verdict information, inline-vs-summary counts, nits, and findings that cannot be posted inline; successfully attached P0–P3 findings appear only in their associated inline comments, not duplicated in the top-level body. The GitHub event is hardcoded to `COMMENT`; the publisher cannot send `APPROVE` or `REQUEST_CHANGES`, even when the review's suggested verdict is `request_changes`. It validates the current head and every inline diff anchor before the single POST, so an invalid open-PR inline comment fails without leaving a partial review. Closed/merged PRs require either `--include-closed`/`--review-closed` or the one-shot affirmative confirmation, then use one body-only `COMMENT` review with each formerly-inline finding folded into the body exactly once. Unknown or unconfirmed non-open lifecycle states fail without posting.
-
-### Publishing a completed review after a new commit
-
-The latest valid, reviewed final result for each repository and PR is cached before GitHub publication preflight for the current extension session. If a commit lands after review generation and the normal stale-head guard refuses to post, do **not** rerun `/pr-review` with `--comment` and do not ask the model to bypass its write policy. Use the extension-owned publish-only command:
-
-```
-/pr-review-publish 123 --allow-stale
+```bash
+bun test
 ```
 
-This command calls no review model and reuses the completed result for PR `123`. The default `/pr-review-publish 123` still rejects a stale head; `--allow-stale` is the explicit acknowledgement. A stale review is posted as one body-only formal `COMMENT` review against the head observed during preflight, begins with a warning that shows both the reviewed and observed full SHAs, and keeps every finding in the body. Inline comments are intentionally disabled because their original diff anchors may no longer be valid. Repository binding, duplicate, draft, lifecycle, payload-size, identity, and final head-stability checks remain active. If another commit lands during the publish preflight, run the same publish-only command again to acknowledge that newer observed head.
+The package consists of the `/pr-review` prompt, tiered subagent and rendering extensions, and supporting libraries under `lib/`. To use only the prompt template:
 
-The in-memory cache is discarded when a new pi session starts or extensions reload. `/pr-review-publish` explicitly refuses to start or rerun a review when no cached result exists, and it will not publish an older cached result while a new review of the same PR is active.
-
-### Duplicate review handling
-
-Published reviews include a hidden `pi-pr-review` marker with the reviewed `headRefOid`. A later run skips only when it finds a same-head marker authored by the current authenticated GitHub identity in either formal reviews or legacy issue comments. If new commits were pushed, the head SHA changes and `/pr-review` reviews the PR again. Older or unmarked content is not proof that the current head was reviewed.
-
-### Response format
-
-For actual review output, the assistant replies with **only** the JSON object (no prose, no fences). The only exception is the pre-review confirmation question for closed/merged PRs when `--include-closed` / `--review-closed` was not supplied.
-
-In the **interactive TUI**, the final JSON is rendered as a full review: a `## Code Review — PR #N: <title>` header, a **Verification** line, **Overview**, **Strengths**, a **Findings** table (sorted `P0 → nit`, with a blocking column, location, and confidence) plus per-finding details, **Correctness / Security / Performance** notes, and a **Verdict**. In `print` / `json` / `rpc` modes the raw JSON is left untouched so piping and automation keep a machine-readable payload.
-
-Example payload:
-
-```json
-{
-  "pr": { "number": 33, "title": "fix(logs): parse date-time log timestamps", "head_sha": "0123456789abcdef0123456789abcdef01234567" },
-  "disposition": "reviewed",
-  "verification": "`go build ./...` ✅, `go test ./...` ✅ (130 passed)",
-  "overview": "Migrates log timestamps from epoch-ms to RFC3339 to match the endpoint contract.",
-  "strengths": ["Reuses FormatTimestamp instead of ad-hoc formatting; net -3 lines."],
-  "findings": [
-    {
-      "title": "[P1] Guard against nil map before write",
-      "severity": "P1",
-      "blocking": true,
-      "body": "Panics under concurrent writes; guard with a mutex.",
-      "confidence_score": 0.9,
-      "code_location": {
-        "absolute_file_path": "pkg/store/cache.go",
-        "line_range": { "start": 42, "end": 45 },
-        "side": "RIGHT",
-        "commentable": true
-      }
-    }
-  ],
-  "notes": { "correctness": "build confirms; no unused imports", "security": "none", "performance": "negligible" },
-  "verdict": "approve",
-  "overall_correctness": "patch is correct",
-  "overall_explanation": "Clean, well-scoped contract-alignment change with matching tests.",
-  "overall_confidence_score": 0.9
-}
+```bash
+cp prompts/pr-review.md ~/.pi/agent/prompts/
 ```
 
-Severity tags: `[P0]` blocking/drop-everything · `[P1]` blocking/urgent · `[P2]` normal · `[P3]` low · `[nit]` trivial/optional. Verdict is `approve` (no blocking findings), `request_changes` (a blocking finding exists), or `comment`.
-
-**Inline-comment ready.** Each finding's `code_location` is diff-anchored — repo-relative `absolute_file_path`, `line_range` on `side` (`RIGHT` for added/context lines, `LEFT` for removed), and `commentable` (whether the lines are inside a diff hunk). The rendered table shows an **Inline** ✎ column. When publishing is enabled, the extension validates these anchors against current GitHub diff metadata and attaches eligible P0–P3 findings under the single formal review; nits and off-diff observations stay in the top-level body.
-
-## What's in the package
-
-```
-pi-pr-review/
-├─ package.json                      # pi manifest: prompts + extensions
-├─ prompts/pr-review.md              # the /pr-review orchestrator prompt
-├─ lib/pr-review-policy.ts           # pure tool-policy resolution/argv helpers
-├─ lib/pr-review-publish.ts          # safe COMMENT-review payload, validation, and gh publisher
-├─ lib/pr-review-telemetry.ts        # monotonic invocation intervals and overlap-safe summaries
-├─ lib/pr-review-thinking.ts         # tier thinking resolution and warnings
-├─ lib/pr-review-verify.ts           # strict profiles, exact-head verification, group supervision + cleanup
-├─ extensions/pr-review-subagent.ts  # review tools, named verification + /pr-review-config
-├─ extensions/review-table.ts        # renders JSON and triggers trusted configured publishing
-├─ tests/pr-review-policy.test.ts     # focused policy compatibility tests
-├─ tests/pr-review-prompt.test.ts     # orchestrator scheduling and safety contract tests
-├─ tests/pr-review-publish.test.ts    # posting gate, payload, marker, and anchor tests
-├─ tests/pr-review-telemetry.test.ts  # monotonic lifecycle and overlap accounting tests
-├─ tests/pr-review-thinking.test.ts   # tier thinking compatibility tests
-└─ tests/pr-review-verify.test.ts     # verification success/failure/timeout/abort cleanup tests
-```
-
-## Speed, security & cost notes
-
-### Concurrent review and verification
-
-- The four independent major-defect lenses remain intact. The default executes five focused base passes: overview/minor hygiene, state/lifecycle correctness, contracts/data correctness, security, and performance. Diffs from 200–399 KB with multiple changed files run every base pass over two whole-file-balanced shards (10 concurrent passes); diffs at least 400 KB use three shards (15 concurrent passes). `--full` adds conventions/maintainability and expands those counts to 6/12/18. Smaller or single-file diffs remain unsharded. The orchestrator captures the diff once without dumping it into its conversation, removes it on every early exit or confirmation pause, and performs final cleanup after validation. The extension appends the bounded regular `context_file` internally for every full-diff pass and pipes the assembled task to child stdin rather than argv; the orchestrator later reads only candidate-specific hunks for independent validation. Only overview runs context-only with `--no-tools`; all heavy specialists and the optional `--full` medium pass retain configured tools for surrounding-file validation. Unsharded correctness specialists receive the complete diff; in sharded reviews every correctness lens covers every shard, and configured passes can inspect the full captured path to validate concrete cross-shard defects. Specialists start from that diff, batch independent evidence reads/checks for concrete candidates, and allow one evidence-driven follow-up instead of serially browsing the repository; every reported finding still requires substantiation. All subprocesses use `--no-context-files`, `--no-skills`, `--no-prompt-templates`, and `--no-themes` because the orchestrator supplies the complete review task explicitly; extension discovery and configured tools remain enabled. In `--full`, convention excerpts are sent only to the medium pass instead of every model.
-- The orchestrator gathers independent PR metadata, diff, identity, convention paths, and `pr_review_verify` `action=list` discovery in one concurrent initial tool turn, then reads only applicable convention files. It selects at most one applicable **user-level** verification name. Missing config means verification is disabled; project-local profiles are ignored. The model never supplies argv or a timeout.
-- When a profile is selected, the review batch and `action=run` are emitted in the **same assistant turn**. Run accepts only `pr_number`, exact `head_sha`, and `baseline_name`. Before PR-code setup, the extension resolves canonical Git/gh from its startup PATH, uses trusted `gh` metadata to revalidate the exact head, and rejects cross-repository PRs unless `allowForks` is true.
-- The sole network fetch is isolated in a fresh extension-owned bare staging repository with config and hooks absent. Authentication and askpass exist only during that staging fetch, whose output is fully suppressed and accounted. After exact staged-SHA verification, a secret-free local-path fetch imports the ref into the original repository with `--no-write-fetch-head`, followed by a second exact-SHA check. Original hooks/URL rewrites never see the token. Unauthenticated timeout/abort paths retain bounded diagnostics and byte accounting.
-- The fixed argv runs without a shell/stdin, with a minimal secret-scrubbed environment and temporary HOME/cache. `totalTimeoutMs` bounds the normal setup+command+termination+reserved-cleanup lifecycle; a fixed 2-second emergency cleanup allowance is unconditionally available to bounded cleanup beyond it. Output uses a shared raw-byte cap, UTF-8/control sanitization, exact dropped-byte counts, and a final serialized cap. Timeout/abort or residual members of the original process group trigger group TERM, then unconditional group KILL after grace, followed by bounded drain. `primaryOutcome`, `terminationOutcome`, and `cleanupOutcome` remain independent.
-- Verification still executes unsandboxed PR code. Supervision covers only the original POSIX process group; deliberate `setsid`/session escape can survive. Use an external sandbox/container wrapper for untrusted PRs. If no profile applies or the tool is unavailable, verification is skipped rather than replaced with prompt-owned bash.
-
-### Performance telemetry
-
-Review-tool results expose the effective `toolPolicy`, monotonic `elapsedMs`, per-attempt timing, observable batch scheduling offsets, and child phase diagnostics: `firstEventMs`, `firstAssistantMs`, and overlap-aware `toolElapsedMs`. In addition, when an accepted `/pr-review` reaches a recorded terminal, cleared, or replaced boundary, it appends a durable `pr-review-telemetry` session entry with these fields:
-
-- `schemaVersion` (currently `2`), `clock`, `prNumber`, and `completion` identify the schema, monotonic clock, PR, and terminal boundary (`terminal_response`, `cleared`, or `replaced`).
-- `totalWallMs` is measured directly from accepted input to that boundary and includes any human-confirmation wait. Publication occurs afterward and is excluded.
-- `activeReviewMs` is the active timeline after human-confirmation wait is removed.
-- `phases.humanConfirmationWait.elapsedMs` reports time paused after the one-shot question for a non-open PR until affirmative input resumes the review or the invocation reaches its recorded completion. This wait is also removed from active interval offsets rather than attributed to model or orchestration time.
-- `phases.reviewSubagentTools` and `phases.baselineVerificationTool` report interval-unioned `elapsedMs` plus observed tool intervals. Baseline timing is attributed only to `pr_review_verify` calls with `action=run`; `action=list` discovery and bash calls remain aggregate orchestration. Each interval contains `toolCallId`, `toolName`, `startOffsetMs`, `endOffsetMs`, `elapsedMs`, and `endObserved` on the active timeline.
-- `phases.overlapMs` is the intersection of those two phase interval sets. `phases.observableToolWallMs` is their union, so concurrent work is not double-counted.
-- `phases.aggregateOrchestration.elapsedMs` is the remaining active time. It intentionally groups metadata/context gathering, model orchestration, targeted checks, and final validation because their individual lifecycle boundaries are not directly observed; it is not a model-only timing claim. The prompt schedules independent initial gathering together and batches known candidate-validation reads/checks into one parallel wave (plus at most one evidence-driven follow-up) without weakening the requirement to confirm every surviving finding.
-- `notes` records these accounting boundaries in the durable entry so downstream consumers do not have to infer them.
-
-These measurements describe observed execution and do not guarantee speed. The balanced five-pass topology is the default; use `--full` when exhaustive convention/minor coverage justifies the additional work. Cache reordering and further context/tool reduction remain deferred pending evidence that review quality is preserved. Restore tools for a custom pass with `tool_policy: "configured"`; omitted policy retains legacy behavior unless `toolPolicies` config says otherwise.
-
-### Security, cost, and publishing
-
-- The `review_subagents` batch tool and `review_subagent` fallback spawn isolated `pi` subprocesses (`--mode json -p --no-session`) on your configured tier models. Reviewer prompts prohibit modifications, but a configured allowlist containing `bash` is not technically read-only; use a narrower allowlist if stronger enforcement is required.
-- Project-local model/tool/publication settings in `pr-review.json` are read only when the project is trusted; project-local `verificationBaselines` is always ignored. Because project `autoPostReviews: true` causes writes under your authenticated `gh` identity, its full effective decision is snapshotted before any review tools or optional unsandboxed verification execute and the source is surfaced when publication occurs. PR code cannot gain write authority by changing config mid-review.
-- GitHub publication uses `gh` only, verifies the current identity and PR head, checks paginated formal reviews and legacy comments for same-head markers, and hardcodes `event: COMMENT`. Ambiguous transport failures are reconciled once and never blindly retried. The performance changes above do not alter these publishing gates or opt-in defaults.
-- **`gh api -f` caution:** `gh api ... -f body=@/tmp/file.md` posts the literal text `@/tmp/file.md`; unlike `gh pr comment --body-file`, `-f` does not expand `@file`. Use a JSON payload via `gh api ... --input -` for API requests. The built-in publisher already does this.
-- Tiered review calls multiple models per PR, concurrently for independent passes. Point `light` at a model suitable for overview/risk scan; reserve `heavy` for deep passes, and configure per-tier `fallbacks` only for acceptable backup models because retries can increase cost.
-
-## Design notes
-
-- **Process** is PR-number driven: confirm non-open PRs, skip draft/same-head-already-reviewed work, fan out four major-defect lenses as five focused default passes (10/15 passes for adaptive large-diff shards), verify, validate/classify, emit JSON, then optionally publish one extension-owned formal `COMMENT` review. `--full` uses 6/12/18 passes.
-- **Bounds minor work by default:** retain every validated P0–P2 plus at most three direct-diff P3/nits. `--full` captures every qualifying severity (`nit → P0`). The verdict depends only on blocking findings.
-- **Verification is non-destructive to Git state:** a selected user-level named baseline runs through `pr_review_verify` in an extension-owned worktree pinned to the captured full PR SHA. Staging and local import use `--no-write-fetch-head`; cleanup reports worktree/ref/temp removal separately. The prompt never owns cleanup and never checks out, commits, or pushes in your working tree. Verification is nevertheless unsandboxed PR-code execution, so it is disabled by default and requires explicit user acknowledgement plus an external sandbox/container wrapper when the PR is untrusted.
-- pi has no built-in sub-agents, so tiering is implemented as an extension that spawns isolated `pi` subprocesses per tier; the batch tool gives deterministic parallelism, and the prompt degrades gracefully to single-pass or inline review when the extension is absent.
+Releases use conventional squash-merged PR titles and npm trusted publishing. See [RELEASING.md](RELEASING.md).
