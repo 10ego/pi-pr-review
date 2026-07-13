@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.3](https://github.com/10ego/pi-pr-review/compare/v1.6.2...v1.6.3) (2026-07-13)
+
+
+### Performance Improvements
+
+* **review:** optimize parallel review execution ([#5](https://github.com/10ego/pi-pr-review/issues/5)) ([4ea1a76](https://github.com/10ego/pi-pr-review/commit/4ea1a7627f5c5fb7a8022a97fe2c24bb44643d2a))
+
 ## [1.6.2](https://github.com/10ego/pi-pr-review/compare/v1.6.1...v1.6.2) (2026-07-11)
 
 
