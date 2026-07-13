@@ -6,6 +6,7 @@
       "release-type": "node",
       "package-name": "pi-pr-review",
       "changelog-path": "CHANGELOG.md",
+      "pull-request-title-pattern": "release${scope}: release${component} ${version}",
       "include-component-in-tag": false,
       "changelog-sections": [
         { "type": "feat", "section": "Features", "hidden": false },

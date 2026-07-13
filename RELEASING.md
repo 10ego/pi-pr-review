@@ -1,6 +1,6 @@
 # Releasing
 
-[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version change, `CHANGELOG.md`, and release manifest. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `pi-pr-review` to npm with signed provenance.
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version change, `CHANGELOG.md`, and release manifest. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `pi-pr-review` to npm with signed provenance.
 
 ## Semver
 
