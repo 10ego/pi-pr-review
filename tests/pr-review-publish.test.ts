@@ -11,7 +11,6 @@ import {
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
-	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
@@ -83,6 +82,7 @@ const changedFiles = [
 ];
 
 const autoOff = resolveAutoPostSetting({ autoPostReviews: false });
+const sessionA = { id: "session-a", startedAt: "2026-07-13T00:00:00.000Z" };
 
 describe("automatic posting configuration", () => {
 	test("defaults to disabled", () => {
@@ -297,7 +297,7 @@ describe("publish-only completed review command", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
-		cache.remember(review, invocation, repository, "session-a");
+		cache.remember(review, invocation, repository);
 		expect(cache.get(7, repository)).toEqual({ review, invocation, repository });
 		expect(cache.get(7, { hostname: "github.com", repository: "other/repo" })).toBeUndefined();
 		expect(cache.get(8, repository)).toBeUndefined();
@@ -305,43 +305,63 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
-	test("restores only validated state from the same Pi session", () => {
+	test("restores only validated state from the same Pi session instance", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
-		const persisted = cache.remember(review, invocation, repository, "session-a");
+		const record = cache.remember(review, invocation, repository);
+		const persisted = cache.persist(record, sessionA);
 		const restored = new CompletedReviewCache();
-		expect(restored.restore(persisted, "session-a")).toBeTrue();
+		expect(restored.restore(persisted, sessionA)).toBeTrue();
 		expect(restored.get(7, repository)).toEqual({ review, invocation, repository });
-		expect(restored.restore(persisted, "forked-session")).toBeFalse();
-		expect(restored.restore({ ...persisted, schemaVersion: 2 }, "session-a")).toBeFalse();
+		expect(
+			restored.restore(persisted, { id: sessionA.id, startedAt: "2026-07-14T00:00:00.000Z" }),
+		).toBeFalse();
+		expect(restored.restore({ ...persisted, schemaVersion: 1 }, sessionA)).toBeFalse();
 		expect(
 			restored.restore(
 				{ ...persisted, repository: { hostname: "invalid host", repository: "owner/repo" } },
-				"session-a",
+				sessionA,
 			),
 		).toBeFalse();
+	});
+
+	test("restores referenced reviews without duplicating raw JSON", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const record = cache.remember(review, invocation, repository);
+		const persisted = cache.persist(record, sessionA, "review-message");
+		expect(persisted.review).toBeUndefined();
+		const branch = [
+			{
+				type: "message",
+				id: "review-message",
+				message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(review) }] },
+			},
+			{ type: "custom", id: "cache-entry", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted },
+		];
+		const restored = new CompletedReviewCache();
+		expect(restoreCompletedReviewBranch(restored, branch, sessionA)).toBe(1);
+		expect(restored.get(7, repository)).toEqual({ review, invocation, repository });
 	});
 
 	test("rebuilds cache state for reloads and session-tree navigation", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
-		const persisted = cache.remember(review, invocation, repository, "session-a");
+		const record = cache.remember(review, invocation, repository);
+		const persisted = cache.persist(record, sessionA);
 		const branch = [{ type: "custom", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted }];
 
-		expect(restoreCompletedReviewBranch(cache, branch, "session-a")).toBe(1);
+		expect(restoreCompletedReviewBranch(cache, branch, sessionA)).toBe(1);
 		expect(cache.get(7, repository)).toBeDefined();
-		expect(restoreCompletedReviewBranch(cache, [], "session-a")).toBe(0);
+		expect(restoreCompletedReviewBranch(cache, [], sessionA)).toBe(0);
 		expect(cache.get(7, repository)).toBeUndefined();
-		expect(restoreCompletedReviewBranch(cache, branch, "forked-session")).toBe(0);
+		expect(
+			restoreCompletedReviewBranch(cache, branch, { id: sessionA.id, startedAt: "different-instance" }),
+		).toBe(0);
 		expect(cache.get(7, repository)).toBeUndefined();
-
-		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
-		expect(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE).toBe("pr-review-cache-branch");
-		expect(extension).toContain("pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted)");
-		expect(extension).toContain('pi.on("session_tree"');
-		expect(extension).toContain("pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE");
 	});
 
 	test("does not retry publication without the repository binding used for caching", () => {

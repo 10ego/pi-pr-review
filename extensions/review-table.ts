@@ -35,6 +35,8 @@ import {
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
+	type CompletedReviewRecord,
+	type CompletedReviewSessionIdentity,
 	type RepositoryBinding,
 	type ReviewInvocation,
 	type ReviewLike,
@@ -387,13 +389,22 @@ async function maybePublishReview(
 export default function (pi: ExtensionAPI) {
 	const invocationGate = new ReviewInvocationGate();
 	const completedReviews = new CompletedReviewCache();
-	const restoreCompletedReviews = (ctx: ExtensionContext) => {
-		restoreCompletedReviewBranch(
-			completedReviews,
-			ctx.sessionManager.getBranch(),
-			ctx.sessionManager.getSessionId(),
-		);
+	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
+		const header = ctx.sessionManager.getHeader();
+		const id = ctx.sessionManager.getSessionId();
+		return header?.id === id && typeof header.timestamp === "string"
+			? { id, startedAt: header.timestamp }
+			: undefined;
 	};
+	const restoreCompletedReviews = (ctx: ExtensionContext) => {
+		const session = sessionIdentity(ctx);
+		if (!session) {
+			completedReviews.clear();
+			return;
+		}
+		restoreCompletedReviewBranch(completedReviews, ctx.sessionManager.getBranch(), session);
+	};
+	let pendingPersistence: { record: CompletedReviewRecord; session: CompletedReviewSessionIdentity } | undefined;
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -463,20 +474,21 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		invocationGate.clear();
+		pendingPersistence = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 	});
 
-	pi.on("session_tree", (_event, ctx) => {
+	pi.on("session_tree", (event, ctx) => {
 		invocationGate.clear();
+		pendingPersistence = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
+		const session = sessionIdentity(ctx);
+		if (event.summaryEntry || !session) return;
 		try {
 			// Pi otherwise resumes at the JSONL tail, not a no-summary /tree selection.
-			pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE, {
-				schemaVersion: 1,
-				sessionId: ctx.sessionManager.getSessionId(),
-			});
+			pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE, { schemaVersion: 2, session });
 		} catch (error) {
 			ctx.ui.notify(`PR review cache branch selection will not survive session resume: ${String(error)}`, "warning");
 		}
@@ -518,6 +530,41 @@ export default function (pi: ExtensionAPI) {
 		telemetryTracker.toolEnded(event.toolCallId);
 	});
 
+	pi.on("turn_end", (_event, ctx) => {
+		const pending = pendingPersistence;
+		pendingPersistence = undefined;
+		if (!pending) return;
+		const currentSession = sessionIdentity(ctx);
+		if (
+			!currentSession ||
+			currentSession.id !== pending.session.id ||
+			currentSession.startedAt !== pending.session.startedAt
+		) {
+			ctx.ui.notify("Completed review cache will not survive reload because the session identity changed", "warning");
+			return;
+		}
+		const leaf = ctx.sessionManager.getLeafEntry();
+		const leafText = leaf?.type === "message" && leaf.message.role === "assistant"
+			? assistantText(leaf.message as { content?: MessagePart[] })
+			: "";
+		const leafReview = parsePublishableReview(leafText).review;
+		const reviewEntryId =
+			leaf?.type === "message" &&
+			leaf.message.role === "assistant" &&
+			leafReview &&
+			!validateReviewInvocation(leafReview, pending.record.invocation)
+				? leaf.id
+				: undefined;
+		try {
+			pi.appendEntry(
+				COMPLETED_REVIEW_ENTRY_TYPE,
+				completedReviews.persist(pending.record, pending.session, reviewEntryId),
+			);
+		} catch (error) {
+			ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");
+		}
+	});
+
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
@@ -556,17 +603,12 @@ export default function (pi: ExtensionAPI) {
 			) {
 				try {
 					repository = await resolveRepositoryBinding(ctx.cwd);
-					// Cache and persist before publication preflight so stale failures survive reloads.
-					const persisted = completedReviews.remember(
-						publishable.review,
-						invocation,
-						repository,
-						ctx.sessionManager.getSessionId(),
-					);
-					try {
-						pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted);
-					} catch (error) {
-						ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");
+					// Cache before publication preflight; persist after Pi stores the assistant message.
+					const record = completedReviews.remember(publishable.review, invocation, repository);
+					const session = sessionIdentity(ctx);
+					if (session) pendingPersistence = { record, session };
+					else {
+						ctx.ui.notify("Completed review cache will not survive reload: session identity is unavailable", "warning");
 					}
 				} catch (error) {
 					ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
