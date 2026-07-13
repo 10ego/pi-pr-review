@@ -3,8 +3,17 @@ import { describe, expect, test } from "bun:test";
 
 const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 const extension = readFileSync(new URL("../extensions/pr-review-subagent.ts", import.meta.url), "utf8");
+const entrypoint = readFileSync(new URL("../extensions/index.ts", import.meta.url), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 describe("PR review prompt scheduling policy", () => {
+	test("registers tools and publication behind one shared loop coordinator", () => {
+		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
+		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
+		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
+		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+	});
+
 	test("uses balanced five-pass coverage by default", () => {
 		expect(prompt).toContain("The default is balanced");
 		expect(prompt).toContain("By default, and when `--balanced` is present");

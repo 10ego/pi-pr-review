@@ -92,7 +92,7 @@ Common settings:
 
 Supported thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. A thinking suffix in a model spec, such as `provider/model:xhigh`, takes precedence over the tier's thinking setting. `unset` restores inherited behavior.
 
-Tool policy can be `none` or `configured`. `configured` uses the `tools` allowlist; because an allowlist containing `bash` is not technically read-only, remove it if you need stricter reviewer isolation.
+Tool policy can be `none` or `configured`. `configured` uses the `tools` allowlist; because an allowlist containing `bash` is not technically read-only, remove it if you need stricter reviewer isolation. Reviewer subprocesses disable extension discovery, strip the package's review-tool names from this allowlist, and use `--no-tools` when no allowed tools remain.
 
 Configuration is stored in:
 
@@ -203,6 +203,10 @@ The verdict is `request_changes` only when a validated P0 or P1 finding exists. 
 
 ## Safety and cost
 
+- `review_subagent`, `review_subagents`, and `pr_review_verify` are exposed only during a direct interactive or RPC `/pr-review` loop. Extension-generated input cannot authorize them.
+- Every review tool also checks an in-memory, session- and cwd-bound loop lease before reading review context, running verification, or spawning a reviewer. Hiding the tools is not the only enforcement boundary.
+- Unrelated input, terminal completion, cancellation, session navigation, or tree navigation revokes the lease and aborts in-flight review work. Tools are suspended while a non-open PR waits for confirmation.
+- Reviewer subprocesses start with extension discovery disabled, so they cannot recursively invoke this package's agents or verification tool.
 - Reviewers receive the captured diff and are instructed not to modify files.
 - The orchestrator does not check out, commit, or push PR code.
 - GitHub writes require `--comment` or an effective `autoPostReviews: true` setting.
