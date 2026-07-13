@@ -11,14 +11,17 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	CONFIG_DIR_NAME,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
 	classifyAssistantCompletion,
+	CachedPublishAuthorizationGate,
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
@@ -28,10 +31,10 @@ import {
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
+	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveRepositoryBinding,
 	restoreCompletedReviewBranch,
-	ReviewInvocationGate,
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
@@ -41,6 +44,10 @@ import {
 	type ReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
+import {
+	ReviewLoopCoordinator,
+	type ReviewLoopInputSource,
+} from "../lib/pr-review-loop.ts";
 import {
 	ReviewTelemetryTracker,
 	type ReviewPerformanceTelemetry,
@@ -78,6 +85,25 @@ interface Review {
 }
 
 type MessagePart = { type: string; text?: string };
+
+const OWN_REVIEW_PROMPT = fs.realpathSync(
+	fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url)),
+);
+
+function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
+	try {
+		return pi.getCommands().some((command) => {
+			if (command.name !== "pr-review" || command.source !== "prompt") return false;
+			try {
+				return fs.realpathSync(command.sourceInfo.path) === OWN_REVIEW_PROMPT;
+			} catch {
+				return false;
+			}
+		});
+	} catch {
+		return false;
+	}
+}
 
 function assistantText(message: { content?: MessagePart[] }): string {
 	if (!Array.isArray(message.content)) return "";
@@ -309,19 +335,32 @@ function readJsonObject(filePath: string): ConfigReadResult {
 	}
 }
 
-function resolvePublishingConfig(ctx: ExtensionContext): AutoPostResolution {
+interface PublishingConfigResolution {
+	autoPost: AutoPostResolution;
+	allowStale: AutoPostResolution;
+}
+
+function invalidPublishingConfig(source: "user" | "project", error: string): PublishingConfigResolution {
+	const invalid = { value: false, valid: false, source, error } as const;
+	return { autoPost: invalid, allowStale: invalid };
+}
+
+function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolution {
 	const user = readJsonObject(path.join(getAgentDir(), "pr-review.json"));
-	if (user.error) return { value: false, valid: false, source: "user", error: user.error };
+	if (user.error) return invalidPublishingConfig("user", user.error);
 	let project: ConfigReadResult | undefined;
 	try {
 		if (ctx.isProjectTrusted()) {
 			project = readJsonObject(path.join(ctx.cwd, CONFIG_DIR_NAME, "pr-review.json"));
-			if (project.error) return { value: false, valid: false, source: "project", error: project.error };
+			if (project.error) return invalidPublishingConfig("project", project.error);
 		}
 	} catch {
 		/* user config only */
 	}
-	return resolveAutoPostSetting(user.value, project?.value);
+	return {
+		autoPost: resolveAutoPostSetting(user.value, project?.value),
+		allowStale: resolveAllowStalePublishSetting(user.value, project?.value),
+	};
 }
 
 function notifyPublishResult(
@@ -380,14 +419,18 @@ async function maybePublishReview(
 		prNumber: invocation.prNumber,
 		headSha,
 		allowNonOpen: invocation.allowNonOpen,
+		allowStale: invocation.allowStalePublish,
 		expectedRepository,
 		review: parsed.review as ReviewLike,
 	});
 	notifyPublishResult(result, authority.source ?? "frozen invocation", ctx);
 }
 
-export default function (pi: ExtensionAPI) {
-	const invocationGate = new ReviewInvocationGate();
+export default function registerReviewTable(
+	pi: ExtensionAPI,
+	loopCoordinator = new ReviewLoopCoordinator(pi),
+	publishAuthorization = new CachedPublishAuthorizationGate(),
+) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
 		const header = ctx.sessionManager.getHeader();
@@ -424,9 +467,126 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	type CachedPublication =
+		| { result: Awaited<ReturnType<typeof publishPullReview>> }
+		| { error: string };
+	const publishCachedReview = async (
+		prNumber: number,
+		allowStaleOverride: boolean | undefined,
+		ctx: ExtensionContext,
+		requireLatest = false,
+	): Promise<CachedPublication> => {
+		let repository: RepositoryBinding;
+		try {
+			repository = await resolveRepositoryBinding(ctx.cwd);
+		} catch (error) {
+			return { error: `Cannot resolve the current GitHub repository: ${String(error)}` };
+		}
+		const completed = completedReviews.get(prNumber, repository);
+		if (requireLatest && completedReviews.latest(repository)?.invocation.prNumber !== prNumber) {
+			return {
+				error: `PR #${prNumber} is not the latest completed review cached for this repository. Name the PR number in the direct publish request to select it explicitly.`,
+			};
+		}
+		if (!completed) {
+			return {
+				error: `No completed review for PR #${prNumber} is cached for this repository in the current extension session. Publishing never starts or reruns a review.`,
+			};
+		}
+		const headSha = completed.review.pr?.head_sha;
+		if (typeof headSha !== "string") return { error: "Cached PR review is missing pr.head_sha" };
+		const allowStale = allowStaleOverride ?? completed.invocation.allowStalePublish;
+		return {
+			result: await publishPullReview({
+				cwd: ctx.cwd,
+				prNumber,
+				headSha,
+				allowNonOpen: completed.invocation.allowNonOpen,
+				allowStale,
+				expectedRepository: completed.repository,
+				review: completed.review,
+			}),
+		};
+	};
+
+	pi.registerTool({
+		name: "pr_review_publish",
+		label: "Publish Cached PR Review",
+		description: [
+			"Publish a completed PR review cached by this extension after a fresh direct interactive or RPC user request authorizes one call.",
+			"Accepts only a PR number: review content, repository binding, and reviewed head come from the validated extension cache.",
+			"Never starts or reruns review agents. An explicit user request authorizes safe stale publication as a body-only review with the reviewed and current commit hashes disclosed.",
+		].join(" "),
+		promptSnippet: "Publish an extension-cached completed PR review when the user explicitly asks to post it",
+		promptGuidelines: [
+			"Call pr_review_publish only in the agent turn started by the user's direct publish request; the extension enforces a one-shot host-side authorization.",
+			"Do not call it during the /pr-review run itself; --comment and autoPostReviews are handled by the extension after final JSON.",
+			"This tool cannot accept model-authored review text; stale inline anchors are never posted.",
+		],
+		parameters: Type.Object(
+			{
+				pr_number: Type.Integer({
+					minimum: 1,
+					description: "PR number whose completed cached review should be published; stale reviews degrade to disclosed body-only comments.",
+				}),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (loopCoordinator.peek()) {
+				return {
+					content: [{ type: "text", text: "A /pr-review run is still active; finish or cancel it before publishing its cached result." }],
+					isError: true,
+					details: { status: "active_review" },
+				};
+			}
+			const authorization = publishAuthorization.consume(params.pr_number, ctx);
+			if (!authorization.authorized) {
+				return {
+					content: [{
+						type: "text",
+						text: "Cached review publication requires a fresh direct user request such as ‘post the inline review’ or ‘publish the review for PR #123’.",
+					}],
+					isError: true,
+					details: { status: "unauthorized" },
+				};
+			}
+			const published = await publishCachedReview(
+				params.pr_number,
+				true,
+				ctx,
+				authorization.requireLatest,
+			);
+			if ("error" in published) {
+				return {
+					content: [{ type: "text", text: published.error }],
+					isError: true,
+					details: { status: "error", message: published.error },
+				};
+			}
+			const result = published.result;
+			const succeeded = result.status === "posted" ||
+				result.status === "posted_degraded" ||
+				result.status === "skipped_duplicate";
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				...(!succeeded ? { isError: true } : {}),
+				details: result,
+			};
+		},
+	});
+
 	pi.registerCommand("pr-review-publish", {
 		description: "Publish a completed review from this session without rerunning the model",
 		handler: async (args, ctx) => {
+			// Extension commands execute before input hooks, so every invocation —
+			// including malformed arguments — must revoke active review and model-tool authority.
+			publishAuthorization.clear();
+			const active = loopCoordinator.peek();
+			if (active) {
+				loopCoordinator.clear();
+				persistTelemetry("cleared");
+			}
 			const parsed = parsePublishExistingArgs(args ?? "");
 			if (parsed.error || !parsed.prNumber) {
 				ctx.ui.notify(
@@ -435,60 +595,50 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const active = invocationGate.peek();
 			if (active?.prNumber === parsed.prNumber) {
 				ctx.ui.notify(
-					`PR #${parsed.prNumber} is still being reviewed. The publish-only command will not post an older cached result while a new result is in progress.`,
+					`PR #${parsed.prNumber} review was cancelled. The publish-only command will not post an older cached result in its place.`,
 					"error",
 				);
 				return;
 			}
-			let repository: RepositoryBinding;
-			try {
-				repository = await resolveRepositoryBinding(ctx.cwd);
-			} catch (error) {
-				ctx.ui.notify(`Cannot resolve the current GitHub repository: ${String(error)}`, "error");
+			const published = await publishCachedReview(
+				parsed.prNumber,
+				parsed.allowStale ? true : undefined,
+				ctx,
+			);
+			if ("error" in published) {
+				ctx.ui.notify(published.error, "error");
 				return;
 			}
-			const completed = completedReviews.get(parsed.prNumber, repository);
-			if (!completed) {
-				ctx.ui.notify(
-					`No completed review for PR #${parsed.prNumber} is cached for this repository in the current extension session. This command never starts or reruns a review.`,
-					"error",
-				);
-				return;
-			}
-			const headSha = completed.review.pr?.head_sha;
-			if (typeof headSha !== "string") {
-				ctx.ui.notify("Cached PR review is missing pr.head_sha", "error");
-				return;
-			}
-			const result = await publishPullReview({
-				cwd: ctx.cwd,
-				prNumber: parsed.prNumber,
-				headSha,
-				allowNonOpen: completed.invocation.allowNonOpen,
-				allowStale: parsed.allowStale,
-				expectedRepository: completed.repository,
-				review: completed.review,
-			});
 			notifyPublishResult(
-				result,
+				published.result,
 				parsed.allowStale ? "publish-only --allow-stale" : "publish-only",
 				ctx,
 			);
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
-		invocationGate.clear();
+	const revokeActiveLoop = () => {
+		loopCoordinator.clear();
+		publishAuthorization.clear();
 		pendingCompletion = undefined;
-		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
+	};
+
+	pi.on("session_before_switch", revokeActiveLoop);
+	pi.on("session_before_fork", revokeActiveLoop);
+	pi.on("session_before_tree", revokeActiveLoop);
+	pi.on("session_shutdown", revokeActiveLoop);
+
+	pi.on("session_start", (_event, ctx) => {
+		revokeActiveLoop();
+		restoreCompletedReviews(ctx);
 	});
 
 	pi.on("session_tree", (event, ctx) => {
-		invocationGate.clear();
+		loopCoordinator.clear();
+		publishAuthorization.clear();
 		pendingCompletion = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
@@ -503,8 +653,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
-		if (invocationGate.phase() === "awaiting_confirmation") {
-			const confirmation = invocationGate.resolveConfirmationInput(event.text);
+		const source = event.source as ReviewLoopInputSource;
+		if (loopCoordinator.peek()) publishAuthorization.clear();
+		else publishAuthorization.observe(event.text, source, event.streamingBehavior, ctx);
+		if (loopCoordinator.phase() === "awaiting_confirmation") {
+			const confirmation = loopCoordinator.resolveConfirmationInput(event.text, source, ctx);
 			if (confirmation === "confirmed") {
 				telemetryTracker.resumeAfterConfirmation();
 				return;
@@ -513,15 +666,37 @@ export default function (pi: ExtensionAPI) {
 			// A fresh /pr-review in this same input may safely bind a new tracker below.
 			persistTelemetry("cleared");
 		}
+
 		const parsed = parsePublishMode(event.text);
-		if (!parsed.matched) return;
-		if (invocationGate.peek() && event.streamingBehavior === undefined) {
-			// Replace an abandoned/settled invocation, but never a queued/steering one.
-			invocationGate.clear();
-			persistTelemetry("replaced");
+		if (loopCoordinator.peek()) {
+			// Any independent user/extension input revokes the current generation.
+			// Only a fresh idle /pr-review command may begin the replacement.
+			loopCoordinator.clear();
+			persistTelemetry(parsed.matched && event.streamingBehavior === undefined ? "replaced" : "cleared");
+			if (!parsed.matched) return;
 		}
+		if (!parsed.matched) return;
+		if (event.streamingBehavior !== undefined) {
+			// Returning handled prevents queueing but does not stop the current parent
+			// operation. Abort it so revoked review work cannot continue with built-ins.
+			ctx.abort();
+			ctx.ui.notify("Invalid /pr-review invocation: queued or steering input cannot start a review loop", "error");
+			return { action: "handled" as const };
+		}
+		if (!isOwnReviewPrompt(pi)) {
+			ctx.ui.notify("Invalid /pr-review invocation: the active prompt is not the pi-pr-review package prompt", "error");
+			return { action: "handled" as const };
+		}
+
 		// Freeze trusted publication config before review tools or optional PR code can run.
-		const gate = invocationGate.begin(parsed, resolvePublishingConfig(ctx));
+		const publishingConfig = resolvePublishingConfig(ctx);
+		const gate = loopCoordinator.begin(
+			parsed,
+			publishingConfig.autoPost,
+			source,
+			ctx,
+			publishingConfig.allowStale.valid && publishingConfig.allowStale.value,
+		);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			return { action: "handled" as const };
@@ -530,7 +705,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_start", (event) => {
-		if (!invocationGate.peek()) return;
+		if (!loopCoordinator.peek()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
 	});
 
@@ -578,25 +753,27 @@ export default function (pi: ExtensionAPI) {
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
 		if (completion === "continue_tools") return;
 		if (completion === "clear_invocation") {
-			invocationGate.clear();
+			loopCoordinator.clear();
+			publishAuthorization.clear();
 			persistTelemetry("cleared");
 			return;
 		}
 
 		const text = assistantText(event.message);
-		const active = invocationGate.peek();
+		const active = loopCoordinator.peek();
+		if (!active) publishAuthorization.clear();
 		if (
 			active &&
-			invocationGate.phase() === "reviewing" &&
+			loopCoordinator.phase() === "reviewing" &&
 			isNonOpenConfirmationPrompt(text, active.prNumber)
 		) {
-			if (invocationGate.markAwaitingConfirmation()) telemetryTracker.pauseForConfirmation();
+			if (loopCoordinator.markAwaitingConfirmation()) telemetryTracker.pauseForConfirmation();
 			return;
 		}
 
 		// Every other terminal response consumes authority, whether valid, empty, or unrelated.
 		// Persist timing before publication so network/write latency is never coupled to review wall time.
-		const invocation = active ? invocationGate.consume() : undefined;
+		const invocation = active ? loopCoordinator.consume() : undefined;
 		if (invocation) persistTelemetry("terminal_response");
 		if (!text.trim()) return;
 		const review = parseReview(text);

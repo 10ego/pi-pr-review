@@ -14,6 +14,7 @@ The default review prioritizes P0–P2 defects and allows up to three minor find
 
 ## Requirements
 
+- Pi `0.77.0` or newer.
 - [`gh`](https://cli.github.com/) installed and authenticated with `gh auth login`.
 - Pi running inside the repository that owns the PR.
 
@@ -87,12 +88,13 @@ Common settings:
 /pr-review-config heavy_tool_policy=configured
 /pr-review-config tools=read,bash,grep,find,ls
 /pr-review-config auto_post_reviews=true
+/pr-review-config allow_stale_publish=false
 /pr-review-config medium=unset
 ```
 
 Supported thinking levels are `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. A thinking suffix in a model spec, such as `provider/model:xhigh`, takes precedence over the tier's thinking setting. `unset` restores inherited behavior.
 
-Tool policy can be `none` or `configured`. `configured` uses the `tools` allowlist; because an allowlist containing `bash` is not technically read-only, remove it if you need stricter reviewer isolation.
+Tool policy can be `none` or `configured`. `configured` uses the `tools` allowlist; because an allowlist containing `bash` is not technically read-only, remove it if you need stricter reviewer isolation. Reviewer subprocesses disable extension discovery, strip the package's review-tool names from this allowlist, and use `--no-tools` when no allowed tools remain.
 
 Configuration is stored in:
 
@@ -124,7 +126,8 @@ Example:
     "heavy": "configured"
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
-  "autoPostReviews": false
+  "autoPostReviews": false,
+  "allowStalePublish": true
 }
 ```
 
@@ -144,13 +147,15 @@ The extension—not the model—owns publishing. It creates one formal review wi
 
 Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
 
-If a new commit makes a completed review stale, publish the cached result without rerunning the model:
+After a review completes, you can directly ask the agent to “post the inline review.” That interactive/RPC input creates one host-side, session- and repository-bound authorization for the extension-owned `pr_review_publish` tool. The authorization is consumed by one matching call; an unnumbered request is restricted to the latest cached review, while “publish the review for PR #123” binds the named PR. The model cannot self-authorize, supply replacement review text, replay the request, or use this tool to rerun review agents. An explicit authorized request permits stale publication.
+
+Stale publication is also enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` without an override use the setting captured when the review starts. The explicit `--allow-stale` flag remains available when the captured setting disabled stale publication:
 
 ```text
 /pr-review-publish 123 --allow-stale
 ```
 
-Inline comments are intentionally disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and identifies both the reviewed and current SHAs. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is bound to that session instance's ID and creation metadata as well as the repository.
+Inline comments are always disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and displays a warning containing both the reviewed and current commit hashes. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is bound to that session instance's ID and creation metadata as well as the repository.
 
 ## Optional verification
 
@@ -203,9 +208,13 @@ The verdict is `request_changes` only when a validated P0 or P1 finding exists. 
 
 ## Safety and cost
 
+- `review_subagent`, `review_subagents`, and `pr_review_verify` are exposed only during a direct interactive or RPC `/pr-review` loop. Extension-generated input cannot authorize them.
+- Every review tool also checks an in-memory, session- and cwd-bound loop lease before reading review context, running verification, or spawning a reviewer. Hiding the tools is not the only enforcement boundary.
+- Unrelated input, terminal completion, cancellation, session navigation, or tree navigation revokes the lease and aborts in-flight review work. Tools are suspended while a non-open PR waits for confirmation.
+- Reviewer subprocesses start with extension discovery disabled, so they cannot recursively invoke this package's agents or verification tool.
 - Reviewers receive the captured diff and are instructed not to modify files.
 - The orchestrator does not check out, commit, or push PR code.
-- GitHub writes require `--comment` or an effective `autoPostReviews: true` setting.
+- GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, or a fresh direct user request that grants one host-side call to the cache-only `pr_review_publish` tool. `allowStalePublish` controls whether an authorized/configured write may be stale; it does not independently authorize a write.
 - Publication authority is captured before review or optional verification begins, so PR code cannot enable it mid-run.
 - Multiple model calls run per PR. Use a cheaper `light` model and reserve stronger models for `heavy` passes to control cost.
 - Same-head review markers prevent duplicate publication by the same GitHub identity.

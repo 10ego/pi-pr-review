@@ -51,13 +51,21 @@ import { Type } from "typebox";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
+	combineAbortSignals,
+	ReviewLoopCoordinator,
+	reviewLoopDeniedResult,
+} from "../lib/pr-review-loop.ts";
+import {
 	appendToolPolicyArgs,
 	buildReviewBaseArgs,
 	normalizeToolPolicy,
 	resolveToolPolicy,
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
-import { resolveAutoPostSetting } from "../lib/pr-review-publish.ts";
+import {
+	resolveAllowStalePublishSetting,
+	resolveAutoPostSetting,
+} from "../lib/pr-review-publish.ts";
 import { monotonicNow } from "../lib/pr-review-telemetry.ts";
 import {
 	discoverVerificationBaselines,
@@ -109,6 +117,8 @@ interface PrReviewConfig {
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
 	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
 	autoPostReviews: boolean;
+	/** Permit stale publication as body-only with reviewed/current SHAs disclosed. Enabled by default. */
+	allowStalePublish: boolean;
 	/** Trusted user-level named verification profiles. Project config never overlays these. */
 	verificationBaselines: VerificationBaselines;
 	/** Tools granted to review subagents whose effective policy is configured. */
@@ -185,6 +195,17 @@ function resolveAutoPostForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjec
 	return resolveAutoPostSetting(user, project);
 }
 
+function resolveAllowStaleForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
+	const user = readConfigFile(userConfigPath());
+	let project: Partial<PrReviewConfig> | undefined;
+	try {
+		if (ctx.isProjectTrusted()) project = readConfigFile(projectConfigPath(ctx.cwd));
+	} catch {
+		/* user config only */
+	}
+	return resolveAllowStalePublishSetting(user, project);
+}
+
 /** User config overlaid by a trusted project, except user-only verification profiles. */
 function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): PrReviewConfig {
 	const user = readConfigFile(userConfigPath());
@@ -195,6 +216,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 		/* trust check unavailable -> user config only */
 	}
 	const autoPost = resolveAutoPostSetting(user, project);
+	const allowStale = resolveAllowStalePublishSetting(user, project);
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
@@ -207,6 +229,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 			...normalizeToolPolicies(project.toolPolicies),
 		},
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		allowStalePublish: allowStale.valid ? allowStale.value : false,
 		// Verification is intentionally user-owned. Never accept a profile from
 		// the repository-controlled project overlay, even for trusted projects.
 		verificationBaselines: resolveUserVerificationBaselines(user, project),
@@ -218,12 +241,14 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 function readUserConfig(): PrReviewConfig {
 	const raw = readConfigFile(userConfigPath());
 	const autoPost = resolveAutoPostSetting(raw);
+	const allowStale = resolveAllowStalePublishSetting(raw);
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
 		thinkingLevels: normalizeThinkingLevels(raw.thinkingLevels, "User pr-review config"),
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
+		allowStalePublish: allowStale.valid ? allowStale.value : false,
 		verificationBaselines: resolveUserVerificationBaselines(raw),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
 	};
@@ -432,6 +457,8 @@ function runReviewSubprocess(
 		const startedAt = monotonicNow();
 		let buffer = "";
 		let aborted = false;
+		let closed = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let activeTools = 0;
 		let activeToolsStartedAt = 0;
 
@@ -439,6 +466,20 @@ function runReviewSubprocess(
 		// Keep the complete review task off argv: macOS rejects a single argument
 		// near 1 MiB, while context_file intentionally supports up to 16 MiB.
 		const proc = spawn(command, args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+		const kill = () => {
+			if (closed || aborted) return;
+			aborted = true;
+			proc.kill("SIGTERM");
+			killTimer = setTimeout(() => {
+				// ChildProcess.killed only means a signal was sent; it does not mean
+				// the process exited. Escalate based on the observed close event.
+				if (!closed) proc.kill("SIGKILL");
+			}, 5000);
+		};
+		const cleanupAbort = () => {
+			if (killTimer) clearTimeout(killTimer);
+			signal?.removeEventListener("abort", kill);
+		};
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
@@ -486,6 +527,8 @@ function runReviewSubprocess(
 		proc.stdin.on("error", () => {});
 		proc.stdin.end(input, "utf8");
 		proc.on("close", (code) => {
+			closed = true;
+			cleanupAbort();
 			if (buffer.trim()) processLine(buffer);
 			if (activeTools > 0) {
 				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
@@ -497,6 +540,8 @@ function runReviewSubprocess(
 			resolve(result);
 		});
 		proc.on("error", (err) => {
+			closed = true;
+			cleanupAbort();
 			if (activeTools > 0) result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 			result.exitCode = 1;
 			result.errorMessage = err.message;
@@ -504,13 +549,6 @@ function runReviewSubprocess(
 		});
 
 		if (signal) {
-			const kill = () => {
-				aborted = true;
-				proc.kill("SIGTERM");
-				setTimeout(() => {
-					if (!proc.killed) proc.kill("SIGKILL");
-				}, 5000);
-			};
 			if (signal.aborted) kill();
 			else signal.addEventListener("abort", kill, { once: true });
 		}
@@ -607,6 +645,7 @@ async function runSubagentAttempt(
 	toolPolicy: ToolPolicy,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
+	beforeSpawn?: () => boolean,
 ): Promise<{ result: RunResult; notice: string; elapsedMs: number }> {
 	let tmp: { dir: string; filePath: string } | undefined;
 	const startedAt = monotonicNow();
@@ -627,6 +666,9 @@ async function runSubagentAttempt(
 		args.push("--append-system-prompt", tmp.filePath);
 		const task = buildPassTask(pass.objective, pass.context);
 
+		if (beforeSpawn && !beforeSpawn()) {
+			throw new Error("The active /pr-review loop ended before the reviewer could start.");
+		}
 		const invocation = getPiInvocation(args);
 		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, task, signal, (text) => {
 			onText?.(text);
@@ -655,6 +697,7 @@ async function runSubagentPass(
 	pass: SubagentPassRequest,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
+	beforeSpawn?: () => boolean,
 ): Promise<SubagentPassResult> {
 	const startedAt = monotonicNow();
 	const tier = pass.tier;
@@ -673,6 +716,7 @@ async function runSubagentPass(
 			toolPolicy,
 			signal,
 			onText,
+			beforeSpawn,
 		);
 		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = failed && isRetryableModelFailure(result);
@@ -940,7 +984,11 @@ const ReviewSubagentsParams = Type.Object({
 	),
 });
 
-export default function (pi: ExtensionAPI) {
+export default function registerPrReviewSubagents(
+	pi: ExtensionAPI,
+	loopCoordinator = new ReviewLoopCoordinator(pi),
+	revokePublishAuthorization: () => void = () => {},
+) {
 	// Resolve security-sensitive executables only from the PATH trusted when this
 	// extension starts, never from a later mutable process environment.
 	const trustedStartupPath = process.env.PATH ?? "";
@@ -963,14 +1011,26 @@ export default function (pi: ExtensionAPI) {
 		parameters: PrReviewVerifyParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("pr_review_verify");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const config = loadConfig(ctx);
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_verify");
 			if (params.action === "list") {
-				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, signal, { startupPath: trustedStartupPath });
+				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, executionSignal, { startupPath: trustedStartupPath });
 				return {
 					content: [{ type: "text", text: JSON.stringify(discovery, null, 2) }],
 					details: discovery,
 				};
 			}
+			if (params.pr_number !== loopCoordinator.peek()?.prNumber) {
+				return {
+					content: [{ type: "text", text: "pr_review_verify PR number does not match the active /pr-review invocation." }],
+					isError: true,
+					details: { authorized: false, reason: "pr_mismatch" },
+				};
+			}
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_verify");
 			const result = await verifyPullRequestHead(
 				ctx.cwd,
 				{
@@ -979,7 +1039,7 @@ export default function (pi: ExtensionAPI) {
 					baselineName: params.baseline_name,
 				},
 				config.verificationBaselines,
-				signal,
+				executionSignal,
 				{ startupPath: trustedStartupPath },
 			);
 			return {
@@ -1008,6 +1068,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: ReviewSubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("review_subagent");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const tier = params.tier as Tier;
 			let loadedContext;
 			try {
@@ -1019,6 +1082,7 @@ export default function (pi: ExtensionAPI) {
 					details: { tier, contextFileBytes: 0 },
 				};
 			}
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
 				config,
@@ -1031,8 +1095,9 @@ export default function (pi: ExtensionAPI) {
 					majorOnly: params.major_only === true,
 					minorHygiene: params.minor_hygiene === true,
 				},
-				signal,
+				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
+				() => loopCoordinator.isLeaseActive(lease, ctx),
 			);
 
 			const warnings = thinkingWarnings(config, [tier]);
@@ -1092,6 +1157,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: ReviewSubagentsParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("review_subagents");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
 			if (rawPasses.length === 0) {
 				return {
@@ -1172,6 +1240,7 @@ export default function (pi: ExtensionAPI) {
 					: [makePass(undefined, 0)];
 			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
@@ -1181,7 +1250,14 @@ export default function (pi: ExtensionAPI) {
 				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
 			const dispatchResults = await runWithConcurrency(dispatchPasses, maxParallel, async ({ pass, originalIndex }) => {
 				const startOffsetMs = monotonicNow() - batchStartedAt;
-				const result = await runSubagentPass(config, ctx, pass, signal);
+				const result = await runSubagentPass(
+					config,
+					ctx,
+					pass,
+					executionSignal,
+					undefined,
+					() => loopCoordinator.isLeaseActive(lease, ctx),
+				);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
 				onUpdate?.({
 					content: [
@@ -1251,6 +1327,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("pr-review-config", {
 		description: "Open review-tier settings, or show/set models, thinking, and fallbacks for /pr-review",
 		handler: async (args, ctx) => {
+			// Extension commands execute before input events, so revoke explicitly.
+			loopCoordinator.clear();
+			revokePublishAuthorization();
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
 			if (parsed.errors.length) {
@@ -1333,6 +1412,7 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
 	})),
 	{ value: "auto_post_reviews=", label: "auto_post_reviews=<true|false> — automatically post COMMENT reviews (default false)" },
+	{ value: "allow_stale_publish=", label: "allow_stale_publish=<true|false> — permit disclosed body-only stale publication (default true)" },
 	{ value: "tools=", label: "tools=read,bash,grep,find,ls — allowlist used by configured policy" },
 	{ value: "show", label: "show — print the current review config" },
 ];
@@ -1411,6 +1491,7 @@ interface ConfigPatch {
 	thinkingLevels: Partial<Record<Tier, ThinkingLevel | null>>;
 	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
 	autoPostReviews?: boolean;
+	allowStalePublish?: boolean;
 	tools?: string[];
 }
 
@@ -1451,11 +1532,15 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			if (value === "true") patch.autoPostReviews = true;
 			else if (value === "false") patch.autoPostReviews = false;
 			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
+		} else if (key === "allow_stale_publish" || key === "allowstalepublish" || key === "allow-stale-publish") {
+			if (value === "true") patch.allowStalePublish = true;
+			else if (value === "false") patch.allowStalePublish = false;
+			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|tools)`,
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|tools)`,
 			);
 		}
 	}
@@ -1465,6 +1550,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		Object.keys(patch.thinkingLevels).length > 0 ||
 		Object.keys(patch.toolPolicies).length > 0 ||
 		patch.autoPostReviews !== undefined ||
+		patch.allowStalePublish !== undefined ||
 		patch.tools !== undefined;
 	return { patch, hasChanges, errors };
 }
@@ -1476,6 +1562,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		thinkingLevels: normalizeThinkingLevels(base.thinkingLevels, "PR review config"),
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		autoPostReviews: base.autoPostReviews,
+		allowStalePublish: base.allowStalePublish,
 		verificationBaselines: { ...base.verificationBaselines },
 		tools: [...base.tools],
 	};
@@ -1502,6 +1589,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		}
 	}
 	if (patch.autoPostReviews !== undefined) next.autoPostReviews = patch.autoPostReviews;
+	if (patch.allowStalePublish !== undefined) next.allowStalePublish = patch.allowStalePublish;
 	if (patch.tools) next.tools = patch.tools;
 	return next;
 }
@@ -1526,6 +1614,7 @@ function summarizeConfig(
 		/* ignore */
 	}
 	const autoPost = resolveAutoPostForContext(ctx);
+	const allowStale = resolveAllowStaleForContext(ctx);
 	const lines = [
 		`# PR review config${changed ? " updated" : ""}`,
 		"",
@@ -1536,6 +1625,7 @@ function summarizeConfig(
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub \`COMMENT\` review; default \`false\` |`,
+		`| \`allowStalePublish\` | \`${user.allowStalePublish}\` | \`${effective.allowStalePublish}\` (${allowStale.source}) | permit body-only stale publication with reviewed/current SHAs; default \`true\` |`,
 		`| \`verificationBaselines\` | \`${Object.keys(user.verificationBaselines).length} configured\` | user scope only | strict named argv profiles; project overlays ignored |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
@@ -1555,6 +1645,10 @@ function summarizeConfig(
 	else if (autoPost.source === "project") {
 		lines.push("Automatic posting is controlled by the trusted project overlay; this command edits user config only.");
 	}
+	if (!allowStale.valid) lines.push(`Stale publication config error: ${allowStale.error}`);
+	else if (allowStale.source === "project") {
+		lines.push("Stale publication is controlled by the trusted project overlay; this command edits user config only.");
+	}
 	lines.push(
 		"",
 		"## Usage",
@@ -1565,6 +1659,8 @@ function summarizeConfig(
 		"- Set tier thinking: `/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high`",
 		"- Enable automatic GitHub review posting: `/pr-review-config auto_post_reviews=true`",
 		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
+		"- Disable stale publication: `/pr-review-config allow_stale_publish=false`",
+		"- Enable stale publication (default): `/pr-review-config allow_stale_publish=true`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
 		"- Clear fallback chain: `/pr-review-config heavy_fallbacks=unset`",
@@ -1695,6 +1791,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			values: ["false", "true"],
 		},
 		{
+			id: "allow_stale_publish",
+			label: "user stale publication setting",
+			description: "Permit body-only stale reviews with reviewed/current commit disclosure. Enabled by default.",
+			currentValue: String(cfg.allowStalePublish),
+			values: ["true", "false"],
+		},
+		{
 			id: "tools",
 			label: "configured tool allowlist",
 			description: "Tools available when effective policy is configured. Enter/Space cycles presets.",
@@ -1727,6 +1830,7 @@ async function showConfigMenu(
 					settingsList.updateValue(`${tier}_tool_policy`, draft.toolPolicies[tier] ?? INHERIT_TOOL_POLICY);
 				}
 				settingsList.updateValue("auto_post_reviews", String(draft.autoPostReviews));
+				settingsList.updateValue("allow_stale_publish", String(draft.allowStalePublish));
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
 
@@ -1758,6 +1862,8 @@ async function showConfigMenu(
 					}
 				} else if (id === "auto_post_reviews") {
 					draft.autoPostReviews = newValue === "true";
+				} else if (id === "allow_stale_publish") {
+					draft.allowStalePublish = newValue === "true";
 				} else if (id === "tools") {
 					draft.tools = splitCommaList(newValue);
 				} else {
@@ -1770,7 +1876,9 @@ async function showConfigMenu(
 						? draft.tools.join(",")
 						: id === "auto_post_reviews"
 							? String(draft.autoPostReviews)
-							: isFallbackKey(id)
+							: id === "allow_stale_publish"
+								? String(draft.allowStalePublish)
+								: isFallbackKey(id)
 								? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
 								: isThinkingKey(id)
 									? (draft.thinkingLevels[tierFromCompoundKey(id)] ?? INHERIT_THINKING)
@@ -1782,6 +1890,16 @@ async function showConfigMenu(
 						if (effective.source === "project") {
 							ctx.ui.notify(
 								`User autoPostReviews saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)} or use --no-comment.`,
+								"warning",
+							);
+						} else {
+							ctx.ui.notify(`PR review config: ${id} = ${shown} (effective ${effective.value})`, "info");
+						}
+					} else if (id === "allow_stale_publish") {
+						const effective = resolveAllowStaleForContext(ctx);
+						if (effective.source === "project") {
+							ctx.ui.notify(
+								`User allowStalePublish saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)}.`,
 								"warning",
 							);
 						} else {

@@ -3,8 +3,21 @@ import { describe, expect, test } from "bun:test";
 
 const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 const extension = readFileSync(new URL("../extensions/pr-review-subagent.ts", import.meta.url), "utf8");
+const entrypoint = readFileSync(new URL("../extensions/index.ts", import.meta.url), "utf8");
+const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 describe("PR review prompt scheduling policy", () => {
+	test("registers tools and publication behind one shared loop coordinator", () => {
+		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
+		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.77.0");
+		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
+		expect(entrypoint).toContain("const publishAuthorization = new CachedPublishAuthorizationGate()");
+		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator, () => publishAuthorization.clear())");
+		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator, publishAuthorization)");
+		expect(extension).toContain("allow_stale_publish");
+		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");
+	});
+
 	test("uses balanced five-pass coverage by default", () => {
 		expect(prompt).toContain("The default is balanced");
 		expect(prompt).toContain("By default, and when `--balanced` is present");

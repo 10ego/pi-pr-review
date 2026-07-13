@@ -1,0 +1,206 @@
+import * as path from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	ReviewInvocationGate,
+	type AutoPostResolution,
+	type PublishModeParseResult,
+	type ReviewInvocation,
+	type ReviewInvocationPhase,
+} from "./pr-review-publish.ts";
+
+export const REVIEW_LOOP_TOOL_NAMES = [
+	"review_subagent",
+	"review_subagents",
+	"pr_review_verify",
+] as const;
+
+const REVIEW_LOOP_TOOL_SET = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
+
+export type ReviewLoopInputSource = "interactive" | "rpc" | "extension";
+
+interface ReviewLoopBinding {
+	readonly generation: number;
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly sessionStartedAt?: string;
+	readonly controller: AbortController;
+}
+
+export interface ReviewLoopLease {
+	readonly generation: number;
+	readonly signal: AbortSignal;
+}
+
+function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
+	cwd: string;
+	sessionId: string;
+	sessionStartedAt?: string;
+} {
+	const sessionId = ctx.sessionManager.getSessionId();
+	const header = ctx.sessionManager.getHeader();
+	return {
+		cwd: path.resolve(ctx.cwd),
+		sessionId,
+		...(header?.id === sessionId && typeof header.timestamp === "string"
+			? { sessionStartedAt: header.timestamp }
+			: {}),
+	};
+}
+
+function sameBinding(
+	binding: ReviewLoopBinding,
+	ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+): boolean {
+	const current = sessionBinding(ctx);
+	return binding.cwd === current.cwd &&
+		binding.sessionId === current.sessionId &&
+		binding.sessionStartedAt === current.sessionStartedAt;
+}
+
+/**
+ * Host-owned authority for one /pr-review loop. No capability is exposed to the
+ * model: tools acquire a generation-bound lease directly from this coordinator.
+ */
+export class ReviewLoopCoordinator {
+	private readonly invocationGate = new ReviewInvocationGate();
+	private binding?: ReviewLoopBinding;
+	private nextGeneration = 1;
+
+	constructor(private readonly pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">) {}
+
+	private setToolsEnabled(enabled: boolean): void {
+		try {
+			const current = this.pi.getActiveTools();
+			const next = enabled
+				? [...current, ...REVIEW_LOOP_TOOL_NAMES.filter((name) => !current.includes(name))]
+				: current.filter((name) => !REVIEW_LOOP_TOOL_SET.has(name));
+			if (next.length !== current.length || next.some((name, index) => name !== current[index])) {
+				this.pi.setActiveTools(next);
+			}
+		} catch {
+			// Execute-time authorization remains authoritative if visibility cannot
+			// be updated during startup, shutdown, or a stale extension lifecycle.
+		}
+	}
+
+	begin(
+		parsed: PublishModeParseResult,
+		autoPost: AutoPostResolution,
+		source: ReviewLoopInputSource,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+		allowStalePublish = true,
+	): { accepted: boolean; error?: string } {
+		if (source !== "interactive" && source !== "rpc") {
+			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
+		}
+		const started = this.invocationGate.begin(parsed, autoPost, allowStalePublish);
+		if (!started.accepted) return started;
+		const current = sessionBinding(ctx);
+		this.binding = {
+			generation: this.nextGeneration++,
+			...current,
+			controller: new AbortController(),
+		};
+		this.setToolsEnabled(true);
+		return { accepted: true };
+	}
+
+	peek(): ReviewInvocation | undefined {
+		return this.invocationGate.peek();
+	}
+
+	phase(): ReviewInvocationPhase | undefined {
+		return this.invocationGate.phase();
+	}
+
+	markAwaitingConfirmation(): boolean {
+		const changed = this.invocationGate.markAwaitingConfirmation();
+		if (changed) this.setToolsEnabled(false);
+		return changed;
+	}
+
+	resolveConfirmationInput(
+		text: string,
+		source: ReviewLoopInputSource,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): "not_awaiting" | "confirmed" | "cleared" {
+		if (this.invocationGate.phase() !== "awaiting_confirmation") return "not_awaiting";
+		if ((source !== "interactive" && source !== "rpc") || !this.binding || !sameBinding(this.binding, ctx)) {
+			this.clear();
+			return "cleared";
+		}
+		const result = this.invocationGate.resolveConfirmationInput(text);
+		if (result === "confirmed") this.setToolsEnabled(true);
+		else if (result === "cleared") this.revokeBinding();
+		return result;
+	}
+
+	acquire(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): ReviewLoopLease | undefined {
+		const phase = this.invocationGate.phase();
+		if ((phase !== "reviewing" && phase !== "confirmed") || !this.binding) return undefined;
+		if (!sameBinding(this.binding, ctx) || this.binding.controller.signal.aborted) {
+			this.clear();
+			return undefined;
+		}
+		return Object.freeze({
+			generation: this.binding.generation,
+			signal: this.binding.controller.signal,
+		});
+	}
+
+	isLeaseActive(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		const active = !!this.binding &&
+			this.binding.generation === lease.generation &&
+			!lease.signal.aborted &&
+			(this.phase() === "reviewing" || this.phase() === "confirmed") &&
+			sameBinding(this.binding, ctx);
+		if (!active && this.binding?.generation === lease.generation) this.clear();
+		return active;
+	}
+
+	consume(): ReviewInvocation | undefined {
+		const invocation = this.invocationGate.consume();
+		this.revokeBinding();
+		return invocation;
+	}
+
+	clear(): void {
+		this.invocationGate.clear();
+		this.revokeBinding();
+	}
+
+	hideTools(): void {
+		this.setToolsEnabled(false);
+	}
+
+	private revokeBinding(): void {
+		this.binding?.controller.abort();
+		this.binding = undefined;
+		this.setToolsEnabled(false);
+	}
+}
+
+export function combineAbortSignals(
+	first: AbortSignal | undefined,
+	second: AbortSignal | undefined,
+): AbortSignal | undefined {
+	if (!first) return second;
+	if (!second || first === second) return first;
+	return AbortSignal.any([first, second]);
+}
+
+export function reviewLoopDeniedResult(toolName: string) {
+	return {
+		content: [
+			{
+				type: "text" as const,
+				text: `${toolName} is available only inside an active user-initiated /pr-review loop.`,
+			},
+		],
+		isError: true,
+		details: { authorized: false },
+	};
+}

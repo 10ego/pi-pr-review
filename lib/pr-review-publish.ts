@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import * as path from "node:path";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -53,6 +54,36 @@ export function resolveAutoPostSetting(user: unknown, trustedProject?: unknown):
 	return { value: false, valid: true, source: "default" };
 }
 
+/** Resolve whether stale cached reviews may publish, enabled by default. */
+export function resolveAllowStalePublishSetting(
+	user: unknown,
+	trustedProject?: unknown,
+): AutoPostResolution {
+	if (hasOwn(trustedProject, "allowStalePublish")) {
+		const value = (trustedProject as { allowStalePublish?: unknown }).allowStalePublish;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "project" }
+			: {
+					value: false,
+					valid: false,
+					source: "project",
+					error: "project allowStalePublish must be a boolean",
+				};
+	}
+	if (hasOwn(user, "allowStalePublish")) {
+		const value = (user as { allowStalePublish?: unknown }).allowStalePublish;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "user" }
+			: {
+					value: false,
+					valid: false,
+					source: "user",
+					error: "user allowStalePublish must be a boolean",
+				};
+	}
+	return { value: true, valid: true, source: "default" };
+}
+
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
@@ -64,7 +95,7 @@ export interface PublishModeParseResult {
 /** Parse trusted raw prompt-template invocation flags before template expansion. */
 export function parsePublishMode(input: string): PublishModeParseResult {
 	const trimmed = input.trim();
-	if (!/^\/(?:prompt:)?pr-review(?:\s|$)/.test(trimmed)) return { matched: false };
+	if (!/^\/pr-review(?:\s|$)/.test(trimmed)) return { matched: false };
 	const tokens = trimmed.split(/\s+/);
 	const requested = Number(tokens[1]);
 	if (!Number.isInteger(requested) || requested <= 0) {
@@ -93,6 +124,8 @@ export interface ReviewInvocation {
 	readonly mode: PublishMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Trusted stale-publication setting captured before review execution begins. */
+	readonly allowStalePublish: boolean;
 	/** Trusted automatic-posting decision captured before review execution begins. */
 	readonly autoPost: Readonly<AutoPostResolution>;
 }
@@ -116,6 +149,95 @@ export function decideReviewPublication(invocation: ReviewInvocation): ReviewPub
 	return invocation.autoPost.value
 		? { publish: true, source: `${invocation.autoPost.source} config` }
 		: { publish: false };
+}
+
+export interface DirectPublishRequestParseResult {
+	matched: boolean;
+	prNumber?: number;
+}
+
+/** Narrow whole-input matcher for direct natural-language cached publish requests. */
+export function parseDirectPublishRequest(input: string): DirectPublishRequestParseResult {
+	const trimmed = input.trim();
+	if (!trimmed || /[\r\n]/.test(trimmed)) return { matched: false };
+	const match = trimmed.match(
+		/^(?:(?:please|kindly)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:post|publish|submit)\s+(?:(?:the|this|that|my|our)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?)(?:\s+(?:for|on|to)\s+(?:(?:the\s+)?(?:pull\s+request|pr)\s*)?#?(\d+))?(?:\s+please)?[.!?]*$/i,
+	);
+	if (!match) return { matched: false };
+	if (match[1] === undefined) return { matched: true };
+	const prNumber = Number(match[1]);
+	return Number.isInteger(prNumber) && prNumber > 0
+		? { matched: true, prNumber }
+		: { matched: false };
+}
+
+interface PublishAuthorizationContext {
+	cwd: string;
+	sessionManager: {
+		getSessionId(): string;
+		getHeader(): { id?: string; timestamp?: unknown } | undefined;
+	};
+}
+
+interface PendingPublishAuthorization {
+	cwd: string;
+	sessionId: string;
+	sessionStartedAt?: string;
+	prNumber?: number;
+}
+
+function publishAuthorizationBinding(ctx: PublishAuthorizationContext) {
+	const sessionId = ctx.sessionManager.getSessionId();
+	const header = ctx.sessionManager.getHeader();
+	return {
+		cwd: path.resolve(ctx.cwd),
+		sessionId,
+		...(header?.id === sessionId && typeof header.timestamp === "string"
+			? { sessionStartedAt: header.timestamp }
+			: {}),
+	};
+}
+
+/** One pending model-tool publication authorized by one direct user input. */
+export class CachedPublishAuthorizationGate {
+	private pending?: PendingPublishAuthorization;
+
+	observe(
+		input: string,
+		source: "interactive" | "rpc" | "extension",
+		streamingBehavior: "steer" | "followUp" | undefined,
+		ctx: PublishAuthorizationContext,
+	): DirectPublishRequestParseResult {
+		this.clear();
+		if ((source !== "interactive" && source !== "rpc") || streamingBehavior !== undefined) {
+			return { matched: false };
+		}
+		const parsed = parseDirectPublishRequest(input);
+		if (!parsed.matched) return parsed;
+		this.pending = { ...publishAuthorizationBinding(ctx), ...(parsed.prNumber ? { prNumber: parsed.prNumber } : {}) };
+		return parsed;
+	}
+
+	consume(
+		prNumber: number,
+		ctx: PublishAuthorizationContext,
+	): { authorized: boolean; requireLatest: boolean } {
+		const pending = this.pending;
+		this.clear();
+		if (!pending) return { authorized: false, requireLatest: false };
+		const current = publishAuthorizationBinding(ctx);
+		const sameContext = pending.cwd === current.cwd &&
+			pending.sessionId === current.sessionId &&
+			pending.sessionStartedAt === current.sessionStartedAt;
+		if (!sameContext || (pending.prNumber !== undefined && pending.prNumber !== prNumber)) {
+			return { authorized: false, requireLatest: false };
+		}
+		return { authorized: true, requireLatest: pending.prNumber === undefined };
+	}
+
+	clear(): void {
+		this.pending = undefined;
+	}
 }
 
 export interface PublishExistingParseResult {
@@ -166,7 +288,11 @@ export class ReviewInvocationGate {
 	private active?: ReviewInvocation;
 	private currentPhase?: ReviewInvocationPhase;
 
-	begin(parsed: PublishModeParseResult, autoPost: AutoPostResolution): { accepted: boolean; error?: string } {
+	begin(
+		parsed: PublishModeParseResult,
+		autoPost: AutoPostResolution,
+		allowStalePublish = true,
+	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
 			return { accepted: false, error: `PR #${this.active.prNumber} review is still active` };
@@ -184,6 +310,7 @@ export class ReviewInvocationGate {
 			mode: parsed.mode,
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			allowStalePublish,
 			autoPost: snapshot,
 		});
 		this.currentPhase = "reviewing";
@@ -375,7 +502,12 @@ function reviewHash(review: ReviewLike): string {
 function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined {
 	if (!isObject(value)) return undefined;
 	if (!new Set(["auto", "force", "disabled"]).has(String(value.mode))) return undefined;
-	if (!Number.isInteger(value.prNumber) || Number(value.prNumber) <= 0 || typeof value.allowNonOpen !== "boolean") {
+	if (
+		!Number.isInteger(value.prNumber) ||
+		Number(value.prNumber) <= 0 ||
+		typeof value.allowNonOpen !== "boolean" ||
+		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean")
+	) {
 		return undefined;
 	}
 	const autoPost = value.autoPost;
@@ -392,6 +524,9 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		mode: value.mode as PublishMode,
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		// Schema v2 records created before this setting existed inherit the new
+		// safe default: stale publication is body-only with both SHAs disclosed.
+		allowStalePublish: typeof value.allowStalePublish === "boolean" ? value.allowStalePublish : true,
 		autoPost: {
 			value: autoPost.value,
 			valid: autoPost.valid,
@@ -411,7 +546,11 @@ export class CompletedReviewCache {
 			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
 		};
-		this.reviews.set(completedReviewKey(repository, invocation.prNumber), record);
+		const key = completedReviewKey(repository, invocation.prNumber);
+		// Refresh insertion order so unnumbered direct publish requests bind to
+		// the most recently completed review in this repository.
+		this.reviews.delete(key);
+		this.reviews.set(key, record);
 		return record;
 	}
 
@@ -476,6 +615,19 @@ export class CompletedReviewCache {
 
 	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {
 		return this.reviews.get(completedReviewKey(repository, prNumber));
+	}
+
+	latest(repository: RepositoryBinding): CompletedReviewRecord | undefined {
+		const records = [...this.reviews.values()];
+		for (let index = records.length - 1; index >= 0; index--) {
+			const record = records[index]!;
+			if (completedReviewKey(record.repository, record.invocation.prNumber).startsWith(
+				`${repository.hostname.toLowerCase()}:${repository.repository.toLowerCase()}:`,
+			)) {
+				return record;
+			}
+		}
+		return undefined;
 	}
 
 	clear(): void {
