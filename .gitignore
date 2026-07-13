@@ -18,3 +18,7 @@ Thumbs.db
 *.log
 tmp/
 .tmp/
+
+# Local Pi project state
+.pi/
+.auto/

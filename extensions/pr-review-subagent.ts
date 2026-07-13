@@ -48,6 +48,8 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
+import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
 	appendToolPolicyArgs,
 	buildReviewBaseArgs,
@@ -89,7 +91,7 @@ const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
 const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const DEFAULT_BATCH_PARALLEL = 4;
-const MAX_BATCH_PARALLEL = 6;
+const MAX_BATCH_PARALLEL = 18;
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
 	medium: "convention compliance + readability / maintainability",
@@ -346,32 +348,51 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier): string {
+function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
 		"",
-		"Stay inside the assigned objective. Within that objective, surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
+		minorHygiene
+			? "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
+			: majorOnly
+				? "This is major-only mode. Within the assigned objective, report only substantiated P0, P1, or P2 defects. Do not spend review time on P3/nit style, naming, documentation, or low-impact observations, and never inflate a minor issue's severity to include it."
+				: "Stay inside the assigned objective. Within that objective, surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
 		"Stay strictly in PR scope: only report issues caused by or directly relevant to this PR's diff (the changed lines and the code they provably affect). Do NOT flag pre-existing issues in untouched code or audit the wider codebase; if a problem existed before this change, leave it out. Reading surrounding files/callers is for context and confirmation only.",
 	];
 	if (tier === "light") {
 		lines.push(
-			"Return concise Markdown with two sections:",
+			minorHygiene
+				? "Return concise Markdown with three sections:"
+				: "Return concise Markdown with two sections:",
 			"- 'Overview:' 1-3 short paragraphs on what the PR does and author intent.",
 			"- 'Strengths:' a bullet list of genuine strengths (or 'none').",
 		);
+		if (minorHygiene) {
+			lines.push(
+				"- 'Minor candidates:' at most three direct-diff observations. For each include title prefixed [P3] or [nit], severity, why, location, side, in_diff, pr_related, and confidence. Use 'none' when no such observation is clear from the diff.",
+			);
+		}
 	} else {
 		lines.push(
+			"Start from the supplied complete diff. Use repository tools only to substantiate a concrete candidate caused by that diff; never browse for unrelated issues or run broad repository audits/tests.",
+			"Before your first tool call, identify the evidence needed for all current candidates. Issue independent reads/searches/checks together when the interface supports concurrent calls, grouped to avoid rereading the same file. Use at most one follow-up tool turn, only for a dependency revealed by the first evidence wave. This schedules validation efficiently but never permits skipping evidence needed to substantiate a finding.",
 			"Return your findings as a concise Markdown list. For each finding include, on its own lines:",
-			"- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
-			"- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
+			majorOnly
+				? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
+				: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
+			majorOnly
+				? "- severity: one of P0, P1, P2 (P0/P1 are blocking)"
+				: "- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
 			"- why: the impact and the exact input/environment needed for it to bite",
 			"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
 			"- side: RIGHT for added/context lines, LEFT for removed lines",
 			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
 			"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
 			"- confidence: a float 0.0-1.0",
-			"If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
+			majorOnly
+				? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
+				: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
 		);
 	}
 	lines.push("Do not attempt to post GitHub comments or modify files. Reviewing only.");
@@ -392,22 +413,32 @@ interface RunResult {
 	stopReason?: string;
 	errorMessage?: string;
 	model?: string;
+	firstEventMs?: number;
+	firstAssistantMs?: number;
+	toolElapsedMs: number;
 }
 
 function runReviewSubprocess(
 	command: string,
 	args: string[],
 	cwd: string,
+	input: string,
 	signal: AbortSignal | undefined,
 	onText: (text: string) => void,
 ): Promise<RunResult> {
 	return new Promise<RunResult>((resolve) => {
 		const messages: Message[] = [];
-		const result: RunResult = { text: "", exitCode: 0, stderr: "" };
+		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0 };
+		const startedAt = monotonicNow();
 		let buffer = "";
 		let aborted = false;
+		let activeTools = 0;
+		let activeToolsStartedAt = 0;
 
-		const proc = spawn(command, args, { cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+		// Pi's print/json modes combine piped stdin into the initial user message.
+		// Keep the complete review task off argv: macOS rejects a single argument
+		// near 1 MiB, while context_file intentionally supports up to 16 MiB.
+		const proc = spawn(command, args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
 
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
@@ -417,9 +448,20 @@ function runReviewSubprocess(
 			} catch {
 				return;
 			}
+			const now = monotonicNow();
+			result.firstEventMs ??= now - startedAt;
+			if (event.type === "tool_execution_start") {
+				if (activeTools === 0) activeToolsStartedAt = now;
+				activeTools++;
+			}
+			if (event.type === "tool_execution_end" && activeTools > 0) {
+				activeTools--;
+				if (activeTools === 0) result.toolElapsedMs += now - activeToolsStartedAt;
+			}
 			if (event.type === "message_end" && event.message) {
 				messages.push(event.message);
 				if (event.message.role === "assistant") {
+					result.firstAssistantMs ??= now - startedAt;
 					if (event.message.model) result.model = event.message.model;
 					if (event.message.stopReason) result.stopReason = event.message.stopReason;
 					if (event.message.errorMessage) result.errorMessage = event.message.errorMessage;
@@ -438,14 +480,24 @@ function runReviewSubprocess(
 		proc.stderr.on("data", (data) => {
 			result.stderr += data.toString();
 		});
+		// A fast child failure can close stdin before the buffered task is flushed.
+		// Observe EPIPE so it cannot become an unhandled stream error; close/exit
+		// remains the authoritative subprocess outcome.
+		proc.stdin.on("error", () => {});
+		proc.stdin.end(input, "utf8");
 		proc.on("close", (code) => {
 			if (buffer.trim()) processLine(buffer);
+			if (activeTools > 0) {
+				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
+				activeTools = 0;
+			}
 			result.text = finalAssistantText(messages);
 			result.exitCode = code ?? 0;
 			if (aborted) result.stopReason = "aborted";
 			resolve(result);
 		});
 		proc.on("error", (err) => {
+			if (activeTools > 0) result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 			result.exitCode = 1;
 			result.errorMessage = err.message;
 			resolve(result);
@@ -471,6 +523,8 @@ interface SubagentPassRequest {
 	objective: string;
 	context?: string;
 	toolPolicy?: ToolPolicy;
+	majorOnly?: boolean;
+	minorHygiene?: boolean;
 }
 
 interface ModelAttemptReport {
@@ -482,6 +536,9 @@ interface ModelAttemptReport {
 	status: "completed" | "failed";
 	retryable: boolean;
 	elapsedMs: number;
+	firstEventMs?: number;
+	firstAssistantMs?: number;
+	toolElapsedMs: number;
 	stopReason?: string;
 	errorMessage?: string;
 }
@@ -559,18 +616,25 @@ async function runSubagentAttempt(
 		appendTierThinkingArgs(args, attempt.spec, config.thinkingLevels[pass.tier]);
 		appendToolPolicyArgs(args, toolPolicy, config.tools);
 
-		tmp = await writeTempPrompt(pass.tier, buildSubagentSystemPrompt(pass.tier));
+		tmp = await writeTempPrompt(
+			pass.tier,
+			buildSubagentSystemPrompt(
+				pass.tier,
+				pass.majorOnly === true,
+				pass.minorHygiene && pass.tier === "light",
+			),
+		);
 		args.push("--append-system-prompt", tmp.filePath);
-		args.push(buildPassTask(pass.objective, pass.context));
+		const task = buildPassTask(pass.objective, pass.context);
 
 		const invocation = getPiInvocation(args);
-		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, signal, (text) => {
+		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, task, signal, (text) => {
 			onText?.(text);
 		});
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt };
 	} catch (e) {
 		return {
-			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e) },
+			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e), toolElapsedMs: 0 },
 			notice: noticeForAttempt(pass.tier, attempt),
 			elapsedMs: monotonicNow() - startedAt,
 		};
@@ -623,6 +687,9 @@ async function runSubagentPass(
 			status: failed ? "failed" : "completed",
 			retryable,
 			elapsedMs,
+			firstEventMs: result.firstEventMs,
+			firstAssistantMs: result.firstAssistantMs,
+			toolElapsedMs: result.toolElapsedMs,
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
 		});
@@ -651,7 +718,7 @@ async function runSubagentPass(
 		if (!retryable || signal?.aborted) break;
 	}
 
-	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available." };
+	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available.", toolElapsedMs: 0 };
 	return {
 		id: pass.id ?? tier,
 		tier,
@@ -676,23 +743,6 @@ function normalizeMaxParallel(raw: unknown, count: number): number {
 	if (count <= 0) return 0;
 	const requested = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_BATCH_PARALLEL;
 	return Math.max(1, Math.min(count, MAX_BATCH_PARALLEL, requested > 0 ? requested : DEFAULT_BATCH_PARALLEL));
-}
-
-async function runWithConcurrency<T, R>(
-	items: T[],
-	limit: number,
-	worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-	const results = new Array<R>(items.length);
-	let next = 0;
-	const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-		while (next < items.length) {
-			const index = next++;
-			results[index] = await worker(items[index]!, index);
-		}
-	});
-	await Promise.all(workers);
-	return results;
 }
 
 function formatAttemptSummary(result: SubagentPassResult): string {
@@ -790,7 +840,13 @@ const ReviewSubagentParams = Type.Object({
 	context: Type.Optional(
 		Type.String({
 			description:
-				"Shared context for the subagent, typically the PR title/description plus the unified diff to review.",
+				"Shared context for the subagent, typically PR metadata and either the unified diff or a context_file reference.",
+		}),
+	),
+	context_file: Type.Optional(
+		Type.String({
+			description:
+				"Path to a complete unified diff already captured by the orchestrator. Its contents are appended to context inside the extension, avoiding duplicate large tool arguments.",
 		}),
 	),
 	tool_policy: Type.Optional(
@@ -799,18 +855,52 @@ const ReviewSubagentParams = Type.Object({
 				"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. Request override wins over tier config; omission preserves configured legacy behavior unless tier policy is set.",
 		}),
 	),
+	major_only: Type.Optional(
+		Type.Boolean({
+			description: "Report only substantiated P0-P2 findings; do not spend review time on P3/nit observations.",
+		}),
+	),
+	minor_hygiene: Type.Optional(
+		Type.Boolean({
+			description: "For a light overview pass, add at most three direct-diff P3/nit candidates without tools or a repository audit.",
+		}),
+	),
 });
 
 const ReviewSubagentsParams = Type.Object({
 	context: Type.Optional(
 		Type.String({
 			description:
-				"Shared PR context for every pass, typically PR title/body/metadata, cross-cutting requirements, and the unified diff. Put specialist-only convention excerpts in the medium pass context.",
+				"Shared PR metadata and cross-cutting requirements for every pass. Supply a large complete diff through context_file to avoid duplicating it in tool arguments.",
+		}),
+	),
+	context_file: Type.Optional(
+		Type.String({
+			description:
+				"Path to a complete unified diff already captured by the orchestrator. Its contents are appended to shared context inside the extension.",
+		}),
+	),
+	shard_count: Type.Optional(
+		Type.Integer({
+			minimum: 1,
+			maximum: 3,
+			description:
+				"For large diffs, split whole changed-file blocks into two or three balanced shards and run every requested lens once per shard.",
 		}),
 	),
 	max_parallel: Type.Optional(
 		Type.Number({
 			description: `Maximum pass subprocesses to run concurrently. Defaults to ${DEFAULT_BATCH_PARALLEL}; capped at ${MAX_BATCH_PARALLEL}.`,
+		}),
+	),
+	major_only: Type.Optional(
+		Type.Boolean({
+			description: "Apply major-only P0-P2 candidate reporting to every requested pass without changing model, thinking, tools, or diff scope.",
+		}),
+	),
+	minor_hygiene: Type.Optional(
+		Type.Boolean({
+			description: "Add a bounded direct-diff P3/nit scan to the light overview pass; heavy passes remain P0-P2 only.",
 		}),
 	),
 	passes: Type.Array(
@@ -830,6 +920,11 @@ const ReviewSubagentsParams = Type.Object({
 			context: Type.Optional(
 				Type.String({
 					description: "Optional pass-specific context appended after the shared context.",
+				}),
+			),
+			context_file: Type.Optional(
+				Type.String({
+					description: "Optional pass-specific unified-diff shard. When set, this pass receives the shard instead of the top-level context_file.",
 				}),
 			),
 			tool_policy: Type.Optional(
@@ -908,12 +1003,22 @@ export default function (pi: ExtensionAPI) {
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
 		promptGuidelines: [
 			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable or when rerunning one failed batch pass.",
-			"When calling review_subagent, pass the unified diff and PR title/description in `context` so the subagent does not refetch it.",
+			"When rerunning a failed pass, reuse the captured complete diff with `context_file` plus compact PR metadata in `context`; embedding the diff in context remains supported for compatibility.",
 		],
 		parameters: ReviewSubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const tier = params.tier as Tier;
+			let loadedContext;
+			try {
+				loadedContext = await loadReviewContext(ctx.cwd, params.context, params.context_file);
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: `Review context failed: ${errMessage(error)}` }],
+					isError: true,
+					details: { tier, contextFileBytes: 0 },
+				};
+			}
 			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
 				config,
@@ -921,8 +1026,10 @@ export default function (pi: ExtensionAPI) {
 				{
 					tier,
 					objective: params.objective,
-					context: params.context,
+					context: loadedContext.context,
 					toolPolicy: normalizeToolPolicy(params.tool_policy),
+					majorOnly: params.major_only === true,
+					minorHygiene: params.minor_hygiene === true,
 				},
 				signal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
@@ -944,6 +1051,7 @@ export default function (pi: ExtensionAPI) {
 						toolPolicy: result.toolPolicy,
 						elapsedMs: result.elapsedMs,
 						attempts: result.attempts,
+						contextFileBytes: loadedContext.contextFileBytes,
 					},
 				};
 			}
@@ -959,6 +1067,7 @@ export default function (pi: ExtensionAPI) {
 					toolPolicy: result.toolPolicy,
 					elapsedMs: result.elapsedMs,
 					attempts: result.attempts,
+					contextFileBytes: loadedContext.contextFileBytes,
 				},
 			};
 		},
@@ -977,7 +1086,7 @@ export default function (pi: ExtensionAPI) {
 			"Run independent light/medium/heavy PR-review passes concurrently in isolated subagents with shared PR context",
 		promptGuidelines: [
 			"Prefer review_subagents over separate review_subagent calls for independent /pr-review passes; it guarantees bounded parallel execution instead of relying on the orchestrator to emit concurrent tool calls.",
-			"Fetch PR metadata and the unified diff once, then pass that shared context in `context`; use per-pass `context` only for extra instructions or scoped convention-file excerpts.",
+			"Fetch PR metadata and the unified diff once. Prefer the captured diff path in `context_file` plus compact metadata in `context`; for large multi-file diffs shard_count=2 or 3 runs every requested lens over every balanced whole-file shard.",
 			"If any pass reports status=failed, treat the review evidence as incomplete: rerun that pass or perform it inline before finalizing the JSON.",
 		],
 		parameters: ReviewSubagentsParams,
@@ -992,22 +1101,85 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			const sharedContext = typeof params.context === "string" ? params.context : undefined;
-			const passes: SubagentPassRequest[] = rawPasses.map((pass, index) => {
-				const tier = pass.tier as Tier;
+			if (params.context_file && rawPasses.some((pass) => pass.context_file)) {
 				return {
-					id: typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`,
-					tier,
-					objective: pass.objective,
-					context: combineContexts(sharedContext, typeof pass.context === "string" ? pass.context : undefined),
-					toolPolicy: normalizeToolPolicy(pass.tool_policy),
+					content: [{ type: "text", text: "Review batch context failed: use either top-level context_file or pass-specific context_file shards, not both." }],
+					isError: true,
+					details: { passCount: rawPasses.length, contextFileBytes: 0 },
 				};
+			}
+			let loadedContext;
+			let loadedPassContexts;
+			try {
+				loadedContext = await loadReviewContext(ctx.cwd, params.context, params.context_file);
+				loadedPassContexts = await Promise.all(
+					rawPasses.map((pass) =>
+						loadReviewContext(
+							ctx.cwd,
+							typeof pass.context === "string" ? pass.context : undefined,
+							typeof pass.context_file === "string" ? pass.context_file : undefined,
+						),
+					),
+				);
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: `Review batch context failed: ${errMessage(error)}` }],
+					isError: true,
+					details: { passCount: rawPasses.length, contextFileBytes: 0 },
+				};
+			}
+			const requestedShardCount = params.shard_count === 2 || params.shard_count === 3
+				? params.shard_count
+				: 1;
+			if (requestedShardCount > 1 && !loadedContext.contextFileText) {
+				return {
+					content: [{ type: "text", text: "Review batch context failed: shard_count>1 requires a top-level context_file." }],
+					isError: true,
+					details: { passCount: rawPasses.length, contextFileBytes: 0, shardCount: 0 },
+				};
+			}
+			const requestedShards = requestedShardCount > 1
+				? shardUnifiedDiff(loadedContext.contextFileText!, requestedShardCount)
+				: [];
+			const sharded = requestedShards.length > 1;
+			const sharedContext = sharded
+				? (typeof params.context === "string" ? params.context.trim() : undefined)
+				: loadedContext.context;
+			const majorOnly = params.major_only === true;
+			const minorHygiene = params.minor_hygiene === true;
+			const passes: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
+				const tier = pass.tier as Tier;
+				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
+				const baseContext = combineContexts(sharedContext, loadedPassContexts[index]!.context);
+				const makePass = (shard: string | undefined, shardIndex: number): SubagentPassRequest => ({
+					id: shardIndex === 0 ? baseId : `${baseId}-shard-${shardIndex + 1}`,
+					tier,
+					objective: shard
+						? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
+						: pass.objective,
+					context: shard
+						? combineContexts(
+							baseContext,
+							`--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`,
+						)
+						: baseContext,
+					toolPolicy: normalizeToolPolicy(pass.tool_policy),
+					majorOnly,
+					minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
+				});
+				return sharded
+					? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex))
+					: [makePass(undefined, 0)];
 			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
-			const scheduledResults = await runWithConcurrency(passes, maxParallel, async (pass) => {
+			const tierPriority: Record<Tier, number> = { heavy: 0, medium: 1, light: 2 };
+			const dispatchPasses = passes
+				.map((pass, originalIndex) => ({ pass, originalIndex }))
+				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
+			const dispatchResults = await runWithConcurrency(dispatchPasses, maxParallel, async ({ pass, originalIndex }) => {
 				const startOffsetMs = monotonicNow() - batchStartedAt;
 				const result = await runSubagentPass(config, ctx, pass, signal);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
@@ -1019,8 +1191,9 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 				});
-				return { result, startOffsetMs, endOffsetMs };
+				return { result, originalIndex, startOffsetMs, endOffsetMs };
 			});
+			const scheduledResults = dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex);
 			const elapsedMs = monotonicNow() - batchStartedAt;
 			const results = scheduledResults.map((scheduled) => scheduled.result);
 
@@ -1031,7 +1204,13 @@ export default function (pi: ExtensionAPI) {
 				...(failed.length > 0 ? { isError: true } : {}),
 				details: {
 					maxParallel,
+					majorOnly,
+					minorHygiene,
 					passCount: results.length,
+					shardCount: sharded ? requestedShards.length : 1,
+					contextFileBytes:
+						loadedContext.contextFileBytes +
+						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),
 					failedCount: failed.length,
 					elapsedMs,
 					scheduling: {
@@ -1056,6 +1235,9 @@ export default function (pi: ExtensionAPI) {
 						retryableFailure: r.retryableFailure,
 						toolPolicy: r.toolPolicy,
 						elapsedMs: r.elapsedMs,
+						firstEventMs: r.attempts.at(-1)?.firstEventMs,
+						firstAssistantMs: r.attempts.at(-1)?.firstAssistantMs,
+						toolElapsedMs: r.attempts.at(-1)?.toolElapsedMs ?? 0,
 						startOffsetMs,
 						endOffsetMs,
 						attempts: r.attempts,

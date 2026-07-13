@@ -5,20 +5,100 @@ const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url),
 const extension = readFileSync(new URL("../extensions/pr-review-subagent.ts", import.meta.url), "utf8");
 
 describe("PR review prompt scheduling policy", () => {
-	test("preserves all four review passes and bounded batch fan-out", () => {
+	test("uses balanced five-pass coverage by default", () => {
+		expect(prompt).toContain("The default is balanced");
+		expect(prompt).toContain("By default, and when `--balanced` is present");
+		expect(prompt).toContain("`major_only: true`, `minor_hygiene: true`");
+		expect(prompt).toContain("exactly these five passes: `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
+		expect(prompt).toContain("For an ordinary diff use `max_parallel: 5`");
+		expect(prompt).toContain("Do **not** dispatch `conventions-maintainability`");
+	});
+
+	test("preserves the comprehensive six-pass review behind full mode", () => {
 		expect(prompt).toContain("| `overview` | `light` | `none` |");
 		expect(prompt).toContain("| `conventions-maintainability` | `medium` | `configured` |");
 		expect(prompt).toContain("| `correctness` | `heavy` | `configured` |");
+		expect(prompt).toContain("| `correctness-contracts` | `heavy` | `configured` |");
 		expect(prompt).toContain("| `security-performance` | `heavy` | `configured` |");
-		expect(prompt).toContain("max_parallel: 4");
+		expect(prompt).toContain("| `performance-resources` | `heavy` | `configured` |");
+		expect(prompt).toContain("When `$@` includes `--full`");
+		expect(prompt).toContain("use all six passes");
+		expect(prompt).toContain("For an ordinary diff use `max_parallel: 6`");
+		expect(prompt).toContain("mode-0600 temporary file is the exact base↔head `context_file`");
+		expect(prompt).toContain('gh pr diff $1 > "$diff_file" || { status=$?; rm -f -- "$diff_file"');
+		expect(prompt).toContain("remove it before every early return, skipped JSON, confirmation pause");
+		expect(prompt).toContain("first remove the captured temporary diff");
+		expect(prompt).toContain("Remove the captured temporary diff before stopping");
+		expect(prompt).toContain("Do not dump or embed the complete diff into the parent conversation");
+		expect(prompt).toContain("independently read candidate-specific hunks/surrounding code");
+		expect(extension.match(/context_file: Type.Optional/g)).toHaveLength(3);
+		expect(extension).toContain("loadReviewContext(ctx.cwd, params.context, params.context_file)");
+		expect(extension).toContain('stdio: ["pipe", "pipe", "pipe"]');
+		expect(extension).toContain('proc.stdin.end(input, "utf8")');
+		expect(extension).not.toContain("args.push(buildPassTask(pass.objective, pass.context))");
+		expect(prompt).toContain("Inspect the complete diff so cross-file flows remain visible");
+		expect(prompt).toContain("Inspect the complete diff so cross-file contracts remain visible");
 	});
 
-	test("discovers user-level names after context gathering and skips when none apply", () => {
-		const decision = prompt.indexOf("After metadata/diff capture and convention gathering are complete");
+	test("supports an opt-in major-only mode without dropping heavy-lens coverage", () => {
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced]"');
+		expect(prompt).toContain("When `$@` includes `--major-only`");
+		expect(prompt).toContain("exactly these five passes: `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
+		expect(prompt).toContain("Do **not** dispatch `conventions-maintainability`");
+		expect(prompt).toContain("For an ordinary diff use `max_parallel: 5`");
+		expect(prompt).toContain("discard P3/nit candidates before parent validation and finalization");
+		expect(prompt).toContain("never relabel a minor issue as P2");
+		expect(extension).toContain("major_only: Type.Optional");
+		expect(extension).toContain("buildSubagentSystemPrompt(");
+		expect(extension).toContain("pass.majorOnly === true");
+		expect(extension).not.toContain('pass.majorOnly && pass.tier === "heavy"');
+		expect(extension).toContain("report only substantiated P0, P1, or P2 defects");
+	});
+
+	test("offers bounded minor coverage by default and through the balanced alias", () => {
+		expect(prompt).toContain("`--balanced` is a backward-compatible explicit alias for this default");
+		expect(prompt).toContain("at most three direct-diff P3/nit candidates");
+		expect(prompt).toContain("both `major_only: true` and `minor_hygiene: true`");
+		expect(prompt).toContain("validate every retained candidate independently");
+		expect(extension).toContain("minor_hygiene: Type.Optional");
+		expect(extension).toContain("This is a bounded minor-hygiene scan");
+		expect(extension).toContain("minorHygiene && tier === \"light\" && baseId === \"overview\"");
+	});
+
+	test("shards every lens for large multi-file diffs", () => {
+		expect(prompt).toContain("200,000–399,999 byte multi-file diffs");
+		expect(prompt).toContain("`shard_count: 2` and `max_parallel: 10`");
+		expect(prompt).toContain("diffs at least 400,000 bytes with at least three changed files");
+		expect(prompt).toContain("`shard_count: 3` and `max_parallel: 15`");
+		expect(prompt).toContain("two- and three-shard policies use `max_parallel: 12` and `max_parallel: 18`");
+		expect(prompt).toContain("runs every selected lens once per shard");
+		expect(prompt).toContain("Configured specialists may read the full `context_file` path");
+		expect(prompt).toContain("Never shard a single-file diff");
+		expect(extension).toContain("const MAX_BATCH_PARALLEL = 18");
+		expect(extension).toContain("maximum: 3");
+		expect(extension).toContain("shardUnifiedDiff(loadedContext.contextFileText!, requestedShardCount)");
+		expect(extension).toContain("shard_count>1 requires a top-level context_file");
+		expect(extension).toContain("const tierPriority: Record<Tier, number> = { heavy: 0, medium: 1, light: 2 }");
+		expect(extension).toContain("dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex)");
+		expect(extension).toContain("firstAssistantMs");
+		expect(extension).toContain("toolElapsedMs");
+	});
+
+	test("balances correctness work without dropping error or resource coverage", () => {
+		expect(prompt).toContain("API/data/error-contract violations");
+		expect(prompt).toContain("error propagation/handling defects");
+		expect(prompt).toContain("resource ownership/cleanup leaks");
+		expect(prompt).toContain("Treat definite resource leaks as correctness findings");
+	});
+
+	test("discovers user-level names concurrently with independent initial context", () => {
+		const decision = prompt.indexOf("Use the result of the single `pr_review_verify` call emitted concurrently");
 		const dispatch = prompt.indexOf("If Step 2 selected a discovered baseline name");
 		expect(decision).toBeGreaterThan(-1);
 		expect(dispatch).toBeGreaterThan(decision);
-		expect(prompt).toContain('`pr_review_verify` with exactly `{ "action": "list" }`');
+		expect(prompt).toContain('`pr_review_verify` `{ "action": "list" }` discovery calls together');
+		expect(prompt).toContain("Applicability discovery depends only on the current repository");
+		expect(prompt).toContain("repository-wide convention-path listing (paths only)");
 		expect(prompt).toContain("project-local definitions are ignored");
 		expect(prompt).toContain("missing config disables verification");
 		expect(prompt).toContain("Select **at most one** applicable name");
@@ -73,11 +153,27 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("`primaryOutcome`, `terminationOutcome`, and `cleanupOutcome`");
 	});
 
-	test("does not delay review without a profile and validates candidates afterward", () => {
+	test("does not delay review and batches independent candidate validation", () => {
 		expect(prompt).toContain("If no profile is configured/applicable");
-		expect(prompt).toContain("let the four-pass batch proceed immediately");
+		expect(prompt).toContain("let the default/major-only five-pass batch (or 10/15 sharded passes) proceed immediately");
+		expect(prompt).toContain("the `--full` six-pass batch (or 12/18 sharded passes)");
 		expect(prompt).toContain("Only after the batch results (and any concurrently scheduled baseline result) are available");
-		expect(prompt).toContain("Perform targeted candidate validation now");
-		expect(prompt).toContain("Baseline verification never replaces this post-batch validation");
+		expect(prompt).toContain("make an internal confirm/reject/evidence-needed decision");
+		expect(prompt).toContain("navigational evidence index");
+		expect(prompt).toContain("never as a trusted conclusion");
+		expect(prompt).toContain("do **not** launch a tool call merely to rediscover");
+		expect(prompt).toContain("one parallel tool-call turn");
+		expect(prompt).toContain("Use at most one additional validation turn");
+		expect(prompt).toContain("not permission to skip evidence");
+		expect(prompt).toContain("independent source-grounded confirmation");
+		expect(prompt).toContain("resolve every candidate as confirmed or rejected");
+		expect(prompt).toContain("baseline verification never replaces this post-batch validation");
+	});
+
+	test("batches specialist evidence gathering without weakening substantiation", () => {
+		expect(extension).toContain("Use repository tools only to substantiate a concrete candidate caused by that diff");
+		expect(extension).toContain("Issue independent reads/searches/checks together");
+		expect(extension).toContain("Use at most one follow-up tool turn");
+		expect(extension).toContain("never permits skipping evidence needed to substantiate a finding");
 	});
 });

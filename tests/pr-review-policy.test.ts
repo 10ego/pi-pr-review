@@ -35,6 +35,9 @@ describe("tool policy argv", () => {
 			"-p",
 			"--no-session",
 			"--no-context-files",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
 		]);
 	});
 

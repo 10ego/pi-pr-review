@@ -59,6 +59,8 @@ export interface VerifyResult {
 		outcome: "not_needed" | "success" | "failure";
 		reasons: Array<"timeout" | "abort" | "residual_descendants">;
 		termSignalsSent: number;
+		/** KILL attempts include already-gone groups; delivered signals are counted separately. */
+		killAttempts: number;
 		killSignalsSent: number;
 		drained: boolean;
 		errors: string[];
@@ -148,6 +150,7 @@ interface ProcessTermination {
 	attempted: boolean;
 	reason?: "timeout" | "abort" | "residual_descendants";
 	termSent: boolean;
+	killAttempted: boolean;
 	killSent: boolean;
 	drained: boolean;
 	errors: string[];
@@ -204,6 +207,7 @@ function emptyTermination(): VerifyResult["terminationOutcome"] {
 		outcome: "not_needed",
 		reasons: [],
 		termSignalsSent: 0,
+		killAttempts: 0,
 		killSignalsSent: 0,
 		drained: true,
 		errors: [],
@@ -262,6 +266,7 @@ function preemptedProcessResult(reason: "abort" | "timeout"): ProcessResult {
 			attempted: false,
 			reason,
 			termSent: false,
+			killAttempted: false,
 			killSent: false,
 			drained: true,
 			errors: [],
@@ -298,6 +303,7 @@ function runProcess(command: string, args: string[], options: DeadlineOptions): 
 		const termination: ProcessTermination = {
 			attempted: false,
 			termSent: false,
+			killAttempted: false,
 			killSent: false,
 			drained: true,
 			errors: [],
@@ -399,6 +405,9 @@ function runProcess(command: string, args: string[], options: DeadlineOptions): 
 			// Unconditionally signal the original process group after grace. Do not
 			// cancel this when the group leader exits: descendants may still be alive.
 			forceKillTimer = setTimeout(() => {
+				// Record the mandatory KILL attempt even when TERM already reaped the
+				// group and the OS returns ESRCH. `killSent` remains delivery-only.
+				termination.killAttempted = true;
 				termination.killSent = signalGroup("SIGKILL");
 				afterKill();
 			}, options.killGraceMs);
@@ -850,6 +859,7 @@ function mergeTermination(target: VerifyResult["terminationOutcome"], source: Pr
 	target.attempted = true;
 	if (source.reason && !target.reasons.includes(source.reason)) target.reasons.push(source.reason);
 	if (source.termSent) target.termSignalsSent++;
+	if (source.killAttempted) target.killAttempts++;
 	if (source.killSent) target.killSignalsSent++;
 	target.drained &&= source.drained;
 	target.errors.push(...source.errors);

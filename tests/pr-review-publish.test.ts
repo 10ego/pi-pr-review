@@ -198,10 +198,16 @@ describe("trusted invocation mode", () => {
 		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", prNumber: 7 });
 		expect(parsePublishMode("/pr-review 8 --comment")).toMatchObject({ mode: "force", prNumber: 8 });
 		expect(parsePublishMode("/pr-review 9 --no-comment")).toMatchObject({ mode: "disabled", prNumber: 9 });
+		expect(parsePublishMode("/pr-review 10 --major-only --no-comment")).toMatchObject({ mode: "disabled", prNumber: 10 });
+		expect(parsePublishMode("/pr-review 11 --balanced --no-comment")).toMatchObject({ mode: "disabled", prNumber: 11 });
+		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", prNumber: 12 });
 	});
 
 	test("rejects contradictory flags", () => {
 		expect(parsePublishMode("/pr-review 7 --comment --no-comment").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --major-only --balanced").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --full --balanced").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --full --major-only").error).toContain("cannot be used together");
 	});
 
 	test("queued invocation cannot override active publishing intent", () => {
