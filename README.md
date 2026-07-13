@@ -145,6 +145,8 @@ The extension—not the model—owns publishing. It creates one formal review wi
 
 Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
 
+After a review completes, you can ask the agent to “post the inline review.” It uses the extension-owned `pr_review_publish` tool, which accepts only the PR number and publishes the validated current-head review from the extension cache. The model cannot supply replacement review text or use this tool to rerun review agents.
+
 If a new commit makes a completed review stale, publish the cached result without rerunning the model:
 
 ```text
@@ -210,7 +212,7 @@ The verdict is `request_changes` only when a validated P0 or P1 finding exists. 
 - Reviewer subprocesses start with extension discovery disabled, so they cannot recursively invoke this package's agents or verification tool.
 - Reviewers receive the captured diff and are instructed not to modify files.
 - The orchestrator does not check out, commit, or push PR code.
-- GitHub writes require `--comment` or an effective `autoPostReviews: true` setting.
+- GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, or an explicit user request that the agent fulfills through the cache-only `pr_review_publish` tool.
 - Publication authority is captured before review or optional verification begins, so PR code cannot enable it mid-run.
 - Multiple model calls run per PR. Use a cheaper `light` model and reserve stronger models for `heavy` passes to control cost.
 - Same-head review markers prevent duplicate publication by the same GitHub identity.

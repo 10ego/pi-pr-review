@@ -477,16 +477,19 @@ fi
 		});
 	});
 
-	test("registers and documents a direct command rather than delegating stale publication to the model", () => {
+	test("registers cache-only agent publication while keeping stale override explicit", () => {
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
+		expect(extension).toContain('name: "pr_review_publish"');
 		expect(extension).toContain('pi.registerCommand("pr-review-publish"');
-		expect(extension).toContain("This command never starts or reruns a review");
+		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
+		expect(readme).toContain("cache-only `pr_review_publish` tool");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are intentionally disabled");
 		expect(prompt).toContain("without another model turn");
+		expect(prompt).toContain("call `pr_review_publish` with the PR number");
 	});
 });
 

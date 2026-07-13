@@ -24,10 +24,14 @@ mock.module("typebox", () => {
 		Type: {
 			Array: schema,
 			Boolean: schema,
-			Integer: schema,
+			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema,
 			Number: schema,
-			Object: schema,
+			Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+				type: "object",
+				properties,
+				...options,
+			}),
 			Optional: schema,
 			String: schema,
 			Union: schema,

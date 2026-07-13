@@ -18,6 +18,7 @@ import {
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
 	classifyAssistantCompletion,
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
@@ -449,9 +450,102 @@ export default function registerReviewTable(
 		}
 	};
 
+	type CachedPublication =
+		| { result: Awaited<ReturnType<typeof publishPullReview>> }
+		| { error: string };
+	const publishCachedReview = async (
+		prNumber: number,
+		allowStale: boolean,
+		ctx: ExtensionContext,
+	): Promise<CachedPublication> => {
+		let repository: RepositoryBinding;
+		try {
+			repository = await resolveRepositoryBinding(ctx.cwd);
+		} catch (error) {
+			return { error: `Cannot resolve the current GitHub repository: ${String(error)}` };
+		}
+		const completed = completedReviews.get(prNumber, repository);
+		if (!completed) {
+			return {
+				error: `No completed review for PR #${prNumber} is cached for this repository in the current extension session. Publishing never starts or reruns a review.`,
+			};
+		}
+		const headSha = completed.review.pr?.head_sha;
+		if (typeof headSha !== "string") return { error: "Cached PR review is missing pr.head_sha" };
+		return {
+			result: await publishPullReview({
+				cwd: ctx.cwd,
+				prNumber,
+				headSha,
+				allowNonOpen: completed.invocation.allowNonOpen,
+				allowStale,
+				expectedRepository: completed.repository,
+				review: completed.review,
+			}),
+		};
+	};
+
+	pi.registerTool({
+		name: "pr_review_publish",
+		label: "Publish Cached PR Review",
+		description: [
+			"Publish a completed PR review cached by this extension after the user explicitly asks to post it.",
+			"Accepts only a PR number: review content, repository binding, and reviewed head come from the validated extension cache.",
+			"Never starts or reruns review agents and never forces stale publication; use /pr-review-publish --allow-stale for that explicit override.",
+		].join(" "),
+		promptSnippet: "Publish an extension-cached completed PR review when the user explicitly asks to post it",
+		promptGuidelines: [
+			"Call pr_review_publish only after the user explicitly asks to publish or post a completed review.",
+			"Do not call it during the /pr-review run itself; --comment and autoPostReviews are handled by the extension after final JSON.",
+			"This tool cannot accept model-authored review text or a stale override.",
+		],
+		parameters: Type.Object(
+			{
+				pr_number: Type.Integer({
+					minimum: 1,
+					description: "PR number whose completed cached review should be published at its current reviewed head.",
+				}),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (loopCoordinator.peek()) {
+				return {
+					content: [{ type: "text", text: "A /pr-review run is still active; finish or cancel it before publishing its cached result." }],
+					isError: true,
+					details: { status: "active_review" },
+				};
+			}
+			const published = await publishCachedReview(params.pr_number, false, ctx);
+			if ("error" in published) {
+				return {
+					content: [{ type: "text", text: published.error }],
+					isError: true,
+					details: { status: "error", message: published.error },
+				};
+			}
+			const result = published.result;
+			const succeeded = result.status === "posted" ||
+				result.status === "posted_degraded" ||
+				result.status === "skipped_duplicate";
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				...(!succeeded ? { isError: true } : {}),
+				details: result,
+			};
+		},
+	});
+
 	pi.registerCommand("pr-review-publish", {
 		description: "Publish a completed review from this session without rerunning the model",
 		handler: async (args, ctx) => {
+			// Extension commands execute before input hooks, so every invocation —
+			// including malformed arguments — must revoke active review authority.
+			const active = loopCoordinator.peek();
+			if (active) {
+				loopCoordinator.clear();
+				persistTelemetry("cleared");
+			}
 			const parsed = parsePublishExistingArgs(args ?? "");
 			if (parsed.error || !parsed.prNumber) {
 				ctx.ui.notify(
@@ -460,11 +554,6 @@ export default function registerReviewTable(
 				);
 				return;
 			}
-			const active = loopCoordinator.peek();
-			if (active) {
-				loopCoordinator.clear();
-				persistTelemetry("cleared");
-			}
 			if (active?.prNumber === parsed.prNumber) {
 				ctx.ui.notify(
 					`PR #${parsed.prNumber} review was cancelled. The publish-only command will not post an older cached result in its place.`,
@@ -472,37 +561,13 @@ export default function registerReviewTable(
 				);
 				return;
 			}
-			let repository: RepositoryBinding;
-			try {
-				repository = await resolveRepositoryBinding(ctx.cwd);
-			} catch (error) {
-				ctx.ui.notify(`Cannot resolve the current GitHub repository: ${String(error)}`, "error");
+			const published = await publishCachedReview(parsed.prNumber, parsed.allowStale, ctx);
+			if ("error" in published) {
+				ctx.ui.notify(published.error, "error");
 				return;
 			}
-			const completed = completedReviews.get(parsed.prNumber, repository);
-			if (!completed) {
-				ctx.ui.notify(
-					`No completed review for PR #${parsed.prNumber} is cached for this repository in the current extension session. This command never starts or reruns a review.`,
-					"error",
-				);
-				return;
-			}
-			const headSha = completed.review.pr?.head_sha;
-			if (typeof headSha !== "string") {
-				ctx.ui.notify("Cached PR review is missing pr.head_sha", "error");
-				return;
-			}
-			const result = await publishPullReview({
-				cwd: ctx.cwd,
-				prNumber: parsed.prNumber,
-				headSha,
-				allowNonOpen: completed.invocation.allowNonOpen,
-				allowStale: parsed.allowStale,
-				expectedRepository: completed.repository,
-				review: completed.review,
-			});
 			notifyPublishResult(
-				result,
+				published.result,
 				parsed.allowStale ? "publish-only --allow-stale" : "publish-only",
 				ctx,
 			);
@@ -563,6 +628,9 @@ export default function registerReviewTable(
 		}
 		if (!parsed.matched) return;
 		if (event.streamingBehavior !== undefined) {
+			// Returning handled prevents queueing but does not stop the current parent
+			// operation. Abort it so revoked review work cannot continue with built-ins.
+			ctx.abort();
 			ctx.ui.notify("Invalid /pr-review invocation: queued or steering input cannot start a review loop", "error");
 			return { action: "handled" as const };
 		}

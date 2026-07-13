@@ -22,6 +22,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
+const BASE_ACTIVE_TOOLS = ["read", "bash", "pr_review_publish"];
 
 const review: ReviewLike = {
 	pr: { number: 7, title: "Lifecycle review", head_sha: "a".repeat(40) },
@@ -52,9 +53,11 @@ const invocation = {
 interface Harness {
 	handlers: Map<string, Array<(event: any, ctx: any) => any>>;
 	commands: Map<string, (args: string, ctx: any) => Promise<void>>;
+	tools: Map<string, any>;
 	branch: any[];
 	notifications: string[];
 	activeTools(): string[];
+	abortCount(): number;
 	setPromptPath(path: string): void;
 	ctx: any;
 	appendMessage(message: any, id?: string): any;
@@ -92,13 +95,45 @@ fi
 	return dir;
 }
 
+function installFakePublishingGh(): void {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-publish-tool-"));
+	tempDirs.push(dir);
+	const gh = join(dir, "gh");
+	writeFileSync(
+		gh,
+		`#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+elif [[ "$args" == *" user --jq .login"* ]]; then
+  echo 'reviewer'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  echo '[[]]'
+elif [[ "$args" == *"--method POST"* ]]; then
+  cat >/dev/null
+  echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
+elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
+  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' '${"a".repeat(40)}'
+else
+  echo "unexpected gh args: $args" >&2
+  exit 1
+fi
+`,
+	);
+	chmodSync(gh, 0o755);
+	process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
+}
+
 function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	let nextId = 1;
 	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+	const tools = new Map<string, any>();
 	const branch = [...initialBranch];
 	const notifications: string[] = [];
 	let activeTools = ["read", "bash", ...REVIEW_LOOP_TOOL_NAMES];
+	let aborts = 0;
 	let promptPath = ownPromptPath;
 	const sessionManager = {
 		getBranch: () => [...branch],
@@ -110,6 +145,9 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		cwd: installFakeGh(),
 		mode: "json",
 		isProjectTrusted: () => false,
+		abort: () => {
+			aborts++;
+		},
 		sessionManager,
 		ui: { notify: (message: string) => notifications.push(message) },
 	};
@@ -121,6 +159,10 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		},
 		registerCommand: (name: string, options: { handler: (args: string, ctx: any) => Promise<void> }) => {
 			commands.set(name, options.handler);
+		},
+		registerTool: (definition: any) => {
+			tools.set(definition.name, definition);
+			if (!activeTools.includes(definition.name)) activeTools.push(definition.name);
 		},
 		appendEntry: (customType: string, data: unknown) => {
 			branch.push({ type: "custom", id: `custom-${nextId++}`, customType, data });
@@ -139,9 +181,11 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	return {
 		handlers,
 		commands,
+		tools,
 		branch,
 		notifications,
 		activeTools: () => [...activeTools],
+		abortCount: () => aborts,
 		setPromptPath: (next: string) => {
 			promptPath = next;
 		},
@@ -210,10 +254,10 @@ describe("completed review extension lifecycle", () => {
 	test("exposes review tools only for trusted command-loop phases", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { reason: "startup" });
-		expect(harness.activeTools()).toEqual(["read", "bash"]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
-		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
+		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
 
 		await harness.emit("message_end", {
 			message: {
@@ -222,31 +266,47 @@ describe("completed review extension lifecycle", () => {
 				content: [{ type: "toolCall", name: "review_subagents" }],
 			},
 		});
-		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
+		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
 
 		await harness.emit("input", { text: "do something unrelated", source: "interactive", streamingBehavior: "steer" });
-		expect(harness.activeTools()).toEqual(["read", "bash"]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 
 		const denied = await harness.emit("input", { text: "/pr-review 8", source: "extension" });
 		expect(denied).toContainEqual({ action: "handled" });
-		expect(harness.activeTools()).toEqual(["read", "bash"]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
 	test("rejects queued and shadowed prompt invocations", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { reason: "startup" });
+		await harness.emit("input", { text: "/pr-review 6", source: "interactive" });
 		const queued = await harness.emit("input", {
 			text: "/pr-review 7",
 			source: "interactive",
 			streamingBehavior: "followUp",
 		});
 		expect(queued).toContainEqual({ action: "handled" });
+		expect(harness.abortCount()).toBe(1);
 		expect(harness.activeTools()).not.toContain("review_subagent");
 
 		harness.setPromptPath("/tmp/other-package/prompts/pr-review.md");
 		const shadowed = await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		expect(shadowed).toContainEqual({ action: "handled" });
 		expect(harness.activeTools()).not.toContain("review_subagent");
+	});
+
+	test("publishes a cached current-head review through the narrow agent tool", async () => {
+		const persisted = persistedInlineReview();
+		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		const tool = harness.tools.get("pr_review_publish");
+		expect(tool).toBeDefined();
+		expect(Object.keys(tool.parameters.properties)).toEqual(["pr_number"]);
+		installFakePublishingGh();
+		const result = await tool.execute("publish-1", { pr_number: 7 }, undefined, undefined, harness.ctx);
+		expect(result.isError).toBeUndefined();
+		expect(result.details).toMatchObject({ status: "posted" });
 	});
 
 	test("registered commands explicitly revoke an active review", async () => {
@@ -256,6 +316,15 @@ describe("completed review extension lifecycle", () => {
 		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
 		expect(harness.activeTools()).not.toContain("review_subagent");
 		expect(harness.notifications.some((message) => message.includes("review was cancelled"))).toBeTrue();
+	});
+
+	test("invalid publish commands revoke authority before argument parsing", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(harness.activeTools()).toContain("review_subagent");
+		await harness.commands.get("pr-review-publish")!("not-a-pr", harness.ctx);
+		expect(harness.activeTools()).not.toContain("review_subagent");
+		expect(harness.notifications.some((message) => message.includes("Invalid /pr-review-publish"))).toBeTrue();
 	});
 
 	test("suspends review tools while awaiting non-open confirmation", async () => {
@@ -271,10 +340,10 @@ describe("completed review extension lifecycle", () => {
 				}],
 			},
 		});
-		expect(harness.activeTools()).toEqual(["read", "bash"]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 
 		await harness.emit("input", { text: "yes", source: "rpc" });
-		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
+		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
 	});
 
 	test("does not append a redundant anchor for summarized tree navigation", async () => {
