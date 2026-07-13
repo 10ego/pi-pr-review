@@ -234,7 +234,7 @@ Your final message must be **exactly one JSON object** matching the shape below 
 }
 ```
 
-- `pr.head_sha` is the exact full `headRefOid` reviewed; the publisher rejects missing SHAs. Stale publication requires either an explicit user request through `pr_review_publish`, an invocation-captured `allowStalePublish: true` setting (the default), or the publish-only `--allow-stale` override; stale reviews are always body-only with both commit hashes disclosed.
+- `pr.head_sha` is the exact full `headRefOid` reviewed; the publisher rejects missing SHAs. Stale publication requires either a direct publish request intercepted by the extension, an invocation-captured `allowStalePublish: true` setting (the default), or the publish-only `--allow-stale` override; stale reviews are always body-only with both commit hashes disclosed.
 - `disposition` is exactly `"reviewed"` or `"skipped"`. The extension never publishes `skipped` results.
 - `verdict` is exactly `"approve"`, `"request_changes"`, or `"comment"`.
 - `overall_correctness` is exactly `"patch is correct"` or `"patch is incorrect"`.

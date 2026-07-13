@@ -549,7 +549,7 @@ fi
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
 		expect(prompt).toContain("extension intercepts that direct input");
 		expect(prompt).toContain("permits stale publication");
-		expect(prompt).not.toContain("call `pr_review_publish`");
+		expect(prompt).not.toContain("pr_review_publish");
 	});
 });
 
