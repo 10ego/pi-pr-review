@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.4](https://github.com/10ego/pi-pr-review/compare/v1.6.3...v1.6.4) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** use release commits and simplify docs ([#7](https://github.com/10ego/pi-pr-review/issues/7)) ([4c89c4c](https://github.com/10ego/pi-pr-review/commit/4c89c4c67bf6300fd544fbc8ea9a99079fb1f8aa))
+
 ## [1.6.3](https://github.com/10ego/pi-pr-review/compare/v1.6.2...v1.6.3) (2026-07-13)
 
 
