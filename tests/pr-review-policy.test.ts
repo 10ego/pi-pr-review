@@ -35,6 +35,7 @@ describe("tool policy argv", () => {
 			"-p",
 			"--no-session",
 			"--no-context-files",
+			"--no-extensions",
 			"--no-skills",
 			"--no-prompt-templates",
 			"--no-themes",
@@ -60,9 +61,27 @@ describe("tool policy argv", () => {
 		]);
 	});
 
-	test("configured with an empty list preserves legacy omitted-flag behavior", () => {
+	test("configured with an empty list fails closed with no tools", () => {
 		const args = ["--mode", "json"];
-		expect(appendToolPolicyArgs(args, "configured", [])).toEqual(["--mode", "json"]);
+		expect(appendToolPolicyArgs(args, "configured", [])).toEqual([
+			"--mode",
+			"json",
+			"--no-tools",
+		]);
+	});
+
+	test("configured strips recursive review tools and deduplicates the child allowlist", () => {
+		const args: string[] = [];
+		expect(
+			appendToolPolicyArgs(args, "configured", [
+				"read",
+				"review_subagent",
+				"review_subagents",
+				"pr_review_verify",
+				"read",
+				"grep",
+			]),
+		).toEqual(["--tools", "read,grep"]);
 	});
 
 	test("one resolved policy can be reused across fallback attempts", () => {

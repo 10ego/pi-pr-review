@@ -105,7 +105,7 @@ describe("automatic posting configuration", () => {
 
 	test("captures config in the input gate and never resolves it during final publication", () => {
 		const renderer = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
-		expect(renderer).toContain("invocationGate.begin(parsed, resolvePublishingConfig(ctx))");
+		expect(renderer).toContain("loopCoordinator.begin(parsed, resolvePublishingConfig(ctx), source, ctx)");
 		const publisher = renderer.slice(
 			renderer.indexOf("async function maybePublishReview"),
 			renderer.indexOf("export default function"),

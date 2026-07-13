@@ -31,7 +31,6 @@ import {
 	resolveAutoPostSetting,
 	resolveRepositoryBinding,
 	restoreCompletedReviewBranch,
-	ReviewInvocationGate,
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
@@ -41,6 +40,10 @@ import {
 	type ReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
+import {
+	ReviewLoopCoordinator,
+	type ReviewLoopInputSource,
+} from "../lib/pr-review-loop.ts";
 import {
 	ReviewTelemetryTracker,
 	type ReviewPerformanceTelemetry,
@@ -386,8 +389,10 @@ async function maybePublishReview(
 	notifyPublishResult(result, authority.source ?? "frozen invocation", ctx);
 }
 
-export default function (pi: ExtensionAPI) {
-	const invocationGate = new ReviewInvocationGate();
+export default function registerReviewTable(
+	pi: ExtensionAPI,
+	loopCoordinator = new ReviewLoopCoordinator(pi),
+) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
 		const header = ctx.sessionManager.getHeader();
@@ -435,7 +440,7 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const active = invocationGate.peek();
+			const active = loopCoordinator.peek();
 			if (active?.prNumber === parsed.prNumber) {
 				ctx.ui.notify(
 					`PR #${parsed.prNumber} is still being reviewed. The publish-only command will not post an older cached result while a new result is in progress.`,
@@ -480,15 +485,24 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
-		invocationGate.clear();
+	const revokeActiveLoop = () => {
+		loopCoordinator.clear();
 		pendingCompletion = undefined;
-		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
+	};
+
+	pi.on("session_before_switch", revokeActiveLoop);
+	pi.on("session_before_fork", revokeActiveLoop);
+	pi.on("session_before_tree", revokeActiveLoop);
+	pi.on("session_shutdown", revokeActiveLoop);
+
+	pi.on("session_start", (_event, ctx) => {
+		revokeActiveLoop();
+		restoreCompletedReviews(ctx);
 	});
 
 	pi.on("session_tree", (event, ctx) => {
-		invocationGate.clear();
+		loopCoordinator.clear();
 		pendingCompletion = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
@@ -503,8 +517,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
-		if (invocationGate.phase() === "awaiting_confirmation") {
-			const confirmation = invocationGate.resolveConfirmationInput(event.text);
+		const source = event.source as ReviewLoopInputSource;
+		if (loopCoordinator.phase() === "awaiting_confirmation") {
+			const confirmation = loopCoordinator.resolveConfirmationInput(event.text, source, ctx);
 			if (confirmation === "confirmed") {
 				telemetryTracker.resumeAfterConfirmation();
 				return;
@@ -513,15 +528,19 @@ export default function (pi: ExtensionAPI) {
 			// A fresh /pr-review in this same input may safely bind a new tracker below.
 			persistTelemetry("cleared");
 		}
+
 		const parsed = parsePublishMode(event.text);
-		if (!parsed.matched) return;
-		if (invocationGate.peek() && event.streamingBehavior === undefined) {
-			// Replace an abandoned/settled invocation, but never a queued/steering one.
-			invocationGate.clear();
-			persistTelemetry("replaced");
+		if (loopCoordinator.peek()) {
+			// Any independent user/extension input revokes the current generation.
+			// Only an idle, non-streaming /pr-review input may begin the replacement.
+			loopCoordinator.clear();
+			persistTelemetry(parsed.matched && event.streamingBehavior === undefined ? "replaced" : "cleared");
+			if (event.streamingBehavior !== undefined || !parsed.matched) return;
 		}
+		if (!parsed.matched) return;
+
 		// Freeze trusted publication config before review tools or optional PR code can run.
-		const gate = invocationGate.begin(parsed, resolvePublishingConfig(ctx));
+		const gate = loopCoordinator.begin(parsed, resolvePublishingConfig(ctx), source, ctx);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			return { action: "handled" as const };
@@ -530,7 +549,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_start", (event) => {
-		if (!invocationGate.peek()) return;
+		if (!loopCoordinator.peek()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
 	});
 
@@ -578,25 +597,25 @@ export default function (pi: ExtensionAPI) {
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
 		if (completion === "continue_tools") return;
 		if (completion === "clear_invocation") {
-			invocationGate.clear();
+			loopCoordinator.clear();
 			persistTelemetry("cleared");
 			return;
 		}
 
 		const text = assistantText(event.message);
-		const active = invocationGate.peek();
+		const active = loopCoordinator.peek();
 		if (
 			active &&
-			invocationGate.phase() === "reviewing" &&
+			loopCoordinator.phase() === "reviewing" &&
 			isNonOpenConfirmationPrompt(text, active.prNumber)
 		) {
-			if (invocationGate.markAwaitingConfirmation()) telemetryTracker.pauseForConfirmation();
+			if (loopCoordinator.markAwaitingConfirmation()) telemetryTracker.pauseForConfirmation();
 			return;
 		}
 
 		// Every other terminal response consumes authority, whether valid, empty, or unrelated.
 		// Persist timing before publication so network/write latency is never coupled to review wall time.
-		const invocation = active ? invocationGate.consume() : undefined;
+		const invocation = active ? loopCoordinator.consume() : undefined;
 		if (invocation) persistTelemetry("terminal_response");
 		if (!text.trim()) return;
 		const review = parseReview(text);

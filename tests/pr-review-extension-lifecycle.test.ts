@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { REVIEW_LOOP_TOOL_NAMES } from "../lib/pr-review-loop.ts";
 import {
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
@@ -49,6 +50,7 @@ interface Harness {
 	commands: Map<string, (args: string, ctx: any) => Promise<void>>;
 	branch: any[];
 	notifications: string[];
+	activeTools(): string[];
 	ctx: any;
 	appendMessage(message: any, id?: string): any;
 	emit(name: string, event: any): Promise<any[]>;
@@ -91,6 +93,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
 	const branch = [...initialBranch];
 	const notifications: string[] = [];
+	let activeTools = ["read", "bash", ...REVIEW_LOOP_TOOL_NAMES];
 	const sessionManager = {
 		getBranch: () => [...branch],
 		getSessionId: () => identity.id,
@@ -116,6 +119,10 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		appendEntry: (customType: string, data: unknown) => {
 			branch.push({ type: "custom", id: `custom-${nextId++}`, customType, data });
 		},
+		getActiveTools: () => [...activeTools],
+		setActiveTools: (next: string[]) => {
+			activeTools = [...next];
+		},
 	};
 	reviewTable(pi as any);
 	return {
@@ -123,6 +130,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		commands,
 		branch,
 		notifications,
+		activeTools: () => [...activeTools],
 		ctx,
 		appendMessage(message: any, id = `message-${nextId++}`) {
 			const entry = { type: "message", id, message };
@@ -146,7 +154,7 @@ function persistedInlineReview(identity = session): any {
 describe("completed review extension lifecycle", () => {
 	test("persists a reference before publishing after Pi stores exact assistant JSON", async () => {
 		const harness = createHarness();
-		await harness.emit("input", { text: "/pr-review 7 --comment" });
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const message = {
 			role: "assistant",
 			stopReason: "stop",
@@ -183,6 +191,50 @@ describe("completed review extension lifecycle", () => {
 		await reusedId.emit("session_start", { reason: "fork" });
 		await reusedId.commands.get("pr-review-publish")!("7 --allow-stale", reusedId.ctx);
 		expect(reusedId.notifications.some((message) => message.includes("No completed review"))).toBeTrue();
+	});
+
+	test("exposes review tools only for trusted command-loop phases", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { reason: "startup" });
+		expect(harness.activeTools()).toEqual(["read", "bash"]);
+
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [{ type: "toolCall", name: "review_subagents" }],
+			},
+		});
+		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
+
+		await harness.emit("input", { text: "do something unrelated", source: "interactive", streamingBehavior: "steer" });
+		expect(harness.activeTools()).toEqual(["read", "bash"]);
+
+		const denied = await harness.emit("input", { text: "/pr-review 8", source: "extension" });
+		expect(denied).toContainEqual({ action: "handled" });
+		expect(harness.activeTools()).toEqual(["read", "bash"]);
+	});
+
+	test("suspends review tools while awaiting non-open confirmation", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7", source: "rpc" });
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{
+					type: "text",
+					text: `PR #7 is MERGED (head ${"a".repeat(40)}). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.`,
+				}],
+			},
+		});
+		expect(harness.activeTools()).toEqual(["read", "bash"]);
+
+		await harness.emit("input", { text: "yes", source: "rpc" });
+		expect(harness.activeTools()).toEqual(["read", "bash", ...REVIEW_LOOP_TOOL_NAMES]);
 	});
 
 	test("does not append a redundant anchor for summarized tree navigation", async () => {

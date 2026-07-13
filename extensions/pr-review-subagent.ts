@@ -51,6 +51,11 @@ import { Type } from "typebox";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
+	combineAbortSignals,
+	ReviewLoopCoordinator,
+	reviewLoopDeniedResult,
+} from "../lib/pr-review-loop.ts";
+import {
 	appendToolPolicyArgs,
 	buildReviewBaseArgs,
 	normalizeToolPolicy,
@@ -607,6 +612,7 @@ async function runSubagentAttempt(
 	toolPolicy: ToolPolicy,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
+	beforeSpawn?: () => boolean,
 ): Promise<{ result: RunResult; notice: string; elapsedMs: number }> {
 	let tmp: { dir: string; filePath: string } | undefined;
 	const startedAt = monotonicNow();
@@ -627,6 +633,9 @@ async function runSubagentAttempt(
 		args.push("--append-system-prompt", tmp.filePath);
 		const task = buildPassTask(pass.objective, pass.context);
 
+		if (beforeSpawn && !beforeSpawn()) {
+			throw new Error("The active /pr-review loop ended before the reviewer could start.");
+		}
 		const invocation = getPiInvocation(args);
 		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, task, signal, (text) => {
 			onText?.(text);
@@ -655,6 +664,7 @@ async function runSubagentPass(
 	pass: SubagentPassRequest,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
+	beforeSpawn?: () => boolean,
 ): Promise<SubagentPassResult> {
 	const startedAt = monotonicNow();
 	const tier = pass.tier;
@@ -673,6 +683,7 @@ async function runSubagentPass(
 			toolPolicy,
 			signal,
 			onText,
+			beforeSpawn,
 		);
 		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = failed && isRetryableModelFailure(result);
@@ -940,7 +951,10 @@ const ReviewSubagentsParams = Type.Object({
 	),
 });
 
-export default function (pi: ExtensionAPI) {
+export default function registerPrReviewSubagents(
+	pi: ExtensionAPI,
+	loopCoordinator = new ReviewLoopCoordinator(pi),
+) {
 	// Resolve security-sensitive executables only from the PATH trusted when this
 	// extension starts, never from a later mutable process environment.
 	const trustedStartupPath = process.env.PATH ?? "";
@@ -963,14 +977,26 @@ export default function (pi: ExtensionAPI) {
 		parameters: PrReviewVerifyParams,
 
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("pr_review_verify");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const config = loadConfig(ctx);
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_verify");
 			if (params.action === "list") {
-				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, signal, { startupPath: trustedStartupPath });
+				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, executionSignal, { startupPath: trustedStartupPath });
 				return {
 					content: [{ type: "text", text: JSON.stringify(discovery, null, 2) }],
 					details: discovery,
 				};
 			}
+			if (params.pr_number !== loopCoordinator.peek()?.prNumber) {
+				return {
+					content: [{ type: "text", text: "pr_review_verify PR number does not match the active /pr-review invocation." }],
+					isError: true,
+					details: { authorized: false, reason: "pr_mismatch" },
+				};
+			}
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_verify");
 			const result = await verifyPullRequestHead(
 				ctx.cwd,
 				{
@@ -979,7 +1005,7 @@ export default function (pi: ExtensionAPI) {
 					baselineName: params.baseline_name,
 				},
 				config.verificationBaselines,
-				signal,
+				executionSignal,
 				{ startupPath: trustedStartupPath },
 			);
 			return {
@@ -1008,6 +1034,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: ReviewSubagentParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("review_subagent");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const tier = params.tier as Tier;
 			let loadedContext;
 			try {
@@ -1019,6 +1048,7 @@ export default function (pi: ExtensionAPI) {
 					details: { tier, contextFileBytes: 0 },
 				};
 			}
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
 				config,
@@ -1031,8 +1061,9 @@ export default function (pi: ExtensionAPI) {
 					majorOnly: params.major_only === true,
 					minorHygiene: params.minor_hygiene === true,
 				},
-				signal,
+				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
+				() => loopCoordinator.isLeaseActive(lease, ctx),
 			);
 
 			const warnings = thinkingWarnings(config, [tier]);
@@ -1092,6 +1123,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: ReviewSubagentsParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("review_subagents");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
 			if (rawPasses.length === 0) {
 				return {
@@ -1172,6 +1206,7 @@ export default function (pi: ExtensionAPI) {
 					: [makePass(undefined, 0)];
 			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
@@ -1181,7 +1216,14 @@ export default function (pi: ExtensionAPI) {
 				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
 			const dispatchResults = await runWithConcurrency(dispatchPasses, maxParallel, async ({ pass, originalIndex }) => {
 				const startOffsetMs = monotonicNow() - batchStartedAt;
-				const result = await runSubagentPass(config, ctx, pass, signal);
+				const result = await runSubagentPass(
+					config,
+					ctx,
+					pass,
+					executionSignal,
+					undefined,
+					() => loopCoordinator.isLeaseActive(lease, ctx),
+				);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
 				onUpdate?.({
 					content: [
