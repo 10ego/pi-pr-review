@@ -199,6 +199,7 @@ describe("invocation publication snapshot", () => {
 describe("trusted invocation mode", () => {
 	test("defaults to auto and binds force/disable to the requested PR", () => {
 		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", prNumber: 7 });
+		expect(parsePublishMode("/prompt:pr-review 7")).toEqual({ matched: false });
 		expect(parsePublishMode("/pr-review 8 --comment")).toMatchObject({ mode: "force", prNumber: 8 });
 		expect(parsePublishMode("/pr-review 9 --no-comment")).toMatchObject({ mode: "disabled", prNumber: 9 });
 		expect(parsePublishMode("/pr-review 10 --major-only --no-comment")).toMatchObject({ mode: "disabled", prNumber: 10 });

@@ -64,7 +64,7 @@ export interface PublishModeParseResult {
 /** Parse trusted raw prompt-template invocation flags before template expansion. */
 export function parsePublishMode(input: string): PublishModeParseResult {
 	const trimmed = input.trim();
-	if (!/^\/(?:prompt:)?pr-review(?:\s|$)/.test(trimmed)) return { matched: false };
+	if (!/^\/pr-review(?:\s|$)/.test(trimmed)) return { matched: false };
 	const tokens = trimmed.split(/\s+/);
 	const requested = Number(tokens[1]);
 	if (!Number.isInteger(requested) || requested <= 0) {
