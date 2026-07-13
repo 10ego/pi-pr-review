@@ -19,6 +19,7 @@ jobs:
       contents: read
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
+      release_version: ${{ steps.release.outputs.version }}
     steps:
       - name: Create nerv-ops installation token
         id: app-token
@@ -64,6 +65,11 @@ jobs:
 
       - name: Test
         run: bun test
+
+      - name: Verify release version metadata
+        env:
+          EXPECTED_VERSION: ${{ needs.release.outputs.release_version }}
+        run: npm run verify:release-version -- --expected "$EXPECTED_VERSION"
 
       - name: Publish to npm
         run: npm publish --access public --provenance

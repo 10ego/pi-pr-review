@@ -43,6 +43,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Verify release version metadata
+        run: npm run verify:release-version
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:

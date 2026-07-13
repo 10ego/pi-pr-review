@@ -31,7 +31,8 @@
     "url": "git+https://github.com/10ego/pi-pr-review.git"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "verify:release-version": "node scripts/verify-release-version.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
