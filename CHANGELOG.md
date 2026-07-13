@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.5](https://github.com/10ego/pi-pr-review/compare/v1.6.4...v1.6.5) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** verify root version metadata ([#9](https://github.com/10ego/pi-pr-review/issues/9)) ([ce4e36f](https://github.com/10ego/pi-pr-review/commit/ce4e36f1d2c3aa11b60f5d37564d48a8783e192c))
+
 ## [1.6.4](https://github.com/10ego/pi-pr-review/compare/v1.6.3...v1.6.4) (2026-07-13)
 
 
