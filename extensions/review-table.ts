@@ -19,6 +19,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	classifyAssistantCompletion,
+	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
@@ -470,6 +471,15 @@ export default function (pi: ExtensionAPI) {
 		invocationGate.clear();
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
+		try {
+			// Pi otherwise resumes at the JSONL tail, not a no-summary /tree selection.
+			pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE, {
+				schemaVersion: 1,
+				sessionId: ctx.sessionManager.getSessionId(),
+			});
+		} catch (error) {
+			ctx.ui.notify(`PR review cache branch selection will not survive session resume: ${String(error)}`, "warning");
+		}
 	});
 
 	pi.on("input", (event, ctx) => {

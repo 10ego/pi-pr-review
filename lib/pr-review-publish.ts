@@ -314,6 +314,7 @@ export interface CompletedReviewRecord {
 }
 
 export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
+export const COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE = "pr-review-cache-branch";
 
 export interface PersistedCompletedReview extends CompletedReviewRecord {
 	schemaVersion: 1;

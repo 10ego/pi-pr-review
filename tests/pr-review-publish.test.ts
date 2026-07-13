@@ -11,6 +11,7 @@ import {
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
 	collectFoldedComments,
+	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
@@ -337,8 +338,10 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
+		expect(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE).toBe("pr-review-cache-branch");
 		expect(extension).toContain("pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted)");
 		expect(extension).toContain('pi.on("session_tree"');
+		expect(extension).toContain("pi.appendEntry(COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE");
 	});
 
 	test("does not retry publication without the repository binding used for caching", () => {
