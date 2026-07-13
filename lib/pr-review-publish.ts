@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -326,6 +327,7 @@ export interface PersistedCompletedReview {
 	session: CompletedReviewSessionIdentity;
 	invocation: ReviewInvocation;
 	repository: RepositoryBinding;
+	reviewHash: string;
 	reviewEntryId?: string;
 	review?: ReviewLike;
 }
@@ -364,6 +366,10 @@ function validSessionIdentity(value: unknown): value is CompletedReviewSessionId
 
 function sameSessionIdentity(left: CompletedReviewSessionIdentity, right: CompletedReviewSessionIdentity): boolean {
 	return left.id === right.id && left.startedAt === right.startedAt;
+}
+
+function reviewHash(review: ReviewLike): string {
+	return createHash("sha256").update(JSON.stringify(review)).digest("hex");
 }
 
 function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined {
@@ -413,13 +419,17 @@ export class CompletedReviewCache {
 		record: CompletedReviewRecord,
 		session: CompletedReviewSessionIdentity,
 		reviewEntryId?: string,
+		referencedReview?: ReviewLike,
 	): PersistedCompletedReview {
+		const digest = reviewHash(record.review);
+		const useReference = !!reviewEntryId && !!referencedReview && reviewHash(referencedReview) === digest;
 		return {
 			schemaVersion: 2,
 			session: { ...session },
 			invocation: { ...record.invocation, autoPost: { ...record.invocation.autoPost } },
 			repository: { ...record.repository },
-			...(reviewEntryId ? { reviewEntryId } : { review: record.review }),
+			reviewHash: digest,
+			...(useReference ? { reviewEntryId } : { review: record.review }),
 		};
 	}
 
@@ -439,7 +449,9 @@ export class CompletedReviewCache {
 			return false;
 		}
 		const invocation = parsePersistedInvocation(value.invocation);
-		if (!invocation) return false;
+		if (!invocation || typeof value.reviewHash !== "string" || !/^[0-9a-f]{64}$/.test(value.reviewHash)) {
+			return false;
+		}
 		const hasReference = typeof value.reviewEntryId === "string" && value.reviewEntryId.length > 0;
 		const hasInlineReview = Object.prototype.hasOwnProperty.call(value, "review");
 		if (hasReference === hasInlineReview) return false;
@@ -452,6 +464,7 @@ export class CompletedReviewCache {
 		}
 		if (
 			!parsed.review ||
+			reviewHash(parsed.review) !== value.reviewHash ||
 			!shouldPublishReview(parsed.review) ||
 			validateReviewInvocation(parsed.review, invocation)
 		) {

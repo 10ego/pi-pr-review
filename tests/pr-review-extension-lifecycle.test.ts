@@ -144,9 +144,9 @@ function persistedInlineReview(identity = session): any {
 }
 
 describe("completed review extension lifecycle", () => {
-	test("persists a reference after Pi stores an exact assistant JSON message", async () => {
+	test("persists a reference before publishing after Pi stores exact assistant JSON", async () => {
 		const harness = createHarness();
-		await harness.emit("input", { text: "/pr-review 7 --no-comment" });
+		await harness.emit("input", { text: "/pr-review 7 --comment" });
 		const message = {
 			role: "assistant",
 			stopReason: "stop",
@@ -161,6 +161,7 @@ describe("completed review extension lifecycle", () => {
 		);
 		expect(persisted?.data.reviewEntryId).toBe(assistantEntry.id);
 		expect(persisted?.data.review).toBeUndefined();
+		expect(harness.notifications.some((message) => message.includes("PR review publish failed"))).toBeTrue();
 	});
 
 	test("restores on session_start, clears on tree navigation, and scopes reused IDs by header", async () => {

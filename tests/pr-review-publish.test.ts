@@ -331,8 +331,9 @@ describe("publish-only completed review command", () => {
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, autoPost: autoOff };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
-		const persisted = cache.persist(record, sessionA, "review-message");
+		const persisted = cache.persist(record, sessionA, "review-message", review);
 		expect(persisted.review).toBeUndefined();
+		expect(cache.persist(record, sessionA, "wrong-message", { ...review, overview: "Different" }).review).toEqual(review);
 		const branch = [
 			{
 				type: "message",
