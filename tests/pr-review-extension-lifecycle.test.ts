@@ -19,6 +19,16 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 	getSelectListTheme: () => ({}),
 	getSettingsListTheme: () => ({}),
 }));
+mock.module("typebox", () => ({
+	Type: {
+		Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
+		Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+			type: "object",
+			properties,
+			...options,
+		}),
+	},
+}));
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
