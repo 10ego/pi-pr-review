@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/10ego/pi-pr-review/compare/v1.6.6...v1.7.0) (2026-07-13)
+
+
+### Features
+
+* **review:** restrict tools to command loops ([#13](https://github.com/10ego/pi-pr-review/issues/13)) ([fbb579d](https://github.com/10ego/pi-pr-review/commit/fbb579d0ef9d550a9b21c125040cb8ba036564e1))
+
 ## [1.6.6](https://github.com/10ego/pi-pr-review/compare/v1.6.5...v1.6.6) (2026-07-13)
 
 
