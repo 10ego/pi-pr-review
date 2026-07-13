@@ -317,6 +317,13 @@ export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
 
 export interface PersistedCompletedReview extends CompletedReviewRecord {
 	schemaVersion: 1;
+	sessionId: string;
+}
+
+export interface CompletedReviewSessionEntryLike {
+	type: string;
+	customType?: string;
+	data?: unknown;
 }
 
 function completedReviewKey(repository: RepositoryBinding, prNumber: number): string {
@@ -370,6 +377,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
+		sessionId: string,
 	): PersistedCompletedReview {
 		const record = {
 			review,
@@ -377,12 +385,19 @@ export class CompletedReviewCache {
 			repository: { ...repository },
 		};
 		this.reviews.set(completedReviewKey(repository, invocation.prNumber), record);
-		return { schemaVersion: 1, ...record };
+		return { schemaVersion: 1, sessionId, ...record };
 	}
 
-	/** Restore only strictly validated state from the current Pi session branch. */
-	restore(value: unknown): boolean {
-		if (!isObject(value) || value.schemaVersion !== 1 || !validRepositoryBinding(value.repository)) return false;
+	/** Restore only strictly validated state created by this exact Pi session. */
+	restore(value: unknown, sessionId: string): boolean {
+		if (
+			!isObject(value) ||
+			value.schemaVersion !== 1 ||
+			value.sessionId !== sessionId ||
+			!validRepositoryBinding(value.repository)
+		) {
+			return false;
+		}
 		const invocation = parsePersistedInvocation(value.invocation);
 		if (!invocation) return false;
 		let parsed: PublishableReviewParseResult;
@@ -398,7 +413,7 @@ export class CompletedReviewCache {
 		) {
 			return false;
 		}
-		this.remember(parsed.review, invocation, value.repository);
+		this.remember(parsed.review, invocation, value.repository, sessionId);
 		return true;
 	}
 
@@ -409,6 +424,26 @@ export class CompletedReviewCache {
 	clear(): void {
 		this.reviews.clear();
 	}
+}
+
+/** Rebuild cache state after session load, reload, resume, or tree navigation. */
+export function restoreCompletedReviewBranch(
+	cache: CompletedReviewCache,
+	entries: CompletedReviewSessionEntryLike[],
+	sessionId: string,
+): number {
+	cache.clear();
+	let restored = 0;
+	for (const entry of entries) {
+		if (
+			entry.type === "custom" &&
+			entry.customType === COMPLETED_REVIEW_ENTRY_TYPE &&
+			cache.restore(entry.data, sessionId)
+		) {
+			restored++;
+		}
+	}
+	return restored;
 }
 
 export interface PublishableReviewParseResult {

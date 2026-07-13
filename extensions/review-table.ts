@@ -29,6 +29,7 @@ import {
 	publishPullReview,
 	resolveAutoPostSetting,
 	resolveRepositoryBinding,
+	restoreCompletedReviewBranch,
 	ReviewInvocationGate,
 	shouldPublishReview,
 	validateReviewInvocation,
@@ -385,6 +386,13 @@ async function maybePublishReview(
 export default function (pi: ExtensionAPI) {
 	const invocationGate = new ReviewInvocationGate();
 	const completedReviews = new CompletedReviewCache();
+	const restoreCompletedReviews = (ctx: ExtensionContext) => {
+		restoreCompletedReviewBranch(
+			completedReviews,
+			ctx.sessionManager.getBranch(),
+			ctx.sessionManager.getSessionId(),
+		);
+	};
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -454,12 +462,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		invocationGate.clear();
-		completedReviews.clear();
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE) {
-				completedReviews.restore(entry.data);
-			}
-		}
+		restoreCompletedReviews(ctx);
+		telemetryTracker.clear();
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		invocationGate.clear();
+		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 	});
 
@@ -538,7 +547,12 @@ export default function (pi: ExtensionAPI) {
 				try {
 					repository = await resolveRepositoryBinding(ctx.cwd);
 					// Cache and persist before publication preflight so stale failures survive reloads.
-					const persisted = completedReviews.remember(publishable.review, invocation, repository);
+					const persisted = completedReviews.remember(
+						publishable.review,
+						invocation,
+						repository,
+						ctx.sessionManager.getSessionId(),
+					);
 					try {
 						pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, persisted);
 					} catch (error) {
