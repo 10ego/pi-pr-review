@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/10ego/pi-pr-review/compare/v1.7.1...v1.8.0) (2026-07-14)
+
+
+### Features
+
+* add live subagent focus viewer ([#17](https://github.com/10ego/pi-pr-review/issues/17)) ([44f1020](https://github.com/10ego/pi-pr-review/commit/44f102067e974ca2a723611c6882019bac6dbb9c))
+
 ## [1.7.1](https://github.com/10ego/pi-pr-review/compare/v1.7.0...v1.7.1) (2026-07-14)
 
 
