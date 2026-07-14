@@ -160,7 +160,7 @@ export function parseDirectPublishRequest(input: string): DirectPublishRequestPa
 	const trimmed = input.trim();
 	if (!trimmed || /[\r\n]/.test(trimmed)) return { matched: false };
 	const match = trimmed.match(
-		/^(?:(?:please|kindly)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:post|publish|submit)\s+(?:(?:(?:the|this|that|my|our)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?)|(?:it|this|that)\s+as\s+(?:(?:an?|the)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request)\s+)*(?:reviews?|inline\s+comments?))(?:\s+(?:for|on|to)\s+(?:(?:the\s+)?(?:pull\s+request|pr)\s*)?#?(\d+))?(?:\s+please)?[.!?]*$/i,
+		/^(?:(?:please|kindly)\s+|(?:(?:can|could|would|will)\s+you\s+))?(?:post|publish|submit)\s+(?:(?:(?:the|this|that|these|those|my|our)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request|review)\s+)*(?:reviews?|comments|(?:inline|review)\s+comment)|(?:it|this|that)\s+as\s+(?:(?:an?|the)\s+)?(?:(?:cached|completed|current|latest|inline|github|pr|pull[\s-]?request|review)\s+)*(?:reviews?|comments|(?:inline|review)\s+comment))(?:\s+(?:for|on|to)\s+(?:(?:the\s+)?(?:pull\s+request|pr)\s*)?#?(\d+))?(?:\s+please)?[.!?]*$/i,
 	);
 	if (!match) return { matched: false };
 	if (match[1] === undefined) return { matched: true };
