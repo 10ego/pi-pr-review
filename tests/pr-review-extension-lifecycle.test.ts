@@ -401,7 +401,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).not.toContain("review_subagent");
 	});
 
-	test("publishes a direct natural-language request without an agent turn", async () => {
+	test("publishes a direct comments request without an agent turn", async () => {
 		const persisted = persistedInlineReview(session, false);
 		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
 		const harness = createHarness([cacheEntry]);
@@ -410,7 +410,7 @@ describe("completed review extension lifecycle", () => {
 		const currentHead = "b".repeat(40);
 		const payloadPath = installFakePublishingGh(currentHead);
 		const handled = await harness.emit("input", {
-			text: "post it as an inline review",
+			text: "post the comments",
 			source: "interactive",
 		});
 		expect(handled).toContainEqual({ action: "handled" });
