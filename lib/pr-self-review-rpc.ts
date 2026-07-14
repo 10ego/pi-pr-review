@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { monotonicNow } from "./pr-review-telemetry.ts";
 
 const SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS = 30_000;
 export const SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS = 10 * 60_000;
@@ -273,13 +274,13 @@ function runSelfReviewRpcChild(
 			proc.stderr.destroy();
 		};
 		const drainAfterKill = () => {
-			const deadline = Date.now() + options.drainMs;
+			const deadline = monotonicNow() + options.drainMs;
 			const poll = () => {
-				if ((closed && !groupExists()) || Date.now() >= deadline) {
+				if ((closed && !groupExists()) || monotonicNow() >= deadline) {
 					finish();
 					return;
 				}
-				drainTimer = setTimeout(poll, Math.min(10, Math.max(1, deadline - Date.now())));
+				drainTimer = setTimeout(poll, Math.min(10, Math.max(1, deadline - monotonicNow())));
 			};
 			poll();
 		};
@@ -299,7 +300,7 @@ function runSelfReviewRpcChild(
 				finish();
 				return;
 			}
-			const remaining = killDeadline - Date.now();
+			const remaining = killDeadline - monotonicNow();
 			if (remaining <= 0) {
 				forceKillAndDrain();
 				return;
@@ -313,7 +314,7 @@ function runSelfReviewRpcChild(
 		const beginTermination = () => {
 			if (!terminationStarted || killStarted || !groupReady || killDeadline !== undefined) return;
 			signalGroup("SIGTERM");
-			killDeadline = Date.now() + options.killGraceMs;
+			killDeadline = monotonicNow() + options.killGraceMs;
 			checkTerminationGrace();
 		};
 		const terminate = () => {

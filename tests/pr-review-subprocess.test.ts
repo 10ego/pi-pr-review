@@ -280,7 +280,7 @@ describe("review subprocess policy and task transport", () => {
 		}
 	});
 
-	test("finishes host termination when close observes that the process group disappeared during grace", async () => {
+	test("uses monotonic grace timing when the process group disappears after a backward wall-clock jump", async () => {
 		const childScript = String.raw`
 			const readline = require("node:readline");
 			const out = value => process.stdout.write(JSON.stringify(value) + "\n");
@@ -294,8 +294,11 @@ describe("review subprocess policy and task transport", () => {
 			});
 		`;
 		const trustedAgentDir = privateAgentDir("pi-pr-review-grace-agent-");
+		const originalDateNow = Date.now;
+		let wallClock = originalDateNow();
+		Date.now = () => wallClock -= 60_000;
 		try {
-			const startedAt = Date.now();
+			const startedAt = process.hrtime.bigint();
 			const result = await runSelfReviewRpcSubprocess(
 				process.execPath,
 				["-e", childScript],
@@ -307,8 +310,10 @@ describe("review subprocess policy and task transport", () => {
 			);
 			expect(result.exitCode).toBe(1);
 			expect(result.errorMessage).toContain("total runtime exceeded 50ms");
-			expect(Date.now() - startedAt).toBeLessThan(500);
+			const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+			expect(elapsedMs).toBeLessThan(500);
 		} finally {
+			Date.now = originalDateNow;
 			fs.rmSync(trustedAgentDir, { recursive: true, force: true });
 		}
 	});
