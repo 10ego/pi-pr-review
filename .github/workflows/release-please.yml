@@ -36,6 +36,36 @@ jobs:
           manifest-file: .release-please-manifest.json
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Enable squash auto-merge for release PRs
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+        run: |
+          jq -r '.[].number' <<< "$RELEASE_PRS" | while read -r number; do
+            merge_method="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "NONE"')"
+            echo "Release PR #$number auto-merge method: $merge_method"
+
+            case "$merge_method" in
+              SQUASH)
+                echo "Squash auto-merge is already enabled for release PR #$number"
+                continue
+                ;;
+              MERGE|REBASE)
+                echo "Replacing $merge_method auto-merge for release PR #$number"
+                gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --disable-auto
+                ;;
+              NONE)
+                ;;
+              *)
+                echo "Unexpected auto-merge method for release PR #$number: $merge_method" >&2
+                exit 1
+                ;;
+            esac
+
+            gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --auto --squash
+          done
+
   publish:
     name: Test and publish to npm
     needs: release
