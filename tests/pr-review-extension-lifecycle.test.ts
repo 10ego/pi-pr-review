@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { REVIEW_LOOP_TOOL_NAMES } from "../lib/pr-review-loop.ts";
+import { SELF_REVIEW_TOOL_NAME } from "../lib/pr-self-review.ts";
 import {
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
@@ -101,6 +103,14 @@ fi
 `,
 	);
 	chmodSync(gh, 0o755);
+	for (const args of [
+		["init", "-q"],
+		["add", "gh"],
+		["-c", "user.name=Lifecycle Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"],
+	]) {
+		const result = spawnSync("/usr/bin/git", args, { cwd: dir, encoding: "utf8" });
+		if (result.status !== 0) throw new Error(result.stderr || "fixture git setup failed");
+	}
 	if (previousPath === undefined) previousPath = process.env.PATH;
 	process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
 	return dir;
@@ -266,6 +276,26 @@ describe("completed review extension lifecycle", () => {
 		await reusedId.emit("session_start", { reason: "fork" });
 		await reusedId.commands.get("pr-review-publish")!("7 --allow-stale", reusedId.ctx);
 		expect(reusedId.notifications.some((message) => message.includes("No completed review"))).toBeTrue();
+	});
+
+	test("exposes self-review only for a direct clean top-level task and hides it for /pr-review", async () => {
+		const harness = createHarness();
+		await harness.emit("session_start", { reason: "startup" });
+		await harness.emit("input", { text: "implement the requested change", source: "interactive" });
+		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
+		await harness.emit("before_agent_start", { prompt: "implement the requested change" });
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+		await harness.emit("agent_end", { messages: [] });
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+		await harness.emit("agent_settled", {});
+		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
+
+		await harness.emit("input", { text: "implement another change", source: "rpc" });
+		await harness.emit("before_agent_start", { prompt: "implement another change" });
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
+		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
 	});
 
 	test("exposes review tools only for trusted command-loop phases", async () => {
