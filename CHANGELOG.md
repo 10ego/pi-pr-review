@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/10ego/pi-pr-review/compare/v1.7.0...v1.7.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **publish:** handle direct review requests in extension ([#15](https://github.com/10ego/pi-pr-review/issues/15)) ([e27ffeb](https://github.com/10ego/pi-pr-review/commit/e27ffebb181687a7e38f5ce8f0045b5db76975f4))
+
 ## [1.7.0](https://github.com/10ego/pi-pr-review/compare/v1.6.6...v1.7.0) (2026-07-13)
 
 
