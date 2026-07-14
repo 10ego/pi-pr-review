@@ -43,11 +43,26 @@ mock.module("@earendil-works/pi-tui", () => ({
 		return chunks;
 	}),
 }));
-mock.module("typebox", () => ({
-	Type: new Proxy({}, {
-		get: () => (...args: unknown[]) => ({ args }),
-	}),
-}));
+mock.module("typebox", () => {
+	const schema = () => ({});
+	return {
+		Type: {
+			Array: schema,
+			Boolean: schema,
+			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
+			Literal: schema,
+			Number: schema,
+			Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+				type: "object",
+				properties,
+				...options,
+			}),
+			Optional: schema,
+			String: schema,
+			Union: schema,
+		},
+	};
+});
 
 const registerPrReview = (await import("../extensions/index.ts")).default;
 const { SELF_REVIEW_TOOL_NAME } = await import("../lib/pr-self-review.ts");
