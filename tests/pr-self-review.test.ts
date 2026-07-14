@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,6 +12,10 @@ import {
 } from "../lib/pr-self-review.ts";
 
 const roots: string[] = [];
+
+function readFileIfPresent(filePath: string): string | undefined {
+	return existsSync(filePath) ? readFileSync(filePath, "utf8") : undefined;
+}
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -41,7 +45,7 @@ function repositoryWithSubmodule(): string {
 	return root;
 }
 
-function harness(root: string) {
+function harness(root: string, gitExecutable?: string) {
 	let activeTools = ["read", SELF_REVIEW_TOOL_NAME];
 	let reviewActive = false;
 	const session = { id: "session-1", startedAt: "2026-07-13T00:00:00.000Z" };
@@ -58,7 +62,7 @@ function harness(root: string) {
 			getHeader: () => ({ id: session.id, timestamp: session.startedAt }),
 		},
 	};
-	const coordinator = new SelfReviewPermitCoordinator(pi as any, () => reviewActive);
+	const coordinator = new SelfReviewPermitCoordinator(pi as any, () => reviewActive, gitExecutable);
 	coordinator.hideTool();
 	return {
 		coordinator,
@@ -174,6 +178,50 @@ describe("one-shot self-review authority", () => {
 		expect(h.coordinator.bindToolCall("replacement", h.ctx as any)).toBeFalse();
 		expect(await h.coordinator.consume("sole-self-review", h.ctx as any)).toBeDefined();
 		expect(h.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
+	});
+
+	test("binds one injected canonical Git executable through baseline, permit, and delta", async () => {
+		const root = repository();
+		const wrapper = join(root, "trusted-git");
+		const logRoot = mkdtempSync(join(tmpdir(), "pi-self-review-git-log-"));
+		roots.push(logRoot);
+		const log = join(logRoot, "trusted-git.log");
+		writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec /usr/bin/git "$@"\n`, { mode: 0o700 });
+		git(root, "add", "trusted-git");
+		git(root, "-c", "user.name=Self Review Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "trusted git fixture");
+		const h = harness(root, wrapper);
+		h.coordinator.noteTopLevelInput("interactive", undefined, h.ctx as any);
+		expect(await h.coordinator.beginTask(h.ctx as any)).toBeTrue();
+		writeFileSync(join(root, "tracked.ts"), "export const value = 9;\n");
+		h.coordinator.bindToolCall("trusted-git", h.ctx as any);
+		const permit = (await h.coordinator.consume("trusted-git", h.ctx as any))!;
+		expect(permit.gitExecutable).toBe(realpathSync(wrapper));
+		await buildSelfReviewDelta(permit);
+		const calls = readFileSync(log, "utf8");
+		expect(calls).toContain("rev-parse --show-toplevel");
+		expect(calls).toContain("status --porcelain=v2");
+		expect(calls).toContain("diff --binary");
+	});
+
+	test("aborts pending baseline capture promptly when task authority is cleared", async () => {
+		const root = repository();
+		const hangingGit = join(root, "hanging-git");
+		const started = join(root, "hanging-git.started");
+		writeFileSync(hangingGit, `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(started)}, "started");\nsetInterval(() => {}, 1000);\n`, { mode: 0o700 });
+		const h = harness(root, hangingGit);
+		h.coordinator.noteTopLevelInput("interactive", undefined, h.ctx as any);
+		const beginning = h.coordinator.beginTask(h.ctx as any);
+		for (let attempts = 0; attempts < 100 && !readFileIfPresent(started); attempts++) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		expect(readFileIfPresent(started)).toBe("started");
+		const clearedAt = Date.now();
+		h.coordinator.clear();
+		expect(await Promise.race([
+			beginning,
+			new Promise<"late">((resolve) => setTimeout(() => resolve("late"), 500)),
+		])).toBeFalse();
+		expect(Date.now() - clearedAt).toBeLessThan(500);
 	});
 });
 
