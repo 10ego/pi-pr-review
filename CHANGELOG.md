@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/10ego/pi-pr-review/compare/v1.10.0...v1.10.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **publish:** recognize direct review comment requests ([#23](https://github.com/10ego/pi-pr-review/issues/23)) ([83b003b](https://github.com/10ego/pi-pr-review/commit/83b003b6a37fab9c0ff32d482e41010dc9893afa))
+
 ## [1.10.0](https://github.com/10ego/pi-pr-review/compare/v1.9.0...v1.10.0) (2026-07-14)
 
 
