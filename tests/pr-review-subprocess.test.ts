@@ -56,7 +56,8 @@ describe("review subprocess policy and task transport", () => {
 		expect(selfReviewRpc).toContain('type: "set_auto_compaction", enabled: false');
 		expect(selfReviewRpc).toContain('type: "set_auto_retry", enabled: false');
 		expect(selfReviewRpc).toContain('event.type === "auto_retry_start" || event.type === "compaction_start"');
-		expect(extension).toContain("parseSelfReviewOutput(attempt.result.text)");
+		expect(extension).toContain("parseSelfReviewOutput(attempt.result.text, captured.anchors)");
+		expect(selfReviewRpc).toContain("SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS");
 		expect(extension).toContain("attempts: 1");
 		expect(extension).toContain("fallbackUsed: false");
 		expect(extension).toContain("P0, P1, or P2 findings");
@@ -192,6 +193,40 @@ describe("review subprocess policy and task transport", () => {
 			expect(result.exitCode).toBe(1);
 			expect(result.errorMessage).toContain("forbidden auto-retry");
 			expect(fs.existsSync(result.stderr)).toBe(false);
+		} finally {
+			fs.rmSync(trustedAgentDir, { recursive: true, force: true });
+		}
+	});
+
+	test("bounds total RPC runtime after prompt startup with an injectable test timeout", async () => {
+		const childScript = String.raw`
+			const readline = require("node:readline");
+			const out = value => process.stdout.write(JSON.stringify(value) + "\n");
+			readline.createInterface({ input: process.stdin }).on("line", line => {
+				const command = JSON.parse(line);
+				if (command.type === "set_auto_compaction" || command.type === "set_auto_retry") out({ id: command.id, type: "response", command: command.type, success: true });
+				if (command.type === "prompt") {
+					out({ id: command.id, type: "response", command: command.type, success: true });
+					out({ type: "agent_start" });
+				}
+			});
+		`;
+		const trustedAgentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-timeout-agent-"));
+		fs.chmodSync(trustedAgentDir, 0o700);
+		try {
+			const startedAt = Date.now();
+			const result = await runSelfReviewRpcSubprocess(
+				process.execPath,
+				["-e", childScript],
+				process.cwd(),
+				"review task",
+				undefined,
+				trustedAgentDir,
+				{ totalTimeoutMs: 50 },
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.errorMessage).toContain("total runtime exceeded 50ms");
+			expect(Date.now() - startedAt).toBeLessThan(2000);
 		} finally {
 			fs.rmSync(trustedAgentDir, { recursive: true, force: true });
 		}

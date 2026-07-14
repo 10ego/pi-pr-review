@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS = 30_000;
+export const SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS = 10 * 60_000;
 const MAX_TRUSTED_CONFIG_BYTES = 4 * 1024 * 1024;
 const CHILD_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const SHARED_CHILD_CONFIG_FILES = ["auth.json", "models.json"] as const;
@@ -133,6 +134,11 @@ export interface SelfReviewRpcResult {
 	toolElapsedMs: number;
 }
 
+export interface SelfReviewRpcOptions {
+	/** Total child lifetime. Injectable only so lifecycle tests can fail quickly. */
+	readonly totalTimeoutMs?: number;
+}
+
 function finalAssistantText(messages: readonly RpcMessage[]): string {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
@@ -151,6 +157,7 @@ function runSelfReviewRpcChild(
 	input: string,
 	signal: AbortSignal | undefined,
 	isolatedAgentDir: string,
+	totalTimeoutMs: number,
 ): Promise<SelfReviewRpcResult> {
 	return new Promise<SelfReviewRpcResult>((resolve) => {
 		const messages: RpcMessage[] = [];
@@ -165,6 +172,7 @@ function runSelfReviewRpcChild(
 		let agentSettled = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let startupTimer: ReturnType<typeof setTimeout> | undefined;
+		let totalTimer: ReturnType<typeof setTimeout> | undefined;
 
 		const proc = spawn(command, args, {
 			cwd,
@@ -175,6 +183,7 @@ function runSelfReviewRpcChild(
 		const cleanup = () => {
 			if (killTimer) clearTimeout(killTimer);
 			if (startupTimer) clearTimeout(startupTimer);
+			if (totalTimer) clearTimeout(totalTimer);
 			signal?.removeEventListener("abort", abort);
 		};
 		const finish = () => {
@@ -311,6 +320,10 @@ function runSelfReviewRpcChild(
 			finish();
 		});
 
+		totalTimer = setTimeout(
+			() => failClosed(`Self-review child RPC total runtime exceeded ${totalTimeoutMs}ms.`),
+			totalTimeoutMs,
+		);
 		startupTimer = setTimeout(
 			() => failClosed(`Self-review child RPC startup exceeded ${SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS}ms.`),
 			SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS,
@@ -335,10 +348,15 @@ export async function runSelfReviewRpcSubprocess(
 	input: string,
 	signal: AbortSignal | undefined,
 	trustedAgentDir: string,
+	options: SelfReviewRpcOptions = {},
 ): Promise<SelfReviewRpcResult> {
+	const totalTimeoutMs = options.totalTimeoutMs ?? SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS;
+	if (!Number.isSafeInteger(totalTimeoutMs) || totalTimeoutMs < 1) {
+		throw new Error("Self-review RPC total timeout must be a positive safe integer.");
+	}
 	const isolatedAgentDir = prepareIsolatedAgentDir(trustedAgentDir);
 	try {
-		return await runSelfReviewRpcChild(command, args, cwd, input, signal, isolatedAgentDir);
+		return await runSelfReviewRpcChild(command, args, cwd, input, signal, isolatedAgentDir, totalTimeoutMs);
 	} finally {
 		fs.rmSync(isolatedAgentDir, { recursive: true, force: true });
 	}

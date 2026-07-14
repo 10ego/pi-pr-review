@@ -1098,8 +1098,8 @@ export default function registerPrReviewSubagents(
 		],
 		parameters: SelfReviewSubagentParams,
 
-		async execute(_toolCallId, _params, signal, onUpdate, ctx) {
-			const permit = await selfReviewCoordinator.consume(ctx);
+		async execute(toolCallId, _params, signal, onUpdate, ctx) {
+			const permit = await selfReviewCoordinator.consume(toolCallId, ctx);
 			if (!permit) return selfReviewDeniedResult();
 			const executionSignal = combineAbortSignals(signal, permit.signal);
 			try {
@@ -1142,7 +1142,7 @@ export default function registerPrReviewSubagents(
 				}
 				let report;
 				try {
-					report = parseSelfReviewOutput(attempt.result.text);
+					report = parseSelfReviewOutput(attempt.result.text, captured.anchors);
 				} catch (error) {
 					return {
 						content: [{ type: "text", text: `Self-review rejected malformed or out-of-policy output: ${errMessage(error)}` }],

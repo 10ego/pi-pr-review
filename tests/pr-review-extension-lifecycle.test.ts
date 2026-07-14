@@ -4,8 +4,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { REVIEW_LOOP_TOOL_NAMES } from "../lib/pr-review-loop.ts";
-import { SELF_REVIEW_TOOL_NAME } from "../lib/pr-self-review.ts";
+import { ReviewLoopCoordinator, REVIEW_LOOP_TOOL_NAMES } from "../lib/pr-review-loop.ts";
+import { SelfReviewPermitCoordinator, SELF_REVIEW_TOOL_NAME } from "../lib/pr-self-review.ts";
 import {
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
@@ -71,6 +71,7 @@ interface Harness {
 	notifications: string[];
 	activeTools(): string[];
 	abortCount(): number;
+	selfReviewCoordinator: SelfReviewPermitCoordinator;
 	setPromptPath(path: string): void;
 	ctx: any;
 	appendMessage(message: any, id?: string): any;
@@ -200,7 +201,9 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 			sourceInfo: { path: promptPath },
 		}],
 	};
-	reviewTable(pi as any);
+	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
+	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator);
 	return {
 		handlers,
 		commands,
@@ -209,6 +212,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		notifications,
 		activeTools: () => [...activeTools],
 		abortCount: () => aborts,
+		selfReviewCoordinator,
 		setPromptPath: (next: string) => {
 			promptPath = next;
 		},
@@ -296,6 +300,51 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
 		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
+	});
+
+	test("binds self-review only from a sole tool call and preserves authority after denied dispatches", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "implement safely", source: "interactive" });
+		await harness.emit("before_agent_start", { prompt: "implement safely" });
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [
+					{ type: "toolCall", id: "mixed-self", name: SELF_REVIEW_TOOL_NAME, arguments: {} },
+					{ type: "toolCall", id: "mixed-edit", name: "edit", arguments: {} },
+				],
+			},
+		});
+		expect(await harness.selfReviewCoordinator.consume("mixed-self", harness.ctx)).toBeUndefined();
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [
+					{ type: "toolCall", id: "multiple-one", name: SELF_REVIEW_TOOL_NAME, arguments: {} },
+					{ type: "toolCall", id: "multiple-two", name: SELF_REVIEW_TOOL_NAME, arguments: {} },
+				],
+			},
+		});
+		expect(await harness.selfReviewCoordinator.consume("multiple-one", harness.ctx)).toBeUndefined();
+		expect(await harness.selfReviewCoordinator.consume("direct-unbound", harness.ctx)).toBeUndefined();
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [{ type: "toolCall", id: "sole-self", name: SELF_REVIEW_TOOL_NAME, arguments: {} }],
+			},
+		});
+		expect(await harness.selfReviewCoordinator.consume("wrong-id", harness.ctx)).toBeUndefined();
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+		expect(await harness.selfReviewCoordinator.consume("sole-self", harness.ctx)).toBeDefined();
+		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
 	});
 
 	test("exposes review tools only for trusted command-loop phases", async () => {

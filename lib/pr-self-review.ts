@@ -31,6 +31,7 @@ export interface SelfReviewBaseline {
 
 interface ArmedTask extends PendingTask, SelfReviewBaseline {
 	readonly controller: AbortController;
+	boundToolCallId?: string;
 }
 
 export interface SelfReviewPermit extends SelfReviewBaseline {
@@ -59,6 +60,18 @@ export interface SelfReviewFinding {
 export interface SelfReviewReport {
 	readonly findings: readonly SelfReviewFinding[];
 }
+
+export interface SelfReviewChangedLineRange {
+	readonly start: number;
+	readonly end: number;
+}
+
+export interface SelfReviewChangedLineHunk {
+	readonly ranges: readonly SelfReviewChangedLineRange[];
+}
+
+/** Changed-line ranges keyed by the exact side and path present in the captured diff. */
+export type SelfReviewChangedLineAnchors = ReadonlyMap<string, readonly SelfReviewChangedLineHunk[]>;
 
 const SELF_REVIEW_ROOT_KEYS = ["findings"] as const;
 const SELF_REVIEW_FINDING_KEYS = [
@@ -92,8 +105,159 @@ function nonEmptyString(value: unknown, field: string): string {
 	return value;
 }
 
-/** Parse and structurally validate the only output accepted from a self-review child. */
-export function parseSelfReviewOutput(text: string): SelfReviewReport {
+function changedLineAnchorKey(pathname: string, side: "LEFT" | "RIGHT"): string {
+	return `${side}\0${pathname}`;
+}
+
+function decodeGitQuotedPath(raw: string): string {
+	if (!raw.startsWith('"') || !raw.endsWith('"')) throw new Error("Self-review encountered a malformed quoted diff path.");
+	const bytes: number[] = [];
+	for (let index = 1; index < raw.length - 1; index++) {
+		const char = raw[index]!;
+		if (char !== "\\") {
+			bytes.push(...Buffer.from(char, "utf8"));
+			continue;
+		}
+		const escaped = raw[++index];
+		if (escaped === undefined || index >= raw.length - 1) throw new Error("Self-review encountered a malformed diff path escape.");
+		const simple: Record<string, number> = {
+			a: 0x07, b: 0x08, t: 0x09, n: 0x0a, v: 0x0b, f: 0x0c, r: 0x0d,
+			'"': 0x22, "\\": 0x5c,
+		};
+		if (escaped in simple) {
+			bytes.push(simple[escaped]!);
+			continue;
+		}
+		if (!/[0-7]/.test(escaped)) throw new Error("Self-review encountered an unsupported diff path escape.");
+		let octal = escaped;
+		for (let count = 1; count < 3 && /[0-7]/.test(raw[index + 1] ?? ""); count++) octal += raw[++index];
+		bytes.push(Number.parseInt(octal, 8));
+	}
+	return Buffer.from(bytes).toString("utf8");
+}
+
+function diffMarkerPath(raw: string, prefix: "a" | "b"): string | undefined {
+	if (raw === "/dev/null") return undefined;
+	const decoded = raw.startsWith('"') ? decodeGitQuotedPath(raw) : raw;
+	if (!decoded.startsWith(`${prefix}/`)) throw new Error("Self-review encountered a malformed unified-diff path marker.");
+	return decoded.slice(2);
+}
+
+function changedRanges(lines: readonly number[]): SelfReviewChangedLineRange[] {
+	const ranges: SelfReviewChangedLineRange[] = [];
+	for (const line of lines) {
+		const last = ranges.at(-1);
+		if (last && line === last.end + 1) {
+			ranges[ranges.length - 1] = { start: last.start, end: line };
+		} else {
+			ranges.push({ start: line, end: line });
+		}
+	}
+	return ranges;
+}
+
+/** Parse host-captured unified diff text into exact changed-line anchors. */
+export function buildSelfReviewChangedLineAnchors(delta: string): SelfReviewChangedLineAnchors {
+	const anchors = new Map<string, SelfReviewChangedLineHunk[]>();
+	let oldPath: string | undefined;
+	let newPath: string | undefined;
+	let hunk: {
+		oldLine: number;
+		newLine: number;
+		oldCount: number;
+		newCount: number;
+		oldConsumed: number;
+		newConsumed: number;
+		left: number[];
+		right: number[];
+	} | undefined;
+
+	const finishHunk = () => {
+		if (!hunk) return;
+		if (hunk.oldConsumed !== hunk.oldCount || hunk.newConsumed !== hunk.newCount) {
+			throw new Error("Self-review encountered an incomplete unified-diff hunk.");
+		}
+		for (const [side, pathname, lines] of [
+			["LEFT", oldPath, hunk.left],
+			["RIGHT", newPath, hunk.right],
+		] as const) {
+			if (!pathname || lines.length === 0) continue;
+			const key = changedLineAnchorKey(pathname, side);
+			const existing = anchors.get(key) ?? [];
+			existing.push({ ranges: changedRanges(lines) });
+			anchors.set(key, existing);
+		}
+		hunk = undefined;
+	};
+
+	const lines = delta.split("\n");
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]!;
+		if (line.startsWith("diff --git ")) {
+			finishHunk();
+			oldPath = undefined;
+			newPath = undefined;
+			continue;
+		}
+		if (!hunk && line.startsWith("--- ")) {
+			oldPath = diffMarkerPath(line.slice(4), "a");
+			continue;
+		}
+		if (!hunk && line.startsWith("+++ ")) {
+			newPath = diffMarkerPath(line.slice(4), "b");
+			continue;
+		}
+		if (line.startsWith("@@ ")) {
+			finishHunk();
+			const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/.exec(line);
+			if (!match || (!oldPath && !newPath)) throw new Error("Self-review encountered a malformed unified-diff hunk header.");
+			hunk = {
+				oldLine: Number(match[1]),
+				oldCount: match[2] === undefined ? 1 : Number(match[2]),
+				newLine: Number(match[3]),
+				newCount: match[4] === undefined ? 1 : Number(match[4]),
+				oldConsumed: 0,
+				newConsumed: 0,
+				left: [],
+				right: [],
+			};
+			continue;
+		}
+		if (!hunk) continue;
+		if (line.startsWith("\\ No newline at end of file")) continue;
+		if (line.startsWith("-")) {
+			hunk.left.push(hunk.oldLine++);
+			hunk.oldConsumed++;
+		} else if (line.startsWith("+")) {
+			hunk.right.push(hunk.newLine++);
+			hunk.newConsumed++;
+		} else if (line.startsWith(" ")) {
+			hunk.oldLine++;
+			hunk.newLine++;
+			hunk.oldConsumed++;
+			hunk.newConsumed++;
+		} else if (!(index === lines.length - 1 && line === "")) {
+			throw new Error("Self-review encountered malformed unified-diff hunk content.");
+		}
+	}
+	finishHunk();
+	return anchors;
+}
+
+function findingHasChangedLineAnchor(
+	anchors: SelfReviewChangedLineAnchors,
+	path: string,
+	side: "LEFT" | "RIGHT",
+	startLine: number,
+	endLine: number,
+): boolean {
+	return (anchors.get(changedLineAnchorKey(path, side)) ?? []).some((hunk) =>
+		hunk.ranges.some((range) => startLine >= range.start && endLine <= range.end),
+	);
+}
+
+/** Parse and validate the only output accepted from a self-review child against its captured delta. */
+export function parseSelfReviewOutput(text: string, anchors: SelfReviewChangedLineAnchors): SelfReviewReport {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
@@ -146,6 +310,15 @@ export function parseSelfReviewOutput(text: string): SelfReviewReport {
 		}
 		if (finding.inDiff !== true || finding.prRelated !== true) {
 			throw new Error(`Self-review finding ${index} must be in-diff and introduced or affected by the task delta.`);
+		}
+		if (!findingHasChangedLineAnchor(
+			anchors,
+			findingPath,
+			finding.side,
+			finding.startLine as number,
+			finding.endLine as number,
+		)) {
+			throw new Error(`Self-review finding ${index} range must be entirely on changed lines in one captured diff hunk on its claimed path and side.`);
 		}
 		if (typeof finding.confidence !== "number" || !Number.isFinite(finding.confidence) || finding.confidence < 0 || finding.confidence > 1) {
 			throw new Error(`Self-review finding ${index} confidence must be between 0 and 1.`);
@@ -376,7 +549,7 @@ async function validateUntrackedPath(worktree: string, relativePath: string): Pr
 
 export async function buildSelfReviewDelta(
 	permit: SelfReviewPermit,
-): Promise<{ delta: string; fileCount: number; bytes: number }> {
+): Promise<{ delta: string; anchors: SelfReviewChangedLineAnchors; fileCount: number; bytes: number }> {
 	const headBefore = await gitHead(permit.worktree, permit.signal);
 	if (headBefore !== permit.head) throw new Error("Git HEAD changed after the top-level task started.");
 	const statusBefore = await gitStatus(permit.worktree, permit.signal);
@@ -424,7 +597,13 @@ export async function buildSelfReviewDelta(
 		throw new Error("Git worktree state changed while the self-review delta was being captured.");
 	}
 	if (bytes === 0) throw new Error("The Git-visible working-tree delta is empty.");
-	return { delta: Buffer.concat(chunks).toString("utf8"), fileCount: entries.length, bytes };
+	const delta = Buffer.concat(chunks).toString("utf8");
+	return {
+		delta,
+		anchors: buildSelfReviewChangedLineAnchors(delta),
+		fileCount: entries.length,
+		bytes,
+	};
 }
 
 /** Host-owned one-shot authority for one direct top-level interactive/RPC task. */
@@ -497,12 +676,33 @@ export class SelfReviewPermitCoordinator {
 		return true;
 	}
 
-	async consume(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<SelfReviewPermit | undefined> {
+	bindToolCall(toolCallId: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		const armed = this.armed;
+		if (
+			!armed ||
+			armed.boundToolCallId !== undefined ||
+			!toolCallId ||
+			this.reviewLoopActive() ||
+			armed.controller.signal.aborted ||
+			armed.cwd !== path.resolve(ctx.cwd) ||
+			!sameSession(armed.session, sessionBinding(ctx))
+		) {
+			if (armed && this.reviewLoopActive()) this.clear();
+			return false;
+		}
+		armed.boundToolCallId = toolCallId;
+		return true;
+	}
+
+	async consume(toolCallId: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<SelfReviewPermit | undefined> {
 		const armed = this.armed;
 		if (!armed) {
 			this.setVisible(false);
 			return undefined;
 		}
+		// Dispatch authorization is narrower than the reusable task permit. Calls
+		// not bound from a sole self-review tool call cannot consume or hide it.
+		if (!toolCallId || armed.boundToolCallId !== toolCallId) return undefined;
 		if (this.reviewLoopActive()) {
 			this.clear();
 			return undefined;
