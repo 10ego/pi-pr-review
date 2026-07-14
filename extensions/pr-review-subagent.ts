@@ -56,6 +56,13 @@ import {
 	reviewLoopDeniedResult,
 	type ReviewFocusPublisher,
 } from "../lib/pr-review-loop.ts";
+import { runSelfReviewRpcSubprocess } from "../lib/pr-self-review-rpc.ts";
+import {
+	buildSelfReviewDelta,
+	parseSelfReviewOutput,
+	SelfReviewPermitCoordinator,
+	selfReviewDeniedResult,
+} from "../lib/pr-self-review.ts";
 import {
 	normalizeReviewFocusJsonEvent,
 	ReviewJsonLineDecoder,
@@ -705,6 +712,69 @@ async function runSubagentAttempt(
 	}
 }
 
+const SELF_REVIEW_SYSTEM_PROMPT = [
+	"You are an isolated self-review subagent invoked once by the host for a completed top-level coding task.",
+	"Review only the complete host-derived Git working-tree delta supplied below. Do not infer or request caller context.",
+	"Find only substantiated defects introduced by this delta in correctness, security, performance, state/lifecycle, concurrency, or integration behavior.",
+	"Report only P0, P1, or P2 findings. Do not report P3/nits, style, naming, documentation, tests-only hygiene, or subjective maintainability preferences, and never inflate severity.",
+	"You have no tools. Do not attempt to inspect paths, modify files, run verification, publish comments, or delegate work.",
+	"Return only strict JSON with this exact shape and no Markdown fence: {\"findings\":[{\"title\":\"[P2] Imperative summary\",\"severity\":\"P2\",\"blocking\":false,\"impact\":\"concrete user/system impact\",\"trigger\":\"exact input or environment\",\"evidence\":\"specific causal evidence visible in the delta\",\"path\":\"repo/relative/path.ts\",\"startLine\":1,\"endLine\":1,\"side\":\"RIGHT\",\"inDiff\":true,\"prRelated\":true,\"confidence\":0.9}]}",
+	"Every listed field is required and no additional fields are allowed. blocking is true only for P0/P1. Use exact changed-line coordinates and LEFT only for removed lines. Emit {\"findings\":[]} when no substantiated P0-P2 finding survives validation.",
+].join("\n");
+
+async function runSelfReviewAttempt(
+	config: PrReviewConfig,
+	worktree: string,
+	delta: string,
+	signal: AbortSignal | undefined,
+	onText?: (text: string) => void,
+): Promise<{ result: RunResult; modelSpec?: string; elapsedMs: number }> {
+	let tmp: { dir: string; filePath: string } | undefined;
+	const startedAt = monotonicNow();
+	const modelSpec = config.tiers.heavy;
+	try {
+		const args = buildReviewBaseArgs();
+		args[args.indexOf("json")] = "rpc";
+		args.splice(args.indexOf("-p"), 1);
+		if (modelSpec) args.push("--model", modelSpec);
+		appendTierThinkingArgs(args, modelSpec, config.thinkingLevels.heavy);
+		args.push("--no-tools", "--no-approve");
+		tmp = await writeTempPrompt("heavy", SELF_REVIEW_SYSTEM_PROMPT);
+		args.push("--append-system-prompt", tmp.filePath);
+		const task = [
+			"Objective: Perform the host-defined one-shot major-only self-review of this complete task delta.",
+			"",
+			"--- Complete host-derived task delta ---",
+			delta,
+		].join("\n");
+		const invocation = getPiInvocation(args);
+		const result = await runSelfReviewRpcSubprocess(
+			invocation.command,
+			invocation.args,
+			worktree,
+			task,
+			signal,
+			getAgentDir(),
+		);
+		if (result.text) onText?.(result.text);
+		return { result, modelSpec, elapsedMs: monotonicNow() - startedAt };
+	} catch (error) {
+		return {
+			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(error), toolElapsedMs: 0 },
+			modelSpec,
+			elapsedMs: monotonicNow() - startedAt,
+		};
+	} finally {
+		if (tmp) {
+			try {
+				fs.rmSync(tmp.dir, { recursive: true, force: true });
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+}
+
 async function runSubagentPass(
 	config: PrReviewConfig,
 	ctx: Pick<ExtensionContext, "cwd">,
@@ -862,6 +932,8 @@ function combineContexts(shared: string | undefined, specific: string | undefine
 // Extension
 // ---------------------------------------------------------------------------
 
+const SelfReviewSubagentParams = Type.Object({}, { additionalProperties: false });
+
 const PrReviewVerifyParams = Type.Union([
 	Type.Object(
 		{
@@ -1006,10 +1078,96 @@ const ReviewSubagentsParams = Type.Object({
 export default function registerPrReviewSubagents(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
+	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
 ) {
 	// Resolve security-sensitive executables only from the PATH trusted when this
 	// extension starts, never from a later mutable process environment.
 	const trustedStartupPath = process.env.PATH ?? "";
+
+	pi.registerTool({
+		name: "self_review_subagent",
+		label: "Self Review Subagent",
+		description: [
+			"Perform the host-defined, one-shot P0-P2 self-review for the current eligible top-level user task.",
+			"The host supplies the complete bounded Git-visible task delta, heavy-tier model, objective, isolation, and no-tools policy; this tool accepts no arguments.",
+		].join(" "),
+		promptSnippet: "Run the one-shot host-bounded major-only self-review near the end of an eligible coding task",
+		promptGuidelines: [
+			"Call at most once, near the end of a long-running top-level coding task after implementation and focused tests.",
+			"The permit is consumed before delta capture. A denied or failed call cannot be replayed, and the tool is unavailable during /pr-review.",
+		],
+		parameters: SelfReviewSubagentParams,
+
+		async execute(_toolCallId, _params, signal, onUpdate, ctx) {
+			const permit = await selfReviewCoordinator.consume(ctx);
+			if (!permit) return selfReviewDeniedResult();
+			const executionSignal = combineAbortSignals(signal, permit.signal);
+			try {
+				if (executionSignal?.aborted) throw new Error("Self-review was aborted before delta capture.");
+				const captured = await buildSelfReviewDelta({ ...permit, signal: executionSignal ?? permit.signal });
+				if (executionSignal?.aborted) throw new Error("Self-review was aborted before the reviewer could start.");
+				const config = loadConfig(ctx);
+				const attempt = await runSelfReviewAttempt(
+					config,
+					permit.worktree,
+					captured.delta,
+					executionSignal,
+				);
+				const failed = attempt.result.exitCode !== 0 ||
+					attempt.result.stopReason === "error" ||
+					attempt.result.stopReason === "aborted";
+				const details = {
+					authorized: true,
+					generation: permit.generation,
+					tier: "heavy",
+					model: attempt.result.model ?? attempt.modelSpec,
+					exitCode: attempt.result.exitCode,
+					status: failed ? "failed" : "completed",
+					attempts: 1,
+					fallbackUsed: false,
+					toolPolicy: "none",
+					majorOnly: true,
+					minorHygiene: false,
+					deltaBytes: captured.bytes,
+					fileCount: captured.fileCount,
+					elapsedMs: attempt.elapsedMs,
+				};
+				if (failed) {
+					const error = attempt.result.errorMessage || attempt.result.stderr || attempt.result.text || "(no output)";
+					return {
+						content: [{ type: "text", text: `Self-review subagent failed: ${error}` }],
+						isError: true,
+						details,
+					};
+				}
+				let report;
+				try {
+					report = parseSelfReviewOutput(attempt.result.text);
+				} catch (error) {
+					return {
+						content: [{ type: "text", text: `Self-review rejected malformed or out-of-policy output: ${errMessage(error)}` }],
+						isError: true,
+						details: { ...details, status: "failed", outputRejected: true },
+					};
+				}
+				const text = JSON.stringify(report, null, 2);
+				onUpdate?.({ content: [{ type: "text", text }] });
+				return {
+					content: [{ type: "text", text }],
+					details: { ...details, findingCount: report.findings.length },
+				};
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: `Self-review failed closed: ${errMessage(error)}` }],
+					isError: true,
+					details: { authorized: true, generation: permit.generation, attempts: 0 },
+				};
+			} finally {
+				selfReviewCoordinator.finish(permit);
+			}
+		},
+	});
+	selfReviewCoordinator.hideTool();
 
 	pi.registerTool({
 		name: "pr_review_verify",
@@ -1361,6 +1519,7 @@ export default function registerPrReviewSubagents(
 		handler: async (args, ctx) => {
 			// Extension commands execute before input events, so revoke explicitly.
 			loopCoordinator.clear();
+			selfReviewCoordinator.clear();
 			const raw = (args ?? "").trim();
 			const parsed = parseConfigArgs(raw);
 			if (parsed.errors.length) {

@@ -4,6 +4,7 @@ const RECURSIVE_REVIEW_TOOLS = new Set([
 	"review_subagent",
 	"review_subagents",
 	"pr_review_verify",
+	"self_review_subagent",
 ]);
 
 /** Isolated review subprocesses receive all review context explicitly. */
