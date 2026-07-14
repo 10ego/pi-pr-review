@@ -1,6 +1,6 @@
 {
   "name": "pi-pr-review",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Parallel AI code review for GitHub pull requests in the Pi coding agent, with model-agnostic tiered subagents, structured findings, optional verification, and safe COMMENT-only publishing.",
   "keywords": [
     "pi-package",
