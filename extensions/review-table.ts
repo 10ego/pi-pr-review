@@ -18,15 +18,14 @@ import {
 	type ExtensionContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import {
 	classifyAssistantCompletion,
-	CachedPublishAuthorizationGate,
 	COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	isNonOpenConfirmationPrompt,
+	parseDirectPublishRequest,
 	parsePublishExistingArgs,
 	parsePublishMode,
 	parsePublishableReview,
@@ -429,7 +428,6 @@ async function maybePublishReview(
 export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
-	publishAuthorization = new CachedPublishAuthorizationGate(),
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -471,10 +469,9 @@ export default function registerReviewTable(
 		| { result: Awaited<ReturnType<typeof publishPullReview>> }
 		| { error: string };
 	const publishCachedReview = async (
-		prNumber: number,
+		requestedPrNumber: number | undefined,
 		allowStaleOverride: boolean | undefined,
 		ctx: ExtensionContext,
-		requireLatest = false,
 	): Promise<CachedPublication> => {
 		let repository: RepositoryBinding;
 		try {
@@ -482,17 +479,16 @@ export default function registerReviewTable(
 		} catch (error) {
 			return { error: `Cannot resolve the current GitHub repository: ${String(error)}` };
 		}
-		const completed = completedReviews.get(prNumber, repository);
-		if (requireLatest && completedReviews.latest(repository)?.invocation.prNumber !== prNumber) {
-			return {
-				error: `PR #${prNumber} is not the latest completed review cached for this repository. Name the PR number in the direct publish request to select it explicitly.`,
-			};
-		}
+		const completed = requestedPrNumber === undefined
+			? completedReviews.latest(repository)
+			: completedReviews.get(requestedPrNumber, repository);
 		if (!completed) {
+			const target = requestedPrNumber === undefined ? "the latest PR" : `PR #${requestedPrNumber}`;
 			return {
-				error: `No completed review for PR #${prNumber} is cached for this repository in the current extension session. Publishing never starts or reruns a review.`,
+				error: `No completed review for ${target} is cached for this repository in the current extension session. Publishing never starts or reruns a review.`,
 			};
 		}
+		const prNumber = completed.invocation.prNumber;
 		const headSha = completed.review.pr?.head_sha;
 		if (typeof headSha !== "string") return { error: "Cached PR review is missing pr.head_sha" };
 		const allowStale = allowStaleOverride ?? completed.invocation.allowStalePublish;
@@ -509,79 +505,11 @@ export default function registerReviewTable(
 		};
 	};
 
-	pi.registerTool({
-		name: "pr_review_publish",
-		label: "Publish Cached PR Review",
-		description: [
-			"Publish a completed PR review cached by this extension after a fresh direct interactive or RPC user request authorizes one call.",
-			"Accepts only a PR number: review content, repository binding, and reviewed head come from the validated extension cache.",
-			"Never starts or reruns review agents. An explicit user request authorizes safe stale publication as a body-only review with the reviewed and current commit hashes disclosed.",
-		].join(" "),
-		promptSnippet: "Publish an extension-cached completed PR review when the user explicitly asks to post it",
-		promptGuidelines: [
-			"Call pr_review_publish only in the agent turn started by the user's direct publish request; the extension enforces a one-shot host-side authorization.",
-			"Do not call it during the /pr-review run itself; --comment and autoPostReviews are handled by the extension after final JSON.",
-			"This tool cannot accept model-authored review text; stale inline anchors are never posted.",
-		],
-		parameters: Type.Object(
-			{
-				pr_number: Type.Integer({
-					minimum: 1,
-					description: "PR number whose completed cached review should be published; stale reviews degrade to disclosed body-only comments.",
-				}),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (loopCoordinator.peek()) {
-				return {
-					content: [{ type: "text", text: "A /pr-review run is still active; finish or cancel it before publishing its cached result." }],
-					isError: true,
-					details: { status: "active_review" },
-				};
-			}
-			const authorization = publishAuthorization.consume(params.pr_number, ctx);
-			if (!authorization.authorized) {
-				return {
-					content: [{
-						type: "text",
-						text: "Cached review publication requires a fresh direct user request such as ‘post the inline review’ or ‘publish the review for PR #123’.",
-					}],
-					isError: true,
-					details: { status: "unauthorized" },
-				};
-			}
-			const published = await publishCachedReview(
-				params.pr_number,
-				true,
-				ctx,
-				authorization.requireLatest,
-			);
-			if ("error" in published) {
-				return {
-					content: [{ type: "text", text: published.error }],
-					isError: true,
-					details: { status: "error", message: published.error },
-				};
-			}
-			const result = published.result;
-			const succeeded = result.status === "posted" ||
-				result.status === "posted_degraded" ||
-				result.status === "skipped_duplicate";
-			return {
-				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-				...(!succeeded ? { isError: true } : {}),
-				details: result,
-			};
-		},
-	});
-
 	pi.registerCommand("pr-review-publish", {
 		description: "Publish a completed review from this session without rerunning the model",
 		handler: async (args, ctx) => {
 			// Extension commands execute before input hooks, so every invocation —
-			// including malformed arguments — must revoke active review and model-tool authority.
-			publishAuthorization.clear();
+			// including malformed arguments — must revoke active review authority.
 			const active = loopCoordinator.peek();
 			if (active) {
 				loopCoordinator.clear();
@@ -621,7 +549,6 @@ export default function registerReviewTable(
 
 	const revokeActiveLoop = () => {
 		loopCoordinator.clear();
-		publishAuthorization.clear();
 		pendingCompletion = undefined;
 		telemetryTracker.clear();
 	};
@@ -638,7 +565,6 @@ export default function registerReviewTable(
 
 	pi.on("session_tree", (event, ctx) => {
 		loopCoordinator.clear();
-		publishAuthorization.clear();
 		pendingCompletion = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
@@ -652,10 +578,29 @@ export default function registerReviewTable(
 		}
 	});
 
-	pi.on("input", (event, ctx) => {
+	pi.on("input", async (event, ctx) => {
 		const source = event.source as ReviewLoopInputSource;
-		if (loopCoordinator.peek()) publishAuthorization.clear();
-		else publishAuthorization.observe(event.text, source, event.streamingBehavior, ctx);
+		const directPublish = parseDirectPublishRequest(event.text);
+		if (
+			(source === "interactive" || source === "rpc") &&
+			event.streamingBehavior === undefined &&
+			directPublish.matched
+		) {
+			const active = loopCoordinator.peek();
+			if (active) {
+				loopCoordinator.clear();
+				persistTelemetry("cleared");
+				ctx.ui.notify(
+					`PR #${active.prNumber} review was cancelled. The direct publish request will not post an older cached result in its place.`,
+					"error",
+				);
+				return { action: "handled" as const };
+			}
+			const published = await publishCachedReview(directPublish.prNumber, true, ctx);
+			if ("error" in published) ctx.ui.notify(published.error, "error");
+			else notifyPublishResult(published.result, "direct user request", ctx);
+			return { action: "handled" as const };
+		}
 		if (loopCoordinator.phase() === "awaiting_confirmation") {
 			const confirmation = loopCoordinator.resolveConfirmationInput(event.text, source, ctx);
 			if (confirmation === "confirmed") {
@@ -754,14 +699,12 @@ export default function registerReviewTable(
 		if (completion === "continue_tools") return;
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
-			publishAuthorization.clear();
 			persistTelemetry("cleared");
 			return;
 		}
 
 		const text = assistantText(event.message);
 		const active = loopCoordinator.peek();
-		if (!active) publishAuthorization.clear();
 		if (
 			active &&
 			loopCoordinator.phase() === "reviewing" &&

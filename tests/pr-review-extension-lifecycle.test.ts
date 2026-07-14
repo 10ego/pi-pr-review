@@ -32,7 +32,7 @@ mock.module("typebox", () => ({
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
-const BASE_ACTIVE_TOOLS = ["read", "bash", "pr_review_publish"];
+const BASE_ACTIVE_TOOLS = ["read", "bash"];
 
 const review: ReviewLike = {
 	pr: { number: 7, title: "Lifecycle review", head_sha: "a".repeat(40) },
@@ -312,32 +312,59 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).not.toContain("review_subagent");
 	});
 
-	test("publishes a stale cached review through the agent tool with SHA disclosure", async () => {
+	test("publishes a direct natural-language request without an agent turn", async () => {
 		const persisted = persistedInlineReview(session, false);
 		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
 		const harness = createHarness([cacheEntry]);
 		await harness.emit("session_start", { reason: "reload" });
-		const tool = harness.tools.get("pr_review_publish");
-		expect(tool).toBeDefined();
-		expect(Object.keys(tool.parameters.properties)).toEqual(["pr_number"]);
-		const unauthorized = await tool.execute("publish-0", { pr_number: 7 }, undefined, undefined, harness.ctx);
-		expect(unauthorized.isError).toBeTrue();
-		expect(unauthorized.details).toEqual({ status: "unauthorized" });
-		await harness.emit("input", { text: "post the inline review", source: "interactive" });
+		expect(harness.tools.has("pr_review_publish")).toBeFalse();
 		const currentHead = "b".repeat(40);
 		const payloadPath = installFakePublishingGh(currentHead);
-		const result = await tool.execute("publish-1", { pr_number: 7 }, undefined, undefined, harness.ctx);
-		expect(result.isError).toBeUndefined();
-		expect(result.details).toMatchObject({ status: "posted_degraded" });
+		const handled = await harness.emit("input", {
+			text: "post it as an inline review",
+			source: "interactive",
+		});
+		expect(handled).toContainEqual({ action: "handled" });
+		expect(harness.notifications.some((message) => message.includes("posted"))).toBeTrue();
 		const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
 		expect(payload.comments).toBeUndefined();
 		expect(payload.body).toContain("[!WARNING]");
 		expect(payload.body).toContain("This review was generated for commit");
 		expect(payload.body).toContain("a".repeat(40));
 		expect(payload.body).toContain(currentHead);
-		const replay = await tool.execute("publish-2", { pr_number: 7 }, undefined, undefined, harness.ctx);
-		expect(replay.isError).toBeTrue();
-		expect(replay.details).toEqual({ status: "unauthorized" });
+	});
+
+	test("rejects extension-generated, queued, and steering publish requests", async () => {
+		const persisted = persistedInlineReview();
+		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		const payloadPath = installFakePublishingGh();
+
+		for (const event of [
+			{ text: "post the inline review", source: "extension" },
+			{ text: "post the inline review", source: "interactive", streamingBehavior: "followUp" },
+			{ text: "post the inline review", source: "rpc", streamingBehavior: "steer" },
+		]) {
+			const results = await harness.emit("input", event);
+			expect(results).not.toContainEqual({ action: "handled" });
+		}
+		expect(() => readFileSync(payloadPath, "utf8")).toThrow();
+	});
+
+	test("does not publish an older cache entry while a review is active", async () => {
+		const persisted = persistedInlineReview();
+		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const payloadPath = installFakePublishingGh();
+
+		const handled = await harness.emit("input", { text: "post the inline review", source: "interactive" });
+		expect(handled).toContainEqual({ action: "handled" });
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+		expect(harness.notifications.some((message) => message.includes("will not post an older cached result"))).toBeTrue();
+		expect(() => readFileSync(payloadPath, "utf8")).toThrow();
 	});
 
 	test("publish command follows captured stale config unless explicitly overridden", async () => {

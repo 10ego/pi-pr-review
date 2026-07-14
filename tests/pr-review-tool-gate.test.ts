@@ -56,8 +56,7 @@ function harness() {
 		},
 	};
 	const coordinator = new ReviewLoopCoordinator(pi as any);
-	let publishRevocations = 0;
-	registerPrReviewSubagents(pi as any, coordinator, () => publishRevocations++);
+	registerPrReviewSubagents(pi as any, coordinator);
 	const notifications: string[] = [];
 	const ctx = {
 		cwd: "/tmp/repo",
@@ -76,7 +75,6 @@ function harness() {
 		coordinator,
 		ctx,
 		activeTools: () => [...activeTools],
-		publishRevocations: () => publishRevocations,
 	};
 }
 
@@ -104,6 +102,5 @@ describe("review tool execution gate", () => {
 		await h.commands.get("pr-review-config")!("show", h.ctx);
 		expect(lease.signal.aborted).toBeTrue();
 		expect(h.activeTools()).toEqual(["read"]);
-		expect(h.publishRevocations()).toBe(1);
 	});
 });
