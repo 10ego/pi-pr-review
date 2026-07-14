@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/10ego/pi-pr-review/compare/v1.8.0...v1.9.0) (2026-07-14)
+
+
+### Features
+
+* **review:** add constrained one-shot self-review ([#18](https://github.com/10ego/pi-pr-review/issues/18)) ([ab267c4](https://github.com/10ego/pi-pr-review/commit/ab267c40415731b2fbbea91c5b345153fa7b6132))
+
 ## [1.8.0](https://github.com/10ego/pi-pr-review/compare/v1.7.1...v1.8.0) (2026-07-14)
 
 
