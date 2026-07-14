@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 
 const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 const extension = readFileSync(new URL("../extensions/pr-review-subagent.ts", import.meta.url), "utf8");
+const focusExtension = readFileSync(new URL("../extensions/pr-review-focus.ts", import.meta.url), "utf8");
 const entrypoint = readFileSync(new URL("../extensions/index.ts", import.meta.url), "utf8");
+const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
 describe("PR review prompt scheduling policy", () => {
@@ -12,10 +14,21 @@ describe("PR review prompt scheduling policy", () => {
 		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.77.0");
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
 		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
+		expect(entrypoint).toContain("registerReviewFocus(pi, loopCoordinator)");
 		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+		expect(focusExtension).toContain('pi.registerCommand("pr-review-focus"');
+		expect(focusExtension).toContain('pi.registerShortcut(SHORTCUT');
 		expect(entrypoint).not.toContain("CachedPublishAuthorizationGate");
 		expect(extension).toContain("allow_stale_publish");
 		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");
+	});
+
+	test("documents the read-only live focus viewer", () => {
+		expect(readme).toContain("/pr-review-focus");
+		expect(readme).toContain("Ctrl+Alt+R");
+		expect(readme).toContain("Return to the main thread without cancelling the review");
+		expect(readme).toContain("never stores the pass objective, input context, captured diff");
+		expect(readme).toContain("cannot send prompts, steering, or follow-ups");
 	});
 
 	test("uses balanced five-pass coverage by default", () => {
