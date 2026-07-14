@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/10ego/pi-pr-review/compare/v1.9.0...v1.10.0) (2026-07-14)
+
+
+### Features
+
+* **release:** auto-merge release pull requests ([#21](https://github.com/10ego/pi-pr-review/issues/21)) ([56ea9a9](https://github.com/10ego/pi-pr-review/commit/56ea9a9585069193181c78700223cb659af72750))
+
 ## [1.9.0](https://github.com/10ego/pi-pr-review/compare/v1.8.0...v1.9.0) (2026-07-14)
 
 
