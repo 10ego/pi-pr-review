@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	normalizeReviewFocusJsonEvent,
 	ReviewFocusRegistry,
+	ReviewJsonLineDecoder,
 	sanitizeReviewFocusText,
 } from "../lib/pr-review-focus.ts";
 
@@ -10,6 +11,21 @@ const descriptor = {
 	label: "correctness",
 	tier: "heavy" as const,
 };
+
+describe("review focus JSONL decoding", () => {
+	test("handles fragmented, CRLF, malformed, and unterminated records", () => {
+		const events: unknown[] = [];
+		const decoder = new ReviewJsonLineDecoder((event) => events.push(event));
+		decoder.push('{"type":"message_up');
+		decoder.push('date","value":1}\r\nnot-json\n{"type":"tool_');
+		decoder.push('execution_start","value":2}');
+		decoder.end();
+		expect(events).toEqual([
+			{ type: "message_update", value: 1 },
+			{ type: "tool_execution_start", value: 2 },
+		]);
+	});
+});
 
 describe("review focus event normalization", () => {
 	test("accepts only assistant text and synthesized tool lifecycle metadata", () => {
@@ -112,11 +128,34 @@ describe("review focus registry", () => {
 		registry.register(1, descriptor);
 		registry.publish(1, descriptor.key, { type: "attempt_started", attempt: 1 });
 		registry.publish(1, descriptor.key, { type: "assistant_snapshot", text: `prefix-${"🙂".repeat(20_000)}-tail` });
-		const pass = registry.snapshot(1)!.passes[0]!;
-		expect(Buffer.byteLength(pass.assistantText, "utf8")).toBeLessThanOrEqual(48 * 1024);
-		expect(pass.assistantText.endsWith("-tail")).toBeTrue();
-		expect(pass.assistantText).not.toContain("prefix-");
-		expect(pass.evictedBytes).toBeGreaterThan(0);
+		const first = registry.snapshot(1)!.passes[0]!;
+		expect(Buffer.byteLength(first.assistantText, "utf8")).toBeLessThanOrEqual(48 * 1024);
+		expect(first.assistantText.endsWith("-tail")).toBeTrue();
+		expect(first.assistantText).not.toContain("prefix-");
+		expect(first.evictedBytes).toBeGreaterThan(0);
+
+		registry.publish(1, descriptor.key, { type: "assistant_snapshot", text: `new-${"🙂".repeat(20_100)}-tail` });
+		const second = registry.snapshot(1)!.passes[0]!;
+		expect(second.evictedBytes).toBeGreaterThan(first.evictedBytes);
+		expect(second.evictedBytes).toBeLessThan(first.evictedBytes * 2);
+	});
+
+	test("enforces a generation-wide UTF-8 byte ceiling across parallel passes", () => {
+		const registry = new ReviewFocusRegistry();
+		registry.open(1);
+		for (let index = 0; index < 8; index++) {
+			const key = `pass-${index}`;
+			registry.register(1, { ...descriptor, key, label: key });
+			registry.publish(1, key, { type: "attempt_started", attempt: 1 });
+			registry.publish(1, key, { type: "assistant_snapshot", text: `${index}:${"x".repeat(48 * 1024)}` });
+		}
+		const current = registry.snapshot(1)!;
+		const retainedBytes = current.passes.reduce(
+			(total, pass) => total + Buffer.byteLength(pass.assistantText, "utf8"),
+			0,
+		);
+		expect(retainedBytes).toBeLessThanOrEqual(256 * 1024);
+		expect(current.passes.some((pass) => pass.evictedBytes > 0)).toBeTrue();
 	});
 
 	test("notifies subscribers and rejects stale generations synchronously", () => {

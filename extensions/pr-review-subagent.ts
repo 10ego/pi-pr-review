@@ -56,7 +56,10 @@ import {
 	reviewLoopDeniedResult,
 	type ReviewFocusPublisher,
 } from "../lib/pr-review-loop.ts";
-import { normalizeReviewFocusJsonEvent } from "../lib/pr-review-focus.ts";
+import {
+	normalizeReviewFocusJsonEvent,
+	ReviewJsonLineDecoder,
+} from "../lib/pr-review-focus.ts";
 import {
 	appendToolPolicyArgs,
 	buildReviewBaseArgs,
@@ -458,7 +461,6 @@ export function runReviewSubprocess(
 		const messages: Message[] = [];
 		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0 };
 		const startedAt = monotonicNow();
-		let buffer = "";
 		let aborted = false;
 		let closed = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -484,14 +486,9 @@ export function runReviewSubprocess(
 			signal?.removeEventListener("abort", kill);
 		};
 
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			let event: { type?: string; message?: Message };
-			try {
-				event = JSON.parse(line);
-			} catch {
-				return;
-			}
+		const processEvent = (raw: unknown) => {
+			if (!raw || typeof raw !== "object") return;
+			const event = raw as { type?: string; message?: Message };
 			onEvent?.(event);
 			const now = monotonicNow();
 			result.firstEventMs ??= now - startedAt;
@@ -516,12 +513,8 @@ export function runReviewSubprocess(
 			}
 		};
 
-		proc.stdout.on("data", (data) => {
-			buffer += data.toString();
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) processLine(line);
-		});
+		const decoder = new ReviewJsonLineDecoder(processEvent);
+		proc.stdout.on("data", (data) => decoder.push(data.toString()));
 		proc.stderr.on("data", (data) => {
 			result.stderr += data.toString();
 		});
@@ -533,7 +526,7 @@ export function runReviewSubprocess(
 		proc.on("close", (code) => {
 			closed = true;
 			cleanupAbort();
-			if (buffer.trim()) processLine(buffer);
+			decoder.end();
 			if (activeTools > 0) {
 				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 				activeTools = 0;

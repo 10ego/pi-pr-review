@@ -47,6 +47,34 @@ export type ReviewFocusPassEvent =
 
 export type ReviewFocusSubscriber = (snapshot: ReviewFocusSnapshot | undefined) => void;
 
+/** Strict LF-delimited decoder for the child Pi JSON event stream. */
+export class ReviewJsonLineDecoder {
+	private buffer = "";
+
+	constructor(private readonly onEvent: (event: unknown) => void) {}
+
+	push(chunk: string): void {
+		this.buffer += chunk;
+		const lines = this.buffer.split("\n");
+		this.buffer = lines.pop() ?? "";
+		for (const line of lines) this.parse(line.endsWith("\r") ? line.slice(0, -1) : line);
+	}
+
+	end(): void {
+		if (this.buffer) this.parse(this.buffer.endsWith("\r") ? this.buffer.slice(0, -1) : this.buffer);
+		this.buffer = "";
+	}
+
+	private parse(line: string): void {
+		if (!line.trim()) return;
+		try {
+			this.onEvent(JSON.parse(line));
+		} catch {
+			// Malformed child output is ignored; process exit remains authoritative.
+		}
+	}
+}
+
 const MAX_PASSES = 64;
 const MAX_TOOLS_PER_PASS = 24;
 const MAX_ASSISTANT_BYTES_PER_PASS = 48 * 1024;
@@ -112,7 +140,7 @@ export function sanitizeReviewFocusText(value: string): string {
 		.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
 		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
 		.replace(/\r\n?/g, "\n")
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "�");
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "�");
 }
 
 function assistantText(message: unknown): string | undefined {
@@ -228,25 +256,26 @@ export class ReviewFocusRegistry {
 				pass.evictedBytes = 0;
 				break;
 			case "assistant_delta":
-				this.setAssistantText(pass, pass.assistantText + sanitizeReviewFocusText(event.text));
+				this.appendAssistantText(pass, sanitizeReviewFocusText(event.text));
 				break;
 			case "assistant_snapshot":
-				this.setAssistantText(pass, sanitizeReviewFocusText(event.text));
+				this.replaceAssistantText(pass, sanitizeReviewFocusText(event.text));
 				break;
 			case "tool_started":
 				pass.tools.push({
-					callId: event.toolCallId,
+					callId: event.toolCallId.slice(0, 160),
 					name: clampPlainField(event.toolName, MAX_TOOL_NAME_LENGTH, "tool"),
 					status: "running",
 				});
 				if (pass.tools.length > MAX_TOOLS_PER_PASS) pass.tools.splice(0, pass.tools.length - MAX_TOOLS_PER_PASS);
 				break;
 			case "tool_ended": {
-				const existing = [...pass.tools].reverse().find((tool) => tool.callId === event.toolCallId);
+				const callId = event.toolCallId.slice(0, 160);
+				const existing = [...pass.tools].reverse().find((tool) => tool.callId === callId);
 				if (existing) existing.status = event.isError ? "failed" : "completed";
 				else {
 					pass.tools.push({
-						callId: event.toolCallId,
+						callId,
 						name: clampPlainField(event.toolName, MAX_TOOL_NAME_LENGTH, "tool"),
 						status: event.isError ? "failed" : "completed",
 					});
@@ -296,10 +325,16 @@ export class ReviewFocusRegistry {
 		state.passes.clear();
 	}
 
-	private setAssistantText(pass: MutablePass, value: string): void {
-		const bounded = keepUtf8Tail(value, MAX_ASSISTANT_BYTES_PER_PASS);
+	private appendAssistantText(pass: MutablePass, delta: string): void {
+		const bounded = keepUtf8Tail(pass.assistantText + delta, MAX_ASSISTANT_BYTES_PER_PASS);
 		pass.assistantText = bounded.text;
 		pass.evictedBytes += bounded.droppedBytes;
+	}
+
+	private replaceAssistantText(pass: MutablePass, value: string): void {
+		const bounded = keepUtf8Tail(value, MAX_ASSISTANT_BYTES_PER_PASS);
+		pass.assistantText = bounded.text;
+		pass.evictedBytes = bounded.droppedBytes;
 	}
 
 	private enforceGenerationLimit(state: GenerationState): void {

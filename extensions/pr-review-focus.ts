@@ -102,13 +102,13 @@ export class ReviewFocusView implements Component {
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, "pageup")) {
+		if (matchesKey(data, "pageUp")) {
 			this.followTail = false;
 			this.scrollTop = Math.max(0, this.scrollTop - this.pageSize());
 			this.tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, "pagedown")) {
+		if (matchesKey(data, "pageDown")) {
 			this.followTail = false;
 			this.scrollTop += this.pageSize();
 			this.tui.requestRender();
@@ -227,7 +227,8 @@ export default function registerReviewFocus(
 	loopCoordinator: ReviewLoopCoordinator,
 ): void {
 	const open = async (ctx: ExtensionContext): Promise<void> => {
-		if (ctx.mode !== "tui" || typeof ctx.ui.custom !== "function") {
+		const mode = (ctx as ExtensionContext & { mode?: string }).mode;
+		if (!ctx.hasUI || (mode !== undefined && mode !== "tui") || typeof ctx.ui.custom !== "function") {
 			ctx.ui.notify("/pr-review-focus is available only in the interactive TUI", "warning");
 			return;
 		}

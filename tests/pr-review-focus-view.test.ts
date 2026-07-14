@@ -12,8 +12,8 @@ const keyData: Record<string, string> = {
 	left: "\x1b[D",
 	up: "\x1b[A",
 	down: "\x1b[B",
-	pageup: "\x1b[5~",
-	pagedown: "\x1b[6~",
+	pageUp: "\x1b[5~",
+	pageDown: "\x1b[6~",
 	home: "\x1b[H",
 	end: "\x1b[F",
 };
@@ -160,6 +160,7 @@ function commandHarness(mode: "tui" | "json" = "tui") {
 	const ctx = {
 		cwd: "/tmp/repo",
 		mode,
+		hasUI: true,
 		sessionManager: {
 			getSessionId: () => "session-1",
 			getHeader: () => ({ id: "session-1", timestamp: "2026-07-13T00:00:00.000Z" }),
