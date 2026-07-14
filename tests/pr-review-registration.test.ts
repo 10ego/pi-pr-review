@@ -11,13 +11,37 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
 	getSettingsListTheme: () => ({}),
 }));
 mock.module("@earendil-works/pi-tui", () => ({
-	Container: class {},
+	Container: class { addChild() {} },
 	fuzzyFilter: () => [],
-	getKeybindings: () => ({}),
+	getKeybindings: () => ({ matches: () => false }),
 	Input: class {},
 	SelectList: class {},
 	SettingsList: class {},
 	Text: class {},
+	matchesKey: (data: string, key: string) => ({
+		escape: "\x1b",
+		"ctrl+c": "\x03",
+		tab: "\t",
+		"shift+tab": "\x1b[Z",
+		right: "\x1b[C",
+		left: "\x1b[D",
+		up: "\x1b[A",
+		down: "\x1b[B",
+		pageUp: "\x1b[5~",
+		pageDown: "\x1b[6~",
+		home: "\x1b[H",
+		end: "\x1b[F",
+	} as Record<string, string>)[key] === data,
+	truncateToWidth: (text: string, width: number, ellipsis = "…", pad = false) => {
+		const truncated = text.length > width ? `${text.slice(0, Math.max(0, width - ellipsis.length))}${ellipsis}` : text;
+		return pad ? truncated.padEnd(width) : truncated;
+	},
+	wrapTextWithAnsi: (text: string, width: number) => text.split("\n").flatMap((line) => {
+		if (!line) return [""];
+		const chunks: string[] = [];
+		for (let index = 0; index < line.length; index += width) chunks.push(line.slice(index, index + width));
+		return chunks;
+	}),
 }));
 mock.module("typebox", () => ({
 	Type: new Proxy({}, {
