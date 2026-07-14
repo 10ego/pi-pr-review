@@ -55,6 +55,7 @@ function registrationHarness() {
 		registerCommand(name: string) {
 			commands.add(name);
 		},
+		registerShortcut() {},
 		getActiveTools: () => [...activeTools],
 		setActiveTools(next: string[]) {
 			activeTools = [...next];
