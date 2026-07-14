@@ -11,11 +11,12 @@ const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.me
 describe("PR review prompt scheduling policy", () => {
 	test("registers review tools and publication behind one shared loop coordinator", () => {
 		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
-		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.77.0");
+		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.80.5");
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
-		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator)");
+		expect(entrypoint).toContain("const selfReviewCoordinator = new SelfReviewPermitCoordinator");
+		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator, selfReviewCoordinator)");
 		expect(entrypoint).toContain("registerReviewFocus(pi, loopCoordinator)");
-		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
+		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator, selfReviewCoordinator)");
 		expect(focusExtension).toContain('pi.registerCommand("pr-review-focus"');
 		expect(focusExtension).toContain('pi.registerShortcut(SHORTCUT');
 		expect(focusExtension).not.toContain('"(waiting for assistant output…) "');

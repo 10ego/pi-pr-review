@@ -46,7 +46,7 @@ const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-rev
 function harness() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
-	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify"];
+	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "self_review_subagent"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
@@ -79,6 +79,25 @@ function harness() {
 }
 
 describe("review tool execution gate", () => {
+	test("registers self-review with an empty closed schema and hides it while idle", () => {
+		const h = harness();
+		const tool = h.tools.get("self_review_subagent");
+		expect(tool.parameters).toEqual({
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		});
+		expect(h.activeTools()).not.toContain("self_review_subagent");
+	});
+
+	test("self-review fails before host delta work when no top-level permit exists", async () => {
+		const h = harness();
+		const result = await h.tools.get("self_review_subagent").execute("call-self", {}, undefined, undefined, h.ctx);
+		expect(result.isError).toBeTrue();
+		expect(result.details).toEqual({ authorized: false });
+		expect(result.content[0].text).toContain("no active one-shot permit");
+	});
+
 	test("all review tools fail before processing parameters outside /pr-review", async () => {
 		const h = harness();
 		for (const name of ["review_subagent", "review_subagents", "pr_review_verify"]) {

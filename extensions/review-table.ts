@@ -47,6 +47,7 @@ import {
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
 } from "../lib/pr-review-loop.ts";
+import { SelfReviewPermitCoordinator } from "../lib/pr-self-review.ts";
 import {
 	ReviewTelemetryTracker,
 	type ReviewPerformanceTelemetry,
@@ -428,6 +429,7 @@ async function maybePublishReview(
 export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
+	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -510,6 +512,7 @@ export default function registerReviewTable(
 		handler: async (args, ctx) => {
 			// Extension commands execute before input hooks, so every invocation —
 			// including malformed arguments — must revoke active review authority.
+			selfReviewCoordinator.clear();
 			const active = loopCoordinator.peek();
 			if (active) {
 				loopCoordinator.clear();
@@ -549,6 +552,7 @@ export default function registerReviewTable(
 
 	const revokeActiveLoop = () => {
 		loopCoordinator.clear();
+		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
 		telemetryTracker.clear();
 	};
@@ -563,8 +567,17 @@ export default function registerReviewTable(
 		restoreCompletedReviews(ctx);
 	});
 
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await selfReviewCoordinator.beginTask(ctx);
+	});
+
+	pi.on("agent_settled", () => {
+		selfReviewCoordinator.clear();
+	});
+
 	pi.on("session_tree", (event, ctx) => {
 		loopCoordinator.clear();
+		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
@@ -579,6 +592,9 @@ export default function registerReviewTable(
 	});
 
 	pi.on("input", async (event, ctx) => {
+		// Any new input revokes the prior top-level task generation before it can
+		// authorize a replay or a queued/steering continuation.
+		selfReviewCoordinator.clear();
 		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
@@ -620,7 +636,10 @@ export default function registerReviewTable(
 			persistTelemetry(parsed.matched && event.streamingBehavior === undefined ? "replaced" : "cleared");
 			if (!parsed.matched) return;
 		}
-		if (!parsed.matched) return;
+		if (!parsed.matched) {
+			selfReviewCoordinator.noteTopLevelInput(source, event.streamingBehavior, ctx);
+			return;
+		}
 		if (event.streamingBehavior !== undefined) {
 			// Returning handled prevents queueing but does not stop the current parent
 			// operation. Abort it so revoked review work cannot continue with built-ins.
@@ -696,7 +715,18 @@ export default function registerReviewTable(
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
-		if (completion === "continue_tools") return;
+		if (completion === "continue_tools") {
+			const toolCalls = Array.isArray(event.message.content)
+				? event.message.content.filter((part) => part.type === "toolCall")
+				: [];
+			if (toolCalls.length === 1) {
+				const call = toolCalls[0] as { id?: unknown; name?: unknown };
+				if (call.name === "self_review_subagent" && typeof call.id === "string") {
+					selfReviewCoordinator.bindToolCall(call.id, ctx);
+				}
+			}
+			return;
+		}
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
 			persistTelemetry("cleared");

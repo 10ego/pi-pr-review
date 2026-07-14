@@ -78,6 +78,7 @@ describe("tool policy argv", () => {
 				"review_subagent",
 				"review_subagents",
 				"pr_review_verify",
+				"self_review_subagent",
 				"read",
 				"grep",
 			]),

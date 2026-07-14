@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
+import { resolveTrustedExecutableFromStartupPath } from "./trusted-executable.ts";
 
 export const VERIFY_TIMEOUT_MIN_MS = 2_000;
 export const VERIFY_TIMEOUT_MAX_MS = 10 * 60_000;
@@ -615,33 +616,6 @@ function validateCanonicalExecutable(profile: VerificationBaselineProfile): stri
 		errors.push(`argv[0] is not an accessible executable: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return errors;
-}
-
-function canonicalExecutable(candidate: string, label: string): string {
-	if (!path.isAbsolute(candidate)) throw new Error(`${label} executable path must be absolute`);
-	const canonical = fs.realpathSync(candidate);
-	const stat = fs.statSync(canonical);
-	if (!stat.isFile()) throw new Error(`${label} executable must resolve to a regular file`);
-	fs.accessSync(canonical, fs.constants.X_OK);
-	return canonical;
-}
-
-function resolveTrustedExecutableFromStartupPath(
-	name: "gh" | "git",
-	injected: string | undefined,
-	startupPath: string,
-): string {
-	if (injected) return canonicalExecutable(injected, name);
-	for (const directory of startupPath.split(path.delimiter)) {
-		if (!path.isAbsolute(directory)) continue;
-		const candidate = path.join(directory, name);
-		try {
-			return canonicalExecutable(candidate, name);
-		} catch {
-			/* continue through the trusted extension startup PATH */
-		}
-	}
-	throw new Error(`Unable to resolve an accessible ${name} executable from the trusted extension startup PATH.`);
 }
 
 function trustedStartupPath(options: VerifyOptions): string {
