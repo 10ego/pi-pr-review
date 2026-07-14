@@ -58,6 +58,21 @@ describe("review focus event normalization", () => {
 		})).toEqual([{ type: "tool_ended", toolCallId: "call-1", toolName: "read", isError: false }]);
 	});
 
+	test("reconciles the actual child model without retaining other message metadata", () => {
+		expect(normalizeReviewFocusJsonEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				model: "provider/actual-model",
+				provider: "secret-provider-metadata",
+				content: [{ type: "text", text: "done" }],
+			},
+		})).toEqual([
+			{ type: "model_observed", model: "provider/actual-model" },
+			{ type: "assistant_snapshot", text: "done" },
+		]);
+	});
+
 	test("never retains user prompts, raw args, results, or malformed events", () => {
 		const sentinel = "SENTINEL_COMPLETE_DIFF";
 		for (const raw of [
@@ -84,7 +99,8 @@ describe("review focus registry", () => {
 		const registry = new ReviewFocusRegistry();
 		registry.open(7);
 		expect(registry.register(7, descriptor)).toBeTrue();
-		expect(registry.publish(7, descriptor.key, { type: "attempt_started", attempt: 1, model: "provider/model" })).toBeTrue();
+		expect(registry.publish(7, descriptor.key, { type: "attempt_started", attempt: 1, model: "provider/requested" })).toBeTrue();
+		registry.publish(7, descriptor.key, { type: "model_observed", model: "provider/actual" });
 		registry.publish(7, descriptor.key, { type: "assistant_delta", text: "hel" });
 		registry.publish(7, descriptor.key, { type: "assistant_snapshot", text: "hello" });
 		registry.publish(7, descriptor.key, { type: "assistant_delta", text: " world" });
@@ -96,12 +112,27 @@ describe("review focus registry", () => {
 			label: "correctness",
 			status: "completed",
 			attempt: 1,
-			model: "provider/model",
+			model: "provider/actual",
 			assistantText: "hello world",
 			tools: [{ name: "read", status: "completed" }],
 		});
 		expect(registry.publish(7, descriptor.key, { type: "assistant_delta", text: "late" })).toBeFalse();
 		expect(registry.snapshot(7)?.passes[0]?.assistantText).toBe("hello world");
+	});
+
+	test("uses bounded collision-resistant tool identities", () => {
+		const registry = new ReviewFocusRegistry();
+		registry.open(1);
+		registry.register(1, descriptor);
+		registry.publish(1, descriptor.key, { type: "attempt_started", attempt: 1 });
+		const sharedPrefix = "x".repeat(200);
+		registry.publish(1, descriptor.key, { type: "tool_started", toolCallId: `${sharedPrefix}-one`, toolName: "read-one" });
+		registry.publish(1, descriptor.key, { type: "tool_started", toolCallId: `${sharedPrefix}-two`, toolName: "read-two" });
+		registry.publish(1, descriptor.key, { type: "tool_ended", toolCallId: `${sharedPrefix}-two`, toolName: "read-two", isError: true });
+		expect(registry.snapshot(1)?.passes[0]?.tools).toEqual([
+			{ name: "read-one", status: "running" },
+			{ name: "read-two", status: "failed" },
+		]);
 	});
 
 	test("clears text and tool activity for deterministic fallback attempts", () => {
@@ -156,6 +187,19 @@ describe("review focus registry", () => {
 		);
 		expect(retainedBytes).toBeLessThanOrEqual(256 * 1024);
 		expect(current.passes.some((pass) => pass.evictedBytes > 0)).toBeTrue();
+	});
+
+	test("isolates observer failures from publication and purge", () => {
+		const registry = new ReviewFocusRegistry();
+		registry.open(1);
+		let healthyUpdates = 0;
+		registry.subscribe(1, () => {
+			throw new Error("broken observer");
+		});
+		registry.subscribe(1, () => healthyUpdates++);
+		expect(() => registry.register(1, descriptor)).not.toThrow();
+		expect(healthyUpdates).toBe(2);
+		expect(() => registry.close(1)).not.toThrow();
 	});
 
 	test("notifies subscribers and rejects stale generations synchronously", () => {

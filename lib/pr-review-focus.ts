@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type ReviewFocusPassStatus =
 	| "queued"
 	| "running"
@@ -36,6 +38,7 @@ export interface ReviewFocusSnapshot {
 
 export type ReviewFocusPassEvent =
 	| { type: "attempt_started"; attempt: number; model?: string }
+	| { type: "model_observed"; model: string }
 	| { type: "assistant_delta"; text: string }
 	| { type: "assistant_snapshot"; text: string }
 	| { type: "tool_started"; toolCallId: string; toolName: string }
@@ -143,6 +146,18 @@ export function sanitizeReviewFocusText(value: string): string {
 		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "�");
 }
 
+function toolIdentity(value: string): string {
+	return createHash("sha256").update(value).digest("base64url").slice(0, 24);
+}
+
+function assistantModel(message: unknown): string | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const candidate = message as { role?: unknown; model?: unknown };
+	return candidate.role === "assistant" && typeof candidate.model === "string" && candidate.model.trim()
+		? candidate.model
+		: undefined;
+}
+
 function assistantText(message: unknown): string | undefined {
 	if (!message || typeof message !== "object") return undefined;
 	const candidate = message as { role?: unknown; content?: unknown };
@@ -162,20 +177,27 @@ export function normalizeReviewFocusJsonEvent(raw: unknown): ReviewFocusPassEven
 	if (!raw || typeof raw !== "object") return [];
 	const event = raw as Record<string, unknown>;
 	if (event.type === "message_update") {
+		const normalized: ReviewFocusPassEvent[] = [];
+		const model = assistantModel(event.message);
+		if (model) normalized.push({ type: "model_observed", model });
 		const snapshot = assistantText(event.message);
-		if (snapshot) return [{ type: "assistant_snapshot", text: snapshot }];
+		if (snapshot) return [...normalized, { type: "assistant_snapshot", text: snapshot }];
 		const update = event.assistantMessageEvent;
 		if (update && typeof update === "object") {
 			const delta = (update as { type?: unknown; delta?: unknown });
 			if (delta.type === "text_delta" && typeof delta.delta === "string") {
-				return [{ type: "assistant_delta", text: delta.delta }];
+				return [...normalized, { type: "assistant_delta", text: delta.delta }];
 			}
 		}
-		return [];
+		return normalized;
 	}
 	if (event.type === "message_end") {
+		const normalized: ReviewFocusPassEvent[] = [];
+		const model = assistantModel(event.message);
+		if (model) normalized.push({ type: "model_observed", model });
 		const snapshot = assistantText(event.message);
-		return snapshot === undefined ? [] : [{ type: "assistant_snapshot", text: snapshot }];
+		if (snapshot !== undefined) normalized.push({ type: "assistant_snapshot", text: snapshot });
+		return normalized;
 	}
 	if (event.type === "tool_execution_start") {
 		if (typeof event.toolCallId !== "string" || typeof event.toolName !== "string") return [];
@@ -255,6 +277,9 @@ export class ReviewFocusRegistry {
 				pass.tools = [];
 				pass.evictedBytes = 0;
 				break;
+			case "model_observed":
+				pass.model = clampPlainField(event.model, MAX_MODEL_LENGTH, "") || undefined;
+				break;
 			case "assistant_delta":
 				this.appendAssistantText(pass, sanitizeReviewFocusText(event.text));
 				break;
@@ -263,14 +288,14 @@ export class ReviewFocusRegistry {
 				break;
 			case "tool_started":
 				pass.tools.push({
-					callId: event.toolCallId.slice(0, 160),
+					callId: toolIdentity(event.toolCallId),
 					name: clampPlainField(event.toolName, MAX_TOOL_NAME_LENGTH, "tool"),
 					status: "running",
 				});
 				if (pass.tools.length > MAX_TOOLS_PER_PASS) pass.tools.splice(0, pass.tools.length - MAX_TOOLS_PER_PASS);
 				break;
 			case "tool_ended": {
-				const callId = event.toolCallId.slice(0, 160);
+				const callId = toolIdentity(event.toolCallId);
 				const existing = [...pass.tools].reverse().find((tool) => tool.callId === callId);
 				if (existing) existing.status = event.isError ? "failed" : "completed";
 				else {
@@ -312,7 +337,11 @@ export class ReviewFocusRegistry {
 		const state = this.state;
 		if (!state || state.generation !== generation) return undefined;
 		state.subscribers.add(subscriber);
-		subscriber(this.makeSnapshot(state));
+		try {
+			subscriber(this.makeSnapshot(state));
+		} catch {
+			state.subscribers.delete(subscriber);
+		}
 		return () => state.subscribers.delete(subscriber);
 	}
 
@@ -320,7 +349,13 @@ export class ReviewFocusRegistry {
 		const state = this.state;
 		if (!state || (generation !== undefined && state.generation !== generation)) return;
 		this.state = undefined;
-		for (const subscriber of [...state.subscribers]) subscriber(undefined);
+		for (const subscriber of [...state.subscribers]) {
+			try {
+				subscriber(undefined);
+			} catch {
+				// Observer failures never delay authority revocation or data purge.
+			}
+		}
 		state.subscribers.clear();
 		state.passes.clear();
 	}
@@ -375,6 +410,12 @@ export class ReviewFocusRegistry {
 	private notify(state: GenerationState): void {
 		if (state.subscribers.size === 0) return;
 		const snapshot = this.makeSnapshot(state);
-		for (const subscriber of [...state.subscribers]) subscriber(snapshot);
+		for (const subscriber of [...state.subscribers]) {
+			try {
+				subscriber(snapshot);
+			} catch {
+				state.subscribers.delete(subscriber);
+			}
+		}
 	}
 }

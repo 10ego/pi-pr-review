@@ -448,7 +448,7 @@ interface RunResult {
 	toolElapsedMs: number;
 }
 
-export function runReviewSubprocess(
+function runReviewSubprocess(
 	command: string,
 	args: string[],
 	cwd: string,
@@ -489,7 +489,11 @@ export function runReviewSubprocess(
 		const processEvent = (raw: unknown) => {
 			if (!raw || typeof raw !== "object") return;
 			const event = raw as { type?: string; message?: Message };
-			onEvent?.(event);
+			try {
+				onEvent?.(event);
+			} catch {
+				// Focus observers are non-authoritative and must never change review results.
+			}
 			const now = monotonicNow();
 			result.firstEventMs ??= now - startedAt;
 			if (event.type === "tool_execution_start") {
