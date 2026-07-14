@@ -43,10 +43,25 @@ jobs:
           RELEASE_PRS: ${{ steps.release.outputs.prs }}
         run: |
           jq -r '.[].number' <<< "$RELEASE_PRS" | while read -r number; do
-            if [[ "$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null')" == "true" ]]; then
-              echo "Auto-merge is already enabled for release PR #$number"
-              continue
-            fi
+            merge_method="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // "NONE"')"
+            echo "Release PR #$number auto-merge method: $merge_method"
+
+            case "$merge_method" in
+              SQUASH)
+                echo "Squash auto-merge is already enabled for release PR #$number"
+                continue
+                ;;
+              MERGE|REBASE)
+                echo "Replacing $merge_method auto-merge for release PR #$number"
+                gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --disable-auto
+                ;;
+              NONE)
+                ;;
+              *)
+                echo "Unexpected auto-merge method for release PR #$number: $merge_method" >&2
+                exit 1
+                ;;
+            esac
 
             gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --auto --squash
           done
