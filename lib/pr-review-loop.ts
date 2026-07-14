@@ -7,6 +7,13 @@ import {
 	type ReviewInvocation,
 	type ReviewInvocationPhase,
 } from "./pr-review-publish.ts";
+import {
+	ReviewFocusRegistry,
+	type ReviewFocusPassDescriptor,
+	type ReviewFocusPassEvent,
+	type ReviewFocusSnapshot,
+	type ReviewFocusSubscriber,
+} from "./pr-review-focus.ts";
 
 export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagent",
@@ -29,6 +36,10 @@ interface ReviewLoopBinding {
 export interface ReviewLoopLease {
 	readonly generation: number;
 	readonly signal: AbortSignal;
+}
+
+export interface ReviewFocusPublisher {
+	publish(event: ReviewFocusPassEvent): boolean;
 }
 
 function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
@@ -63,6 +74,7 @@ function sameBinding(
  */
 export class ReviewLoopCoordinator {
 	private readonly invocationGate = new ReviewInvocationGate();
+	private readonly focusRegistry = new ReviewFocusRegistry();
 	private binding?: ReviewLoopBinding;
 	private nextGeneration = 1;
 
@@ -101,6 +113,7 @@ export class ReviewLoopCoordinator {
 			...current,
 			controller: new AbortController(),
 		};
+		this.focusRegistry.open(this.binding.generation);
 		this.setToolsEnabled(true);
 		return { accepted: true };
 	}
@@ -161,6 +174,36 @@ export class ReviewLoopCoordinator {
 		return active;
 	}
 
+	createFocusPublisher(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+		descriptor: ReviewFocusPassDescriptor,
+	): ReviewFocusPublisher | undefined {
+		if (!this.isLeaseActive(lease, ctx)) return undefined;
+		if (!this.focusRegistry.register(lease.generation, descriptor)) return undefined;
+		return Object.freeze({
+			publish: (event: ReviewFocusPassEvent) => {
+				if (!this.isLeaseActive(lease, ctx)) return false;
+				return this.focusRegistry.publish(lease.generation, descriptor.key, event);
+			},
+		});
+	}
+
+	focusSnapshot(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): ReviewFocusSnapshot | undefined {
+		const lease = this.acquire(ctx);
+		return lease ? this.focusRegistry.snapshot(lease.generation) : undefined;
+	}
+
+	subscribeFocus(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+		subscriber: ReviewFocusSubscriber,
+	): (() => void) | undefined {
+		const lease = this.acquire(ctx);
+		return lease ? this.focusRegistry.subscribe(lease.generation, subscriber) : undefined;
+	}
+
 	consume(): ReviewInvocation | undefined {
 		const invocation = this.invocationGate.consume();
 		this.revokeBinding();
@@ -177,6 +220,8 @@ export class ReviewLoopCoordinator {
 	}
 
 	private revokeBinding(): void {
+		const generation = this.binding?.generation;
+		if (generation !== undefined) this.focusRegistry.close(generation);
 		this.binding?.controller.abort();
 		this.binding = undefined;
 		this.setToolsEnabled(false);

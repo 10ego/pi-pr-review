@@ -54,7 +54,12 @@ import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
 	reviewLoopDeniedResult,
+	type ReviewFocusPublisher,
 } from "../lib/pr-review-loop.ts";
+import {
+	normalizeReviewFocusJsonEvent,
+	ReviewJsonLineDecoder,
+} from "../lib/pr-review-focus.ts";
 import {
 	appendToolPolicyArgs,
 	buildReviewBaseArgs,
@@ -450,12 +455,12 @@ function runReviewSubprocess(
 	input: string,
 	signal: AbortSignal | undefined,
 	onText: (text: string) => void,
+	onEvent?: (event: unknown) => void,
 ): Promise<RunResult> {
 	return new Promise<RunResult>((resolve) => {
 		const messages: Message[] = [];
 		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0 };
 		const startedAt = monotonicNow();
-		let buffer = "";
 		let aborted = false;
 		let closed = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -481,13 +486,13 @@ function runReviewSubprocess(
 			signal?.removeEventListener("abort", kill);
 		};
 
-		const processLine = (line: string) => {
-			if (!line.trim()) return;
-			let event: { type?: string; message?: Message };
+		const processEvent = (raw: unknown) => {
+			if (!raw || typeof raw !== "object") return;
+			const event = raw as { type?: string; message?: Message };
 			try {
-				event = JSON.parse(line);
+				onEvent?.(event);
 			} catch {
-				return;
+				// Focus observers are non-authoritative and must never change review results.
 			}
 			const now = monotonicNow();
 			result.firstEventMs ??= now - startedAt;
@@ -512,12 +517,8 @@ function runReviewSubprocess(
 			}
 		};
 
-		proc.stdout.on("data", (data) => {
-			buffer += data.toString();
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) processLine(line);
-		});
+		const decoder = new ReviewJsonLineDecoder(processEvent);
+		proc.stdout.on("data", (data) => decoder.push(data.toString()));
 		proc.stderr.on("data", (data) => {
 			result.stderr += data.toString();
 		});
@@ -529,7 +530,7 @@ function runReviewSubprocess(
 		proc.on("close", (code) => {
 			closed = true;
 			cleanupAbort();
-			if (buffer.trim()) processLine(buffer);
+			decoder.end();
 			if (activeTools > 0) {
 				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 				activeTools = 0;
@@ -563,6 +564,7 @@ interface SubagentPassRequest {
 	toolPolicy?: ToolPolicy;
 	majorOnly?: boolean;
 	minorHygiene?: boolean;
+	focusPublisher?: ReviewFocusPublisher;
 }
 
 interface ModelAttemptReport {
@@ -642,6 +644,7 @@ async function runSubagentAttempt(
 	ctx: Pick<ExtensionContext, "cwd">,
 	pass: SubagentPassRequest,
 	attempt: ModelAttempt,
+	attemptOrdinal: number,
 	toolPolicy: ToolPolicy,
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
@@ -669,10 +672,21 @@ async function runSubagentAttempt(
 		if (beforeSpawn && !beforeSpawn()) {
 			throw new Error("The active /pr-review loop ended before the reviewer could start.");
 		}
+		pass.focusPublisher?.publish({ type: "attempt_started", attempt: attemptOrdinal, model: attempt.spec });
 		const invocation = getPiInvocation(args);
-		const result = await runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, task, signal, (text) => {
-			onText?.(text);
-		});
+		const result = await runReviewSubprocess(
+			invocation.command,
+			invocation.args,
+			ctx.cwd,
+			task,
+			signal,
+			(text) => onText?.(text),
+			(event) => {
+				for (const normalized of normalizeReviewFocusJsonEvent(event)) {
+					pass.focusPublisher?.publish(normalized);
+				}
+			},
+		);
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt };
 	} catch (e) {
 		return {
@@ -707,12 +721,14 @@ async function runSubagentPass(
 	let lastResult: RunResult | undefined;
 	let lastNotice = noticeForAttempt(tier, attempts[0]!);
 
-	for (const attempt of attempts) {
+	for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+		const attempt = attempts[attemptIndex]!;
 		const { result, notice, elapsedMs } = await runSubagentAttempt(
 			config,
 			ctx,
 			pass,
 			attempt,
+			attemptIndex + 1,
 			toolPolicy,
 			signal,
 			onText,
@@ -739,6 +755,7 @@ async function runSubagentPass(
 		});
 
 		if (!failed) {
+			pass.focusPublisher?.publish({ type: "completed" });
 			return {
 				id: pass.id ?? tier,
 				tier,
@@ -760,9 +777,11 @@ async function runSubagentPass(
 		}
 
 		if (!retryable || signal?.aborted) break;
+		pass.focusPublisher?.publish({ type: "retrying" });
 	}
 
 	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available.", toolElapsedMs: 0 };
+	pass.focusPublisher?.publish({ type: signal?.aborted || final.stopReason === "aborted" ? "aborted" : "failed" });
 	return {
 		id: pass.id ?? tier,
 		tier,
@@ -1066,7 +1085,7 @@ export default function registerPrReviewSubagents(
 		],
 		parameters: ReviewSubagentParams,
 
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("review_subagent");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
@@ -1082,6 +1101,11 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
+			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
+				key: `${toolCallId}:single`,
+				label: `${tier} review`,
+				tier,
+			});
 			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
 				config,
@@ -1093,6 +1117,7 @@ export default function registerPrReviewSubagents(
 					toolPolicy: normalizeToolPolicy(params.tool_policy),
 					majorOnly: params.major_only === true,
 					minorHygiene: params.minor_hygiene === true,
+					focusPublisher,
 				},
 				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
@@ -1155,7 +1180,7 @@ export default function registerPrReviewSubagents(
 		],
 		parameters: ReviewSubagentsParams,
 
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("review_subagents");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
@@ -1214,7 +1239,7 @@ export default function registerPrReviewSubagents(
 				: loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
-			const passes: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
+			const passesWithoutFocus: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
 				const tier = pass.tier as Tier;
 				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
 				const baseContext = combineContexts(sharedContext, loadedPassContexts[index]!.context);
@@ -1238,8 +1263,16 @@ export default function registerPrReviewSubagents(
 					? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex))
 					: [makePass(undefined, 0)];
 			});
-			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
+			const passes = passesWithoutFocus.map((pass, index) => ({
+				...pass,
+				focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, {
+					key: `${toolCallId}:${index}`,
+					label: pass.id ?? `${pass.tier} review`,
+					tier: pass.tier,
+				}),
+			}));
+			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 

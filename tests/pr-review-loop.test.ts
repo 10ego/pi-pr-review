@@ -102,13 +102,43 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.acquire(h.ctx as any)).toBeUndefined();
 	});
 
+	test("binds focus publishers and subscribers to the active generation", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		const publisher = h.coordinator.createFocusPublisher(lease, h.ctx as any, {
+			key: "call-1:pass-1",
+			label: "correctness",
+			tier: "heavy",
+		})!;
+		publisher.publish({ type: "attempt_started", attempt: 1, model: "provider/model" });
+		publisher.publish({ type: "assistant_snapshot", text: "live output" });
+		expect(h.coordinator.focusSnapshot(h.ctx as any)?.passes[0]?.assistantText).toBe("live output");
+
+		let closed = false;
+		h.coordinator.subscribeFocus(h.ctx as any, (snapshot) => {
+			if (!snapshot) closed = true;
+		});
+		h.coordinator.clear();
+		expect(closed).toBeTrue();
+		expect(publisher.publish({ type: "assistant_delta", text: "late" })).toBeFalse();
+		expect(h.coordinator.focusSnapshot(h.ctx as any)).toBeUndefined();
+	});
+
 	test("fails closed when the session identity or cwd changes", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
 		const lease = h.coordinator.acquire(h.ctx as any)!;
+		const publisher = h.coordinator.createFocusPublisher(lease, h.ctx as any, {
+			key: "call-1:pass-1",
+			label: "security",
+			tier: "heavy",
+		})!;
 		h.session.startedAt = "2026-07-14T00:00:00.000Z";
 		expect(h.coordinator.isLeaseActive(lease, h.ctx as any)).toBeFalse();
 		expect(lease.signal.aborted).toBeTrue();
+		expect(publisher.publish({ type: "assistant_delta", text: "late" })).toBeFalse();
+		expect(h.coordinator.focusSnapshot(h.ctx as any)).toBeUndefined();
 		expect(h.activeTools()).toEqual(["read", "bash"]);
 	});
 });

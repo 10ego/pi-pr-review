@@ -69,6 +69,31 @@ A review uses five focused passes by default:
 
 `--full` adds a convention and maintainability pass (`medium`). Large multi-file diffs are split by whole-file boundaries and reviewed in parallel. If the extension is unavailable, the prompt falls back to the current Pi session model.
 
+## Focus running reviewers
+
+While a review is running in the interactive TUI, open the live read-only subagent view with:
+
+```text
+/pr-review-focus
+```
+
+`Ctrl+Alt+R` opens the same view without entering a command. The viewer keeps the parent review running and does not switch Pi sessions or attach an interactive terminal to a child process.
+
+Viewer controls:
+
+| Key | Action |
+|---|---|
+| `Tab` / `Right` | Focus the next pass. |
+| `Shift+Tab` / `Left` | Focus the previous pass. |
+| `Up` / `Down` | Scroll one line. |
+| `PageUp` / `PageDown` | Scroll one page. |
+| `Home` / `End` | Jump to the start or resume following live output. |
+| `Esc` | Return to the main thread without cancelling the review. |
+
+The view shows pass status, attempt/model, tool names and completion state, and bounded assistant output. It never stores the pass objective, input context, captured diff, raw child events, tool arguments, tool results, or stderr. Assistant text is sanitized and capped at 48 KiB per pass and 256 KiB across the active review; older text is evicted with an on-screen marker. State exists only in memory for the active session/cwd-bound `/pr-review` generation and is synchronously purged on completion, cancellation, replacement, or session/tree lifecycle changes.
+
+The viewer intentionally cannot send prompts, steering, or follow-ups to reviewers. It is unavailable in print, JSON, and RPC modes and outside an active user-initiated `/pr-review` loop.
+
 ## Configure models
 
 `/pr-review-config` opens an interactive settings menu in the TUI. Use `/pr-review-config show` for a text summary or `key=value` arguments for direct changes.
