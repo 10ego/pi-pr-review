@@ -158,6 +158,20 @@ Example:
 
 Tier subprocesses retry configured fallbacks only for retryable quota, rate-limit, or capacity failures. If a tier is unset, it uses the nearest configured tier and then Pi's default model.
 
+## One-shot self-review for top-level tasks
+
+For an eligible long-running coding task started by direct interactive or RPC input, Pi exposes `self_review_subagent` near the end of the task. The tool takes no arguments. Its empty schema is closed with `additionalProperties: false`; the extension—not the caller—fixes the objective, heavy tier, P0–P2-only severity policy, no-minor-hygiene policy, and no-tools isolation.
+
+The permit is bound to one top-level task generation, the Pi session instance, cwd, and canonical Git worktree. It is consumed atomically before delta capture, so concurrent or replayed calls are rejected and the tool is hidden immediately. It is never available during `/pr-review`. Low-level `agent_end` events do not revoke it because Pi may still retry, compact, or run queued continuations; unused authority is cleared only at terminal `agent_settled` (or earlier cancellation/session/input boundaries).
+
+The child uses Pi RPC mode. Before startup, the host creates a mode-`0700` temporary `PI_CODING_AGENT_DIR`, copies and normalizes the trusted user settings there with retry and compaction disabled, and exposes only validated regular `auth.json`/`models.json` files through controlled symlinks. RPC control acknowledgements can therefore persist only to the temporary settings, which are removed after every outcome; malformed or unsafe source configuration fails closed. Environment-based authentication remains inherited, and no credentials are placed in arguments or prompts. The host waits for acknowledgements that automatic compaction and automatic retry are disabled before it submits the sole prompt, and it also aborts on any retry/compaction lifecycle event or second `agent_start`. There is no fallback, sharding, extension discovery, tools, publication, or verification behavior.
+
+Self-review is deliberately fail-closed. The worktree must be clean when the top-level task starts and HEAD must remain unchanged. At execution, the host builds a complete bounded diff of Git-visible tracked, staged, and non-ignored untracked changes relative to that starting HEAD. It rejects an empty delta, any changed or dirty submodule, more than 200 status records, more than 4 MiB of diff, a changed session/cwd/worktree/HEAD, or a status change during capture.
+
+The child must return strict JSON containing only a `findings` array. Every finding must pass an exact host-owned schema: P0/P1/P2 severity and matching title/blocking state, concrete impact/trigger/evidence strings, normalized repo-relative changed-line coordinates, side, task/diff relationship flags, and bounded confidence. Markdown, malformed JSON, extra or missing fields, P3/nits, inconsistent metadata, and unsafe paths are rejected rather than shown as review results. No findings is `{"findings":[]}`.
+
+This is a practical Git-derived boundary, not a filesystem snapshot or sandbox. Ignored files are not included, and an external process that rewrites ordinary file contents without changing status shape could race capture. Requiring a clean start, rejecting submodule deltas, checking HEAD and status before/after capture, bounding all output, and failing closed avoids silently presenting a partial oversized delta; use a separate sandbox or snapshot system when stronger isolation is required.
+
 ## Publish to GitHub
 
 Publishing is off by default.
@@ -237,6 +251,8 @@ The verdict is `request_changes` only when a validated P0 or P1 finding exists. 
 - Every review tool also checks an in-memory, session- and cwd-bound loop lease before reading review context, running verification, or spawning a reviewer. Hiding the tools is not the only enforcement boundary.
 - Unrelated input, terminal completion, cancellation, session navigation, or tree navigation revokes the lease and aborts in-flight review work. Tools are suspended while a non-open PR waits for confirmation.
 - Reviewer subprocesses start with extension discovery disabled, so they cannot recursively invoke this package's agents or verification tool.
+- `self_review_subagent` has separate one-shot authority for an eligible direct top-level task; it cannot authorize `review_subagent`, `review_subagents`, or `pr_review_verify`, and those permissive schemas remain exclusively behind `ReviewLoopCoordinator`.
+- Self-review execute-time checks are authoritative: visibility alone never grants a permit, and consumption hides the tool before any asynchronous delta or child work.
 - Reviewers receive the captured diff and are instructed not to modify files.
 - The orchestrator does not check out, commit, or push PR code.
 - GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, the model-free `/pr-review-publish` command, or a narrowly matched direct interactive/RPC publish request handled by the extension before an agent turn. `allowStalePublish` controls whether an invocation/config-authorized write may be stale; it does not independently authorize a write.
