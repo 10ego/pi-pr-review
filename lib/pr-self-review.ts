@@ -138,7 +138,11 @@ function decodeGitQuotedPath(raw: string): string {
 
 function diffMarkerPath(raw: string, prefix: "a" | "b"): string | undefined {
 	if (raw === "/dev/null") return undefined;
-	const decoded = raw.startsWith('"') ? decodeGitQuotedPath(raw) : raw;
+	// `git diff --no-index` appends a delimiter tab to unquoted marker paths,
+	// even when it emits no timestamp. A literal trailing tab is C-quoted, so
+	// stripping one here cannot alter the represented path.
+	const marker = !raw.startsWith('"') && raw.endsWith("\t") ? raw.slice(0, -1) : raw;
+	const decoded = marker.startsWith('"') ? decodeGitQuotedPath(marker) : marker;
 	if (!decoded.startsWith(`${prefix}/`)) throw new Error("Self-review encountered a malformed unified-diff path marker.");
 	return decoded.slice(2);
 }

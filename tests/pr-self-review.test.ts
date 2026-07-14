@@ -264,6 +264,21 @@ describe("self-review output validation", () => {
 			.toThrow("one captured diff hunk");
 	});
 
+	test("normalizes the delimiter tab from unquoted no-index marker paths", () => {
+		const untrackedAnchors = buildSelfReviewChangedLineAnchors([
+			"diff --git a/space file.ts b/space file.ts",
+			"new file mode 100644",
+			"--- /dev/null",
+			"+++ b/space file.ts\t",
+			"@@ -0,0 +1 @@",
+			"+export const added = true;",
+			"",
+		].join("\n"));
+		const untrackedFinding = { ...validFinding, path: "space file.ts", startLine: 1, endLine: 1 };
+		expect(parseSelfReviewOutput(JSON.stringify({ findings: [untrackedFinding] }), untrackedAnchors))
+			.toEqual({ findings: [untrackedFinding] });
+	});
+
 	test("gives binary and no-hunk paths no changed-line anchors", () => {
 		const binaryAnchors = buildSelfReviewChangedLineAnchors([
 			"diff --git a/image.png b/image.png",

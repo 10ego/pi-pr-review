@@ -714,17 +714,19 @@ export default function registerReviewTable(
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
-		const toolCalls = Array.isArray(event.message.content)
-			? event.message.content.filter((part) => part.type === "toolCall")
-			: [];
-		if (toolCalls.length === 1) {
-			const call = toolCalls[0] as { id?: unknown; name?: unknown };
-			if (call.name === "self_review_subagent" && typeof call.id === "string") {
-				selfReviewCoordinator.bindToolCall(call.id, ctx);
-			}
-		}
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
-		if (completion === "continue_tools") return;
+		if (completion === "continue_tools") {
+			const toolCalls = Array.isArray(event.message.content)
+				? event.message.content.filter((part) => part.type === "toolCall")
+				: [];
+			if (toolCalls.length === 1) {
+				const call = toolCalls[0] as { id?: unknown; name?: unknown };
+				if (call.name === "self_review_subagent" && typeof call.id === "string") {
+					selfReviewCoordinator.bindToolCall(call.id, ctx);
+				}
+			}
+			return;
+		}
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
 			persistTelemetry("cleared");

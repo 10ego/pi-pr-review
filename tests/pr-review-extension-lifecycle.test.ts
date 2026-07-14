@@ -337,6 +337,16 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", {
 			message: {
 				role: "assistant",
+				stopReason: "error",
+				content: [{ type: "toolCall", id: "rejected-self", name: SELF_REVIEW_TOOL_NAME, arguments: {} }],
+			},
+		});
+		expect(await harness.selfReviewCoordinator.consume("rejected-self", harness.ctx)).toBeUndefined();
+		expect(harness.activeTools()).toContain(SELF_REVIEW_TOOL_NAME);
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
 				stopReason: "toolUse",
 				content: [{ type: "toolCall", id: "sole-self", name: SELF_REVIEW_TOOL_NAME, arguments: {} }],
 			},
