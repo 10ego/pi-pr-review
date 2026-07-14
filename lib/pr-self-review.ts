@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { resolveTrustedExecutableFromStartupPath } from "./trusted-executable.ts";
 
 export const SELF_REVIEW_TOOL_NAME = "self_review_subagent";
 
@@ -20,6 +21,7 @@ interface PendingTask {
 	readonly generation: number;
 	readonly cwd: string;
 	readonly session: SessionBinding;
+	readonly controller: AbortController;
 }
 
 export interface SelfReviewBaseline {
@@ -27,10 +29,10 @@ export interface SelfReviewBaseline {
 	readonly canonicalCwd: string;
 	readonly worktree: string;
 	readonly head: string;
+	readonly gitExecutable: string;
 }
 
 interface ArmedTask extends PendingTask, SelfReviewBaseline {
-	readonly controller: AbortController;
 	boundToolCallId?: string;
 }
 
@@ -369,14 +371,8 @@ interface ProcessResult {
 	exitCode: number;
 }
 
-function gitExecutable(): string {
-	if (process.platform === "win32" || !fs.existsSync("/usr/bin/git")) {
-		throw new Error("Self-review requires the trusted POSIX Git executable at /usr/bin/git.");
-	}
-	return "/usr/bin/git";
-}
-
 function runGit(
+	gitExecutable: string,
 	cwd: string,
 	args: string[],
 	maxStdoutBytes: number,
@@ -389,7 +385,7 @@ function runGit(
 		let stderrBytes = 0;
 		const stdout: Buffer[] = [];
 		const stderr: Buffer[] = [];
-		const proc = spawn(gitExecutable(), [
+		const proc = spawn(gitExecutable, [
 			"-c", "core.fsmonitor=false",
 			"-c", "core.hooksPath=/dev/null",
 			...args,
@@ -453,15 +449,16 @@ function runGit(
 	});
 }
 
-async function gitHead(worktree: string, signal?: AbortSignal): Promise<string> {
-	const result = await runGit(worktree, ["rev-parse", "--verify", "HEAD"], 256, signal);
+async function gitHead(gitExecutable: string, worktree: string, signal?: AbortSignal): Promise<string> {
+	const result = await runGit(gitExecutable, worktree, ["rev-parse", "--verify", "HEAD"], 256, signal);
 	const head = result.stdout.toString("utf8").trim().toLowerCase();
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(head)) throw new Error("Self-review could not capture a valid Git HEAD.");
 	return head;
 }
 
-async function gitStatus(worktree: string, signal?: AbortSignal): Promise<Buffer> {
+async function gitStatus(gitExecutable: string, worktree: string, signal?: AbortSignal): Promise<Buffer> {
 	return (await runGit(
+		gitExecutable,
 		worktree,
 		["status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none"],
 		MAX_STATUS_BYTES,
@@ -469,23 +466,28 @@ async function gitStatus(worktree: string, signal?: AbortSignal): Promise<Buffer
 	)).stdout;
 }
 
-export async function captureCleanSelfReviewBaseline(cwd: string): Promise<SelfReviewBaseline> {
+export async function captureCleanSelfReviewBaseline(
+	cwd: string,
+	gitExecutable: string,
+	signal?: AbortSignal,
+): Promise<SelfReviewBaseline> {
+	if (signal?.aborted) throw new Error("Self-review Git inspection was aborted.");
 	const resolvedCwd = path.resolve(cwd);
 	const canonicalCwd = await fs.promises.realpath(resolvedCwd);
-	const rootResult = await runGit(canonicalCwd, ["rev-parse", "--show-toplevel"], 16 * 1024);
+	const rootResult = await runGit(gitExecutable, canonicalCwd, ["rev-parse", "--show-toplevel"], 16 * 1024, signal);
 	const reportedRoot = rootResult.stdout.toString("utf8").trim();
 	if (!path.isAbsolute(reportedRoot)) throw new Error("Self-review Git worktree root is not absolute.");
 	const worktree = await fs.promises.realpath(reportedRoot);
 	if (!isWithin(worktree, canonicalCwd)) throw new Error("Self-review cwd is outside its canonical Git worktree.");
 
-	const headBefore = await gitHead(worktree);
-	const status = await gitStatus(worktree);
-	const headAfter = await gitHead(worktree);
+	const headBefore = await gitHead(gitExecutable, worktree, signal);
+	const status = await gitStatus(gitExecutable, worktree, signal);
+	const headAfter = await gitHead(gitExecutable, worktree, signal);
 	if (headBefore !== headAfter) throw new Error("Git HEAD changed while self-review task authority was being prepared.");
 	if (status.length > 0) {
 		throw new Error("Self-review is available only when the Git worktree is clean at top-level task start.");
 	}
-	return { cwd: resolvedCwd, canonicalCwd, worktree, head: headBefore };
+	return { cwd: resolvedCwd, canonicalCwd, worktree, head: headBefore, gitExecutable };
 }
 
 interface StatusEntry {
@@ -554,9 +556,9 @@ async function validateUntrackedPath(worktree: string, relativePath: string): Pr
 export async function buildSelfReviewDelta(
 	permit: SelfReviewPermit,
 ): Promise<{ delta: string; anchors: SelfReviewChangedLineAnchors; fileCount: number; bytes: number }> {
-	const headBefore = await gitHead(permit.worktree, permit.signal);
+	const headBefore = await gitHead(permit.gitExecutable, permit.worktree, permit.signal);
 	if (headBefore !== permit.head) throw new Error("Git HEAD changed after the top-level task started.");
-	const statusBefore = await gitStatus(permit.worktree, permit.signal);
+	const statusBefore = await gitStatus(permit.gitExecutable, permit.worktree, permit.signal);
 	const entries = statusEntries(statusBefore);
 	if (entries.length === 0) throw new Error("There is no Git-visible working-tree delta to self-review.");
 	if (entries.length > MAX_SELF_REVIEW_FILES) {
@@ -577,6 +579,7 @@ export async function buildSelfReviewDelta(
 		chunks.push(chunk);
 	};
 	const tracked = await runGit(
+		permit.gitExecutable,
 		permit.worktree,
 		["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", permit.head, "--"],
 		MAX_SELF_REVIEW_DELTA_BYTES,
@@ -586,6 +589,7 @@ export async function buildSelfReviewDelta(
 	for (const relativePath of untracked) {
 		const remaining = MAX_SELF_REVIEW_DELTA_BYTES - bytes;
 		const diff = await runGit(
+			permit.gitExecutable,
 			permit.worktree,
 			["diff", "--no-index", "--binary", "--no-ext-diff", "--no-textconv", "--", "/dev/null", relativePath],
 			remaining,
@@ -595,8 +599,8 @@ export async function buildSelfReviewDelta(
 		append(diff.stdout);
 	}
 
-	const statusAfter = await gitStatus(permit.worktree, permit.signal);
-	const headAfter = await gitHead(permit.worktree, permit.signal);
+	const statusAfter = await gitStatus(permit.gitExecutable, permit.worktree, permit.signal);
+	const headAfter = await gitHead(permit.gitExecutable, permit.worktree, permit.signal);
 	if (!statusBefore.equals(statusAfter) || headAfter !== permit.head) {
 		throw new Error("Git worktree state changed while the self-review delta was being captured.");
 	}
@@ -617,10 +621,20 @@ export class SelfReviewPermitCoordinator {
 	private running?: ArmedTask;
 	private nextGeneration = 1;
 
+	private readonly startupPath: string;
+	private readonly gitExecutableCandidate: string | undefined;
+
 	constructor(
 		private readonly pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">,
 		private readonly reviewLoopActive: () => boolean,
-	) {}
+		gitExecutable?: string,
+	) {
+		// Capture only immutable startup inputs here. Platform support and executable
+		// canonicalization are task-local availability checks and must not prevent the
+		// rest of the extension from registering.
+		this.startupPath = process.env.PATH ?? "";
+		this.gitExecutableCandidate = gitExecutable;
+	}
 
 	private setVisible(visible: boolean): void {
 		try {
@@ -648,6 +662,7 @@ export class SelfReviewPermitCoordinator {
 			generation: this.nextGeneration++,
 			cwd: path.resolve(ctx.cwd),
 			session,
+			controller: new AbortController(),
 		};
 		return true;
 	}
@@ -660,7 +675,13 @@ export class SelfReviewPermitCoordinator {
 		}
 		let baseline: SelfReviewBaseline;
 		try {
-			baseline = await captureCleanSelfReviewBaseline(ctx.cwd);
+			if (process.platform === "win32") throw new Error("Self-review requires POSIX process semantics.");
+			const gitExecutable = resolveTrustedExecutableFromStartupPath(
+				"git",
+				this.gitExecutableCandidate,
+				this.startupPath,
+			);
+			baseline = await captureCleanSelfReviewBaseline(ctx.cwd, gitExecutable, pending.controller.signal);
 		} catch {
 			if (this.pending === pending) this.clear();
 			return false;
@@ -675,7 +696,7 @@ export class SelfReviewPermitCoordinator {
 			return false;
 		}
 		this.pending = undefined;
-		this.armed = { ...pending, ...baseline, controller: new AbortController() };
+		this.armed = { ...pending, ...baseline };
 		this.setVisible(true);
 		return true;
 	}
@@ -715,7 +736,7 @@ export class SelfReviewPermitCoordinator {
 		let worktree: string;
 		try {
 			canonicalCwd = await fs.promises.realpath(path.resolve(ctx.cwd));
-			const root = await runGit(canonicalCwd, ["rev-parse", "--show-toplevel"], 16 * 1024, armed.controller.signal);
+			const root = await runGit(armed.gitExecutable, canonicalCwd, ["rev-parse", "--show-toplevel"], 16 * 1024, armed.controller.signal);
 			worktree = await fs.promises.realpath(root.stdout.toString("utf8").trim());
 		} catch {
 			if (this.armed === armed) this.clear();
@@ -745,6 +766,7 @@ export class SelfReviewPermitCoordinator {
 			canonicalCwd: armed.canonicalCwd,
 			worktree: armed.worktree,
 			head: armed.head,
+			gitExecutable: armed.gitExecutable,
 			signal: armed.controller.signal,
 		});
 	}
@@ -756,6 +778,7 @@ export class SelfReviewPermitCoordinator {
 	}
 
 	clear(): void {
+		this.pending?.controller.abort();
 		this.armed?.controller.abort();
 		this.running?.controller.abort();
 		this.pending = undefined;

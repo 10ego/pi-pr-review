@@ -2,10 +2,15 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 const SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS = 30_000;
 export const SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS = 10 * 60_000;
 const MAX_TRUSTED_CONFIG_BYTES = 4 * 1024 * 1024;
+const SELF_REVIEW_RPC_STDOUT_MAX_BYTES = 8 * 1024 * 1024;
+const SELF_REVIEW_RPC_STDERR_MAX_BYTES = 1024 * 1024;
+const SELF_REVIEW_RPC_KILL_GRACE_MS = 5_000;
+const SELF_REVIEW_RPC_DRAIN_MS = 1_000;
 const CHILD_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const SHARED_CHILD_CONFIG_FILES = ["auth.json", "models.json"] as const;
 
@@ -137,15 +142,22 @@ export interface SelfReviewRpcResult {
 export interface SelfReviewRpcOptions {
 	/** Total child lifetime. Injectable only so lifecycle tests can fail quickly. */
 	readonly totalTimeoutMs?: number;
+	/** Injectable stream caps for deterministic overflow tests. */
+	readonly stdoutMaxBytes?: number;
+	readonly stderrMaxBytes?: number;
+	/** Injectable teardown bounds for deterministic process-group tests. */
+	readonly killGraceMs?: number;
+	readonly drainMs?: number;
 }
 
 function finalAssistantText(messages: readonly RpcMessage[]): string {
 	for (let index = messages.length - 1; index >= 0; index--) {
 		const message = messages[index];
 		if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-		for (const part of message.content) {
-			if (part.type === "text" && typeof part.text === "string" && part.text.trim()) return part.text;
-		}
+		return message.content
+			.filter((part) => part.type === "text" && typeof part.text === "string")
+			.map((part) => part.text as string)
+			.join("");
 	}
 	return "";
 }
@@ -153,15 +165,18 @@ function finalAssistantText(messages: readonly RpcMessage[]): string {
 function runSelfReviewRpcChild(
 	command: string,
 	args: string[],
-	cwd: string,
 	input: string,
 	signal: AbortSignal | undefined,
 	isolatedAgentDir: string,
-	totalTimeoutMs: number,
+	options: Required<SelfReviewRpcOptions>,
 ): Promise<SelfReviewRpcResult> {
 	return new Promise<SelfReviewRpcResult>((resolve) => {
 		const messages: RpcMessage[] = [];
 		const result: SelfReviewRpcResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0 };
+		const stdoutDecoder = new StringDecoder("utf8");
+		const stderrDecoder = new StringDecoder("utf8");
+		let stdoutBytes = 0;
+		let stderrBytes = 0;
 		let buffer = "";
 		let closed = false;
 		let resolved = false;
@@ -170,34 +185,141 @@ function runSelfReviewRpcChild(
 		let agentStarts = 0;
 		let promptAccepted = false;
 		let agentSettled = false;
+		let groupReady = false;
+		let terminationStarted = false;
+		let killStarted = false;
+		let processCode: number | null = null;
+		let processSignal: NodeJS.Signals | null = null;
+		let killDeadline: number | undefined;
+		let decodersEnded = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let drainTimer: ReturnType<typeof setTimeout> | undefined;
 		let startupTimer: ReturnType<typeof setTimeout> | undefined;
 		let totalTimer: ReturnType<typeof setTimeout> | undefined;
 
+		const childEnv: NodeJS.ProcessEnv = { ...process.env, [CHILD_AGENT_DIR_ENV]: isolatedAgentDir };
+		// Repository-controlled Bun config is avoided by the private cwd. Scrub the
+		// inherited runtime flags that can preload code before Pi handles --no-tools.
+		delete childEnv.NODE_OPTIONS;
+		delete childEnv.BUN_OPTIONS;
 		const proc = spawn(command, args, {
-			cwd,
+			cwd: isolatedAgentDir,
+			detached: true,
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, [CHILD_AGENT_DIR_ENV]: isolatedAgentDir },
+			env: childEnv,
 		});
+
 		const cleanup = () => {
 			if (killTimer) clearTimeout(killTimer);
+			if (drainTimer) clearTimeout(drainTimer);
 			if (startupTimer) clearTimeout(startupTimer);
 			if (totalTimer) clearTimeout(totalTimer);
 			signal?.removeEventListener("abort", abort);
+		};
+		const finishDecoding = () => {
+			if (decodersEnded) return;
+			decodersEnded = true;
+			if (!protocolFailed) {
+				buffer += stdoutDecoder.end();
+				if (buffer.trim()) processLine(buffer);
+			}
+			result.stderr += stderrDecoder.end();
+			result.text = finalAssistantText(messages);
+			if (!result.errorMessage && !aborted && !agentSettled) {
+				result.errorMessage = "Self-review child exited before agent_settled.";
+			}
+			if (!result.errorMessage && !aborted && agentStarts !== 1) {
+				result.errorMessage = "Self-review child did not run exactly one model attempt.";
+			}
+			if (!result.errorMessage && !aborted && processSignal !== null) {
+				result.errorMessage = `Self-review child exited due to ${processSignal}.`;
+			}
+			if (!result.errorMessage && !aborted && processCode === null) {
+				result.errorMessage = "Self-review child closed without a numeric exit code.";
+			}
+			result.exitCode = result.errorMessage || aborted ? 1 : processCode!;
 		};
 		const finish = () => {
 			if (resolved) return;
 			resolved = true;
 			cleanup();
+			finishDecoding();
 			resolve(result);
 		};
+		const groupExists = (): boolean => {
+			if (!groupReady || proc.pid === undefined) return false;
+			try {
+				process.kill(-proc.pid, 0);
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException).code !== "ESRCH";
+			}
+		};
+		const signalGroup = (groupSignal: NodeJS.Signals): void => {
+			// A negative pid is never used until Node reports successful detached spawn.
+			if (!groupReady || proc.pid === undefined) return;
+			try {
+				process.kill(-proc.pid, groupSignal);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+					result.errorMessage ??= `Self-review child ${groupSignal} process-group signal failed: ${error instanceof Error ? error.message : String(error)}`;
+				}
+			}
+		};
+		const destroyPipes = () => {
+			proc.stdin.destroy();
+			proc.stdout.destroy();
+			proc.stderr.destroy();
+		};
+		const drainAfterKill = () => {
+			const deadline = Date.now() + options.drainMs;
+			const poll = () => {
+				if ((closed && !groupExists()) || Date.now() >= deadline) {
+					finish();
+					return;
+				}
+				drainTimer = setTimeout(poll, Math.min(10, Math.max(1, deadline - Date.now())));
+			};
+			poll();
+		};
+		const forceKillAndDrain = () => {
+			if (killStarted || resolved) return;
+			killStarted = true;
+			// KILL the original detached group even if its leader exited after TERM;
+			// descendants may otherwise retain inherited stdio indefinitely.
+			signalGroup("SIGKILL");
+			destroyPipes();
+			drainAfterKill();
+		};
+		const checkTerminationGrace = () => {
+			if (!terminationStarted || killStarted || resolved || killDeadline === undefined) return;
+			if (killTimer) clearTimeout(killTimer);
+			if (closed && !groupExists()) {
+				finish();
+				return;
+			}
+			const remaining = killDeadline - Date.now();
+			if (remaining <= 0) {
+				forceKillAndDrain();
+				return;
+			}
+			// Once close has fired, poll only to distinguish descendants that still
+			// retain the original group from a group that disappears during grace.
+			// If pipes remain open (including from an escaped process), preserve the
+			// grace and bounded post-KILL drain instead of resolving early.
+			killTimer = setTimeout(checkTerminationGrace, closed ? Math.min(10, remaining) : remaining);
+		};
+		const beginTermination = () => {
+			if (!terminationStarted || killStarted || !groupReady || killDeadline !== undefined) return;
+			signalGroup("SIGTERM");
+			killDeadline = Date.now() + options.killGraceMs;
+			checkTerminationGrace();
+		};
 		const terminate = () => {
-			if (closed) return;
-			proc.kill("SIGTERM");
-			killTimer ??= setTimeout(() => {
-				if (!closed) proc.kill("SIGKILL");
-			}, 5000);
+			if (terminationStarted || resolved) return;
+			terminationStarted = true;
+			beginTermination();
 		};
 		const failClosed = (message: string) => {
 			protocolFailed = true;
@@ -211,7 +333,7 @@ function runSelfReviewRpcChild(
 			terminate();
 		};
 		const send = (commandBody: Record<string, unknown>) => {
-			if (closed || protocolFailed) return;
+			if (closed || protocolFailed || terminationStarted) return;
 			proc.stdin.write(`${JSON.stringify(commandBody)}\n`, "utf8");
 		};
 		const processLine = (line: string) => {
@@ -292,37 +414,63 @@ function runSelfReviewRpcChild(
 			}
 		};
 
-		proc.stdout.on("data", (data) => {
-			buffer += data.toString();
+		proc.stdout.on("data", (data: Buffer | string) => {
+			if (protocolFailed) return;
+			const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			stdoutBytes += chunk.length;
+			if (stdoutBytes > options.stdoutMaxBytes) {
+				failClosed(`Self-review child stdout exceeded the ${options.stdoutMaxBytes}-byte safety limit.`);
+				return;
+			}
+			buffer += stdoutDecoder.write(chunk);
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 			for (const line of lines) processLine(line);
 		});
-		proc.stderr.on("data", (data) => {
-			result.stderr += data.toString();
+		proc.stderr.on("data", (data: Buffer | string) => {
+			if (protocolFailed) return;
+			const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+			stderrBytes += chunk.length;
+			if (stderrBytes > options.stderrMaxBytes) {
+				failClosed(`Self-review child stderr exceeded the ${options.stderrMaxBytes}-byte safety limit.`);
+				return;
+			}
+			result.stderr += stderrDecoder.write(chunk);
 		});
 		proc.stdin.on("error", (error) => {
-			if (!closed && !agentSettled) failClosed(`Self-review child RPC input failed: ${error.message}`);
+			if (!closed && !agentSettled && !terminationStarted) failClosed(`Self-review child RPC input failed: ${error.message}`);
 		});
-		proc.on("close", (code) => {
+		proc.on("spawn", () => {
+			groupReady = proc.pid !== undefined && proc.pid > 0;
+			beginTermination();
+		});
+		const recordProcessExit = (code: number | null, exitSignal: NodeJS.Signals | null) => {
+			if (code !== null) processCode = code;
+			if (exitSignal !== null) processSignal = exitSignal;
+		};
+		proc.on("exit", (code, exitSignal) => {
+			recordProcessExit(code, exitSignal);
+			if (!terminationStarted && groupExists()) {
+				failClosed("Self-review child exited while descendants retained its process group.");
+			}
+		});
+		proc.on("close", (code, exitSignal) => {
 			closed = true;
-			if (buffer.trim()) processLine(buffer);
-			result.text = finalAssistantText(messages);
-			if (!result.errorMessage && !agentSettled) result.errorMessage = "Self-review child exited before agent_settled.";
-			if (!result.errorMessage && agentStarts !== 1) result.errorMessage = "Self-review child did not run exactly one model attempt.";
-			result.exitCode = result.errorMessage || aborted ? 1 : (code ?? 0);
-			finish();
+			recordProcessExit(code, exitSignal);
+			if (!terminationStarted) finish();
+			else checkTerminationGrace();
 		});
 		proc.on("error", (error) => {
 			closed = true;
 			result.exitCode = 1;
 			result.errorMessage = error.message;
+			destroyPipes();
 			finish();
 		});
 
 		totalTimer = setTimeout(
-			() => failClosed(`Self-review child RPC total runtime exceeded ${totalTimeoutMs}ms.`),
-			totalTimeoutMs,
+			() => failClosed(`Self-review child RPC total runtime exceeded ${options.totalTimeoutMs}ms.`),
+			options.totalTimeoutMs,
 		);
 		startupTimer = setTimeout(
 			() => failClosed(`Self-review child RPC startup exceeded ${SELF_REVIEW_RPC_STARTUP_TIMEOUT_MS}ms.`),
@@ -344,19 +492,34 @@ function runSelfReviewRpcChild(
 export async function runSelfReviewRpcSubprocess(
 	command: string,
 	args: string[],
-	cwd: string,
+	_cwd: string,
 	input: string,
 	signal: AbortSignal | undefined,
 	trustedAgentDir: string,
 	options: SelfReviewRpcOptions = {},
 ): Promise<SelfReviewRpcResult> {
-	const totalTimeoutMs = options.totalTimeoutMs ?? SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS;
-	if (!Number.isSafeInteger(totalTimeoutMs) || totalTimeoutMs < 1) {
-		throw new Error("Self-review RPC total timeout must be a positive safe integer.");
+	if (process.platform === "win32") throw new Error("Self-review RPC supervision requires POSIX process groups.");
+	const resolvedOptions: Required<SelfReviewRpcOptions> = {
+		totalTimeoutMs: options.totalTimeoutMs ?? SELF_REVIEW_RPC_TOTAL_TIMEOUT_MS,
+		stdoutMaxBytes: options.stdoutMaxBytes ?? SELF_REVIEW_RPC_STDOUT_MAX_BYTES,
+		stderrMaxBytes: options.stderrMaxBytes ?? SELF_REVIEW_RPC_STDERR_MAX_BYTES,
+		killGraceMs: options.killGraceMs ?? SELF_REVIEW_RPC_KILL_GRACE_MS,
+		drainMs: options.drainMs ?? SELF_REVIEW_RPC_DRAIN_MS,
+	};
+	for (const [label, value, minimum] of [
+		["total timeout", resolvedOptions.totalTimeoutMs, 1],
+		["stdout limit", resolvedOptions.stdoutMaxBytes, 1],
+		["stderr limit", resolvedOptions.stderrMaxBytes, 1],
+		["kill grace", resolvedOptions.killGraceMs, 0],
+		["drain deadline", resolvedOptions.drainMs, 1],
+	] as const) {
+		if (!Number.isSafeInteger(value) || value < minimum) {
+			throw new Error(`Self-review RPC ${label} must be a ${minimum === 0 ? "non-negative" : "positive"} safe integer.`);
+		}
 	}
 	const isolatedAgentDir = prepareIsolatedAgentDir(trustedAgentDir);
 	try {
-		return await runSelfReviewRpcChild(command, args, cwd, input, signal, isolatedAgentDir, totalTimeoutMs);
+		return await runSelfReviewRpcChild(command, args, input, signal, isolatedAgentDir, resolvedOptions);
 	} finally {
 		fs.rmSync(isolatedAgentDir, { recursive: true, force: true });
 	}
