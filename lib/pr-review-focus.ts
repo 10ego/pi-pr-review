@@ -180,8 +180,6 @@ export function normalizeReviewFocusJsonEvent(raw: unknown): ReviewFocusPassEven
 		const normalized: ReviewFocusPassEvent[] = [];
 		const model = assistantModel(event.message);
 		if (model) normalized.push({ type: "model_observed", model });
-		const snapshot = assistantText(event.message);
-		if (snapshot) return [...normalized, { type: "assistant_snapshot", text: snapshot }];
 		const update = event.assistantMessageEvent;
 		if (update && typeof update === "object") {
 			const delta = (update as { type?: unknown; delta?: unknown });
@@ -189,6 +187,8 @@ export function normalizeReviewFocusJsonEvent(raw: unknown): ReviewFocusPassEven
 				return [...normalized, { type: "assistant_delta", text: delta.delta }];
 			}
 		}
+		const snapshot = assistantText(event.message);
+		if (snapshot) normalized.push({ type: "assistant_snapshot", text: snapshot });
 		return normalized;
 	}
 	if (event.type === "message_end") {

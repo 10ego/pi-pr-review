@@ -18,6 +18,7 @@ describe("PR review prompt scheduling policy", () => {
 		expect(entrypoint).toContain("registerReviewTable(pi, loopCoordinator)");
 		expect(focusExtension).toContain('pi.registerCommand("pr-review-focus"');
 		expect(focusExtension).toContain('pi.registerShortcut(SHORTCUT');
+		expect(focusExtension).not.toContain('"(waiting for assistant output…) "');
 		expect(entrypoint).not.toContain("CachedPublishAuthorizationGate");
 		expect(extension).toContain("allow_stale_publish");
 		expect(extension).toContain("allowStalePublish: allowStale.valid ? allowStale.value : false");

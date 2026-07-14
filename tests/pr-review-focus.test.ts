@@ -33,12 +33,16 @@ describe("review focus event normalization", () => {
 			type: "message_update",
 			message: { role: "assistant", content: [{ type: "text", text: "partial" }] },
 			assistantMessageEvent: { type: "text_delta", delta: "ial" },
-		})).toEqual([{ type: "assistant_snapshot", text: "partial" }]);
+		})).toEqual([{ type: "assistant_delta", text: "ial" }]);
 		expect(normalizeReviewFocusJsonEvent({
 			type: "message_update",
 			message: { role: "assistant", content: [] },
 			assistantMessageEvent: { type: "text_delta", delta: "fallback" },
 		})).toEqual([{ type: "assistant_delta", text: "fallback" }]);
+		expect(normalizeReviewFocusJsonEvent({
+			type: "message_update",
+			message: { role: "assistant", content: [{ type: "text", text: "snapshot fallback" }] },
+		})).toEqual([{ type: "assistant_snapshot", text: "snapshot fallback" }]);
 		expect(normalizeReviewFocusJsonEvent({
 			type: "message_end",
 			message: { role: "assistant", content: [{ type: "text", text: "done" }] },
@@ -56,6 +60,32 @@ describe("review focus event normalization", () => {
 			result: { content: "SECRET_DIFF" },
 			isError: false,
 		})).toEqual([{ type: "tool_ended", toolCallId: "call-1", toolName: "read", isError: false }]);
+	});
+
+	test("streams deltas and uses message_end as authoritative reconciliation", () => {
+		const registry = new ReviewFocusRegistry();
+		registry.open(1);
+		registry.register(1, descriptor);
+		registry.publish(1, descriptor.key, { type: "attempt_started", attempt: 1 });
+		for (const raw of [
+			{
+				type: "message_update",
+				message: { role: "assistant", content: [{ type: "text", text: "hel" }] },
+				assistantMessageEvent: { type: "text_delta", delta: "hel" },
+			},
+			{
+				type: "message_update",
+				message: { role: "assistant", content: [{ type: "text", text: "hello! stale" }] },
+				assistantMessageEvent: { type: "text_delta", delta: "lo" },
+			},
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+			},
+		]) {
+			for (const event of normalizeReviewFocusJsonEvent(raw)) registry.publish(1, descriptor.key, event);
+		}
+		expect(registry.snapshot(1)?.passes[0]?.assistantText).toBe("hello");
 	});
 
 	test("reconciles the actual child model without retaining other message metadata", () => {

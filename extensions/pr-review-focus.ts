@@ -169,7 +169,7 @@ export class ReviewFocusView implements Component {
 		if (pass.evictedBytes > 0) {
 			body.push(this.theme.fg("warning", `… ${pass.evictedBytes} earlier UTF-8 bytes evicted by viewer limits …`));
 		}
-		const output = pass.assistantText || (pass.status === "queued" ? "(queued)" : "(waiting for assistant output…) ");
+		const output = pass.assistantText || (pass.status === "queued" ? "(queued)" : "(waiting for assistant output…)");
 		for (const outputLine of wrapTextWithAnsi(output, Math.max(1, safeWidth - 2))) {
 			body.push(`  ${this.theme.fg("toolOutput", outputLine)}`);
 		}
