@@ -581,7 +581,7 @@ fi
 				expectedRepository: { hostname: "github.com", repository: "owner/repo" },
 				review,
 			});
-			expect(posted.status).toBe("posted");
+			expect(posted.status).toBe("posted_degraded");
 			expect(posted.message).toContain("1 inline finding kept in the summary");
 			const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
 			expect(payload.comments).toBeUndefined();

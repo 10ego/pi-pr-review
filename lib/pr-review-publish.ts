@@ -1322,6 +1322,10 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `final head check failed: ${String(error)}` };
 		}
 
+		const inlineWarning = inlineWarningCount > 0
+			? `; ${inlineWarningCount} inline finding${inlineWarningCount === 1 ? "" : "s"} kept in the summary because GitHub omitted diff patch metadata`
+			: "";
+		const degraded = !isOpen || headPlan.stale || inlineWarningCount > 0;
 		const post = await runGh(
 			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
 			cwd,
@@ -1334,10 +1338,6 @@ export async function publishPullReview(input: {
 			} catch {
 				/* accepted response without parseable metadata */
 			}
-			const degraded = !isOpen || headPlan.stale;
-			const inlineWarning = inlineWarningCount > 0
-				? `; ${inlineWarningCount} inline finding${inlineWarningCount === 1 ? "" : "s"} kept in the summary because GitHub omitted diff patch metadata`
-				: "";
 			return {
 				status: degraded ? "posted_degraded" : "posted",
 				message: headPlan.stale
@@ -1353,8 +1353,8 @@ export async function publishPullReview(input: {
 		try {
 			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
 				return {
-					status: !isOpen || headPlan.stale ? "posted_degraded" : "posted",
-					message: "GitHub review found during failure reconciliation",
+					status: degraded ? "posted_degraded" : "posted",
+					message: `GitHub review found during failure reconciliation${inlineWarning}`,
 					reconciled: true,
 				};
 			}

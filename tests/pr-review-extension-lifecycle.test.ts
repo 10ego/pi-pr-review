@@ -118,11 +118,12 @@ fi
 	return dir;
 }
 
-function installFakePublishingGh(currentHead = "a".repeat(40)): string {
+function installFakePublishingGh(currentHead = "a".repeat(40), patchless = false): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-publish-tool-"));
 	tempDirs.push(dir);
 	const gh = join(dir, "gh");
 	const payloadPath = join(dir, "payload.json");
+	const changedFiles = patchless ? '[[{"filename":"src/parser.ts","status":"modified"}]]' : "[[]]";
 	writeFileSync(
 		gh,
 		`#!/usr/bin/env bash
@@ -137,6 +138,8 @@ elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/com
 elif [[ "$args" == *"--method POST"* ]]; then
   cat > '${payloadPath}'
   echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
+elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
+  echo '${changedFiles}'
 elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
   printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' '${currentHead}'
 else
@@ -553,6 +556,41 @@ describe("completed review extension lifecycle", () => {
 		expect(payload.body).toContain("This review was generated for commit");
 		expect(payload.body).toContain("a".repeat(40));
 		expect(payload.body).toContain(currentHead);
+	});
+
+	test("surfaces patchless inline fallback in the posted notification", async () => {
+		const patchlessReview: ReviewLike = {
+			...review,
+			findings: [
+				{
+					title: "[P2] Patchless finding",
+					severity: "P2",
+					blocking: false,
+					body: "This finding must remain visible in the summary.",
+					confidence_score: 0.9,
+					code_location: {
+						absolute_file_path: "src/parser.ts",
+						line_range: { start: 2, end: 2 },
+						side: "RIGHT",
+						commentable: true,
+					},
+				},
+			],
+		};
+		const cache = new CompletedReviewCache();
+		const record = cache.remember(patchlessReview, invocation, repository);
+		const persisted = cache.persist(record, session);
+		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		const payloadPath = installFakePublishingGh("a".repeat(40), true);
+
+		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
+
+		expect(harness.notifications.some((message) => message.includes("1 inline finding kept in the summary"))).toBeTrue();
+		const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+		expect(payload.comments).toBeUndefined();
+		expect(payload.body).toContain("[P2] Patchless finding");
 	});
 
 	test("rejects extension-generated, queued, and steering publish requests", async () => {
