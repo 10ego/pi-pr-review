@@ -553,6 +553,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
+		expect(readme).toContain("automatically asks the same agent to correct its completed output once");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
