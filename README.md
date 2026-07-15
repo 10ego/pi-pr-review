@@ -184,7 +184,7 @@ Publishing is off by default.
 
 The extension—not the model—owns publishing. It creates one formal review with the event hardcoded to `COMMENT`; it never submits `APPROVE` or `REQUEST_CHANGES`. Before writing, it verifies the current PR head, validates inline anchors, and checks for a review of the same head by the current GitHub identity.
 
-Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body.
+Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body. When multiple findings target the same diff anchor, the first is attached inline and later findings remain in the review body so publication neither fails nor drops review content.
 
 After a review completes, you can directly ask the agent to “post the inline review” or “post it as an inline review.” The extension handles that request directly before an agent turn, selecting the latest cached review for an unnumbered request or the named PR in “publish the review for PR #123.” Only fresh interactive/RPC input can trigger this path; extension-generated, queued, or steering input cannot. The extension publishes only validated cached content, never replacement model-authored text, and never starts or reruns review agents. A direct request permits stale publication.
 
