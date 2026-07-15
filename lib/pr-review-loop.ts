@@ -76,11 +76,13 @@ export class ReviewLoopCoordinator {
 	private readonly invocationGate = new ReviewInvocationGate();
 	private readonly focusRegistry = new ReviewFocusRegistry();
 	private binding?: ReviewLoopBinding;
+	private suspendedTools?: string[];
 	private nextGeneration = 1;
 
 	constructor(private readonly pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">) {}
 
 	private setToolsEnabled(enabled: boolean): void {
+		if (this.suspendedTools !== undefined) return;
 		try {
 			const current = this.pi.getActiveTools();
 			const next = enabled
@@ -150,7 +152,9 @@ export class ReviewLoopCoordinator {
 
 	acquire(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): ReviewLoopLease | undefined {
 		const phase = this.invocationGate.phase();
-		if ((phase !== "reviewing" && phase !== "confirmed") || !this.binding) return undefined;
+		if (this.suspendedTools !== undefined || (phase !== "reviewing" && phase !== "confirmed") || !this.binding) {
+			return undefined;
+		}
 		if (!sameBinding(this.binding, ctx) || this.binding.controller.signal.aborted) {
 			this.clear();
 			return undefined;
@@ -165,6 +169,7 @@ export class ReviewLoopCoordinator {
 		lease: ReviewLoopLease,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): boolean {
+		if (this.suspendedTools !== undefined) return false;
 		const active = !!this.binding &&
 			this.binding.generation === lease.generation &&
 			!lease.signal.aborted &&
@@ -219,11 +224,48 @@ export class ReviewLoopCoordinator {
 		this.setToolsEnabled(false);
 	}
 
+	/** Hide every tool for a format-only repair turn while retaining invocation authority. */
+	suspendToolsForRepair(): boolean {
+		const phase = this.invocationGate.phase();
+		if (
+			this.suspendedTools !== undefined ||
+			!this.binding ||
+			(phase !== "reviewing" && phase !== "confirmed")
+		) {
+			return false;
+		}
+		let baseTools: string[] = [];
+		try {
+			baseTools = this.pi.getActiveTools().filter((name) => !REVIEW_LOOP_TOOL_SET.has(name));
+			this.suspendedTools = baseTools;
+			this.pi.setActiveTools([]);
+			return true;
+		} catch {
+			this.suspendedTools = undefined;
+			try {
+				this.pi.setActiveTools(baseTools);
+			} catch {
+				// Failure to restore remains fail-closed with no repair turn started.
+			}
+			return false;
+		}
+	}
+
 	private revokeBinding(): void {
 		const generation = this.binding?.generation;
 		if (generation !== undefined) this.focusRegistry.close(generation);
 		this.binding?.controller.abort();
 		this.binding = undefined;
+		const suspendedTools = this.suspendedTools;
+		this.suspendedTools = undefined;
+		if (suspendedTools !== undefined) {
+			try {
+				this.pi.setActiveTools(suspendedTools);
+			} catch {
+				// Keep tools fail-closed if the extension runtime is shutting down.
+			}
+			return;
+		}
 		this.setToolsEnabled(false);
 	}
 }

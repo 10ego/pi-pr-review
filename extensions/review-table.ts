@@ -719,6 +719,14 @@ export default function registerReviewTable(
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
 		if (completion === "continue_tools") {
+			if (outputRepairAttempted && loopCoordinator.peek()) {
+				ctx.ui.notify("PR review was not posted: automatic output correction attempted to call tools", "error");
+				ctx.abort();
+				loopCoordinator.clear();
+				outputRepairAttempted = false;
+				persistTelemetry("cleared");
+				return;
+			}
 			const toolCalls = Array.isArray(event.message.content)
 				? event.message.content.filter((part) => part.type === "toolCall")
 				: [];
@@ -750,24 +758,26 @@ export default function registerReviewTable(
 
 		let publishable = active ? parsePublishableReview(text) : undefined;
 		if (active && !publishable?.review && !outputRepairAttempted) {
-			outputRepairAttempted = true;
-			loopCoordinator.hideTools();
 			const error = publishable?.error ?? "final review JSON is invalid";
-			ctx.ui.notify(`PR review output is invalid (${error}); automatically correcting it once`, "warning");
-			pi.sendMessage(
-				{
-					customType: "pr-review-output-repair",
-					content: [
-						`The completed PR review could not be accepted because ${error}.`,
-						"This is the only automatic correction attempt. Do not call tools, redo the review, or change its substance.",
-						"Re-emit the same completed review as exactly one JSON object satisfying the required OUTPUT FORMAT. Emit no Markdown fences, prose, headings, or trailing text.",
-					].join(" "),
-					display: false,
-					details: { error, attempt: 1 },
-				},
-				{ triggerTurn: true, deliverAs: "followUp" },
-			);
-			return;
+			if (loopCoordinator.suspendToolsForRepair()) {
+				outputRepairAttempted = true;
+				ctx.ui.notify(`PR review output is invalid (${error}); automatically correcting it once`, "warning");
+				pi.sendMessage(
+					{
+						customType: "pr-review-output-repair",
+						content: [
+							`The completed PR review could not be accepted because ${error}.`,
+							"This is the only automatic correction attempt. Do not call tools, redo the review, or change its substance.",
+							"Re-emit the same completed review as exactly one JSON object satisfying the required OUTPUT FORMAT. Emit no Markdown fences, prose, headings, or trailing text.",
+						].join(" "),
+						display: false,
+						details: { error, attempt: 1 },
+					},
+					{ triggerTurn: true, deliverAs: "followUp" },
+				);
+				return;
+			}
+			ctx.ui.notify("Automatic PR review output correction was skipped because tools could not be disabled", "warning");
 		}
 
 		// A valid response, or a failed single correction, consumes authority.

@@ -264,7 +264,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.sentMessages[0]?.message.content).toContain("exactly one JSON object");
 		expect(harness.sentMessages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
 		expect(harness.notifications.some((message) => message.includes("automatically correcting"))).toBeTrue();
-		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+		expect(harness.activeTools()).toEqual([]);
 
 		harness.appendMessage(wrapped, "wrapped-review");
 		await harness.emit("turn_end", { message: wrapped, toolResults: [] });
@@ -283,6 +283,32 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
 		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
+	test("aborts and revokes repair authority when the correction attempts a tool call", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const invalid = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "not json" }],
+		};
+		await harness.emit("message_end", { message: invalid });
+		expect(harness.activeTools()).toEqual([]);
+
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [{ type: "toolCall", id: "repair-bash", name: "bash", arguments: { command: "echo unsafe" } }],
+			},
+		});
+
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.notifications.some((message) => message.includes("correction attempted to call tools"))).toBeTrue();
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
 	test("stops after one automatic correction attempt", async () => {
@@ -295,6 +321,7 @@ describe("completed review extension lifecycle", () => {
 		};
 		await harness.emit("message_end", { message: invalid });
 		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.activeTools()).toEqual([]);
 		await harness.emit("turn_end", { message: invalid, toolResults: [] });
 
 		await harness.emit("message_end", { message: invalid });

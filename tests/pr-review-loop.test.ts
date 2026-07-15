@@ -55,6 +55,29 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.acquire(h.ctx as any)).toBeDefined();
 	});
 
+	test("suspends every tool for output repair and restores only base tools", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+
+		expect(h.coordinator.suspendToolsForRepair()).toBeTrue();
+		expect(h.activeTools()).toEqual([]);
+		expect(h.coordinator.acquire(h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.isLeaseActive(lease, h.ctx as any)).toBeFalse();
+		expect(lease.signal.aborted).toBeFalse();
+		expect(h.coordinator.suspendToolsForRepair()).toBeFalse();
+
+		expect(h.coordinator.consume()?.prNumber).toBe(7);
+		expect(lease.signal.aborted).toBeTrue();
+		expect(h.activeTools()).toEqual(["read", "bash"]);
+
+		h.coordinator.begin(parsePublishMode("/pr-review 8"), autoOff, "interactive", h.ctx as any);
+		expect(h.coordinator.suspendToolsForRepair()).toBeTrue();
+		h.coordinator.clear();
+		expect(h.activeTools()).toEqual(["read", "bash"]);
+		expect(h.coordinator.suspendToolsForRepair()).toBeFalse();
+	});
+
 	test("never authorizes extension-originated commands", () => {
 		const h = harness();
 		h.coordinator.hideTools();
