@@ -837,6 +837,7 @@ function isInlineSeverity(finding: ReviewFindingLike): boolean {
 export interface CommentValidationResult {
 	comments: PublishComment[];
 	errors: string[];
+	warnings?: string[];
 }
 
 export function validateInlineComments(
@@ -844,6 +845,7 @@ export function validateInlineComments(
 	changedFiles: ChangedFileLike[],
 ): CommentValidationResult {
 	const errors: string[] = [];
+	const warnings: string[] = [];
 	const comments: PublishComment[] = [];
 	const files = new Map<string, ChangedFileLike>();
 	for (const file of changedFiles) {
@@ -876,7 +878,9 @@ export function validateInlineComments(
 			continue;
 		}
 		if (!file.patch) {
-			errors.push(`${label}: diff patch is unavailable for anchor validation`);
+			// GitHub legitimately omits patch metadata for some large, binary, or transiently unavailable diffs.
+			// Keep the complete finding in the review summary rather than sending an unvalidated inline anchor.
+			warnings.push(`${label}: diff patch is unavailable; kept in the review summary`);
 			continue;
 		}
 		const sideKey = side === "LEFT" ? "left" : "right";
@@ -913,7 +917,7 @@ export function validateInlineComments(
 	if (comments.length > MAX_INLINE_COMMENTS) {
 		errors.push(`too many inline comments (${comments.length}; max ${MAX_INLINE_COMMENTS})`);
 	}
-	return { comments, errors };
+	return { comments, errors, warnings };
 }
 
 export function collectFoldedComments(review: ReviewLike): CommentValidationResult {
@@ -954,7 +958,7 @@ export function collectFoldedComments(review: ReviewLike): CommentValidationResu
 			...(Number(start) < Number(end) ? { start_line: Number(start), start_side: side } : {}),
 		});
 	}
-	return { comments, errors };
+	return { comments, errors, warnings: [] };
 }
 
 export function foldInlineComments(summary: string, comments: PublishComment[]): string {
@@ -1244,6 +1248,7 @@ export async function publishPullReview(input: {
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
 		let comments: PublishComment[] = [];
+		let inlineWarningCount = 0;
 		if (!isOpen) {
 			const candidates = collectFoldedComments(review);
 			if (candidates.errors.length > 0) {
@@ -1270,6 +1275,7 @@ export async function publishPullReview(input: {
 					return { status: "failed", message: `inline validation failed: ${validated.errors.join("; ")}` };
 				}
 				comments = validated.comments;
+				inlineWarningCount = validated.warnings?.length ?? 0;
 			}
 		}
 
@@ -1316,6 +1322,10 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `final head check failed: ${String(error)}` };
 		}
 
+		const inlineWarning = inlineWarningCount > 0
+			? `; ${inlineWarningCount} inline finding${inlineWarningCount === 1 ? "" : "s"} kept in the summary because GitHub omitted diff patch metadata`
+			: "";
+		const degraded = !isOpen || headPlan.stale || inlineWarningCount > 0;
 		const post = await runGh(
 			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
 			cwd,
@@ -1328,13 +1338,12 @@ export async function publishPullReview(input: {
 			} catch {
 				/* accepted response without parseable metadata */
 			}
-			const degraded = !isOpen || headPlan.stale;
 			return {
 				status: degraded ? "posted_degraded" : "posted",
 				message: headPlan.stale
 					? `body-only stale COMMENT review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
 					: isOpen
-						? "GitHub COMMENT review posted"
+						? `GitHub COMMENT review posted${inlineWarning}`
 						: "body-only COMMENT review posted for non-open PR",
 				reviewId: response.id,
 				url: response.html_url,
@@ -1344,8 +1353,8 @@ export async function publishPullReview(input: {
 		try {
 			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
 				return {
-					status: !isOpen || headPlan.stale ? "posted_degraded" : "posted",
-					message: "GitHub review found during failure reconciliation",
+					status: degraded ? "posted_degraded" : "posted",
+					message: `GitHub review found during failure reconciliation${inlineWarning}`,
 					reconciled: true,
 				};
 			}

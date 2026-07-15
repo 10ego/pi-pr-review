@@ -536,6 +536,68 @@ fi
 		}
 	});
 
+	test("publishes a current review with patchless findings in the summary", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-gh-"));
+		const gh = join(dir, "gh");
+		const payloadPath = join(dir, "payload.json");
+		writeFileSync(
+			gh,
+			`#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+elif [[ "$args" == *" user --jq .login"* ]]; then
+  echo 'reviewer'
+elif [[ "$args" == *"--method POST"* ]]; then
+  cat > "$GH_FAKE_PAYLOAD"
+  echo '{"id":43,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-43"}'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  echo '[]'
+elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
+  echo '[[{"filename":"src/parser.ts","status":"modified"}]]'
+elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
+  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' "$GH_FAKE_CURRENT"
+else
+  echo "unexpected gh args: $args" >&2
+  exit 1
+fi
+`,
+		);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		const previousPayload = process.env.GH_FAKE_PAYLOAD;
+		const previousCurrent = process.env.GH_FAKE_CURRENT;
+		const current = "a".repeat(40);
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		process.env.GH_FAKE_PAYLOAD = payloadPath;
+		process.env.GH_FAKE_CURRENT = current;
+		try {
+			const posted = await publishPullReview({
+				cwd: dir,
+				prNumber: 7,
+				headSha: current,
+				allowNonOpen: false,
+				expectedRepository: { hostname: "github.com", repository: "owner/repo" },
+				review,
+			});
+			expect(posted.status).toBe("posted_degraded");
+			expect(posted.message).toContain("1 inline finding kept in the summary");
+			const payload = JSON.parse(readFileSync(payloadPath, "utf8"));
+			expect(payload.comments).toBeUndefined();
+			expect(payload.body).toContain("[P2] Handle empty input");
+			expect(payload.body).toContain("Empty input currently returns the wrong value.");
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+			if (previousPayload === undefined) delete process.env.GH_FAKE_PAYLOAD;
+			else process.env.GH_FAKE_PAYLOAD = previousPayload;
+			if (previousCurrent === undefined) delete process.env.GH_FAKE_CURRENT;
+			else process.env.GH_FAKE_CURRENT = previousCurrent;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("preserves inline publication when the reviewed head is still current", () => {
 		const head = "a".repeat(40);
 		expect(planHeadPublication(head, head.toUpperCase(), false).plan).toMatchObject({
@@ -683,6 +745,18 @@ describe("atomic COMMENT review payload", () => {
 		const result = validateInlineComments(invalid, changedFiles);
 		expect(result.comments).toEqual([]);
 		expect(result.errors[0]).toContain("not inside one diff hunk");
+	});
+
+	test("keeps findings in the summary when GitHub omits patch metadata", () => {
+		const result = validateInlineComments(review, [{ filename: "src/parser.ts" }]);
+		expect(result.errors).toEqual([]);
+		expect(result.comments).toEqual([]);
+		expect(result.warnings).toEqual([
+			"finding 1: diff patch is unavailable; kept in the review summary",
+		]);
+		const summary = buildReviewSummary(review, result.comments);
+		expect(summary).toContain("2 total (0 inline, 2 summary-only)");
+		expect(summary).toContain("[P2] Handle empty input");
 	});
 
 	test("folds inline findings exactly once into a body-only non-open review", () => {
