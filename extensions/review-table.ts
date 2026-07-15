@@ -457,6 +457,7 @@ export default function registerReviewTable(
 		  }
 		| undefined;
 	let outputRepairAttempted = false;
+	let outputRepairCancelled = false;
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -556,6 +557,7 @@ export default function registerReviewTable(
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
 		outputRepairAttempted = false;
+		outputRepairCancelled = false;
 		telemetryTracker.clear();
 	};
 
@@ -575,12 +577,19 @@ export default function registerReviewTable(
 
 	pi.on("agent_settled", () => {
 		selfReviewCoordinator.clear();
+		if (!outputRepairCancelled) return;
+		loopCoordinator.clear();
+		outputRepairAttempted = false;
+		outputRepairCancelled = false;
+		persistTelemetry("cleared");
 	});
 
 	pi.on("session_tree", (event, ctx) => {
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
+		outputRepairAttempted = false;
+		outputRepairCancelled = false;
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 		const session = sessionIdentity(ctx);
@@ -597,6 +606,12 @@ export default function registerReviewTable(
 		// Any new input revokes the prior top-level task generation before it can
 		// authorize a replay or a queued/steering continuation.
 		selfReviewCoordinator.clear();
+		if (outputRepairAttempted) {
+			outputRepairCancelled = true;
+			ctx.abort();
+			ctx.ui.notify("PR review output correction was cancelled; overlapping input was not queued, so retry it when the agent settles", "warning");
+			return { action: "handled" as const };
+		}
 		outputRepairAttempted = false;
 		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
@@ -718,12 +733,17 @@ export default function registerReviewTable(
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
+		if (outputRepairCancelled) {
+			if (completion === "continue_tools") ctx.abort();
+			return;
+		}
 		if (completion === "continue_tools") {
 			if (outputRepairAttempted && loopCoordinator.peek()) {
 				ctx.ui.notify("PR review was not posted: automatic output correction attempted to call tools", "error");
 				ctx.abort();
 				loopCoordinator.clear();
 				outputRepairAttempted = false;
+				outputRepairCancelled = false;
 				persistTelemetry("cleared");
 				return;
 			}
@@ -741,6 +761,7 @@ export default function registerReviewTable(
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
 			outputRepairAttempted = false;
+			outputRepairCancelled = false;
 			persistTelemetry("cleared");
 			return;
 		}
@@ -761,6 +782,7 @@ export default function registerReviewTable(
 			const error = publishable?.error ?? "final review JSON is invalid";
 			if (loopCoordinator.suspendToolsForRepair()) {
 				outputRepairAttempted = true;
+				outputRepairCancelled = false;
 				ctx.ui.notify(`PR review output is invalid (${error}); automatically correcting it once`, "warning");
 				pi.sendMessage(
 					{
@@ -785,6 +807,7 @@ export default function registerReviewTable(
 		const invocation = active ? loopCoordinator.consume() : undefined;
 		if (invocation) {
 			outputRepairAttempted = false;
+			outputRepairCancelled = false;
 			persistTelemetry("terminal_response");
 		}
 		const review = text.trim() ? parseReview(text) : null;

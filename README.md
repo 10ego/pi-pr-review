@@ -184,7 +184,7 @@ Publishing is off by default.
 
 The extension—not the model—owns publishing. It creates one formal review with the event hardcoded to `COMMENT`; it never submits `APPROVE` or `REQUEST_CHANGES`. Before writing, it verifies the current PR head, validates inline anchors, and checks for a review of the same head by the current GitHub identity.
 
-If the agent's final review is not valid exact-contract JSON, the extension logs the validation reason and automatically asks the same agent to correct its completed output once, with all tools disabled and without changing the captured posting authority. A valid correction is cached and publication is attempted under the original flags/config. If that single correction is also invalid or attempts to call a tool, publication stops and reports the error instead of looping.
+If the agent's final review is not valid exact-contract JSON, the extension logs the validation reason and automatically asks the same agent to correct its completed output once, with all tools disabled and without changing the captured posting authority. A valid correction is cached and publication is attempted under the original flags/config. If that single correction is also invalid or attempts to call a tool, publication stops and reports the error instead of looping. Overlapping input cancels the correction, remains unqueued, and must be retried after the agent settles.
 
 Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body. When multiple findings target the same diff anchor, the first is attached inline and later findings remain in the review body so publication neither fails nor drops review content.
 

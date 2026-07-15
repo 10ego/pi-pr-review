@@ -311,6 +311,42 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
+	test("keeps tools suspended until a cancelled repair definitively settles", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const invalid = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "not json" }],
+		};
+		await harness.emit("message_end", { message: invalid });
+		expect(harness.activeTools()).toEqual([]);
+
+		const overlap = await harness.emit("input", {
+			text: "do something unrelated",
+			source: "interactive",
+			streamingBehavior: "steer",
+		});
+		expect(overlap).toContainEqual({ action: "handled" });
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.activeTools()).toEqual([]);
+		expect(harness.notifications.some((message) => message.includes("was not queued"))).toBeTrue();
+
+		const staleCorrection = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: JSON.stringify(review) }],
+		};
+		await harness.emit("message_end", { message: staleCorrection });
+		harness.appendMessage(staleCorrection, "stale-correction");
+		await harness.emit("turn_end", { message: staleCorrection, toolResults: [] });
+		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeFalse();
+		expect(harness.activeTools()).toEqual([]);
+
+		await harness.emit("agent_settled", {});
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
 	test("stops after one automatic correction attempt", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
