@@ -69,6 +69,7 @@ interface Harness {
 	tools: Map<string, any>;
 	branch: any[];
 	notifications: string[];
+	sentMessages: Array<{ message: any; options: any }>;
 	activeTools(): string[];
 	abortCount(): number;
 	selfReviewCoordinator: SelfReviewPermitCoordinator;
@@ -156,6 +157,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 	const tools = new Map<string, any>();
 	const branch = [...initialBranch];
 	const notifications: string[] = [];
+	const sentMessages: Array<{ message: any; options: any }> = [];
 	let activeTools = ["read", "bash", ...REVIEW_LOOP_TOOL_NAMES];
 	let aborts = 0;
 	let promptPath = ownPromptPath;
@@ -191,6 +193,9 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		appendEntry: (customType: string, data: unknown) => {
 			branch.push({ type: "custom", id: `custom-${nextId++}`, customType, data });
 		},
+		sendMessage: (message: any, options: any) => {
+			sentMessages.push({ message, options });
+		},
 		getActiveTools: () => [...activeTools],
 		setActiveTools: (next: string[]) => {
 			activeTools = [...next];
@@ -210,6 +215,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		tools,
 		branch,
 		notifications,
+		sentMessages,
 		activeTools: () => [...activeTools],
 		abortCount: () => aborts,
 		selfReviewCoordinator,
@@ -241,6 +247,69 @@ function persistedInlineReview(identity = session, allowStalePublish = true): an
 }
 
 describe("completed review extension lifecycle", () => {
+	test("automatically corrects invalid final JSON once and attempts publication", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const wrapped = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: `\`\`\`json\n${JSON.stringify(review)}\n\`\`\`` }],
+		};
+		await harness.emit("message_end", { message: wrapped });
+		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.sentMessages[0]?.message).toMatchObject({
+			customType: "pr-review-output-repair",
+			display: false,
+		});
+		expect(harness.sentMessages[0]?.message.content).toContain("exactly one JSON object");
+		expect(harness.sentMessages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+		expect(harness.notifications.some((message) => message.includes("automatically correcting"))).toBeTrue();
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+
+		harness.appendMessage(wrapped, "wrapped-review");
+		await harness.emit("turn_end", { message: wrapped, toolResults: [] });
+		expect(harness.notifications.some((message) => message.includes("was not posted"))).toBeFalse();
+
+		const payloadPath = installFakePublishingGh();
+		const corrected = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: JSON.stringify(review) }],
+		};
+		await harness.emit("message_end", { message: corrected });
+		harness.appendMessage(corrected, "corrected-review");
+		await harness.emit("turn_end", { message: corrected, toolResults: [] });
+
+		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
+	});
+
+	test("stops after one automatic correction attempt", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const invalid = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "not json" }],
+		};
+		await harness.emit("message_end", { message: invalid });
+		expect(harness.sentMessages).toHaveLength(1);
+		await harness.emit("turn_end", { message: invalid, toolResults: [] });
+
+		await harness.emit("message_end", { message: invalid });
+		harness.appendMessage(invalid, "invalid-retry");
+		await harness.emit("turn_end", { message: invalid, toolResults: [] });
+
+		expect(harness.sentMessages).toHaveLength(1);
+		expect(
+			harness.notifications.some((message) =>
+				message.includes("PR review was not posted: final response is not exactly one JSON object"),
+			),
+		).toBeTrue();
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
 	test("persists a reference before publishing after Pi stores exact assistant JSON", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });

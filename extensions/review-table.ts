@@ -456,6 +456,7 @@ export default function registerReviewTable(
 				session?: CompletedReviewSessionIdentity;
 		  }
 		| undefined;
+	let outputRepairAttempted = false;
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -554,6 +555,7 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
+		outputRepairAttempted = false;
 		telemetryTracker.clear();
 	};
 
@@ -595,6 +597,7 @@ export default function registerReviewTable(
 		// Any new input revokes the prior top-level task generation before it can
 		// authorize a replay or a queued/steering continuation.
 		selfReviewCoordinator.clear();
+		outputRepairAttempted = false;
 		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
@@ -729,6 +732,7 @@ export default function registerReviewTable(
 		}
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
+			outputRepairAttempted = false;
 			persistTelemetry("cleared");
 			return;
 		}
@@ -744,15 +748,38 @@ export default function registerReviewTable(
 			return;
 		}
 
-		// Every other terminal response consumes authority, whether valid, empty, or unrelated.
+		let publishable = active ? parsePublishableReview(text) : undefined;
+		if (active && !publishable?.review && !outputRepairAttempted) {
+			outputRepairAttempted = true;
+			loopCoordinator.hideTools();
+			const error = publishable?.error ?? "final review JSON is invalid";
+			ctx.ui.notify(`PR review output is invalid (${error}); automatically correcting it once`, "warning");
+			pi.sendMessage(
+				{
+					customType: "pr-review-output-repair",
+					content: [
+						`The completed PR review could not be accepted because ${error}.`,
+						"This is the only automatic correction attempt. Do not call tools, redo the review, or change its substance.",
+						"Re-emit the same completed review as exactly one JSON object satisfying the required OUTPUT FORMAT. Emit no Markdown fences, prose, headings, or trailing text.",
+					].join(" "),
+					display: false,
+					details: { error, attempt: 1 },
+				},
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+			return;
+		}
+
+		// A valid response, or a failed single correction, consumes authority.
 		// Persist timing before publication so network/write latency is never coupled to review wall time.
 		const invocation = active ? loopCoordinator.consume() : undefined;
-		if (invocation) persistTelemetry("terminal_response");
-		if (!text.trim()) return;
-		const review = parseReview(text);
-		if (!review) return; // not a /pr-review JSON payload — leave untouched
 		if (invocation) {
-			const publishable = parsePublishableReview(text);
+			outputRepairAttempted = false;
+			persistTelemetry("terminal_response");
+		}
+		const review = text.trim() ? parseReview(text) : null;
+		if (invocation) {
+			publishable ??= parsePublishableReview(text);
 			let repository: RepositoryBinding | undefined;
 			let record: CompletedReviewRecord | undefined;
 			let session: CompletedReviewSessionIdentity | undefined;
@@ -775,6 +802,7 @@ export default function registerReviewTable(
 			}
 			pendingCompletion = { text, invocation, repository, record, session };
 		}
+		if (!review) return; // not a renderable /pr-review JSON payload — leave untouched
 
 		// Keep raw JSON for automation; only prettify for interactive terminals.
 		if (ctx.mode !== "tui") return;
