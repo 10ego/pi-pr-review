@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.4](https://github.com/10ego/pi-pr-review/compare/v1.10.3...v1.10.4) (2026-07-15)
+
+
+### Bug Fixes
+
+* **publish:** summarize findings without diff patches ([#29](https://github.com/10ego/pi-pr-review/issues/29)) ([bdee1ff](https://github.com/10ego/pi-pr-review/commit/bdee1ff024863019a2f357b04cffe944006a5726))
+
 ## [1.10.3](https://github.com/10ego/pi-pr-review/compare/v1.10.2...v1.10.3) (2026-07-15)
 
 
