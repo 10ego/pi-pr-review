@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.2](https://github.com/10ego/pi-pr-review/compare/v1.10.1...v1.10.2) (2026-07-15)
+
+
+### Bug Fixes
+
+* **publish:** preserve findings with duplicate anchors ([#25](https://github.com/10ego/pi-pr-review/issues/25)) ([1df420f](https://github.com/10ego/pi-pr-review/commit/1df420f30b1dd1a74017c0442b2a880949d4b864))
+
 ## [1.10.1](https://github.com/10ego/pi-pr-review/compare/v1.10.0...v1.10.1) (2026-07-14)
 
 
