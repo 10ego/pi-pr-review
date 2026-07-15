@@ -734,11 +734,20 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 		lines.push("### Strengths", "", ...review.strengths.map((strength) => `- ${String(strength).replace(/^\s*-\s*/, "").trim()}`), "");
 	}
 	const findings = Array.isArray(review.findings) ? review.findings : [];
-	const inlineAnchors = new Set(inlineComments.map(publishCommentAnchor));
+	const inlineAnchors = new Map<string, number>();
+	for (const comment of inlineComments) {
+		const anchor = publishCommentAnchor(comment);
+		inlineAnchors.set(anchor, (inlineAnchors.get(anchor) ?? 0) + 1);
+	}
 	const summaryFindings = findings.filter((finding) => {
 		if (!finding.code_location?.commentable || !isInlineSeverity(finding)) return true;
 		const anchor = findingAnchor(finding);
-		return !anchor || !inlineAnchors.has(anchor);
+		if (!anchor) return true;
+		const remaining = inlineAnchors.get(anchor) ?? 0;
+		if (remaining === 0) return true;
+		if (remaining === 1) inlineAnchors.delete(anchor);
+		else inlineAnchors.set(anchor, remaining - 1);
+		return false;
 	});
 	lines.push(
 		`### Findings — ${findings.length} total (${inlineComments.length} inline, ${summaryFindings.length} summary-only)`,
@@ -879,11 +888,6 @@ export function validateInlineComments(
 			continue;
 		}
 		const anchor = `${path}:${side}:${start}:${end}`;
-		if (anchors.has(anchor)) {
-			errors.push(`${label}: duplicate inline anchor`);
-			continue;
-		}
-		anchors.add(anchor);
 		const body = [`**${String(finding.title ?? "Review finding").trim()}**`, finding.body?.trim()]
 			.filter(Boolean)
 			.join("\n\n");
@@ -895,6 +899,9 @@ export function validateInlineComments(
 			errors.push(`${label}: comment body contains a reserved pi-pr-review marker`);
 			continue;
 		}
+		// GitHub receives one comment per anchor; later findings remain in the top-level summary.
+		if (anchors.has(anchor)) continue;
+		anchors.add(anchor);
 		comments.push({
 			path,
 			body,

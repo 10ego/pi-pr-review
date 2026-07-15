@@ -648,6 +648,34 @@ describe("atomic COMMENT review payload", () => {
 		expect(summary).toContain("[P3] Summary-only collision");
 	});
 
+	test("summarizes additional inline findings that share an anchor", () => {
+		const colliding: ReviewLike = JSON.parse(JSON.stringify(review));
+		colliding.findings!.push({
+			title: "[P2] Preserve the second issue",
+			severity: "P2",
+			blocking: false,
+			body: "This distinct issue targets the same diff range.",
+			confidence_score: 0.85,
+			code_location: {
+				absolute_file_path: "src/parser.ts",
+				line_range: { start: 2, end: 3 },
+				side: "RIGHT",
+				commentable: true,
+			},
+		});
+
+		const validated = validateInlineComments(colliding, changedFiles);
+		expect(validated.errors).toEqual([]);
+		expect(validated.comments).toHaveLength(1);
+		expect(validated.comments[0]?.body).toContain("[P2] Handle empty input");
+
+		const summary = buildReviewSummary(colliding, validated.comments);
+		expect(summary).toContain("3 total (1 inline, 2 summary-only)");
+		expect(summary).not.toContain("#### [P2] Handle empty input");
+		expect(summary).toContain("#### [P2] Preserve the second issue");
+		expect(summary).toContain("This distinct issue targets the same diff range.");
+	});
+
 	test("rejects anchors outside changed diff metadata", () => {
 		const invalid: ReviewLike = JSON.parse(JSON.stringify(review));
 		invalid.findings![0]!.code_location!.line_range = { start: 20, end: 20 };
