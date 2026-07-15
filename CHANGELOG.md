@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.3](https://github.com/10ego/pi-pr-review/compare/v1.10.2...v1.10.3) (2026-07-15)
+
+
+### Bug Fixes
+
+* **publish:** retry invalid review output once ([#27](https://github.com/10ego/pi-pr-review/issues/27)) ([9689505](https://github.com/10ego/pi-pr-review/commit/968950579c4eeec0ac264dccf3bda9b1833df160))
+
 ## [1.10.2](https://github.com/10ego/pi-pr-review/compare/v1.10.1...v1.10.2) (2026-07-15)
 
 
