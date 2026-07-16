@@ -1104,6 +1104,23 @@ describe("lossless publication diagnostics", () => {
 		expect(diagnostic.payload?.comments as unknown[]).toHaveLength(1);
 	});
 
+	test("keeps every rejected or ambiguous POST outcome single-shot", async () => {
+		for (const scenario of [
+			{ failure: "gh: HTTP 403: Forbidden", status: "failed" },
+			{ failure: "gh: HTTP 422: Validation Failed", status: "failed" },
+			{ failure: "gh: HTTP 500: Internal Server Error", status: "indeterminate" },
+			{ failure: "gh: connection reset by peer", status: "indeterminate" },
+		] as const) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, {
+				postFailure: scenario.failure,
+			});
+			expect(diagnostic.result.status).toBe(scenario.status);
+			expect(diagnostic.result.message).toContain(scenario.failure);
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+		}
+	});
+
 	test("fails an unsafe location before any write", async () => {
 		const unsafe: ReviewLike = JSON.parse(JSON.stringify(review));
 		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";

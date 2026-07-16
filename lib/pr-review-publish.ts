@@ -1652,8 +1652,10 @@ export async function publishPullReview(input: {
 		if (!planned.plan) {
 			return { status: "failed", message: `publication planning failed: ${planned.errors.join("; ")}` };
 		}
-		// The body-only payload is prevalidated for a future contract-gated fallback,
-		// but this publisher sends only the primary payload.
+		// The body-only payload proves lossless degradation remains representable, but
+		// it is deliberately dormant. GitHub's documented 422 response does not prove
+		// that no review was created, and this process-local lock is not a global
+		// idempotency claim, so every publication invocation sends at most one POST.
 		const publicationPlan = planned.plan;
 		const payload = publicationPlan.primary;
 
@@ -1681,7 +1683,9 @@ export async function publishPullReview(input: {
 		}
 
 		const inlineWarning = publicationPlan.diagnostics.length > 0
-			? `; ${publicationPlan.diagnostics.length} inline finding${publicationPlan.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${publicationPlan.diagnostics.join("; ")}`
+			? inlineDegradationDiagnostic
+				? `; ${inlineDegradationDiagnostic}`
+				: `; ${publicationPlan.diagnostics.length} inline finding${publicationPlan.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${publicationPlan.diagnostics.join("; ")}`
 			: "";
 		const degraded = !isOpen || headPlan.stale || publicationPlan.diagnostics.length > 0;
 		const post = await runGh(
