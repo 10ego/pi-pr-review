@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
+	MAX_INLINE_COMMENTS,
 	parseDirectPublishRequest,
 	parsePublishableReview,
 	parsePublishExistingArgs,
@@ -85,6 +86,75 @@ const changedFiles = [
 
 const autoOff = resolveAutoPostSetting({ autoPostReviews: false });
 const sessionA = { id: "session-a", startedAt: "2026-07-13T00:00:00.000Z" };
+
+async function diagnoseOpenPullPublication(
+	candidateReview: ReviewLike,
+	files: Array<{ filename: string; patch?: string }>,
+): Promise<{
+	result: Awaited<ReturnType<typeof publishPullReview>>;
+	postAttempted: boolean;
+}> {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-diagnostic-"));
+	const gh = join(dir, "gh");
+	const filesPath = join(dir, "files.json");
+	const postSentinel = join(dir, "post-attempted");
+	writeFileSync(filesPath, JSON.stringify([files]));
+	writeFileSync(
+		gh,
+		`#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+elif [[ "$args" == *" user --jq .login"* ]]; then
+  echo 'reviewer'
+elif [[ "$args" == *"--method POST"* ]]; then
+  : > "$GH_FAKE_POST_SENTINEL"
+  cat > /dev/null
+  echo '{"id":44,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-44"}'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  echo '[]'
+elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
+  cat "$GH_FAKE_FILES"
+elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
+  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' "$GH_FAKE_CURRENT"
+else
+  echo "unexpected gh args: $args" >&2
+  exit 1
+fi
+`,
+	);
+	chmodSync(gh, 0o755);
+	const previousPath = process.env.PATH;
+	const previousFiles = process.env.GH_FAKE_FILES;
+	const previousPostSentinel = process.env.GH_FAKE_POST_SENTINEL;
+	const previousCurrent = process.env.GH_FAKE_CURRENT;
+	process.env.PATH = `${dir}:${previousPath ?? ""}`;
+	process.env.GH_FAKE_FILES = filesPath;
+	process.env.GH_FAKE_POST_SENTINEL = postSentinel;
+	process.env.GH_FAKE_CURRENT = "a".repeat(40);
+	try {
+		const result = await publishPullReview({
+			cwd: dir,
+			prNumber: 7,
+			headSha: "a".repeat(40),
+			allowNonOpen: false,
+			expectedRepository: { hostname: "github.com", repository: "owner/repo" },
+			review: candidateReview,
+		});
+		return { result, postAttempted: existsSync(postSentinel) };
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousFiles === undefined) delete process.env.GH_FAKE_FILES;
+		else process.env.GH_FAKE_FILES = previousFiles;
+		if (previousPostSentinel === undefined) delete process.env.GH_FAKE_POST_SENTINEL;
+		else process.env.GH_FAKE_POST_SENTINEL = previousPostSentinel;
+		if (previousCurrent === undefined) delete process.env.GH_FAKE_CURRENT;
+		else process.env.GH_FAKE_CURRENT = previousCurrent;
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
 describe("automatic posting configuration", () => {
 	test("defaults to disabled", () => {
@@ -665,6 +735,85 @@ describe("strict publication parsing", () => {
 	test("suppresses publication for validated skipped outcomes", () => {
 		expect(shouldPublishReview(review)).toBeTrue();
 		expect(shouldPublishReview({ ...review, disposition: "skipped" })).toBeFalse();
+	});
+});
+
+describe("lossless publication diagnostics", () => {
+	test("documents the current fatal result for a safe changed-file anchor outside its diff hunk", async () => {
+		const outsideHunk: ReviewLike = JSON.parse(JSON.stringify(review));
+		outsideHunk.findings = [outsideHunk.findings![0]!];
+		outsideHunk.findings[0]!.code_location!.line_range = { start: 20, end: 20 };
+		const files = [{ filename: "src/parser.ts", patch: changedFiles[0]!.patch }];
+
+		expect(
+			decideReviewPublication({
+				mode: "auto",
+				prNumber: 7,
+				allowNonOpen: false,
+				allowStalePublish: true,
+				autoPost: resolveAutoPostSetting({ autoPostReviews: true }),
+			}),
+		).toEqual({ publish: true, source: "user config" });
+		expect(parsePublishableReview(JSON.stringify(outsideHunk)).review).toBeDefined();
+		expect(validateInlineComments(outsideHunk, files)).toMatchObject({
+			comments: [],
+			errors: ["finding 1: line range is not inside one diff hunk on RIGHT"],
+		});
+
+		const diagnostic = await diagnoseOpenPullPublication(outsideHunk, files);
+		expect(diagnostic.result).toEqual({
+			status: "failed",
+			message: "inline validation failed: finding 1: line range is not inside one diff hunk on RIGHT",
+		});
+		expect(diagnostic.postAttempted).toBeFalse();
+	});
+
+	test("documents the current fatal result when valid inline candidates exceed the cap", async () => {
+		const inlineCount = MAX_INLINE_COMMENTS + 1;
+		const overLimit: ReviewLike = {
+			...review,
+			findings: Array.from({ length: inlineCount }, (_, index) => ({
+				title: `[P2] Diagnostic finding ${index + 1}`,
+				severity: "P2",
+				blocking: false,
+				body: "This valid finding has a unique changed-line anchor.",
+				confidence_score: 0.9,
+				code_location: {
+					absolute_file_path: "src/parser.ts",
+					line_range: { start: index + 1, end: index + 1 },
+					side: "RIGHT",
+					commentable: true,
+				},
+			})),
+		};
+		const patch = [
+			`@@ -1,${inlineCount} +1,${inlineCount} @@`,
+			...Array.from({ length: inlineCount }, (_, index) => ` line ${index + 1}`),
+		].join("\n");
+		const files = [{ filename: "src/parser.ts", patch }];
+
+		expect(
+			decideReviewPublication({
+				mode: "auto",
+				prNumber: 7,
+				allowNonOpen: false,
+				allowStalePublish: true,
+				autoPost: resolveAutoPostSetting({ autoPostReviews: true }),
+			}),
+		).toEqual({ publish: true, source: "user config" });
+		expect(parsePublishableReview(JSON.stringify(overLimit)).review).toBeDefined();
+		const validation = validateInlineComments(overLimit, files);
+		expect(validation.comments).toHaveLength(inlineCount);
+		expect(validation.errors).toEqual([
+			`too many inline comments (${inlineCount}; max ${MAX_INLINE_COMMENTS})`,
+		]);
+
+		const diagnostic = await diagnoseOpenPullPublication(overLimit, files);
+		expect(diagnostic.result).toEqual({
+			status: "failed",
+			message: `inline validation failed: too many inline comments (${inlineCount}; max ${MAX_INLINE_COMMENTS})`,
+		});
+		expect(diagnostic.postAttempted).toBeFalse();
 	});
 });
 
