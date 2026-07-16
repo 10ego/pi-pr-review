@@ -749,8 +749,8 @@ function parsePatchHunks(patch: string): DiffHunk[] {
 }
 
 export interface ChangedFileLike {
-	readonly filename?: string;
-	readonly patch?: string;
+	filename?: string;
+	patch?: string;
 }
 
 function safeRelativePath(value: string): boolean {
@@ -1395,12 +1395,6 @@ export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryB
 	return binding;
 }
 
-function flattenPages<T>(value: unknown): T[] {
-	if (!Array.isArray(value)) return [];
-	if (value.every(Array.isArray)) return value.flat() as T[];
-	return value as T[];
-}
-
 function normalizeChangedFilePages(value: unknown): ChangedFileLike[] | undefined {
 	if (!Array.isArray(value)) return undefined;
 	if (value.some(Array.isArray) && !value.every(Array.isArray)) return undefined;
@@ -1420,8 +1414,30 @@ function normalizeChangedFilePages(value: unknown): ChangedFileLike[] | undefine
 }
 
 interface AuthoredBody {
-	body?: string | null;
-	user?: { login?: string | null } | null;
+	body: string | null;
+	user: { login: string | null } | null;
+}
+
+function normalizeAuthoredBodyPages(value: unknown): AuthoredBody[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	if (value.some(Array.isArray) && !value.every(Array.isArray)) return undefined;
+	const entries: unknown[] = value.every(Array.isArray) ? value.flat() : value;
+	const authoredBodies: AuthoredBody[] = [];
+	for (const entry of entries) {
+		if (!isObject(entry) || (entry.body !== null && typeof entry.body !== "string")) {
+			return undefined;
+		}
+		const user = entry.user;
+		if (user === null) {
+			authoredBodies.push({ body: entry.body, user: null });
+			continue;
+		}
+		if (!isObject(user)) return undefined;
+		const login = user.login;
+		if (login !== null && typeof login !== "string") return undefined;
+		authoredBodies.push({ body: entry.body, user: { login } });
+	}
+	return authoredBodies;
 }
 
 export function bodyHasHeadMarker(body: string | null | undefined, normalizedHeadSha: string): boolean {
@@ -1445,11 +1461,15 @@ async function hasExistingMarker(
 		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/reviews?per_page=100`),
 		cwd,
 	);
+	const reviews = normalizeAuthoredBodyPages(reviewPages);
+	if (!reviews) throw new Error("invalid paginated pull review response");
 	const commentPages = await ghJson<unknown>(
 		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/issues/${prNumber}/comments?per_page=100`),
 		cwd,
 	);
-	return [...flattenPages<AuthoredBody>(reviewPages), ...flattenPages<AuthoredBody>(commentPages)].some(
+	const comments = normalizeAuthoredBodyPages(commentPages);
+	if (!comments) throw new Error("invalid paginated issue comment response");
+	return [...reviews, ...comments].some(
 		(item) =>
 			item.user?.login?.toLowerCase() === identity.toLowerCase() &&
 			bodyHasHeadMarker(item.body, normalizedHeadSha),
@@ -1571,14 +1591,15 @@ export async function publishPullReview(input: {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
-	const preparedReview = preparePublicationReview(review);
-	if (!preparedReview.prepared) {
-		return { status: "failed", message: `publication planning failed: ${preparedReview.errors.join("; ")}` };
+	const preparation = preparePublicationReview(review);
+	const preparedReview = preparation.prepared;
+	if (!preparedReview) {
+		return { status: "failed", message: `publication planning failed: ${preparation.errors.join("; ")}` };
 	}
-	if (preparedReview.prepared.review.pr?.number !== prNumber) {
+	if (preparedReview.review.pr?.number !== prNumber) {
 		return { status: "failed", message: "validated review PR number does not match the publication target" };
 	}
-	if (preparedReview.prepared.review.pr?.head_sha?.toLowerCase() !== normalizedHeadSha) {
+	if (preparedReview.review.pr?.head_sha?.toLowerCase() !== normalizedHeadSha) {
 		return { status: "failed", message: "validated review head does not match the publication target" };
 	}
 
@@ -1626,7 +1647,7 @@ export async function publishPullReview(input: {
 		const allowInlineComments = isOpen && headPlan.allowInlineComments;
 		let changedFiles: readonly ChangedFileLike[] = [];
 		let inlineDegradationDiagnostic: string | undefined;
-		if (allowInlineComments && preparedReview.prepared.hasInlineCandidates) {
+		if (allowInlineComments && preparedReview.hasInlineCandidates) {
 			try {
 				const filePages = await ghJson<unknown>(
 					githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
@@ -1639,7 +1660,7 @@ export async function publishPullReview(input: {
 				inlineDegradationDiagnostic = CHANGED_FILE_LOOKUP_DIAGNOSTIC;
 			}
 		}
-		const planned = createReviewPublicationPlan(preparedReview.prepared, {
+		const planned = createReviewPublicationPlan(preparedReview, {
 			commitId: headPlan.commitId,
 			markerHeadSha: normalizedHeadSha,
 			allowInlineComments,

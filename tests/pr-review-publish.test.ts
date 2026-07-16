@@ -95,6 +95,8 @@ async function diagnosePullPublication(
 		postFailure?: string;
 		filesFailure?: string;
 		filesJson?: string;
+		reviewsJson?: string;
+		commentsJson?: string;
 		state?: string;
 		mergedAt?: string | null;
 		allowNonOpen?: boolean;
@@ -109,9 +111,13 @@ async function diagnosePullPublication(
 	const gh = join(dir, "gh");
 	const callsPath = join(dir, "calls.log");
 	const filesPath = join(dir, "files.json");
+	const reviewsPath = join(dir, "reviews.json");
+	const commentsPath = join(dir, "comments.json");
 	const payloadPath = join(dir, "payload.json");
 	const postSentinel = join(dir, "post-attempted");
 	writeFileSync(filesPath, options.filesJson ?? JSON.stringify([files]));
+	writeFileSync(reviewsPath, options.reviewsJson ?? "[]");
+	writeFileSync(commentsPath, options.commentsJson ?? "[]");
 	writeFileSync(
 		gh,
 		`#!/usr/bin/env bash
@@ -130,8 +136,10 @@ elif [[ "$args" == *"--method POST"* ]]; then
     exit 1
   fi
   echo '{"id":44,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-44"}'
-elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
-  echo '[]'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* ]]; then
+  cat "$GH_FAKE_REVIEWS"
+elif [[ "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  cat "$GH_FAKE_COMMENTS"
 elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
   if [[ -n "\${GH_FAKE_FILES_FAILURE:-}" ]]; then
     echo "$GH_FAKE_FILES_FAILURE" >&2
@@ -152,6 +160,8 @@ fi
 		GH_FAKE_CALLS: process.env.GH_FAKE_CALLS,
 		GH_FAKE_FILES: process.env.GH_FAKE_FILES,
 		GH_FAKE_FILES_FAILURE: process.env.GH_FAKE_FILES_FAILURE,
+		GH_FAKE_REVIEWS: process.env.GH_FAKE_REVIEWS,
+		GH_FAKE_COMMENTS: process.env.GH_FAKE_COMMENTS,
 		GH_FAKE_PAYLOAD: process.env.GH_FAKE_PAYLOAD,
 		GH_FAKE_POST_FAILURE: process.env.GH_FAKE_POST_FAILURE,
 		GH_FAKE_POST_SENTINEL: process.env.GH_FAKE_POST_SENTINEL,
@@ -164,6 +174,8 @@ fi
 	process.env.GH_FAKE_FILES = filesPath;
 	if (options.filesFailure === undefined) delete process.env.GH_FAKE_FILES_FAILURE;
 	else process.env.GH_FAKE_FILES_FAILURE = options.filesFailure;
+	process.env.GH_FAKE_REVIEWS = reviewsPath;
+	process.env.GH_FAKE_COMMENTS = commentsPath;
 	process.env.GH_FAKE_PAYLOAD = payloadPath;
 	if (options.postFailure === undefined) delete process.env.GH_FAKE_POST_FAILURE;
 	else process.env.GH_FAKE_POST_FAILURE = options.postFailure;
@@ -795,6 +807,66 @@ describe("non-open publication authorization", () => {
 			expect(
 				diagnostic.calls.filter((call) => call.includes("pulls/7/files?per_page=100")),
 			).toEqual([]);
+		}
+	});
+});
+
+describe("duplicate publication preflight", () => {
+	const authored = (body: string | null, login: string | null) => ({
+		body,
+		user: login === null ? null : { login },
+	});
+
+	test("accepts valid flat and slurped duplicate response arrays", async () => {
+		for (const responses of [
+			{
+				reviewsJson: JSON.stringify([authored("ordinary review", "another-user")]),
+				commentsJson: JSON.stringify([authored(null, null)]),
+			},
+			{
+				reviewsJson: JSON.stringify([[authored("page one", "another-user")], []]),
+				commentsJson: JSON.stringify([[], [authored("page two", "another-user")]]),
+			},
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("posted");
+			expect(diagnostic.postCount).toBe(1);
+		}
+	});
+
+	test("recognizes matching markers in valid flat reviews and slurped comments", async () => {
+		const marker = canonicalReviewMarker("a".repeat(40));
+		for (const responses of [
+			{
+				reviewsJson: JSON.stringify([authored(marker, "reviewer")]),
+				commentsJson: "[]",
+			},
+			{
+				reviewsJson: "[[]]",
+				commentsJson: JSON.stringify([[authored(`prefix\n${marker}`, "reviewer")]]),
+			},
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("skipped_duplicate");
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+		}
+	});
+
+	test("fails closed on malformed duplicate response shapes before any POST", async () => {
+		for (const responses of [
+			{ reviewsJson: "not-json" },
+			{ commentsJson: JSON.stringify({ body: "not an array" }) },
+			{ reviewsJson: JSON.stringify([[], authored("mixed", "another-user")]) },
+			{ commentsJson: JSON.stringify([42]) },
+			{ reviewsJson: JSON.stringify([[{ body: false, user: { login: "another-user" } }]]) },
+			{ commentsJson: JSON.stringify([{}]) },
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("failed");
+			expect(diagnostic.result.message).toContain("GitHub preflight failed");
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
 		}
 	});
 });
