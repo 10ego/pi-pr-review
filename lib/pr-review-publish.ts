@@ -320,26 +320,6 @@ export interface PullReviewPayload {
 	comments?: PublishComment[];
 }
 
-export interface ReviewPublicationPlan {
-	readonly primary: PullReviewPayload;
-	readonly bodyOnly: PullReviewPayload;
-	readonly diagnostics: readonly string[];
-}
-
-export interface ReviewPublicationPlanInput {
-	readonly review: ReviewLike;
-	readonly commitId: string;
-	readonly markerHeadSha: string;
-	readonly allowInlineComments: boolean;
-	readonly changedFiles?: readonly ChangedFileLike[];
-	readonly bodyPreamble?: string;
-}
-
-export interface ReviewPublicationPlanningResult {
-	readonly plan?: ReviewPublicationPlan;
-	readonly errors: readonly string[];
-}
-
 /** Build the only GitHub review payload this package can emit. */
 export function buildPullReviewPayload(
 	headSha: string,
@@ -648,6 +628,9 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 		return { error: "final response is not exactly one JSON object" };
 	}
 	if (!isObject(value)) return { error: "final review must be a JSON object" };
+	if (containsReservedReviewMarker(JSON.stringify(value))) {
+		return { error: "review content contains a reserved pi-pr-review marker" };
+	}
 	const pr = value.pr;
 	if (!isObject(pr) || !Number.isInteger(pr.number) || Number(pr.number) <= 0 || typeof pr.title !== "string") {
 		return { error: "pr.number and pr.title are required" };
@@ -680,21 +663,8 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 		if (!isConfidence(finding.confidence_score)) {
 			return { error: `finding ${index + 1} has invalid confidence_score` };
 		}
-		if (finding.code_location !== null) {
-			const location = finding.code_location;
-			if (!isObject(location) || typeof location.commentable !== "boolean") {
-				return { error: `finding ${index + 1} has invalid code_location` };
-			}
-			if (location.absolute_file_path !== null && typeof location.absolute_file_path !== "string") {
-				return { error: `finding ${index + 1} has invalid absolute_file_path` };
-			}
-			if (location.side !== null && location.side !== "LEFT" && location.side !== "RIGHT") {
-				return { error: `finding ${index + 1} has invalid side` };
-			}
-			if (!isObject(location.line_range) || !Number.isInteger(location.line_range.start) || !Number.isInteger(location.line_range.end)) {
-				return { error: `finding ${index + 1} has invalid line_range` };
-			}
-		}
+		const locationError = validateFindingLocation(finding as ReviewFindingLike, index);
+		if (locationError) return { error: locationError };
 	}
 	if (!isObject(value.notes)) return { error: "notes must be an object" };
 	for (const key of ["correctness", "security", "performance"] as const) {
@@ -759,260 +729,43 @@ function safeRelativePath(value: string): boolean {
 	return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
+function validateFindingLocation(finding: ReviewFindingLike, index: number): string | undefined {
+	const location = finding.code_location;
+	const label = `finding ${index + 1}`;
+	if (location === null) return undefined;
+	if (!isObject(location) || typeof location.commentable !== "boolean") {
+		return `${label} has invalid code_location`;
+	}
+	const path = location.absolute_file_path;
+	if (path !== null && typeof path !== "string") return `${label} has invalid absolute_file_path`;
+	const side = location.side;
+	if (side !== null && side !== "LEFT" && side !== "RIGHT") return `${label} has invalid side`;
+	const range = location.line_range;
+	if (!isObject(range) || !Number.isInteger(range.start) || !Number.isInteger(range.end)) {
+		return `${label} has invalid line_range`;
+	}
+	const start = Number(range.start);
+	const end = Number(range.end);
+	if (path === null) {
+		if (location.commentable) return `${label}: commentable location is missing a repo-relative path`;
+		if (side !== null || start !== 0 || end !== 0) {
+			return `${label}: location without a path must use null side and a 0:0 range`;
+		}
+		return undefined;
+	}
+	if (!safeRelativePath(path)) return `${label}: invalid repo-relative path`;
+	if (side !== "LEFT" && side !== "RIGHT") return `${label}: side must be LEFT or RIGHT`;
+	if (start <= 0 || end < start) return `${label}: invalid line range`;
+	return undefined;
+}
+
 function isInlineSeverity(finding: ReviewFindingLike): boolean {
 	const severity = String(finding.severity ?? "").toUpperCase();
 	return ["P0", "P1", "P2", "P3"].includes(severity);
 }
 
-interface NormalizedFindingLocation {
-	readonly text: string;
-	readonly path?: string;
-	readonly side?: "LEFT" | "RIGHT";
-	readonly start?: number;
-	readonly end?: number;
-}
-
-interface RenderedFinding {
-	readonly index: number;
-	readonly title: string;
-	readonly body: string;
-	readonly severity: string;
-	readonly confidence?: number;
-	readonly location: NormalizedFindingLocation;
-	readonly inlineComment?: PublishComment;
-}
-
-interface PreparedPublicationReview {
-	readonly review: ReviewLike;
-	readonly findings: readonly RenderedFinding[];
-	readonly hasInlineCandidates: boolean;
-}
-
-interface PreparedPublicationReviewResult {
-	readonly prepared?: PreparedPublicationReview;
-	readonly errors: readonly string[];
-}
-
-interface InlineClassification {
-	readonly comments: PublishComment[];
-	readonly inlineFindingIndexes: ReadonlySet<number>;
-	readonly diagnostics: readonly string[];
-}
-
-function normalizeFindingLocation(
-	finding: ReviewFindingLike,
-	index: number,
-): { location?: NormalizedFindingLocation; error?: string } {
-	const location = finding.code_location;
-	if (location == null) return { location: { text: "summary-only" } };
-	const label = `finding ${index + 1}`;
-	const path = location.absolute_file_path;
-	const side = location.side;
-	const start = location.line_range?.start;
-	const end = location.line_range?.end;
-	if (path === null || path === undefined) {
-		if (location.commentable) {
-			return { error: `${label}: commentable location is missing a repo-relative path` };
-		}
-		if ((side !== null && side !== undefined) || start !== 0 || end !== 0) {
-			return { error: `${label}: location without a path must use null side and a 0:0 range` };
-		}
-		return { location: { text: "summary-only" } };
-	}
-	if (typeof path !== "string" || !safeRelativePath(path)) {
-		return { error: `${label}: invalid repo-relative path` };
-	}
-	if (side !== "LEFT" && side !== "RIGHT") {
-		return { error: `${label}: side must be LEFT or RIGHT` };
-	}
-	if (!Number.isInteger(start) || !Number.isInteger(end) || Number(start) <= 0 || Number(end) < Number(start)) {
-		return { error: `${label}: invalid line range` };
-	}
-	return {
-		location: {
-			text: `${path}:${start}${end !== start ? `-${end}` : ""} ${side}`,
-			path,
-			side,
-			start: Number(start),
-			end: Number(end),
-		},
-	};
-}
-
-function renderFinding(
-	finding: ReviewFindingLike,
-	index: number,
-	location: NormalizedFindingLocation,
-): { rendered?: RenderedFinding; error?: string } {
-	const title = String(finding.title ?? "");
-	const body = String(finding.body ?? "");
-	const inlineCandidate = finding.code_location?.commentable === true && isInlineSeverity(finding);
-	let inlineComment: PublishComment | undefined;
-	if (inlineCandidate) {
-		if (
-			location.path === undefined ||
-			location.side === undefined ||
-			location.start === undefined ||
-			location.end === undefined
-		) {
-			return { error: `finding ${index + 1}: commentable location is semantically incomplete` };
-		}
-		const commentBody = [title.length > 0 ? `**${title}**` : "", body]
-			.filter((part) => part.length > 0)
-			.join("\n\n");
-		if (!commentBody || Buffer.byteLength(commentBody, "utf8") > MAX_BODY_BYTES) {
-			return { error: `finding ${index + 1}: comment body is empty or too large` };
-		}
-		if (containsReservedReviewMarker(commentBody)) {
-			return { error: `finding ${index + 1}: comment body contains a reserved pi-pr-review marker` };
-		}
-		inlineComment = {
-			path: location.path,
-			body: commentBody,
-			line: location.end,
-			side: location.side,
-			...(location.start < location.end
-				? { start_line: location.start, start_side: location.side }
-				: {}),
-		};
-	}
-	return {
-		rendered: {
-			index,
-			title,
-			body,
-			severity: String(finding.severity ?? "—"),
-			...(typeof finding.confidence_score === "number" ? { confidence: finding.confidence_score } : {}),
-			location,
-			...(inlineComment ? { inlineComment } : {}),
-		},
-	};
-}
-
-function prepareRenderedFindings(review: ReviewLike): {
-	findings: readonly RenderedFinding[];
-	errors: readonly string[];
-} {
-	const findings: RenderedFinding[] = [];
-	const errors: string[] = [];
-	for (const [index, finding] of (review.findings ?? []).entries()) {
-		const normalized = normalizeFindingLocation(finding, index);
-		if (!normalized.location) {
-			errors.push(normalized.error ?? `finding ${index + 1}: invalid location`);
-			continue;
-		}
-		const rendered = renderFinding(finding, index, normalized.location);
-		if (!rendered.rendered) {
-			errors.push(rendered.error ?? `finding ${index + 1}: could not be rendered`);
-			continue;
-		}
-		findings.push(rendered.rendered);
-	}
-	return { findings, errors };
-}
-
-function deepFreeze<T>(value: T): T {
-	if (value && typeof value === "object" && !Object.isFrozen(value)) {
-		Object.freeze(value);
-		for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
-	}
-	return value;
-}
-
-function preparePublicationReview(review: ReviewLike): PreparedPublicationReviewResult {
-	let serialized: string | undefined;
-	try {
-		serialized = JSON.stringify(review);
-	} catch {
-		return deepFreeze({ errors: ["review could not be serialized for publication"] });
-	}
-	if (typeof serialized !== "string") {
-		return deepFreeze({ errors: ["review could not be serialized for publication"] });
-	}
-	const parsed = parsePublishableReview(serialized);
-	if (!parsed.review) {
-		return deepFreeze({ errors: [`review is not publishable: ${parsed.error ?? "invalid review"}`] });
-	}
-	if (!shouldPublishReview(parsed.review)) {
-		return deepFreeze({ errors: ["only completed reviewed dispositions can be published"] });
-	}
-	if (containsReservedReviewMarker(serialized)) {
-		return deepFreeze({ errors: ["review content contains a reserved pi-pr-review marker"] });
-	}
-	const snapshot = deepFreeze(parsed.review);
-	const rendered = prepareRenderedFindings(snapshot);
-	if (rendered.errors.length > 0) return deepFreeze({ errors: [...rendered.errors] });
-	return deepFreeze({
-		prepared: {
-			review: snapshot,
-			findings: [...rendered.findings],
-			hasInlineCandidates: rendered.findings.some((finding) => finding.inlineComment !== undefined),
-		},
-		errors: [],
-	});
-}
-
 function publishCommentAnchor(comment: PublishComment): string {
 	return `${comment.path}:${comment.side}:${comment.start_line ?? comment.line}:${comment.line}`;
-}
-
-function renderReviewSummary(
-	review: ReviewLike,
-	findings: readonly RenderedFinding[],
-	inlineFindingIndexes: ReadonlySet<number>,
-	diagnostics: readonly string[],
-): string {
-	const lines: string[] = [];
-	const number = review.pr?.number;
-	const title = String(review.pr?.title ?? "").replace(/\r?\n/g, " ").trim();
-	lines.push(`## Code Review${number != null ? ` — PR #${number}${title ? `: ${title}` : ""}` : ""}`, "");
-	if (review.verification?.trim()) lines.push(`**Verification:** ${review.verification.trim()}`, "");
-	if (review.overview?.trim()) lines.push("### Overview", "", review.overview.trim(), "");
-	if (review.strengths?.length) {
-		lines.push(
-			"### Strengths",
-			"",
-			...review.strengths.map((strength) => `- ${String(strength).replace(/^\s*-\s*/, "").trim()}`),
-			"",
-		);
-	}
-	const summaryFindings = findings.filter((finding) => !inlineFindingIndexes.has(finding.index));
-	lines.push(
-		`### Findings — ${findings.length} total (${inlineFindingIndexes.size} inline, ${summaryFindings.length} summary-only)`,
-		"",
-	);
-	if (findings.length === 0) {
-		lines.push("_No issues found._", "");
-	} else if (summaryFindings.length === 0) {
-		lines.push(`_All ${inlineFindingIndexes.size} findings are attached inline below this review._`, "");
-	} else {
-		for (const finding of summaryFindings) {
-			const metadata = [
-				`\`${finding.location.text}\``,
-				`severity ${finding.severity}`,
-				...(finding.confidence === undefined ? [] : [`confidence ${finding.confidence.toFixed(2)}`]),
-			].join(" · ");
-			lines.push(`#### ${finding.title || "(untitled finding)"}`, metadata, "");
-			if (finding.body.length > 0) lines.push(finding.body, "");
-		}
-	}
-	if (diagnostics.length > 0) {
-		lines.push("### Publication diagnostics", "", ...diagnostics.map((diagnostic) => `- ${diagnostic}`), "");
-	}
-	const notes = review.notes;
-	if (notes?.correctness || notes?.security || notes?.performance) {
-		lines.push("### Correctness / Security / Performance", "");
-		if (notes.correctness) lines.push(`- **Correctness:** ${notes.correctness}`);
-		if (notes.security) lines.push(`- **Security:** ${notes.security}`);
-		if (notes.performance) lines.push(`- **Performance:** ${notes.performance}`);
-		lines.push("");
-	}
-	lines.push("### Verdict", "", `**Suggested verdict:** ${review.verdict ?? "comment"}`);
-	if (review.overall_explanation?.trim()) lines.push("", review.overall_explanation.trim());
-	if (typeof review.overall_confidence_score === "number") {
-		lines.push("", `_Confidence: ${review.overall_confidence_score.toFixed(2)}_`);
-	}
-	return lines.join("\n").trim();
 }
 
 function cell(value: string): string {
@@ -1103,22 +856,16 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 	return lines.join("\n").trim();
 }
 
-function classifyInlineFindings(
-	prepared: PreparedPublicationReview,
+interface InlineSelection {
+	comments: PublishComment[];
+	diagnostics: string[];
+	errors: string[];
+}
+
+function selectInlineComments(
+	review: ReviewLike,
 	changedFiles: readonly ChangedFileLike[],
-	allowInlineComments: boolean,
-	inlineDegradationDiagnostic?: string,
-): InlineClassification {
-	if (!allowInlineComments) {
-		return { comments: [], inlineFindingIndexes: new Set<number>(), diagnostics: [] };
-	}
-	if (inlineDegradationDiagnostic) {
-		return {
-			comments: [],
-			inlineFindingIndexes: new Set<number>(),
-			diagnostics: [inlineDegradationDiagnostic],
-		};
-	}
+): InlineSelection {
 	const files = new Map<string, ChangedFileLike>();
 	for (const file of changedFiles) {
 		if (!file || typeof file.filename !== "string") continue;
@@ -1126,15 +873,34 @@ function classifyInlineFindings(
 		if (!existing || (!existing.patch && file.patch)) files.set(file.filename, file);
 	}
 	const comments: PublishComment[] = [];
-	const inlineFindingIndexes = new Set<number>();
 	const diagnostics: string[] = [];
+	const errors: string[] = [];
 	const anchors = new Set<string>();
 	const hunkCache = new Map<string, DiffHunk[]>();
-	for (const finding of prepared.findings) {
-		const comment = finding.inlineComment;
-		if (!comment) continue;
-		const label = `finding ${finding.index + 1}`;
-		const file = files.get(comment.path);
+	for (const [index, finding] of (review.findings ?? []).entries()) {
+		if (!finding.code_location?.commentable || !isInlineSeverity(finding)) continue;
+		const location = finding.code_location;
+		const label = `finding ${index + 1}`;
+		const path = location.absolute_file_path as string;
+		const side = location.side as "LEFT" | "RIGHT";
+		const start = Number(location.line_range?.start);
+		const end = Number(location.line_range?.end);
+		const body = [
+			finding.title?.trim() ? `**${finding.title.trim()}**` : "",
+			finding.body?.trim(),
+		].filter(Boolean).join("\n\n");
+		if (!body || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+			errors.push(`${label}: comment body is empty or too large`);
+			continue;
+		}
+		const comment: PublishComment = {
+			path,
+			body,
+			line: end,
+			side,
+			...(start < end ? { start_line: start, start_side: side } : {}),
+		};
+		const file = files.get(path);
 		if (!file) {
 			diagnostics.push(`${label}: path is not a changed file; kept in the review summary`);
 			continue;
@@ -1143,19 +909,15 @@ function classifyInlineFindings(
 			diagnostics.push(`${label}: diff patch is unavailable; kept in the review summary`);
 			continue;
 		}
-		let hunks = hunkCache.get(comment.path);
+		let hunks = hunkCache.get(path);
 		if (!hunks) {
 			hunks = parsePatchHunks(file.patch);
-			hunkCache.set(comment.path, hunks);
+			hunkCache.set(path, hunks);
 		}
-		const sideKey = comment.side === "LEFT" ? "left" : "right";
-		const start = comment.start_line ?? comment.line;
-		const hunk = hunks.find(
-			(candidate) => candidate[sideKey].has(start) && candidate[sideKey].has(comment.line),
-		);
-		if (!hunk) {
+		const sideKey = side === "LEFT" ? "left" : "right";
+		if (!hunks.some((hunk) => hunk[sideKey].has(start) && hunk[sideKey].has(end))) {
 			diagnostics.push(
-				`${label}: line range is not inside one diff hunk on ${comment.side}; kept in the review summary`,
+				`${label}: line range is not inside one diff hunk on ${side}; kept in the review summary`,
 			);
 			continue;
 		}
@@ -1172,9 +934,8 @@ function classifyInlineFindings(
 			continue;
 		}
 		comments.push(comment);
-		inlineFindingIndexes.add(finding.index);
 	}
-	return { comments, inlineFindingIndexes, diagnostics };
+	return { comments, diagnostics, errors };
 }
 
 export interface CommentValidationResult {
@@ -1183,45 +944,33 @@ export interface CommentValidationResult {
 	warnings?: string[];
 }
 
+function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewParseResult {
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(review);
+	} catch {
+		return { error: "review could not be serialized for publication" };
+	}
+	if (typeof serialized !== "string") {
+		return { error: "review could not be serialized for publication" };
+	}
+	return parsePublishableReview(serialized);
+}
+
 export function validateInlineComments(
 	review: ReviewLike,
 	changedFiles: readonly ChangedFileLike[],
 ): CommentValidationResult {
-	const rendered = prepareRenderedFindings(review);
-	if (rendered.errors.length > 0) return { comments: [], errors: [...rendered.errors], warnings: [] };
-	const prepared: PreparedPublicationReview = {
-		review,
-		findings: rendered.findings,
-		hasInlineCandidates: rendered.findings.some((finding) => finding.inlineComment !== undefined),
-	};
-	const classified = classifyInlineFindings(prepared, changedFiles, true);
-	return {
-		comments: classified.comments.map((comment) => ({ ...comment })),
-		errors: [],
-		warnings: [...classified.diagnostics],
-	};
-}
-
-export function collectFoldedComments(review: ReviewLike): CommentValidationResult {
-	const rendered = prepareRenderedFindings(review);
-	if (rendered.errors.length > 0) return { comments: [], errors: [...rendered.errors], warnings: [] };
-	return {
-		comments: rendered.findings
-			.filter((finding) => finding.inlineComment !== undefined)
-			.map((finding) => ({ ...finding.inlineComment! })),
-		errors: [],
-		warnings: [],
-	};
-}
-
-export function foldInlineComments(summary: string, comments: readonly PublishComment[]): string {
-	if (comments.length === 0) return summary;
-	const lines = [summary, "", "### Inline findings (folded for a non-open PR)", ""];
-	for (const comment of comments) {
-		const range = comment.start_line ? `${comment.start_line}-${comment.line}` : String(comment.line);
-		lines.push(`#### \`${comment.path}:${range} ${comment.side}\``, "", comment.body, "");
+	const snapshot = canonicalReviewSnapshot(review);
+	if (!snapshot.review) {
+		return { comments: [], errors: [snapshot.error ?? "invalid review"], warnings: [] };
 	}
-	return lines.join("\n").trim();
+	const selected = selectInlineComments(snapshot.review, changedFiles);
+	return {
+		comments: selected.comments,
+		errors: selected.errors,
+		warnings: selected.diagnostics,
+	};
 }
 
 export function containsReservedReviewMarker(body: string): boolean {
@@ -1235,100 +984,57 @@ function validateReviewBody(body: string): string | undefined {
 	return undefined;
 }
 
-interface InternalReviewPublicationPlanInput extends Omit<ReviewPublicationPlanInput, "review"> {
-	readonly inlineDegradationDiagnostic?: string;
+function hasInlineCandidates(review: ReviewLike): boolean {
+	return (review.findings ?? []).some(
+		(finding) => finding.code_location?.commentable === true && isInlineSeverity(finding),
+	);
 }
 
-function createReviewPublicationPlan(
-	prepared: PreparedPublicationReview,
-	input: InternalReviewPublicationPlanInput,
-): ReviewPublicationPlanningResult {
-	const {
-		commitId,
-		markerHeadSha,
-		allowInlineComments,
-		changedFiles = [],
-		bodyPreamble,
-		inlineDegradationDiagnostic,
-	} = input;
-	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(commitId)) {
-		return deepFreeze({ errors: ["publication commit ID must be a full hexadecimal commit SHA"] });
+function buildLosslessReviewPayload(input: {
+	review: ReviewLike;
+	commitId: string;
+	markerHeadSha: string;
+	allowInlineComments: boolean;
+	changedFiles?: readonly ChangedFileLike[];
+	bodyPreamble?: string;
+	diagnostics?: readonly string[];
+}): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
+	const diagnostics = [...(input.diagnostics ?? [])];
+	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.commitId)) {
+		return { diagnostics, errors: ["publication commit ID must be a full hexadecimal commit SHA"] };
 	}
-	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(markerHeadSha)) {
-		return deepFreeze({ errors: ["publication marker head must be a full hexadecimal commit SHA"] });
+	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.markerHeadSha)) {
+		return { diagnostics, errors: ["publication marker head must be a full hexadecimal commit SHA"] };
 	}
-	const normalizedMarkerHead = markerHeadSha.toLowerCase();
-	if (prepared.review.pr?.head_sha?.toLowerCase() !== normalizedMarkerHead) {
-		return deepFreeze({ errors: ["publication marker head does not match the validated review head"] });
+	const markerHeadSha = input.markerHeadSha.toLowerCase();
+	if (input.review.pr?.head_sha?.toLowerCase() !== markerHeadSha) {
+		return { diagnostics, errors: ["publication marker head does not match the validated review head"] };
 	}
-	if (bodyPreamble && containsReservedReviewMarker(bodyPreamble)) {
-		return deepFreeze({ errors: ["publication preamble contains a reserved pi-pr-review marker"] });
+	if (input.bodyPreamble && containsReservedReviewMarker(input.bodyPreamble)) {
+		return { diagnostics, errors: ["publication preamble contains a reserved pi-pr-review marker"] };
 	}
-	const classified = classifyInlineFindings(
-		prepared,
-		changedFiles,
-		allowInlineComments,
-		inlineDegradationDiagnostic,
-	);
-	const primarySummary = renderReviewSummary(
-		prepared.review,
-		prepared.findings,
-		classified.inlineFindingIndexes,
-		classified.diagnostics,
-	);
-	const bodyOnlySummary = renderReviewSummary(
-		prepared.review,
-		prepared.findings,
-		new Set<number>(),
-		classified.diagnostics,
-	);
-	const withPreamble = (body: string) => bodyPreamble?.trim() ? `${bodyPreamble.trim()}\n\n${body}` : body;
-	const primaryContent = withPreamble(primarySummary);
-	const bodyOnlyContent = withPreamble(bodyOnlySummary);
-	const primaryError = validateReviewBody(primaryContent);
-	if (primaryError) return deepFreeze({ errors: [`primary ${primaryError}`] });
-	const bodyOnlyError = validateReviewBody(bodyOnlyContent);
-	if (bodyOnlyError) return deepFreeze({ errors: [`body-only ${bodyOnlyError}`] });
-	const marker = canonicalReviewMarker(normalizedMarkerHead);
-	const primaryBody = `${primaryContent}\n\n${marker}`;
-	const bodyOnlyBody = `${bodyOnlyContent}\n\n${marker}`;
-	if (Buffer.byteLength(primaryBody, "utf8") > MAX_BODY_BYTES) {
-		return deepFreeze({ errors: ["primary final review body exceeds 65536 UTF-8 bytes"] });
-	}
-	if (Buffer.byteLength(bodyOnlyBody, "utf8") > MAX_BODY_BYTES) {
-		return deepFreeze({ errors: ["body-only final review body exceeds 65536 UTF-8 bytes"] });
-	}
-	const primary = deepFreeze(
-		buildPullReviewPayload(commitId.toLowerCase(), primaryBody, classified.comments),
-	);
-	const bodyOnly = deepFreeze(buildPullReviewPayload(commitId.toLowerCase(), bodyOnlyBody, []));
-	if (Buffer.byteLength(JSON.stringify(primary), "utf8") > MAX_PAYLOAD_BYTES) {
-		return deepFreeze({ errors: ["primary review payload is too large"] });
-	}
-	if (Buffer.byteLength(JSON.stringify(bodyOnly), "utf8") > MAX_PAYLOAD_BYTES) {
-		return deepFreeze({ errors: ["body-only review payload is too large"] });
-	}
-	return deepFreeze({
-		plan: {
-			primary,
-			bodyOnly,
-			diagnostics: [...classified.diagnostics],
-		},
-		errors: [],
-	});
-}
+	const selected = input.allowInlineComments
+		? selectInlineComments(input.review, input.changedFiles ?? [])
+		: { comments: [], diagnostics: [], errors: [] };
+	diagnostics.push(...selected.diagnostics);
+	if (selected.errors.length > 0) return { diagnostics, errors: selected.errors };
 
-/** Build immutable inline and body-only COMMENT payloads from one validated review snapshot. */
-export function planReviewPublication(input: ReviewPublicationPlanInput): ReviewPublicationPlanningResult {
-	const prepared = preparePublicationReview(input.review);
-	if (!prepared.prepared) return prepared;
-	return createReviewPublicationPlan(prepared.prepared, {
-		commitId: input.commitId,
-		markerHeadSha: input.markerHeadSha,
-		allowInlineComments: input.allowInlineComments,
-		...(input.changedFiles === undefined ? {} : { changedFiles: input.changedFiles }),
-		...(input.bodyPreamble === undefined ? {} : { bodyPreamble: input.bodyPreamble }),
-	});
+	let content = buildReviewSummary(input.review, selected.comments);
+	if (diagnostics.length > 0) {
+		content = `${content}\n\n### Publication diagnostics\n\n${diagnostics.map((item) => `- ${item}`).join("\n")}`;
+	}
+	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
+	const bodyError = validateReviewBody(content);
+	if (bodyError) return { diagnostics, errors: [bodyError] };
+	const body = `${content}\n\n${canonicalReviewMarker(markerHeadSha)}`;
+	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+		return { diagnostics, errors: ["final review body exceeds 65536 UTF-8 bytes"] };
+	}
+	const payload = buildPullReviewPayload(input.commitId.toLowerCase(), body, selected.comments);
+	if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
+		return { diagnostics, errors: ["review payload is too large"] };
+	}
+	return { payload, diagnostics, errors: [] };
 }
 
 interface GhResult {
@@ -1591,15 +1297,21 @@ export async function publishPullReview(input: {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
-	const preparation = preparePublicationReview(review);
-	const preparedReview = preparation.prepared;
-	if (!preparedReview) {
-		return { status: "failed", message: `publication planning failed: ${preparation.errors.join("; ")}` };
+	const snapshot = canonicalReviewSnapshot(review);
+	const validatedReview = snapshot.review;
+	if (!validatedReview) {
+		return {
+			status: "failed",
+			message: `publication planning failed: ${snapshot.error ?? "review is not publishable"}`,
+		};
 	}
-	if (preparedReview.review.pr?.number !== prNumber) {
+	if (!shouldPublishReview(validatedReview)) {
+		return { status: "failed", message: "only completed reviewed dispositions can be published" };
+	}
+	if (validatedReview.pr?.number !== prNumber) {
 		return { status: "failed", message: "validated review PR number does not match the publication target" };
 	}
-	if (preparedReview.review.pr?.head_sha?.toLowerCase() !== normalizedHeadSha) {
+	if (validatedReview.pr?.head_sha?.toLowerCase() !== normalizedHeadSha) {
 		return { status: "failed", message: "validated review head does not match the publication target" };
 	}
 
@@ -1644,10 +1356,10 @@ export async function publishPullReview(input: {
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
-		const allowInlineComments = isOpen && headPlan.allowInlineComments;
+		let allowInlineComments = isOpen && headPlan.allowInlineComments;
 		let changedFiles: readonly ChangedFileLike[] = [];
-		let inlineDegradationDiagnostic: string | undefined;
-		if (allowInlineComments && preparedReview.hasInlineCandidates) {
+		let changedFileLookupFailed = false;
+		if (allowInlineComments && hasInlineCandidates(validatedReview)) {
 			try {
 				const filePages = await ghJson<unknown>(
 					githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
@@ -1657,28 +1369,25 @@ export async function publishPullReview(input: {
 				if (!normalizedFiles) throw new Error("invalid changed-file JSON response");
 				changedFiles = normalizedFiles;
 			} catch {
-				inlineDegradationDiagnostic = CHANGED_FILE_LOOKUP_DIAGNOSTIC;
+				allowInlineComments = false;
+				changedFileLookupFailed = true;
 			}
 		}
-		const planned = createReviewPublicationPlan(preparedReview, {
+		const built = buildLosslessReviewPayload({
+			review: validatedReview,
 			commitId: headPlan.commitId,
 			markerHeadSha: normalizedHeadSha,
 			allowInlineComments,
 			changedFiles,
-			...(inlineDegradationDiagnostic ? { inlineDegradationDiagnostic } : {}),
+			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale
 				? { bodyPreamble: buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha) }
 				: {}),
 		});
-		if (!planned.plan) {
-			return { status: "failed", message: `publication planning failed: ${planned.errors.join("; ")}` };
+		if (!built.payload) {
+			return { status: "failed", message: `publication planning failed: ${built.errors.join("; ")}` };
 		}
-		// The body-only payload proves lossless degradation remains representable, but
-		// it is deliberately dormant. GitHub's documented 422 response does not prove
-		// that no review was created, and this process-local lock is not a global
-		// idempotency claim, so every publication invocation sends at most one POST.
-		const publicationPlan = planned.plan;
-		const payload = publicationPlan.primary;
+		const payload = built.payload;
 
 		try {
 			const refreshed = await ghJson<PullState>(
@@ -1703,12 +1412,12 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `final head check failed: ${String(error)}` };
 		}
 
-		const inlineWarning = publicationPlan.diagnostics.length > 0
-			? inlineDegradationDiagnostic
-				? `; ${inlineDegradationDiagnostic}`
-				: `; ${publicationPlan.diagnostics.length} inline finding${publicationPlan.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${publicationPlan.diagnostics.join("; ")}`
-			: "";
-		const degraded = !isOpen || headPlan.stale || publicationPlan.diagnostics.length > 0;
+		const inlineWarning = built.diagnostics.length === 0
+			? ""
+			: changedFileLookupFailed
+				? `; ${CHANGED_FILE_LOOKUP_DIAGNOSTIC}`
+				: `; ${built.diagnostics.length} inline finding${built.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${built.diagnostics.join("; ")}`;
+		const degraded = !isOpen || headPlan.stale || built.diagnostics.length > 0;
 		const post = await runGh(
 			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
 			cwd,

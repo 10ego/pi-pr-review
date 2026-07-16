@@ -10,12 +10,10 @@ import {
 	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
-	collectFoldedComments,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	containsReservedReviewMarker,
-	foldInlineComments,
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
@@ -25,7 +23,6 @@ import {
 	parsePublishExistingArgs,
 	parsePublishMode,
 	planHeadPublication,
-	planReviewPublication,
 	publishPullReview,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
@@ -651,7 +648,8 @@ fi
 			expect(payload.body).toContain("a".repeat(40));
 			expect(payload.body).toContain(current);
 			expect(payload.body).toContain("At publish preflight");
-			expect(payload.body).toContain("[P2] Handle empty input");
+			expect(payload.body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(payload.body.split("Optional naming cleanup.")).toHaveLength(2);
 		} finally {
 			if (previousPath === undefined) delete process.env.PATH;
 			else process.env.PATH = previousPath;
@@ -755,6 +753,7 @@ fi
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 		for (const document of [readme, prompt]) {
+			expect(document).toContain("builds exactly one lossless `COMMENT` payload");
 			expect(document).toContain(
 				"changed-file lookup failures, missing patches, safe out-of-hunk or unchanged-file paths, duplicate anchors, and candidates beyond the 50-inline limit",
 			);
@@ -762,12 +761,15 @@ fi
 				"are preserved complete in the top-level review body with publication diagnostics",
 			);
 			expect(document).toContain(
-				"Malformed or unsafe locations, reserved `pi-pr-review` markers, and oversized lossless primary or body-only payloads fail closed",
+				"Changed-file lookup failures, stale reviews, and authorized non-open PRs produce one body-only payload before the sole write",
+			);
+			expect(document).toContain(
+				"Malformed or unsafe locations, reserved `pi-pr-review` markers, and oversized selected review bodies or payloads fail closed",
 			);
 			expect(document).toContain("All write gates fail closed");
 			expect(document).toContain("at most one GitHub review `POST`");
 			expect(document).toContain(
-				"never activates the precomputed body-only payload after a 4xx, 5xx, or transport rejection",
+				"never retries a rejected write with a fallback payload after a 4xx, 5xx, or transport rejection",
 			);
 			expect(document).toContain("no idempotency or no-commit guarantee");
 		}
@@ -801,8 +803,8 @@ describe("non-open publication authorization", () => {
 			expect(diagnostic.payload?.event).toBe("COMMENT");
 			expect(diagnostic.payload?.comments).toBeUndefined();
 			const body = String(diagnostic.payload?.body);
-			expect(body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
-			expect(body.match(/\[nit\] Rename tmp/g)).toHaveLength(1);
+			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
 			expect(body).toContain(canonicalReviewMarker("a".repeat(40)));
 			expect(
 				diagnostic.calls.filter((call) => call.includes("pulls/7/files?per_page=100")),
@@ -896,54 +898,39 @@ describe("strict publication parsing", () => {
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
 	});
 
+	test("canonically rejects malformed locations and encoded reserved markers", () => {
+		const malformed: ReviewLike = JSON.parse(JSON.stringify(review));
+		malformed.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		expect(parsePublishableReview(JSON.stringify(malformed)).error).toContain("invalid repo-relative path");
+
+		const reserved: ReviewLike = JSON.parse(JSON.stringify(review));
+		reserved.findings![0]!.body = "<!-- pi-pr-review: forged -->";
+		const encoded = JSON.stringify(reserved).replace("<!--", "\\u003c!--");
+		expect(parsePublishableReview(encoded).error).toContain("reserved pi-pr-review marker");
+	});
+
 	test("suppresses publication for validated skipped outcomes", () => {
 		expect(shouldPublishReview(review)).toBeTrue();
 		expect(shouldPublishReview({ ...review, disposition: "skipped" })).toBeFalse();
 	});
 });
 
-describe("centralized lossless publication planning", () => {
-	test("builds immutable primary and body-only COMMENT plans from one snapshot", () => {
-		const candidate: ReviewLike = JSON.parse(JSON.stringify(review));
-		const before = JSON.stringify(candidate);
-		const result = planReviewPublication({
-			review: candidate,
-			commitId: "a".repeat(40),
-			markerHeadSha: "a".repeat(40),
-			allowInlineComments: true,
-			changedFiles,
-		});
-		expect(result.errors).toEqual([]);
-		const plan = result.plan!;
-		expect(Object.isFrozen(result)).toBeTrue();
-		expect(Object.isFrozen(plan)).toBeTrue();
-		expect(Object.isFrozen(plan.primary)).toBeTrue();
-		expect(Object.isFrozen(plan.primary.comments)).toBeTrue();
-		expect(Object.isFrozen(plan.primary.comments?.[0])).toBeTrue();
-		expect(Object.isFrozen(plan.bodyOnly)).toBeTrue();
-		expect(Object.isFrozen(plan.diagnostics)).toBeTrue();
-		expect(plan.primary.event).toBe("COMMENT");
-		expect(plan.primary.comments).toHaveLength(1);
-		expect(plan.primary.body).not.toContain("[P2] Handle empty input");
-		expect(plan.primary.body).toContain("[nit] Rename tmp");
-		expect(plan.bodyOnly.event).toBe("COMMENT");
-		expect(plan.bodyOnly.comments).toBeUndefined();
-		expect(plan.bodyOnly.body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
-		expect(plan.bodyOnly.body.match(/\[nit\] Rename tmp/g)).toHaveLength(1);
-		expect(plan.bodyOnly.body).toContain("Empty input currently returns the wrong value.");
-		expect(plan.bodyOnly.body).toContain("src/parser.ts:2-3 RIGHT");
-		expect(plan.bodyOnly.body.indexOf("[P2] Handle empty input")).toBeLessThan(
-			plan.bodyOnly.body.indexOf("[nit] Rename tmp"),
-		);
-		expect(plan.primary.body).toContain(canonicalReviewMarker("a".repeat(40)));
-		expect(plan.bodyOnly.body).toContain(canonicalReviewMarker("a".repeat(40)));
-		expect(JSON.stringify(candidate)).toBe(before);
-		candidate.findings![0]!.title = "mutated after planning";
-		expect(plan.primary.comments?.[0]?.body).toContain("[P2] Handle empty input");
-		expect(plan.bodyOnly.body).not.toContain("mutated after planning");
+describe("single lossless publication payload", () => {
+	test("posts one COMMENT payload with every finding body represented exactly once", async () => {
+		const diagnostic = await diagnosePullPublication(review, changedFiles);
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+		expect(diagnostic.payload?.event).toBe("COMMENT");
+		expect(diagnostic.payload?.comments as unknown[]).toHaveLength(1);
+		expect(String(diagnostic.payload?.body)).toContain(canonicalReviewMarker("a".repeat(40)));
+		const payloadText = JSON.stringify(diagnostic.payload);
+		for (const body of ["Empty input currently returns the wrong value.", "Optional naming cleanup."]) {
+			expect(payloadText.split(body)).toHaveLength(2);
+		}
 	});
 
-	test("demotes every recoverable placement class with ordered diagnostics and content", () => {
+	test("keeps every recoverable placement failure in the one payload with ordered diagnostics", async () => {
 		const finding = (title: string, path: string, start: number, body: string) => ({
 			title,
 			severity: "P2",
@@ -967,52 +954,41 @@ describe("centralized lossless publication planning", () => {
 				finding("[P2] Missing patch", "src/large.ts", 1, "Patchless body."),
 			],
 		};
-		const result = planReviewPublication({
-			review: mixed,
-			commitId: "a".repeat(40),
-			markerHeadSha: "a".repeat(40),
-			allowInlineComments: true,
-			changedFiles: [...changedFiles, { filename: "src/large.ts" }],
-		});
-		expect(result.errors).toEqual([]);
-		const plan = result.plan!;
-		expect(plan.primary.comments).toHaveLength(1);
-		expect(plan.primary.comments?.[0]?.body).toContain("[P2] First inline");
-		expect(plan.diagnostics).toEqual([
+		const diagnostic = await diagnosePullPublication(mixed, [
+			...changedFiles,
+			{ filename: "src/large.ts" },
+		]);
+		expect(diagnostic.result.status).toBe("posted_degraded");
+		expect(diagnostic.postCount).toBe(1);
+		const comments = diagnostic.payload?.comments as Array<Record<string, unknown>>;
+		expect(comments).toHaveLength(1);
+		expect(comments[0]?.body).toContain("[P2] First inline");
+		const expectedDiagnostics = [
 			"finding 2: duplicate inline anchor; kept in the review summary",
 			"finding 3: line range is not inside one diff hunk on RIGHT; kept in the review summary",
 			"finding 4: path is not a changed file; kept in the review summary",
 			"finding 5: diff patch is unavailable; kept in the review summary",
-		]);
-		const demotedTitles = ["Duplicate anchor", "Outside hunk", "Unchanged path", "Missing patch"];
+		];
+		const body = String(diagnostic.payload?.body);
 		let previous = -1;
-		for (const title of demotedTitles) {
-			const at = plan.primary.body.indexOf(title);
+		for (const item of expectedDiagnostics) {
+			const at = body.indexOf(item);
 			expect(at).toBeGreaterThan(previous);
 			previous = at;
 		}
-		for (const content of [
+		const payloadText = JSON.stringify(diagnostic.payload);
+		for (const findingBody of [
+			"First body.",
 			"Duplicate body.",
 			"Outside body.",
 			"Unchanged body.",
 			"Patchless body.",
-			"src/parser.ts:2 RIGHT",
-			"src/parser.ts:20 RIGHT",
-			"src/unchanged.ts:4 RIGHT",
-			"src/large.ts:1 RIGHT",
 		]) {
-			expect(plan.primary.body).toContain(content);
-		}
-		const allTitles = ["First inline", ...demotedTitles];
-		previous = -1;
-		for (const title of allTitles) {
-			const at = plan.bodyOnly.body.indexOf(title);
-			expect(at).toBeGreaterThan(previous);
-			previous = at;
+			expect(payloadText.split(findingBody)).toHaveLength(2);
 		}
 	});
 
-	test("keeps unsafe, malformed, reserved-marker, and body-only overflow boundaries fatal", () => {
+	test("fails malformed, unsafe, and reserved review content before any write", async () => {
 		const unsafe: ReviewLike = JSON.parse(JSON.stringify(review));
 		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
 		const malformed: ReviewLike = JSON.parse(JSON.stringify(review));
@@ -1024,19 +1000,17 @@ describe("centralized lossless publication planning", () => {
 			[malformed, "invalid line range"],
 			[reserved, "reserved pi-pr-review marker"],
 		] as const) {
-			const result = planReviewPublication({
-				review: candidate,
-				commitId: "a".repeat(40),
-				markerHeadSha: "a".repeat(40),
-				allowInlineComments: true,
-				changedFiles,
-			});
-			expect(result.plan).toBeUndefined();
-			expect(result.errors.join("; ")).toContain(expected);
+			const diagnostic = await diagnosePullPublication(candidate, changedFiles);
+			expect(diagnostic.result.status).toBe("failed");
+			expect(diagnostic.result.message).toContain(expected);
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
 		}
+	});
 
+	test("validates limits only against the payload selected for publication", async () => {
 		const findingCount = 40;
-		const overflow: ReviewLike = {
+		const large: ReviewLike = {
 			...review,
 			findings: Array.from({ length: findingCount }, (_, index) => ({
 				title: `[P2] Large finding ${index + 1}`,
@@ -1056,15 +1030,45 @@ describe("centralized lossless publication planning", () => {
 			`@@ -1,${findingCount} +1,${findingCount} @@`,
 			...Array.from({ length: findingCount }, (_, index) => ` line ${index + 1}`),
 		].join("\n");
-		const oversizedPlan = planReviewPublication({
-			review: overflow,
-			commitId: "a".repeat(40),
-			markerHeadSha: "a".repeat(40),
-			allowInlineComments: true,
-			changedFiles: [{ filename: "src/large.ts", patch }],
+		const inline = await diagnosePullPublication(large, [{ filename: "src/large.ts", patch }]);
+		expect(inline.result.status).toBe("posted");
+		expect(inline.postCount).toBe(1);
+		expect(inline.payload?.comments as unknown[]).toHaveLength(findingCount);
+
+		const degraded = await diagnosePullPublication(large, [{ filename: "src/large.ts", patch }], {
+			filesFailure: "gh: changed-file lookup unavailable",
 		});
-		expect(oversizedPlan.plan).toBeUndefined();
-		expect(oversizedPlan.errors.join("; ")).toContain("body-only review body exceeds");
+		expect(degraded.result.status).toBe("failed");
+		expect(degraded.result.message).toContain("review body exceeds 65536 UTF-8 bytes");
+		expect(degraded.postCount).toBe(0);
+	});
+
+	test("fails an oversized selected payload before POST", async () => {
+		const findingCount = 15;
+		const oversized: ReviewLike = {
+			...review,
+			findings: Array.from({ length: findingCount }, (_, index) => ({
+				title: `[P2] Payload finding ${index + 1}`,
+				severity: "P2",
+				blocking: false,
+				body: `${index + 1}: ${"y".repeat(60_000)}`,
+				confidence_score: 0.9,
+				code_location: {
+					absolute_file_path: "src/large.ts",
+					line_range: { start: index + 1, end: index + 1 },
+					side: "RIGHT",
+					commentable: true,
+				},
+			})),
+		};
+		const patch = [
+			`@@ -1,${findingCount} +1,${findingCount} @@`,
+			...Array.from({ length: findingCount }, (_, index) => ` line ${index + 1}`),
+		].join("\n");
+		const diagnostic = await diagnosePullPublication(oversized, [{ filename: "src/large.ts", patch }]);
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("review payload is too large");
+		expect(diagnostic.postCount).toBe(0);
 	});
 });
 
@@ -1121,8 +1125,8 @@ describe("lossless publication diagnostics", () => {
 			const body = String(diagnostic.payload?.body);
 			expect(body.match(new RegExp(warning, "g"))).toHaveLength(1);
 			expect(body).not.toContain("path is not a changed file");
-			expect(body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
-			expect(body.match(/\[nit\] Rename tmp/g)).toHaveLength(1);
+			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
 		}
 	});
 
@@ -1181,13 +1185,15 @@ describe("lossless publication diagnostics", () => {
 		const payloadText = JSON.stringify(diagnostic.payload);
 		for (let index = 1; index <= inlineCount; index++) {
 			expect(payloadText).toContain(`[P2] Diagnostic finding ${index}`);
-			expect(payloadText).toContain(`Unique diagnostic body ${index}.`);
+			expect(payloadText.split(`Unique diagnostic body ${index}.`)).toHaveLength(2);
 		}
-		expect(String(diagnostic.payload?.body)).toContain(`src/parser.ts:${inlineCount} RIGHT`);
-		expect(String(diagnostic.payload?.body)).toContain(warning);
+		const body = String(diagnostic.payload?.body);
+		expect(body).toContain(`src/parser.ts:${inlineCount} RIGHT`);
+		expect(body).toContain(`Unique diagnostic body ${inlineCount}.`);
+		expect(body).toContain(warning);
 	});
 
-	test("keeps the precomputed body-only plan dormant after a server rejection", async () => {
+	test("does not build or send a fallback payload after a server rejection", async () => {
 		const diagnostic = await diagnosePullPublication(review, changedFiles, {
 			postFailure: "gh: HTTP 422: Validation Failed (invalid inline position)",
 		});
@@ -1350,19 +1356,6 @@ describe("atomic COMMENT review payload", () => {
 		const summary = buildReviewSummary(review, result.comments);
 		expect(summary).toContain("2 total (0 inline, 2 summary-only)");
 		expect(summary).toContain("[P2] Handle empty input");
-	});
-
-	test("folds inline findings exactly once into a body-only non-open review", () => {
-		const folded = collectFoldedComments(review);
-		expect(folded.errors).toEqual([]);
-		expect(folded.comments).toHaveLength(1);
-		const summary = buildReviewSummary(review, folded.comments);
-		const body = foldInlineComments(summary, folded.comments);
-		const payload = buildPullReviewPayload("b".repeat(40), body, []);
-		expect(payload.event).toBe("COMMENT");
-		expect(payload.comments).toBeUndefined();
-		expect(payload.body).toContain("Inline findings (folded for a non-open PR)");
-		expect(payload.body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
 	});
 
 	test("uses and reconciles a case-insensitive canonical same-head marker", () => {
