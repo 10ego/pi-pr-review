@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +88,11 @@ interface Harness {
 	emit(name: string, event: any): Promise<any[]>;
 }
 
+interface HarnessOptions {
+	projectConfig?: Record<string, unknown>;
+	operationLogPath?: string;
+}
+
 const tempDirs: string[] = [];
 let previousPath: string | undefined;
 
@@ -118,26 +132,53 @@ fi
 	return dir;
 }
 
-function installFakePublishingGh(currentHead = "a".repeat(40), patchless = false): string {
+interface PublishingProbe {
+	payloadPath: string;
+	calls(): string[];
+	postCount(): number;
+	payload(): Record<string, unknown> | undefined;
+}
+
+function installPublishingProbe(options: {
+	currentHead?: string;
+	patchless?: boolean;
+	postFailure?: string;
+	operationLogPath?: string;
+} = {}): PublishingProbe {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-publish-tool-"));
 	tempDirs.push(dir);
 	const gh = join(dir, "gh");
 	const payloadPath = join(dir, "payload.json");
-	const changedFiles = patchless ? '[[{"filename":"src/parser.ts","status":"modified"}]]' : "[[]]";
+	const callsPath = join(dir, "calls.log");
+	const postsPath = join(dir, "posts.log");
+	const failurePath = join(dir, "post-failure.txt");
+	const changedFiles = options.patchless ? '[[{"filename":"src/parser.ts","status":"modified"}]]' : "[[]]";
+	const currentHead = options.currentHead ?? "a".repeat(40);
+	writeFileSync(failurePath, options.postFailure ?? "");
+	const recordPostOperation = options.operationLogPath
+		? `printf 'gh:POST\\n' >> '${options.operationLogPath}'`
+		: ":";
 	writeFileSync(
 		gh,
 		`#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
+printf '%s\n' "$args" >> '${callsPath}'
 if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
   echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
 elif [[ "$args" == *" user --jq .login"* ]]; then
   echo 'reviewer'
+elif [[ "$args" == *"--method POST"* ]]; then
+  printf 'post\n' >> '${postsPath}'
+  ${recordPostOperation}
+  cat > '${payloadPath}'
+  if [[ -s '${failurePath}' ]]; then
+    cat '${failurePath}' >&2
+    exit 1
+  fi
+  echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
 elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/comments?per_page=100"* ]]; then
   echo '[[]]'
-elif [[ "$args" == *"--method POST"* ]]; then
-  cat > '${payloadPath}'
-  echo '{"id":42,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-42"}'
 elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
   echo '${changedFiles}'
 elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
@@ -150,10 +191,29 @@ fi
 	);
 	chmodSync(gh, 0o755);
 	process.env.PATH = `${dir}:${process.env.PATH ?? ""}`;
-	return payloadPath;
+	return {
+		payloadPath,
+		calls: () => existsSync(callsPath)
+			? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
+			: [],
+		postCount: () => existsSync(postsPath)
+			? readFileSync(postsPath, "utf8").trim().split("\n").filter(Boolean).length
+			: 0,
+		payload: () => existsSync(payloadPath)
+			? JSON.parse(readFileSync(payloadPath, "utf8")) as Record<string, unknown>
+			: undefined,
+	};
 }
 
-function createHarness(initialBranch: any[] = [], identity = session): Harness {
+function installFakePublishingGh(currentHead = "a".repeat(40), patchless = false): string {
+	return installPublishingProbe({ currentHead, patchless }).payloadPath;
+}
+
+function createHarness(
+	initialBranch: any[] = [],
+	identity = session,
+	options: HarnessOptions = {},
+): Harness {
 	let nextId = 1;
 	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
@@ -170,10 +230,15 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		getHeader: () => ({ type: "session", id: identity.id, timestamp: identity.startedAt, cwd: "/tmp" }),
 		getLeafEntry: () => branch.at(-1),
 	};
+	const cwd = installFakeGh();
+	if (options.projectConfig) {
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "pr-review.json"), JSON.stringify(options.projectConfig));
+	}
 	const ctx = {
-		cwd: installFakeGh(),
+		cwd,
 		mode: "json",
-		isProjectTrusted: () => false,
+		isProjectTrusted: () => options.projectConfig !== undefined,
 		abort: () => {
 			aborts++;
 		},
@@ -195,6 +260,7 @@ function createHarness(initialBranch: any[] = [], identity = session): Harness {
 		},
 		appendEntry: (customType: string, data: unknown) => {
 			branch.push({ type: "custom", id: `custom-${nextId++}`, customType, data });
+			if (options.operationLogPath) appendFileSync(options.operationLogPath, `append:${customType}\n`);
 		},
 		sendMessage: (message: any, options: any) => {
 			sentMessages.push({ message, options });
@@ -247,6 +313,54 @@ function persistedInlineReview(identity = session, allowStalePublish = true): an
 		repository,
 	);
 	return cache.persist(record, identity);
+}
+
+function completedReviewMessage(): any {
+	return {
+		role: "assistant",
+		stopReason: "stop",
+		content: [{ type: "text", text: JSON.stringify(review) }],
+	};
+}
+
+async function finishReviewTurn(harness: Harness, prompt: string): Promise<void> {
+	await harness.emit("input", { text: prompt, source: "interactive" });
+	const message = completedReviewMessage();
+	await harness.emit("message_end", { message });
+	harness.appendMessage(message);
+	await harness.emit("turn_end", { message, toolResults: [] });
+}
+
+type PostingPath = "automatic" | "comment" | "slash" | "direct";
+
+async function exercisePostingPath(
+	postingPath: PostingPath,
+	options: { postFailure?: string; operationLogPath?: string } = {},
+): Promise<{ harness: Harness; probe: PublishingProbe; inputResults: any[] }> {
+	const cached = postingPath === "slash" || postingPath === "direct";
+	const initialBranch = cached
+		? [{ type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persistedInlineReview() }]
+		: [];
+	const harness = createHarness(initialBranch, session, {
+		...(postingPath === "automatic" ? { projectConfig: { autoPostReviews: true } } : {}),
+		...(options.operationLogPath ? { operationLogPath: options.operationLogPath } : {}),
+	});
+	if (cached) await harness.emit("session_start", { reason: "reload" });
+	const probe = installPublishingProbe({
+		...(options.postFailure ? { postFailure: options.postFailure } : {}),
+		...(options.operationLogPath ? { operationLogPath: options.operationLogPath } : {}),
+	});
+	let inputResults: any[] = [];
+	if (postingPath === "automatic") await finishReviewTurn(harness, "/pr-review 7");
+	else if (postingPath === "comment") await finishReviewTurn(harness, "/pr-review 7 --comment");
+	else if (postingPath === "slash") await harness.commands.get("pr-review-publish")!("7", harness.ctx);
+	else {
+		inputResults = await harness.emit("input", {
+			text: "publish the cached review for PR #7",
+			source: "interactive",
+		});
+	}
+	return { harness, probe, inputResults };
 }
 
 describe("completed review extension lifecycle", () => {
@@ -692,5 +806,151 @@ describe("completed review extension lifecycle", () => {
 			summaryEntry: { type: "branch_summary", id: "summary" },
 		});
 		expect(harness.branch.some((entry) => entry.customType === COMPLETED_REVIEW_BRANCH_ANCHOR_TYPE)).toBeFalse();
+	});
+});
+
+describe("end-to-end review posting invariants", () => {
+	for (const postingPath of ["automatic", "comment"] as const) {
+		test(`posts a completed review through the ${postingPath} authority path`, async () => {
+			const { harness, probe } = await exercisePostingPath(postingPath);
+
+			expect(probe.postCount()).toBe(1);
+			expect(probe.payload()).toMatchObject({
+				commit_id: "a".repeat(40),
+				event: "COMMENT",
+			});
+			expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+			expect(
+				harness.branch.some((entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE),
+			).toBeTrue();
+		});
+	}
+
+	for (const postingPath of ["slash", "direct"] as const) {
+		test(`publishes the cached review through the ${postingPath} path without an agent rerun`, async () => {
+			const { harness, probe, inputResults } = await exercisePostingPath(postingPath);
+
+			expect(probe.postCount()).toBe(1);
+			expect(harness.sentMessages).toEqual([]);
+			expect(harness.branch.filter((entry) => entry.type === "message")).toEqual([]);
+			expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+			expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+			if (postingPath === "direct") expect(inputResults).toContainEqual({ action: "handled" });
+		});
+	}
+
+	test("keeps payload semantics equivalent across automatic, --comment, slash, and direct posting", async () => {
+		const payloads: Record<PostingPath, Record<string, unknown>> = {} as Record<
+			PostingPath,
+			Record<string, unknown>
+		>;
+		for (const postingPath of ["automatic", "comment", "slash", "direct"] as const) {
+			const { probe } = await exercisePostingPath(postingPath);
+			const payload = probe.payload();
+			expect(payload).toBeDefined();
+			payloads[postingPath] = payload!;
+		}
+
+		expect(payloads.comment).toEqual(payloads.automatic);
+		expect(payloads.slash).toEqual(payloads.automatic);
+		expect(payloads.direct).toEqual(payloads.automatic);
+		expect(payloads.automatic.event).toBe("COMMENT");
+		expect(payloads.automatic.body).toContain("Checks lifecycle persistence.");
+		expect(payloads.automatic.body).toContain("<!-- pi-pr-review:");
+	});
+
+	test("persists the completed review after message storage and before automatic POST", async () => {
+		const sequenceDir = mkdtempSync(join(tmpdir(), "pi-pr-review-sequence-"));
+		tempDirs.push(sequenceDir);
+		const operationLogPath = join(sequenceDir, "operations.log");
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true },
+			operationLogPath,
+		});
+		const probe = installPublishingProbe({ operationLogPath });
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const message = completedReviewMessage();
+
+		await harness.emit("message_end", { message });
+		expect(
+			harness.branch.some((entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE),
+		).toBeFalse();
+		expect(probe.postCount()).toBe(0);
+
+		const assistantEntry = harness.appendMessage(message, "stored-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		const persisted = harness.branch.findLast(
+			(entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE,
+		);
+		const operations = readFileSync(operationLogPath, "utf8").trim().split("\n");
+		const persistenceIndex = operations.indexOf(`append:${COMPLETED_REVIEW_ENTRY_TYPE}`);
+		const postIndex = operations.indexOf("gh:POST");
+
+		expect(persisted?.data.reviewEntryId).toBe(assistantEntry.id);
+		expect(persistenceIndex).toBeGreaterThanOrEqual(0);
+		expect(postIndex).toBeGreaterThan(persistenceIndex);
+		expect(probe.postCount()).toBe(1);
+	});
+
+	test("denies queued and extension-generated review or cached-publish authority", async () => {
+		const cacheEntry = {
+			type: "custom",
+			id: "cache",
+			customType: COMPLETED_REVIEW_ENTRY_TYPE,
+			data: persistedInlineReview(),
+		};
+		const harness = createHarness([cacheEntry]);
+		await harness.emit("session_start", { reason: "reload" });
+		const probe = installPublishingProbe();
+
+		const extensionPublish = await harness.emit("input", {
+			text: "publish the cached review for PR #7",
+			source: "extension",
+		});
+		const queuedPublish = await harness.emit("input", {
+			text: "publish the cached review for PR #7",
+			source: "interactive",
+			streamingBehavior: "followUp",
+		});
+		const extensionReview = await harness.emit("input", {
+			text: "/pr-review 7 --comment",
+			source: "extension",
+		});
+		const queuedReview = await harness.emit("input", {
+			text: "/pr-review 7 --comment",
+			source: "interactive",
+			streamingBehavior: "followUp",
+		});
+		const message = completedReviewMessage();
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message);
+		await harness.emit("turn_end", { message, toolResults: [] });
+
+		expect(extensionPublish).not.toContainEqual({ action: "handled" });
+		expect(queuedPublish).not.toContainEqual({ action: "handled" });
+		expect(extensionReview).toContainEqual({ action: "handled" });
+		expect(queuedReview).toContainEqual({ action: "handled" });
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+		expect(probe.postCount()).toBe(0);
+	});
+
+	test("performs reconciliation after a rejected write without issuing a second POST", async () => {
+		for (const postingPath of ["automatic", "comment", "slash", "direct"] as const) {
+			const { harness, probe } = await exercisePostingPath(postingPath, {
+				postFailure: "gh: HTTP 422: Validation Failed",
+			});
+			const calls = probe.calls();
+			const postIndexes = calls
+				.map((call, index) => call.includes("--method POST") ? index : -1)
+				.filter((index) => index >= 0);
+			const reconciliationCalls = calls.slice(postIndexes[0]! + 1);
+
+			expect(probe.postCount()).toBe(1);
+			expect(postIndexes).toHaveLength(1);
+			expect(reconciliationCalls.some((call) => call.includes("pulls/7/reviews?per_page=100"))).toBeTrue();
+			expect(reconciliationCalls.some((call) => call.includes("issues/7/comments?per_page=100"))).toBeTrue();
+			expect(harness.notifications.some((message) => message.includes("publish failed"))).toBeTrue();
+		}
 	});
 });
