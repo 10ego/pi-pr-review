@@ -30,9 +30,31 @@
     "type": "git",
     "url": "git+https://github.com/10ego/pi-pr-review.git"
   },
+  "homepage": "https://github.com/10ego/pi-pr-review#readme",
+  "bugs": {
+    "url": "https://github.com/10ego/pi-pr-review/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "README.md",
+    "CHANGELOG.md",
+    "extensions/",
+    "lib/",
+    "prompts/"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "scripts": {
     "test": "bun test",
-    "verify:release-version": "node scripts/verify-release-version.mjs"
+    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/workflows.node.mjs",
+    "verify:release-version": "node scripts/verify-release-version.mjs",
+    "verify:package": "node scripts/verify-package-contents.mjs",
+    "verify:workflows": "node scripts/verify-workflows.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
