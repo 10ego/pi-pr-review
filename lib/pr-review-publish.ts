@@ -862,6 +862,22 @@ interface InlineSelection {
 	errors: string[];
 }
 
+function buildPublishComment(
+	path: string,
+	body: string,
+	side: "LEFT" | "RIGHT",
+	start: number,
+	end: number,
+): PublishComment {
+	return {
+		path,
+		body,
+		line: end,
+		side,
+		...(start < end ? { start_line: start, start_side: side } : {}),
+	};
+}
+
 function selectInlineComments(
 	review: ReviewLike,
 	changedFiles: readonly ChangedFileLike[],
@@ -893,13 +909,7 @@ function selectInlineComments(
 			errors.push(`${label}: comment body is empty or too large`);
 			continue;
 		}
-		const comment: PublishComment = {
-			path,
-			body,
-			line: end,
-			side,
-			...(start < end ? { start_line: start, start_side: side } : {}),
-		};
+		const comment = buildPublishComment(path, body, side, start, end);
 		const file = files.get(path);
 		if (!file) {
 			diagnostics.push(`${label}: path is not a changed file; kept in the review summary`);
@@ -971,6 +981,53 @@ export function validateInlineComments(
 		errors: selected.errors,
 		warnings: selected.diagnostics,
 	};
+}
+
+/** Compatibility helper for callers that fold would-be inline findings into a body-only review. */
+export function collectFoldedComments(review: ReviewLike): CommentValidationResult {
+	const comments: PublishComment[] = [];
+	const errors: string[] = [];
+	for (const [index, finding] of (review.findings ?? []).entries()) {
+		const location = finding.code_location;
+		if (!location?.commentable || !isInlineSeverity(finding)) continue;
+		const path = String(location.absolute_file_path ?? "");
+		const side = String(location.side ?? "").toUpperCase();
+		const start = location.line_range?.start;
+		const end = location.line_range?.end;
+		const label = `finding ${index + 1}`;
+		if (!safeRelativePath(path) || (side !== "LEFT" && side !== "RIGHT")) {
+			errors.push(`${label}: invalid folded inline location`);
+			continue;
+		}
+		if (!Number.isInteger(start) || !Number.isInteger(end) || Number(start) <= 0 || Number(end) < Number(start)) {
+			errors.push(`${label}: invalid folded line range`);
+			continue;
+		}
+		const body = [`**${String(finding.title ?? "Review finding").trim()}**`, finding.body?.trim()]
+			.filter(Boolean)
+			.join("\n\n");
+		if (!body || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+			errors.push(`${label}: folded comment body is empty or too large`);
+			continue;
+		}
+		if (containsReservedReviewMarker(body)) {
+			errors.push(`${label}: folded comment body contains a reserved pi-pr-review marker`);
+			continue;
+		}
+		comments.push(buildPublishComment(path, body, side, Number(start), Number(end)));
+	}
+	return { comments, errors, warnings: [] };
+}
+
+/** Compatibility formatter for body-only reviews assembled by earlier consumers. */
+export function foldInlineComments(summary: string, comments: PublishComment[]): string {
+	if (comments.length === 0) return summary;
+	const lines = [summary, "", "### Inline findings (folded for a non-open PR)", ""];
+	for (const comment of comments) {
+		const range = comment.start_line ? `${comment.start_line}-${comment.line}` : String(comment.line);
+		lines.push(`#### \`${comment.path}:${range} ${comment.side}\``, "", comment.body, "");
+	}
+	return lines.join("\n").trim();
 }
 
 export function containsReservedReviewMarker(body: string): boolean {

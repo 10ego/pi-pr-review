@@ -10,10 +10,12 @@ import {
 	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
+	collectFoldedComments,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
 	decideReviewPublication,
 	containsReservedReviewMarker,
+	foldInlineComments,
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
@@ -757,29 +759,15 @@ fi
 		expect(prompt).not.toContain("pr_review_publish");
 	});
 
-	test("documents lossless single-shot publication boundaries", () => {
+	test("documents the cached single-post contract", () => {
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
 		for (const document of [readme, prompt]) {
-			expect(document).toContain("builds exactly one lossless `COMMENT` payload");
-			expect(document).toContain(
-				"changed-file lookup failures, missing patches, safe out-of-hunk or unchanged-file paths, duplicate anchors, and candidates beyond the 50-inline limit",
-			);
-			expect(document).toContain(
-				"are preserved complete in the top-level review body with publication diagnostics",
-			);
-			expect(document).toContain(
-				"Changed-file lookup failures, stale reviews, and authorized non-open PRs produce one body-only payload before the sole write",
-			);
-			expect(document).toContain(
-				"Malformed or unsafe locations, reserved `pi-pr-review` markers, and oversized selected review bodies or payloads fail closed",
-			);
-			expect(document).toContain("All write gates fail closed");
-			expect(document).toContain("at most one GitHub review `POST`");
-			expect(document).toContain(
-				"never retries a rejected write with a fallback payload after a 4xx, 5xx, or transport rejection",
-			);
-			expect(document).toContain("no idempotency or no-commit guarantee");
+			expect(document).toContain("caches one validated completed review");
+			expect(document).toContain("`autoPostReviews` and `--comment` publish that cached review after completion");
+			expect(document).toContain("builds one `COMMENT` payload and sends at most one GitHub review `POST`");
+			expect(document).toContain("first 50 eligible P0–P3 findings with valid, unique diff anchors are inline");
+			expect(document).toContain("All other findings that pass content validation stay in the top-level review body");
 		}
 	});
 });
@@ -1364,6 +1352,16 @@ describe("atomic COMMENT review payload", () => {
 		const summary = buildReviewSummary(review, result.comments);
 		expect(summary).toContain("2 total (0 inline, 2 summary-only)");
 		expect(summary).toContain("[P2] Handle empty input");
+	});
+
+	test("preserves the folded-comment compatibility exports", () => {
+		const folded = collectFoldedComments(review);
+		expect(folded.errors).toEqual([]);
+		expect(folded.comments).toHaveLength(1);
+		const summary = buildReviewSummary(review, folded.comments);
+		const body = foldInlineComments(summary, folded.comments);
+		expect(body).toContain("Inline findings (folded for a non-open PR)");
+		expect(body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
 	});
 
 	test("uses and reconciles a case-insensitive canonical same-head marker", () => {
