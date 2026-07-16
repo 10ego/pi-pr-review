@@ -91,6 +91,7 @@ interface Harness {
 interface HarnessOptions {
 	projectConfig?: Record<string, unknown>;
 	operationLogPath?: string;
+	persistenceFailure?: string;
 }
 
 const tempDirs: string[] = [];
@@ -259,6 +260,9 @@ function createHarness(
 			if (!activeTools.includes(definition.name)) activeTools.push(definition.name);
 		},
 		appendEntry: (customType: string, data: unknown) => {
+			if (customType === COMPLETED_REVIEW_ENTRY_TYPE && options.persistenceFailure) {
+				throw new Error(options.persistenceFailure);
+			}
 			branch.push({ type: "custom", id: `custom-${nextId++}`, customType, data });
 			if (options.operationLogPath) appendFileSync(options.operationLogPath, `append:${customType}\n`);
 		},
@@ -890,6 +894,26 @@ describe("end-to-end review posting invariants", () => {
 		expect(persistenceIndex).toBeGreaterThanOrEqual(0);
 		expect(postIndex).toBeGreaterThan(persistenceIndex);
 		expect(probe.postCount()).toBe(1);
+	});
+
+	test("warns about persistence failure before continuing with the frozen publication", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true },
+			persistenceFailure: "intentional persistence failure",
+		});
+		const probe = installPublishingProbe();
+		await finishReviewTurn(harness, "/pr-review 7");
+
+		const warningIndex = harness.notifications.findIndex((message) =>
+			message.includes("cache will not survive an extension reload"),
+		);
+		const postedIndex = harness.notifications.findIndex((message) => message.includes("PR review posted"));
+		expect(warningIndex).toBeGreaterThanOrEqual(0);
+		expect(postedIndex).toBeGreaterThan(warningIndex);
+		expect(probe.postCount()).toBe(1);
+		expect(
+			harness.branch.some((entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE),
+		).toBeFalse();
 	});
 
 	test("denies queued and extension-generated review or cached-publish authority", async () => {

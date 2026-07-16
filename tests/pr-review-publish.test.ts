@@ -251,12 +251,12 @@ describe("automatic posting configuration", () => {
 		expect(renderer).toContain("const publishingConfig = resolvePublishingConfig(ctx)");
 		expect(renderer).toContain("publishingConfig.allowStale.valid && publishingConfig.allowStale.value");
 		const publisher = renderer.slice(
-			renderer.indexOf("async function maybePublishReview"),
+			renderer.indexOf("async function publishCompletedReview"),
 			renderer.indexOf("export default function"),
 		);
 		expect(publisher).not.toContain("resolvePublishingConfig");
-		expect(publisher).toContain("decideReviewPublication(invocation)");
-		expect(publisher).toContain("allowStale: invocation.allowStalePublish");
+		expect(publisher).toContain("decideReviewPublication(record.invocation)");
+		expect(publisher).toContain("record.invocation.allowStalePublish");
 	});
 });
 
@@ -558,14 +558,22 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
-	test("does not retry publication without the repository binding used for caching", () => {
+	test("publishes the canonical cached record without reparsing assistant text", () => {
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
 		const publisher = extension.slice(
-			extension.indexOf("async function maybePublishReview"),
+			extension.indexOf("async function publishCompletedReview"),
 			extension.indexOf("export default function"),
 		);
-		expect(publisher).toContain("if (!expectedRepository)");
-		expect(publisher).toContain("no publish-only cache is available");
+		const turnEnd = extension.slice(
+			extension.indexOf('pi.on("turn_end"'),
+			extension.indexOf('pi.on("message_end"'),
+		);
+		const messageEnd = extension.slice(extension.indexOf('pi.on("message_end"'));
+		expect(publisher).toContain("expectedRepository: record.repository");
+		expect(publisher).not.toContain("parsePublishableReview");
+		expect(turnEnd).not.toContain("parsePublishableReview");
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		expect(extension).toContain("no publish-only cache is available");
 	});
 
 	test("keeps stale protection by default and degrades an explicit override", () => {
