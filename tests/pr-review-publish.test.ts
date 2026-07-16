@@ -738,6 +738,28 @@ fi
 		expect(prompt).toContain("permits stale publication");
 		expect(prompt).not.toContain("pr_review_publish");
 	});
+
+	test("documents lossless single-shot publication boundaries", () => {
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
+		for (const document of [readme, prompt]) {
+			expect(document).toContain(
+				"changed-file lookup failures, missing patches, safe out-of-hunk or unchanged-file paths, duplicate anchors, and candidates beyond the 50-inline limit",
+			);
+			expect(document).toContain(
+				"are preserved complete in the top-level review body with publication diagnostics",
+			);
+			expect(document).toContain(
+				"Malformed or unsafe locations, reserved `pi-pr-review` markers, and oversized lossless primary or body-only payloads fail closed",
+			);
+			expect(document).toContain("All write gates fail closed");
+			expect(document).toContain("at most one GitHub review `POST`");
+			expect(document).toContain(
+				"never activates the precomputed body-only payload after a 4xx, 5xx, or transport rejection",
+			);
+			expect(document).toContain("no idempotency or no-commit guarantee");
+		}
+	});
 });
 
 describe("non-open publication authorization", () => {
