@@ -103,6 +103,9 @@ async function diagnosePullPublication(
 		state?: string;
 		mergedAt?: string | null;
 		allowNonOpen?: boolean;
+		allowStale?: boolean;
+		currentHead?: string;
+		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -183,7 +186,7 @@ fi
 	if (options.postFailure === undefined) delete process.env.GH_FAKE_POST_FAILURE;
 	else process.env.GH_FAKE_POST_FAILURE = options.postFailure;
 	process.env.GH_FAKE_POST_SENTINEL = postSentinel;
-	process.env.GH_FAKE_CURRENT = "a".repeat(40);
+	process.env.GH_FAKE_CURRENT = options.currentHead ?? "a".repeat(40);
 	process.env.GH_FAKE_STATE = options.state ?? "open";
 	process.env.GH_FAKE_MERGED_AT = options.mergedAt ? JSON.stringify(options.mergedAt) : "null";
 	try {
@@ -192,6 +195,8 @@ fi
 			prNumber: 7,
 			headSha: "a".repeat(40),
 			allowNonOpen: options.allowNonOpen ?? false,
+			allowStale: options.allowStale ?? false,
+			approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 			expectedRepository: { hostname: "github.com", repository: "owner/repo" },
 			review: candidateReview,
 		});
@@ -318,12 +323,12 @@ describe("auto-approve priority gate", () => {
 		).toEqual({ value: "P3", valid: true, source: "project" });
 	});
 
-	test("resolveApproveMaxPriorityLevelSetting rejects invalid values", () => {
-		const result = resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "P4" });
-		expect(result.value).toBe("off");
-		expect(result.valid).toBeFalse();
-		const result2 = resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: 42 });
-		expect(result2.valid).toBeFalse();
+	test("resolveApproveMaxPriorityLevelSetting rejects unsupported and malformed values", () => {
+		for (const value of ["P0", "P1", "P4", 42]) {
+			const result = resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: value });
+			expect(result.value).toBe("off");
+			expect(result.valid).toBeFalse();
+		}
 	});
 
 	test("findingsWithinApproveMaxPriority respects severity ranking", () => {
@@ -333,8 +338,6 @@ describe("auto-approve priority gate", () => {
 		expect(findingsWithinApproveMaxPriority(approveReview, "P3")).toBeFalse();
 		// max=nit → P2 is above, not allowed
 		expect(findingsWithinApproveMaxPriority(approveReview, "nit")).toBeFalse();
-		// max=P0 → everything allowed
-		expect(findingsWithinApproveMaxPriority(approveReview, "P0")).toBeTrue();
 		// max=off → never allowed
 		expect(findingsWithinApproveMaxPriority(approveReview, "off")).toBeFalse();
 	});
@@ -354,22 +357,20 @@ describe("auto-approve priority gate", () => {
 		// verdict=approve, max=P3 but findings has P2 → false
 		expect(shouldApproveReview(approveReview, "P3")).toBeFalse();
 		// verdict=request_changes → always false
-		expect(shouldApproveReview(requestChangesReview, "P0")).toBeFalse();
+		expect(shouldApproveReview(requestChangesReview, "P2")).toBeFalse();
 	});
 
-	test("shouldApproveReview rejects reviews with blocking findings even at P0 gate", () => {
-		// A contradictory review: verdict=approve but has a blocking P1 finding
+	test("shouldApproveReview rejects contradictory blocking findings", () => {
+		// This shape is invalid for a publishable review, but the defensive check
+		// ensures an inconsistent caller cannot turn it into an APPROVE event.
 		const contradictory: ReviewLike = {
 			...approveReview,
 			findings: [
-				{ title: "P1 issue", severity: "P1", blocking: true, body: "Blocking.", confidence_score: 0.9, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 1, end: 1 }, side: "RIGHT", commentable: true } },
+				{ title: "P2 issue", severity: "P2", blocking: true, body: "Blocking.", confidence_score: 0.9, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 1, end: 1 }, side: "RIGHT", commentable: true } },
 			],
 			verdict: "approve",
 		};
-		// Even with P0 gate (which permits all severities), blocking findings prevent APPROVE
-		expect(shouldApproveReview(contradictory, "P0")).toBeFalse();
-		// Non-blocking findings within the gate still allow APPROVE
-		expect(shouldApproveReview(approveReview, "P0")).toBeTrue();
+		expect(shouldApproveReview(contradictory, "P2")).toBeFalse();
 	});
 
 	test("buildPullReviewPayload defaults to COMMENT and supports APPROVE override", () => {
@@ -377,6 +378,34 @@ describe("auto-approve priority gate", () => {
 		expect(commentPayload.event).toBe("COMMENT");
 		const approvePayload = buildPullReviewPayload("a".repeat(40), "body", [], APPROVE_EVENT);
 		expect(approvePayload.event).toBe("APPROVE");
+	});
+
+	test("publishPullReview posts APPROVE for eligible open, stale, and non-open reviews", async () => {
+		const approveFiles = [{ filename: "src/a.ts", patch: "@@ -0,0 +1,2 @@\n+one\n+two" }];
+		const open = await diagnosePullPublication(approveReview, approveFiles, { approveMaxPriorityLevel: "P2" });
+		expect(open.result.status).toBe("posted");
+		expect(open.result.event).toBe("APPROVE");
+		expect(open.payload?.event).toBe("APPROVE");
+
+		const stale = await diagnosePullPublication(approveReview, approveFiles, {
+			approveMaxPriorityLevel: "P2",
+			allowStale: true,
+			currentHead: "b".repeat(40),
+		});
+		expect(stale.result.status).toBe("posted_degraded");
+		expect(stale.result.event).toBe("APPROVE");
+		expect(stale.payload?.event).toBe("APPROVE");
+		expect(stale.result.message).toContain("stale APPROVE");
+
+		const nonOpen = await diagnosePullPublication(approveReview, approveFiles, {
+			approveMaxPriorityLevel: "P2",
+			state: "closed",
+			allowNonOpen: true,
+		});
+		expect(nonOpen.result.status).toBe("posted_degraded");
+		expect(nonOpen.result.event).toBe("APPROVE");
+		expect(nonOpen.payload?.event).toBe("APPROVE");
+		expect(nonOpen.result.message).toContain("non-open PR");
 	});
 
 	test("invocation gate captures approveMaxPriorityLevel", () => {
@@ -922,7 +951,7 @@ fi
 		for (const document of [readme, prompt]) {
 			expect(document).toContain("caches one validated completed review");
 			expect(document).toContain("`autoPostReviews` and `--comment` publish that cached review after completion");
-			expect(document).toContain("builds one `COMMENT` payload and sends at most one GitHub review `POST`");
+			expect(document).toContain("builds one GitHub review payload and sends at most one review `POST`");
 			expect(document).toContain("first 50 eligible P0–P3 findings with valid, unique diff anchors are inline");
 			expect(document).toContain("All other findings that pass content validation stay in the top-level review body");
 		}

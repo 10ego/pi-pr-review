@@ -1754,10 +1754,12 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			const normalized = value.toLowerCase();
 			if (normalized === "off") {
 				patch.approveMaxPriorityLevel = "off";
-			} else if (["p0", "p1", "p2", "p3", "nit"].includes(normalized)) {
-				patch.approveMaxPriorityLevel = normalized === "nit" ? "nit" : normalized.toUpperCase() as ApproveMaxPriorityLevel;
+			} else if (["p2", "p3"].includes(normalized)) {
+				patch.approveMaxPriorityLevel = normalized.toUpperCase() as ApproveMaxPriorityLevel;
+			} else if (normalized === "nit") {
+				patch.approveMaxPriorityLevel = "nit";
 			} else {
-				errors.push(`invalid ${key} "${value}" (expected off|P0|P1|P2|P3|nit)`);
+				errors.push(`invalid ${key} "${value}" (expected off|P2|P3|nit)`);
 			}
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
@@ -2036,7 +2038,7 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			label: "auto-approve priority gate",
 			description: "Maximum severity that permits an APPROVE event (off = COMMENT only). Enter/Space cycles values.",
 			currentValue: String(cfg.approveMaxPriorityLevel),
-			values: ["off", "P0", "P1", "P2", "P3", "nit"],
+			values: ["off", "P2", "P3", "nit"],
 		},
 		{
 			id: "tools",
@@ -2109,7 +2111,7 @@ async function showConfigMenu(
 					const normalized = newValue.toLowerCase();
 					if (normalized === "off") {
 						draft.approveMaxPriorityLevel = "off";
-					} else if (["p0", "p1", "p2", "p3"].includes(normalized)) {
+					} else if (["p2", "p3"].includes(normalized)) {
 						draft.approveMaxPriorityLevel = normalized.toUpperCase() as ApproveMaxPriorityLevel;
 					} else if (normalized === "nit") {
 						draft.approveMaxPriorityLevel = "nit";

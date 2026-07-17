@@ -7,9 +7,9 @@ export type AutoPostSource = "default" | "user" | "project";
 export type CompletionAction = "continue_tools" | "accept_final" | "clear_invocation";
 
 /** Maximum severity that may appear in a review for auto-APPROVE to be granted. */
-export type ApproveMaxPriorityLevel = "off" | "P0" | "P1" | "P2" | "P3" | "nit";
+export type ApproveMaxPriorityLevel = "off" | "P2" | "P3" | "nit";
 
-const APPROVE_PRIORITY_LEVELS = ["P0", "P1", "P2", "P3", "nit"] as const;
+const APPROVE_PRIORITY_LEVELS = ["P2", "P3", "nit"] as const;
 const APPROVE_PRIORITY_RANK: Record<string, number> = {
 	P0: 4,
 	P1: 3,
@@ -1562,7 +1562,9 @@ export async function publishPullReview(input: {
 				changedFileLookupFailed = true;
 			}
 		}
-		const isApprove = isOpen && !headPlan.stale && shouldApproveReview(validatedReview, approveMaxPriorityLevel);
+		// Lifecycle and staleness are authorized above; the configured review gate
+		// alone determines whether that authorized publication records APPROVE.
+		const isApprove = shouldApproveReview(validatedReview, approveMaxPriorityLevel);
 		const built = buildLosslessReviewPayload({
 			review: validatedReview,
 			commitId: headPlan.commitId,
@@ -1625,10 +1627,10 @@ export async function publishPullReview(input: {
 			return {
 				status: degraded ? "posted_degraded" : "posted",
 				message: headPlan.stale
-					? `body-only stale COMMENT review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
+					? `body-only stale ${eventLabel} review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
 					: isOpen
 						? `GitHub ${eventLabel} review posted${inlineWarning}`
-						: "body-only COMMENT review posted for non-open PR",
+						: `body-only ${eventLabel} review posted for non-open PR`,
 				event: payload.event,
 				reviewId: response.id,
 				url: response.html_url,
@@ -1639,7 +1641,8 @@ export async function publishPullReview(input: {
 			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
 				return {
 					status: degraded ? "posted_degraded" : "posted",
-					message: `GitHub review found during failure reconciliation${inlineWarning}`,
+					message: `GitHub ${eventLabel} review found during failure reconciliation${inlineWarning}`,
+					event: payload.event,
 					reconciled: true,
 				};
 			}

@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { readFileSync, rmSync } from "node:fs";
 
 mock.module("@earendil-works/pi-ai", () => ({
 	StringEnum: () => ({}),
@@ -121,5 +122,27 @@ describe("review tool execution gate", () => {
 		await h.commands.get("pr-review-config")!("show", h.ctx);
 		expect(lease.signal.aborted).toBeTrue();
 		expect(h.activeTools()).toEqual(["read"]);
+	});
+
+	test("the config command persists only supported approve priority levels", async () => {
+		const agentDir = "/tmp/pi-pr-review-tool-gate-agent";
+		const configPath = `${agentDir}/pr-review.json`;
+		rmSync(agentDir, { recursive: true, force: true });
+		try {
+			const h = harness();
+			const command = h.commands.get("pr-review-config")!;
+			await command("approve_max_priority_level=off", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("off");
+			await command("approve_max_priority_level=P2", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("P2");
+			await command("approve_max_priority_level=P3", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("P3");
+			await command("approve_max_priority_level=nit", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("nit");
+			await command("approve_max_priority_level=P0", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("nit");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
 	});
 });

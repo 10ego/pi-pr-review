@@ -8,7 +8,7 @@ Give it a PR number and it will:
 - run focused review passes in parallel using models you choose;
 - validate candidate findings before reporting them;
 - render a structured review with severity, location, confidence, and verdict;
-- optionally publish one safe GitHub `COMMENT` review with inline comments.
+- optionally publish one safe GitHub review with inline comments (`COMMENT` by default; gated `APPROVE` when configured).
 
 The default review prioritizes P0–P2 defects and allows up to three minor findings. Use `--full` for exhaustive convention, maintainability, and minor coverage.
 
@@ -190,7 +190,7 @@ If the agent's final review is not valid exact-contract JSON, the extension logs
 
 You can publish the cache later with `/pr-review-publish 123`, or directly ask the agent to “post the inline review,” “post it as an inline review,” or “publish the review for PR #123.” The extension handles that request directly before an agent turn. `/pr-review-publish` and a matching direct request publish only the cache; they never start or rerun review agents. Unnumbered direct requests select the latest cached review for the current repository. Only fresh interactive/RPC input can use the direct path.
 
-Every authorized publish path builds one `COMMENT` payload and sends at most one GitHub review `POST`; it never submits `APPROVE` or `REQUEST_CHANGES` and never retries a rejected write with a fallback POST. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only.
+Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; it never submits `REQUEST_CHANGES` or retries a rejected write with a fallback POST. It emits `COMMENT` by default, or a gated `APPROVE` when configured below. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only, but may still record `APPROVE` when the configured gate qualifies the review.
 
 The same safety gates apply to every path: captured posting authority, exact repository/PR/review binding, safe locations, no reserved review markers, bounded bodies and payloads, current-head and stale policy, draft and lifecycle checks, non-open authorization, same-head duplicate detection, and a final head check. Unknown or invalid states fail closed before a write.
 
@@ -200,7 +200,7 @@ Stale publication is enabled by default through `allowStalePublish: true`; disab
 /pr-review-publish 123 --allow-stale
 ```
 
-A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
+A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. An authorized stale or non-open publication may still record `APPROVE` when `approveMaxPriorityLevel` qualifies the review. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
 
 ## Optional verification
 
@@ -249,7 +249,7 @@ Each finding includes:
 | `P3` | Low-priority improvement. |
 | `nit` | Trivial or optional. |
 
-The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to a severity level (e.g. `P2`), a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead.
+The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to `P2`, `P3`, or `nit`, a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead, including authorized stale or non-open publications.
 
 | Setting | Behavior |
 |---|---|
