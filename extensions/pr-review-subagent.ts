@@ -1746,6 +1746,19 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			if (value === "true") patch.allowStalePublish = true;
 			else if (value === "false") patch.allowStalePublish = false;
 			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
+		} else if (
+			key === "approve_max_priority_level" ||
+			key === "approvemaxprioritylevel" ||
+			key === "approve-max-priority-level"
+		) {
+			const normalized = value.toLowerCase();
+			if (normalized === "off") {
+				patch.approveMaxPriorityLevel = "off";
+			} else if (["p0", "p1", "p2", "p3", "nit"].includes(normalized)) {
+				patch.approveMaxPriorityLevel = normalized === "nit" ? "nit" : normalized.toUpperCase() as ApproveMaxPriorityLevel;
+			} else {
+				errors.push(`invalid ${key} "${value}" (expected off|P0|P1|P2|P3|nit)`);
+			}
 		} else if (key === "tools") {
 			patch.tools = splitCommaList(value);
 		} else {
@@ -2094,8 +2107,12 @@ async function showConfigMenu(
 					draft.allowStalePublish = newValue === "true";
 				} else if (id === "approve_max_priority_level") {
 					const normalized = newValue.toLowerCase();
-					if (["off", "p0", "p1", "p2", "p3", "nit"].includes(normalized)) {
-						draft.approveMaxPriorityLevel = normalized === "off" ? "off" : normalized.toUpperCase();
+					if (normalized === "off") {
+						draft.approveMaxPriorityLevel = "off";
+					} else if (["p0", "p1", "p2", "p3"].includes(normalized)) {
+						draft.approveMaxPriorityLevel = normalized.toUpperCase() as ApproveMaxPriorityLevel;
+					} else if (normalized === "nit") {
+						draft.approveMaxPriorityLevel = "nit";
 					}
 				} else if (id === "tools") {
 					draft.tools = splitCommaList(newValue);

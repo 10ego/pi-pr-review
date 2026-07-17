@@ -372,7 +372,7 @@ function notifyPublishResult(
 	ctx: ExtensionContext,
 ): void {
 	if (result.status === "posted") {
-		const label = result.message.includes("APPROVE") ? "APPROVE" : "COMMENT";
+		const label = result.event === "APPROVE" ? "APPROVE" : "COMMENT";
 		ctx.ui.notify(`PR review posted as ${label} (${source})${result.url ? `: ${result.url}` : ""}`, "info");
 	} else if (result.status === "posted_degraded") {
 		ctx.ui.notify(`PR review posted (${source}): ${result.message}${result.url ? ` ${result.url}` : ""}`, "warning");

@@ -37,7 +37,6 @@ import {
 	shouldPublishReview,
 	validateInlineComments,
 	validateReviewInvocation,
-	type ApproveMaxPriorityLevel,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
 
@@ -356,6 +355,21 @@ describe("auto-approve priority gate", () => {
 		expect(shouldApproveReview(approveReview, "P3")).toBeFalse();
 		// verdict=request_changes → always false
 		expect(shouldApproveReview(requestChangesReview, "P0")).toBeFalse();
+	});
+
+	test("shouldApproveReview rejects reviews with blocking findings even at P0 gate", () => {
+		// A contradictory review: verdict=approve but has a blocking P1 finding
+		const contradictory: ReviewLike = {
+			...approveReview,
+			findings: [
+				{ title: "P1 issue", severity: "P1", blocking: true, body: "Blocking.", confidence_score: 0.9, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 1, end: 1 }, side: "RIGHT", commentable: true } },
+			],
+			verdict: "approve",
+		};
+		// Even with P0 gate (which permits all severities), blocking findings prevent APPROVE
+		expect(shouldApproveReview(contradictory, "P0")).toBeFalse();
+		// Non-blocking findings within the gate still allow APPROVE
+		expect(shouldApproveReview(approveReview, "P0")).toBeTrue();
 	});
 
 	test("buildPullReviewPayload defaults to COMMENT and supports APPROVE override", () => {

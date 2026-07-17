@@ -79,9 +79,11 @@ export function shouldApproveReview(
 	review: ReviewLike,
 	approveMaxPriorityLevel: ApproveMaxPriorityLevel,
 ): boolean {
+	const findings = Array.isArray(review.findings) ? review.findings : [];
 	return (
 		review.verdict === "approve" &&
 		approveMaxPriorityLevel !== "off" &&
+		findings.every((finding) => !finding.blocking) &&
 		findingsWithinApproveMaxPriority(review, approveMaxPriorityLevel)
 	);
 }
@@ -1436,6 +1438,7 @@ export type PublishStatus =
 export interface PublishResult {
 	status: PublishStatus;
 	message: string;
+	event?: ReviewEventType;
 	reviewId?: number;
 	url?: string;
 	reconciled?: boolean;
@@ -1626,6 +1629,7 @@ export async function publishPullReview(input: {
 					: isOpen
 						? `GitHub ${eventLabel} review posted${inlineWarning}`
 						: "body-only COMMENT review posted for non-open PR",
+				event: payload.event,
 				reviewId: response.id,
 				url: response.html_url,
 			};
