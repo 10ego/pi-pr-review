@@ -1282,6 +1282,16 @@ describe("atomic COMMENT review payload", () => {
 		});
 	});
 
+	test("documents regression: findings-only ReviewLike input requires a full review envelope", () => {
+		const findingsOnly: ReviewLike = { findings: [review.findings![0]!] };
+		expect(collectFoldedComments(findingsOnly)).toMatchObject({ errors: [], comments: [{ path: "src/parser.ts" }] });
+		expect(validateInlineComments(findingsOnly, changedFiles)).toEqual({
+			comments: [],
+			errors: ["pr.number and pr.title are required"],
+			warnings: [],
+		});
+	});
+
 	test("keeps nits and noncommentable findings even when anchors collide", () => {
 		const colliding: ReviewLike = JSON.parse(JSON.stringify(review));
 		colliding.findings![1]!.code_location!.line_range = { start: 2, end: 3 };

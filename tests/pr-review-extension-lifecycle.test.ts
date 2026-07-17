@@ -514,6 +514,33 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.notifications.some((message) => message.includes("PR review publish failed"))).toBeTrue();
 	});
 
+	test("documents regression: pretty-printed exact JSON embeds the review while still posting", async () => {
+		const harness = createHarness();
+		const probe = installPublishingProbe();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const prettyJson = JSON.stringify(review, null, 2);
+		expect(JSON.parse(prettyJson)).toEqual(review);
+		expect(prettyJson).not.toBe(JSON.stringify(review));
+		const message = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: prettyJson }],
+		};
+		await harness.emit("message_end", { message });
+		const assistantEntry = harness.appendMessage(message, "pretty-assistant-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+
+		const persisted = harness.branch.findLast(
+			(entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE,
+		);
+		expect(assistantEntry.id).toBe("pretty-assistant-review");
+		expect(persisted?.data.reviewEntryId).toBeUndefined();
+		expect(persisted?.data.review).toEqual(review);
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.body).toContain("Checks lifecycle persistence.");
+		expect(harness.notifications.some((notification) => notification.includes("PR review posted"))).toBeTrue();
+	});
+
 	test("restores on session_start, clears on tree navigation, and scopes reused IDs by header", async () => {
 		const persisted = persistedInlineReview();
 		const cacheEntry = { type: "custom", id: "cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted };
