@@ -165,6 +165,36 @@ export function resolveAllowStalePublishSetting(
 	return { value: true, valid: true, source: "default" };
 }
 
+/** Resolve whether an otherwise-qualified stale review may record APPROVE. Disabled by default. */
+export function resolveAllowStaleApprovalsSetting(
+	user: unknown,
+	trustedProject?: unknown,
+): AutoPostResolution {
+	if (hasOwn(trustedProject, "allowStaleApprovals")) {
+		const value = (trustedProject as { allowStaleApprovals?: unknown }).allowStaleApprovals;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "project" }
+			: {
+					value: false,
+					valid: false,
+					source: "project",
+					error: "project allowStaleApprovals must be a boolean",
+				};
+	}
+	if (hasOwn(user, "allowStaleApprovals")) {
+		const value = (user as { allowStaleApprovals?: unknown }).allowStaleApprovals;
+		return typeof value === "boolean"
+			? { value, valid: true, source: "user" }
+			: {
+					value: false,
+					valid: false,
+					source: "user",
+					error: "user allowStaleApprovals must be a boolean",
+				};
+	}
+	return { value: false, valid: true, source: "default" };
+}
+
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
@@ -207,6 +237,8 @@ export interface ReviewInvocation {
 	readonly allowNonOpen: boolean;
 	/** Trusted stale-publication setting captured before review execution begins. */
 	readonly allowStalePublish: boolean;
+	/** Trusted stale-approval setting captured before review execution begins. */
+	readonly allowStaleApprovals: boolean;
 	/** Trusted automatic-posting decision captured before review execution begins. */
 	readonly autoPost: Readonly<AutoPostResolution>;
 	/** Trusted auto-approve priority gate captured before review execution begins. */
@@ -306,6 +338,7 @@ export class ReviewInvocationGate {
 		parsed: PublishModeParseResult,
 		autoPost: AutoPostResolution,
 		allowStalePublish = true,
+		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
 	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
@@ -326,6 +359,7 @@ export class ReviewInvocationGate {
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
 			allowStalePublish,
+			allowStaleApprovals,
 			autoPost: snapshot,
 			approveMaxPriorityLevel,
 		});
@@ -527,7 +561,8 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		!Number.isInteger(value.prNumber) ||
 		Number(value.prNumber) <= 0 ||
 		typeof value.allowNonOpen !== "boolean" ||
-		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean")
+		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean") ||
+		(value.allowStaleApprovals !== undefined && typeof value.allowStaleApprovals !== "boolean")
 	) {
 		return undefined;
 	}
@@ -548,6 +583,8 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		// Schema v2 records created before this setting existed inherit the new
 		// safe default: stale publication is body-only with both SHAs disclosed.
 		allowStalePublish: typeof value.allowStalePublish === "boolean" ? value.allowStalePublish : true,
+		// Legacy records never opt into merge-relevant stale approvals.
+		allowStaleApprovals: typeof value.allowStaleApprovals === "boolean" ? value.allowStaleApprovals : false,
 		autoPost: {
 			value: autoPost.value,
 			valid: autoPost.valid,
@@ -1469,6 +1506,7 @@ export async function publishPullReview(input: {
 	headSha: string;
 	allowNonOpen: boolean;
 	allowStale?: boolean;
+	allowStaleApprovals?: boolean;
 	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
@@ -1479,6 +1517,7 @@ export async function publishPullReview(input: {
 		headSha,
 		allowNonOpen,
 		allowStale = false,
+		allowStaleApprovals = false,
 		approveMaxPriorityLevel = "off",
 		expectedRepository,
 		review,
@@ -1562,9 +1601,11 @@ export async function publishPullReview(input: {
 				changedFileLookupFailed = true;
 			}
 		}
-		// Lifecycle and staleness are authorized above; the configured review gate
-		// alone determines whether that authorized publication records APPROVE.
-		const isApprove = shouldApproveReview(validatedReview, approveMaxPriorityLevel);
+		// Stale publication authorization is independent from merge-relevant stale
+		// approval. The latter requires its own explicit frozen config opt-in.
+		const isApprove =
+			(!headPlan.stale || allowStaleApprovals) &&
+			shouldApproveReview(validatedReview, approveMaxPriorityLevel);
 		const built = buildLosslessReviewPayload({
 			review: validatedReview,
 			commitId: headPlan.commitId,

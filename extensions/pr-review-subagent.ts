@@ -75,6 +75,7 @@ import {
 	type ToolPolicy,
 } from "../lib/pr-review-policy.ts";
 import {
+	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
@@ -133,6 +134,8 @@ interface PrReviewConfig {
 	autoPostReviews: boolean;
 	/** Permit stale publication as body-only with reviewed/current SHAs disclosed. Enabled by default. */
 	allowStalePublish: boolean;
+	/** Permit otherwise-qualified stale reviews to record APPROVE. Disabled by default. */
+	allowStaleApprovals: boolean;
 	/** Maximum severity finding that permits an APPROVE event (off disables auto-approve). */
 	approveMaxPriorityLevel: ApproveMaxPriorityLevel;
 	/** Trusted user-level named verification profiles. Project config never overlays these. */
@@ -222,6 +225,17 @@ function resolveAllowStaleForContext(ctx: Pick<ExtensionContext, "cwd" | "isProj
 	return resolveAllowStalePublishSetting(user, project);
 }
 
+function resolveAllowStaleApprovalsForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
+	const user = readConfigFile(userConfigPath());
+	let project: Partial<PrReviewConfig> | undefined;
+	try {
+		if (ctx.isProjectTrusted()) project = readConfigFile(projectConfigPath(ctx.cwd));
+	} catch {
+		/* user config only */
+	}
+	return resolveAllowStaleApprovalsSetting(user, project);
+}
+
 function resolveApproveMaxPriorityForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
 	const user = readConfigFile(userConfigPath());
 	let project: Partial<PrReviewConfig> | undefined;
@@ -244,6 +258,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	}
 	const autoPost = resolveAutoPostSetting(user, project);
 	const allowStale = resolveAllowStalePublishSetting(user, project);
+	const allowStaleApprovals = resolveAllowStaleApprovalsSetting(user, project);
 	const approveMaxPriority = resolveApproveMaxPriorityLevelSetting(user, project);
 	return {
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
@@ -258,6 +273,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 		},
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
 		allowStalePublish: allowStale.valid ? allowStale.value : false,
+		allowStaleApprovals: allowStaleApprovals.valid ? allowStaleApprovals.value : false,
 		approveMaxPriorityLevel: approveMaxPriority.valid ? approveMaxPriority.value : "off",
 		// Verification is intentionally user-owned. Never accept a profile from
 		// the repository-controlled project overlay, even for trusted projects.
@@ -271,6 +287,7 @@ function readUserConfig(): PrReviewConfig {
 	const raw = readConfigFile(userConfigPath());
 	const autoPost = resolveAutoPostSetting(raw);
 	const allowStale = resolveAllowStalePublishSetting(raw);
+	const allowStaleApprovals = resolveAllowStaleApprovalsSetting(raw);
 	const approveMaxPriority = resolveApproveMaxPriorityLevelSetting(raw);
 	return {
 		tiers: { ...(raw.tiers ?? {}) },
@@ -279,6 +296,7 @@ function readUserConfig(): PrReviewConfig {
 		toolPolicies: normalizeToolPolicies(raw.toolPolicies),
 		autoPostReviews: autoPost.valid ? autoPost.value : false,
 		allowStalePublish: allowStale.valid ? allowStale.value : false,
+		allowStaleApprovals: allowStaleApprovals.valid ? allowStaleApprovals.value : false,
 		approveMaxPriorityLevel: approveMaxPriority.valid ? approveMaxPriority.value : "off",
 		verificationBaselines: resolveUserVerificationBaselines(raw),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
@@ -1701,6 +1719,7 @@ interface ConfigPatch {
 	toolPolicies: Partial<Record<Tier, ToolPolicy | null>>;
 	autoPostReviews?: boolean;
 	allowStalePublish?: boolean;
+	allowStaleApprovals?: boolean;
 	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	tools?: string[];
 }
@@ -1746,6 +1765,10 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			if (value === "true") patch.allowStalePublish = true;
 			else if (value === "false") patch.allowStalePublish = false;
 			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
+		} else if (key === "allow_stale_approvals" || key === "allowstaleapprovals" || key === "allow-stale-approvals") {
+			if (value === "true") patch.allowStaleApprovals = true;
+			else if (value === "false") patch.allowStaleApprovals = false;
+			else errors.push(`invalid ${key} "${value}" (expected true|false)`);
 		} else if (
 			key === "approve_max_priority_level" ||
 			key === "approvemaxprioritylevel" ||
@@ -1765,7 +1788,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|approve_max_priority_level|tools)`,
+				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|allow_stale_approvals|approve_max_priority_level|tools)`,
 			);
 		}
 	}
@@ -1776,6 +1799,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		Object.keys(patch.toolPolicies).length > 0 ||
 		patch.autoPostReviews !== undefined ||
 		patch.allowStalePublish !== undefined ||
+		patch.allowStaleApprovals !== undefined ||
 		patch.approveMaxPriorityLevel !== undefined ||
 		patch.tools !== undefined;
 	return { patch, hasChanges, errors };
@@ -1789,6 +1813,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		toolPolicies: normalizeToolPolicies(base.toolPolicies),
 		autoPostReviews: base.autoPostReviews,
 		allowStalePublish: base.allowStalePublish,
+		allowStaleApprovals: base.allowStaleApprovals,
 		approveMaxPriorityLevel: base.approveMaxPriorityLevel,
 		verificationBaselines: { ...base.verificationBaselines },
 		tools: [...base.tools],
@@ -1817,6 +1842,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 	}
 	if (patch.autoPostReviews !== undefined) next.autoPostReviews = patch.autoPostReviews;
 	if (patch.allowStalePublish !== undefined) next.allowStalePublish = patch.allowStalePublish;
+	if (patch.allowStaleApprovals !== undefined) next.allowStaleApprovals = patch.allowStaleApprovals;
 	if (patch.approveMaxPriorityLevel !== undefined) next.approveMaxPriorityLevel = patch.approveMaxPriorityLevel;
 	if (patch.tools) next.tools = patch.tools;
 	return next;
@@ -1843,6 +1869,7 @@ function summarizeConfig(
 	}
 	const autoPost = resolveAutoPostForContext(ctx);
 	const allowStale = resolveAllowStaleForContext(ctx);
+	const allowStaleApprovals = resolveAllowStaleApprovalsForContext(ctx);
 	const approveMaxPriority = resolveApproveMaxPriorityForContext(ctx);
 	const lines = [
 		`# PR review config${changed ? " updated" : ""}`,
@@ -1855,6 +1882,7 @@ function summarizeConfig(
 		),
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub review; default \`false\` |`,
 		`| \`allowStalePublish\` | \`${user.allowStalePublish}\` | \`${effective.allowStalePublish}\` (${allowStale.source}) | permit body-only stale publication with reviewed/current SHAs; default \`true\` |`,
+		`| \`allowStaleApprovals\` | \`${user.allowStaleApprovals}\` | \`${effective.allowStaleApprovals}\` (${allowStaleApprovals.source}) | permit qualified stale reviews to record APPROVE; default \`false\` |`,
 		`| \`approveMaxPriorityLevel\` | \`${user.approveMaxPriorityLevel}\` | \`${effective.approveMaxPriorityLevel}\` (${approveMaxPriority.source}) | max severity for auto-APPROVE; \`off\` posts COMMENT only; default \`off\` |`,
 		`| \`verificationBaselines\` | \`${Object.keys(user.verificationBaselines).length} configured\` | user scope only | strict named argv profiles; project overlays ignored |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
@@ -1879,6 +1907,10 @@ function summarizeConfig(
 	else if (allowStale.source === "project") {
 		lines.push("Stale publication is controlled by the trusted project overlay; this command edits user config only.");
 	}
+	if (!allowStaleApprovals.valid) lines.push(`Stale approval config error: ${allowStaleApprovals.error}`);
+	else if (allowStaleApprovals.source === "project") {
+		lines.push("Stale approval is controlled by the trusted project overlay; this command edits user config only.");
+	}
 	if (!approveMaxPriority.valid) lines.push(`Auto-approve priority config error: ${approveMaxPriority.error}`);
 	else if (approveMaxPriority.source === "project") {
 		lines.push("Auto-approve priority is controlled by the trusted project overlay; this command edits user config only.");
@@ -1895,6 +1927,8 @@ function summarizeConfig(
 		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
 		"- Disable stale publication: `/pr-review-config allow_stale_publish=false`",
 		"- Enable stale publication (default): `/pr-review-config allow_stale_publish=true`",
+		"- Permit qualified stale reviews to record APPROVE: `/pr-review-config allow_stale_approvals=true`",
+		"- Keep stale reviews as COMMENT (default): `/pr-review-config allow_stale_approvals=false`",
 		"- Enable auto-approve for low-severity reviews: `/pr-review-config approve_max_priority_level=P2`",
 		"- Disable auto-approve (default): `/pr-review-config approve_max_priority_level=off`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
@@ -2034,6 +2068,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 			values: ["true", "false"],
 		},
 		{
+			id: "allow_stale_approvals",
+			label: "stale approval setting",
+			description: "Permit otherwise-qualified stale reviews to record APPROVE. Disabled by default.",
+			currentValue: String(cfg.allowStaleApprovals),
+			values: ["false", "true"],
+		},
+		{
 			id: "approve_max_priority_level",
 			label: "auto-approve priority gate",
 			description: "Maximum severity that permits an APPROVE event (off = COMMENT only). Enter/Space cycles values.",
@@ -2074,6 +2115,7 @@ async function showConfigMenu(
 				}
 				settingsList.updateValue("auto_post_reviews", String(draft.autoPostReviews));
 				settingsList.updateValue("allow_stale_publish", String(draft.allowStalePublish));
+				settingsList.updateValue("allow_stale_approvals", String(draft.allowStaleApprovals));
 				settingsList.updateValue("tools", draft.tools.join(","));
 			};
 
@@ -2107,6 +2149,8 @@ async function showConfigMenu(
 					draft.autoPostReviews = newValue === "true";
 				} else if (id === "allow_stale_publish") {
 					draft.allowStalePublish = newValue === "true";
+				} else if (id === "allow_stale_approvals") {
+					draft.allowStaleApprovals = newValue === "true";
 				} else if (id === "approve_max_priority_level") {
 					const normalized = newValue.toLowerCase();
 					if (normalized === "off") {
@@ -2130,7 +2174,9 @@ async function showConfigMenu(
 							? String(draft.autoPostReviews)
 							: id === "allow_stale_publish"
 								? String(draft.allowStalePublish)
-								: id === "approve_max_priority_level"
+								: id === "allow_stale_approvals"
+									? String(draft.allowStaleApprovals)
+									: id === "approve_max_priority_level"
 									? String(draft.approveMaxPriorityLevel)
 									: isFallbackKey(id)
 								? (draft.fallbacks[tierFromCompoundKey(id)]?.join(",") ?? "(none)")
@@ -2154,6 +2200,16 @@ async function showConfigMenu(
 						if (effective.source === "project") {
 							ctx.ui.notify(
 								`User allowStalePublish saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)}.`,
+								"warning",
+							);
+						} else {
+							ctx.ui.notify(`PR review config: ${id} = ${shown} (effective ${effective.value})`, "info");
+						}
+					} else if (id === "allow_stale_approvals") {
+						const effective = resolveAllowStaleApprovalsForContext(ctx);
+						if (effective.source === "project") {
+							ctx.ui.notify(
+								`User allowStaleApprovals saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)}.`,
 								"warning",
 							);
 						} else {

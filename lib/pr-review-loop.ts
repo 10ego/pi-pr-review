@@ -104,12 +104,19 @@ export class ReviewLoopCoordinator {
 		source: ReviewLoopInputSource,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 		allowStalePublish = true,
+		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
 	): { accepted: boolean; error?: string } {
 		if (source !== "interactive" && source !== "rpc") {
 			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
 		}
-		const started = this.invocationGate.begin(parsed, autoPost, allowStalePublish, approveMaxPriorityLevel);
+		const started = this.invocationGate.begin(
+			parsed,
+			autoPost,
+			allowStalePublish,
+			allowStaleApprovals,
+			approveMaxPriorityLevel,
+		);
 		if (!started.accepted) return started;
 		const current = sessionBinding(ctx);
 		this.binding = {

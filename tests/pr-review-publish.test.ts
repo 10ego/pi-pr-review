@@ -26,6 +26,7 @@ import {
 	parsePublishMode,
 	planHeadPublication,
 	publishPullReview,
+	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
@@ -104,6 +105,7 @@ async function diagnosePullPublication(
 		mergedAt?: string | null;
 		allowNonOpen?: boolean;
 		allowStale?: boolean;
+		allowStaleApprovals?: boolean;
 		currentHead?: string;
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 	} = {},
@@ -196,6 +198,7 @@ fi
 			headSha: "a".repeat(40),
 			allowNonOpen: options.allowNonOpen ?? false,
 			allowStale: options.allowStale ?? false,
+			allowStaleApprovals: options.allowStaleApprovals ?? false,
 			approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 			expectedRepository: { hostname: "github.com", repository: "owner/repo" },
 			review: candidateReview,
@@ -253,6 +256,23 @@ describe("automatic posting configuration", () => {
 			),
 		).toEqual({ value: false, valid: true, source: "project" });
 		const malformed = resolveAllowStalePublishSetting({ allowStalePublish: "true" });
+		expect(malformed.value).toBeFalse();
+		expect(malformed.valid).toBeFalse();
+	});
+
+	test("requires explicit trusted opt-in for stale approvals", () => {
+		expect(resolveAllowStaleApprovalsSetting({})).toEqual({
+			value: false,
+			valid: true,
+			source: "default",
+		});
+		expect(
+			resolveAllowStaleApprovalsSetting(
+				{ allowStaleApprovals: false },
+				{ allowStaleApprovals: true },
+			),
+		).toEqual({ value: true, valid: true, source: "project" });
+		const malformed = resolveAllowStaleApprovalsSetting({ allowStaleApprovals: "true" });
 		expect(malformed.value).toBeFalse();
 		expect(malformed.valid).toBeFalse();
 	});
@@ -380,22 +400,33 @@ describe("auto-approve priority gate", () => {
 		expect(approvePayload.event).toBe("APPROVE");
 	});
 
-	test("publishPullReview posts APPROVE for eligible open, stale, and non-open reviews", async () => {
+	test("publishPullReview requires explicit opt-in to APPROVE stale reviews", async () => {
 		const approveFiles = [{ filename: "src/a.ts", patch: "@@ -0,0 +1,2 @@\n+one\n+two" }];
 		const open = await diagnosePullPublication(approveReview, approveFiles, { approveMaxPriorityLevel: "P2" });
 		expect(open.result.status).toBe("posted");
 		expect(open.result.event).toBe("APPROVE");
 		expect(open.payload?.event).toBe("APPROVE");
 
-		const stale = await diagnosePullPublication(approveReview, approveFiles, {
+		const staleDefault = await diagnosePullPublication(approveReview, approveFiles, {
 			approveMaxPriorityLevel: "P2",
 			allowStale: true,
 			currentHead: "b".repeat(40),
 		});
-		expect(stale.result.status).toBe("posted_degraded");
-		expect(stale.result.event).toBe("APPROVE");
-		expect(stale.payload?.event).toBe("APPROVE");
-		expect(stale.result.message).toContain("stale APPROVE");
+		expect(staleDefault.result.status).toBe("posted_degraded");
+		expect(staleDefault.result.event).toBe("COMMENT");
+		expect(staleDefault.payload?.event).toBe("COMMENT");
+		expect(staleDefault.result.message).toContain("stale COMMENT");
+
+		const staleOptIn = await diagnosePullPublication(approveReview, approveFiles, {
+			approveMaxPriorityLevel: "P2",
+			allowStale: true,
+			allowStaleApprovals: true,
+			currentHead: "c".repeat(40),
+		});
+		expect(staleOptIn.result.status).toBe("posted_degraded");
+		expect(staleOptIn.result.event).toBe("APPROVE");
+		expect(staleOptIn.payload?.event).toBe("APPROVE");
+		expect(staleOptIn.result.message).toContain("stale APPROVE");
 
 		const nonOpen = await diagnosePullPublication(approveReview, approveFiles, {
 			approveMaxPriorityLevel: "P2",
@@ -408,24 +439,26 @@ describe("auto-approve priority gate", () => {
 		expect(nonOpen.result.message).toContain("non-open PR");
 	});
 
-	test("invocation gate captures approveMaxPriorityLevel", () => {
+	test("invocation gate captures stale-approval and priority settings", () => {
 		const gate = new ReviewInvocationGate();
-		gate.begin(parsePublishMode("/pr-review 7 --comment"), { value: true, valid: true, source: "user" }, true, "P2");
+		gate.begin(parsePublishMode("/pr-review 7 --comment"), { value: true, valid: true, source: "user" }, true, true, "P2");
 		const invocation = gate.consume()!;
+		expect(invocation.allowStaleApprovals).toBeTrue();
 		expect(invocation.approveMaxPriorityLevel).toBe("P2");
 	});
 
-	test("invocation gate defaults approveMaxPriorityLevel to off", () => {
+	test("invocation gate defaults stale approvals off and priority gate off", () => {
 		const gate = new ReviewInvocationGate();
 		gate.begin(parsePublishMode("/pr-review 7 --comment"), { value: true, valid: true, source: "user" });
 		const invocation = gate.consume()!;
+		expect(invocation.allowStaleApprovals).toBeFalse();
 		expect(invocation.approveMaxPriorityLevel).toBe("off");
 	});
 
-	test("persisted invocation without approveMaxPriorityLevel defaults to off on restore", () => {
+	test("persisted invocation without stale-approval settings defaults safely on restore", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: { value: false, valid: true, source: "user" } as const };
-		// This invocation lacks approveMaxPriorityLevel; parsePersistedInvocation should default to "off"
+		// This legacy invocation lacks both approval settings and must default safely
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(approveReview, invocation as any, repository);
 		const persisted = cache.persist(record, { id: "test", startedAt: "2026-01-01T00:00:00.000Z" });
@@ -435,9 +468,11 @@ describe("auto-approve priority gate", () => {
 			invocation: { ...persisted.invocation, approveMaxPriorityLevel: undefined },
 		};
 		delete (legacyPersisted.invocation as any).approveMaxPriorityLevel;
+		delete (legacyPersisted.invocation as any).allowStaleApprovals;
 		const restored = new CompletedReviewCache();
 		expect(restored.restore(legacyPersisted, { id: "test", startedAt: "2026-01-01T00:00:00.000Z" })).toBeTrue();
 		const recovered = restored.get(7, repository)!;
+		expect(recovered.invocation.allowStaleApprovals).toBeFalse();
 		expect(recovered.invocation.approveMaxPriorityLevel).toBe("off");
 	});
 });
@@ -580,6 +615,7 @@ describe("trusted invocation mode", () => {
 			prNumber: 7,
 			allowNonOpen: false,
 			allowStalePublish: true,
+			allowStaleApprovals: false,
 			autoPost: autoOff,
 			approveMaxPriorityLevel: "off",
 		});
@@ -587,10 +623,10 @@ describe("trusted invocation mode", () => {
 
 	test("final JSON must match the invocation PR", () => {
 		expect(
-			validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
+			validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
 		).toBeUndefined();
 		expect(
-			validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
+			validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
 		).toContain("does not match");
 	});
 
@@ -609,6 +645,7 @@ describe("trusted invocation mode", () => {
 			prNumber: 7,
 			allowNonOpen: true,
 			allowStalePublish: true,
+			allowStaleApprovals: false,
 			autoPost: autoOff,
 			approveMaxPriorityLevel: "off",
 		});
@@ -636,6 +673,7 @@ describe("trusted invocation mode", () => {
 			prNumber: 7,
 			allowNonOpen: false,
 			allowStalePublish: true,
+			allowStaleApprovals: false,
 			autoPost: autoOff,
 			approveMaxPriorityLevel: "off",
 		});
@@ -659,7 +697,7 @@ describe("publish-only completed review command", () => {
 
 	test("retains the latest completed review under its repository and PR", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		cache.remember(review, invocation, repository);
 		expect(cache.get(7, repository)).toEqual({ review, invocation, repository });
@@ -678,7 +716,7 @@ describe("publish-only completed review command", () => {
 
 	test("restores only validated state from the same Pi session instance", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA);
@@ -706,7 +744,7 @@ describe("publish-only completed review command", () => {
 
 	test("restores referenced reviews without duplicating raw JSON", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA, "review-message", review);
@@ -727,7 +765,7 @@ describe("publish-only completed review command", () => {
 
 	test("rebuilds cache state for reloads and session-tree navigation", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA);

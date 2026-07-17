@@ -124,7 +124,7 @@ describe("review tool execution gate", () => {
 		expect(h.activeTools()).toEqual(["read"]);
 	});
 
-	test("the config command persists only supported approve priority levels", async () => {
+	test("the config command persists approval gates and explicit stale-approval opt-in", async () => {
 		const agentDir = "/tmp/pi-pr-review-tool-gate-agent";
 		const configPath = `${agentDir}/pr-review.json`;
 		rmSync(agentDir, { recursive: true, force: true });
@@ -141,6 +141,10 @@ describe("review tool execution gate", () => {
 			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("nit");
 			await command("approve_max_priority_level=P0", h.ctx);
 			expect(JSON.parse(readFileSync(configPath, "utf8")).approveMaxPriorityLevel).toBe("nit");
+			await command("allow_stale_approvals=true", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).allowStaleApprovals).toBeTrue();
+			await command("allow_stale_approvals=invalid", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).allowStaleApprovals).toBeTrue();
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true });
 		}

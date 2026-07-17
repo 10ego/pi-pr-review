@@ -30,6 +30,7 @@ import {
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
+	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
@@ -338,13 +339,14 @@ function readJsonObject(filePath: string): ConfigReadResult {
 interface PublishingConfigResolution {
 	autoPost: AutoPostResolution;
 	allowStale: AutoPostResolution;
+	allowStaleApprovals: AutoPostResolution;
 	approveMaxPriority: ApproveMaxPriorityLevelResolution;
 }
 
 function invalidPublishingConfig(source: "user" | "project", error: string): PublishingConfigResolution {
 	const invalid = { value: false, valid: false, source, error } as const;
 	const invalidLevel = { value: "off" as const, valid: false, source, error } as const;
-	return { autoPost: invalid, allowStale: invalid, approveMaxPriority: invalidLevel };
+	return { autoPost: invalid, allowStale: invalid, allowStaleApprovals: invalid, approveMaxPriority: invalidLevel };
 }
 
 function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolution {
@@ -362,6 +364,7 @@ function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolut
 	return {
 		autoPost: resolveAutoPostSetting(user.value, project?.value),
 		allowStale: resolveAllowStalePublishSetting(user.value, project?.value),
+		allowStaleApprovals: resolveAllowStaleApprovalsSetting(user.value, project?.value),
 		approveMaxPriority: resolveApproveMaxPriorityLevelSetting(user.value, project?.value),
 	};
 }
@@ -421,6 +424,7 @@ async function publishCompletedReview(
 		headSha,
 		allowNonOpen: record.invocation.allowNonOpen,
 		allowStale,
+		allowStaleApprovals: record.invocation.allowStaleApprovals,
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
@@ -681,6 +685,7 @@ export default function registerReviewTable(
 			source,
 			ctx,
 			publishingConfig.allowStale.valid && publishingConfig.allowStale.value,
+			publishingConfig.allowStaleApprovals.valid && publishingConfig.allowStaleApprovals.value,
 			publishingConfig.approveMaxPriority.valid ? publishingConfig.approveMaxPriority.value : "off",
 		);
 		if (!gate.accepted) {
