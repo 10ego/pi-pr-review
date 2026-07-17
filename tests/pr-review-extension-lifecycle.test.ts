@@ -371,12 +371,14 @@ describe("completed review extension lifecycle", () => {
 	test("automatically corrects invalid final JSON once and attempts publication", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
-		const wrapped = {
+		// Prose-prefixed output is not auto-healable (only a single surrounding code
+		// fence is), so it still routes through the one-shot repair path.
+		const preamble = {
 			role: "assistant",
 			stopReason: "stop",
-			content: [{ type: "text", text: `\`\`\`json\n${JSON.stringify(review)}\n\`\`\`` }],
+			content: [{ type: "text", text: `Here is the completed review:\n${JSON.stringify(review)}` }],
 		};
-		await harness.emit("message_end", { message: wrapped });
+		await harness.emit("message_end", { message: preamble });
 		expect(harness.sentMessages).toHaveLength(1);
 		expect(harness.sentMessages[0]?.message).toMatchObject({
 			customType: "pr-review-output-repair",
@@ -387,8 +389,8 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.notifications.some((message) => message.includes("automatically correcting"))).toBeTrue();
 		expect(harness.activeTools()).toEqual([]);
 
-		harness.appendMessage(wrapped, "wrapped-review");
-		await harness.emit("turn_end", { message: wrapped, toolResults: [] });
+		harness.appendMessage(preamble, "preamble-review");
+		await harness.emit("turn_end", { message: preamble, toolResults: [] });
 		expect(harness.notifications.some((message) => message.includes("was not posted"))).toBeFalse();
 
 		const payloadPath = installFakePublishingGh();
