@@ -182,21 +182,23 @@ Publishing is off by default.
 /pr-review-config auto_post_reviews=true
 ```
 
-The extension—not the model—owns publishing. It creates one formal review with the event hardcoded to `COMMENT`; it never submits `APPROVE` or `REQUEST_CHANGES`. Before writing, it verifies the current PR head, validates inline anchors, and checks for a review of the same head by the current GitHub identity.
+The extension—not the model—owns publishing. After a successful review, it caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
 
-If the agent's final review is not valid exact-contract JSON, the extension logs the validation reason and automatically asks the same agent to correct its completed output once, with all tools disabled and without changing the captured posting authority. A valid correction is cached and publication is attempted under the original flags/config. If that single correction is also invalid or attempts to call a tool, publication stops and reports the error instead of looping. Overlapping input cancels the correction, remains unqueued, and must be retried after the agent settles.
+If the agent's final review is not valid exact-contract JSON, the extension logs the reason and automatically asks the same agent to correct its completed output once, with tools disabled and the original posting authority unchanged. An invalid correction, a tool call, or overlapping input stops publication rather than starting another correction loop.
 
-Closed or merged PRs use a body-only review. Open PRs attach eligible P0–P3 findings as inline comments and keep nits or off-diff findings in the review body. When GitHub omits patch metadata needed to validate an inline anchor, the affected finding remains in the review summary instead of blocking publication. When multiple findings target the same diff anchor, the first is attached inline and later findings remain in the review body so publication neither fails nor drops review content.
+You can publish the cache later with `/pr-review-publish 123`, or directly ask the agent to “post the inline review,” “post it as an inline review,” or “publish the review for PR #123.” The extension handles that request directly before an agent turn. `/pr-review-publish` and a matching direct request publish only the cache; they never start or rerun review agents. Unnumbered direct requests select the latest cached review for the current repository. Only fresh interactive/RPC input can use the direct path.
 
-After a review completes, you can directly ask the agent to “post the inline review” or “post it as an inline review.” The extension handles that request directly before an agent turn, selecting the latest cached review for an unnumbered request or the named PR in “publish the review for PR #123.” Only fresh interactive/RPC input can trigger this path; extension-generated, queued, or steering input cannot. The extension publishes only validated cached content, never replacement model-authored text, and never starts or reruns review agents. A direct request permits stale publication.
+Every authorized publish path builds one `COMMENT` payload and sends at most one GitHub review `POST`; it never submits `APPROVE` or `REQUEST_CHANGES` and never retries a rejected write with a fallback POST. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only.
 
-Stale publication is also enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` without an override use the setting captured when the review starts. The explicit `--allow-stale` flag remains available when the captured setting disabled stale publication:
+The same safety gates apply to every path: captured posting authority, exact repository/PR/review binding, safe locations, no reserved review markers, bounded bodies and payloads, current-head and stale policy, draft and lifecycle checks, non-open authorization, same-head duplicate detection, and a final head check. Unknown or invalid states fail closed before a write.
+
+Stale publication is enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` use the setting captured when the review starts unless the command supplies the explicit override:
 
 ```text
 /pr-review-publish 123 --allow-stale
 ```
 
-Inline comments are always disabled for stale reviews because the original anchors may no longer be valid. The stale review is body-only and displays a warning containing both the reviewed and current commit hashes. The cache is stored in the current Pi session, survives extension reloads and session resumes, and is bound to that session instance's ID and creation metadata as well as the repository.
+A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
 
 ## Optional verification
 

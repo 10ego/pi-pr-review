@@ -301,6 +301,8 @@ export const MAX_INLINE_COMMENTS = 50;
 const MAX_BODY_BYTES = 65_536;
 const MAX_PAYLOAD_BYTES = 900_000;
 const RESERVED_MARKER_PREFIX = "<!-- pi-pr-review:";
+const CHANGED_FILE_LOOKUP_DIAGNOSTIC =
+	"changed-file lookup failed; all inline findings kept in the review summary";
 
 export interface PublishComment {
 	path: string;
@@ -626,6 +628,9 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 		return { error: "final response is not exactly one JSON object" };
 	}
 	if (!isObject(value)) return { error: "final review must be a JSON object" };
+	if (containsReservedReviewMarker(JSON.stringify(value))) {
+		return { error: "review content contains a reserved pi-pr-review marker" };
+	}
 	const pr = value.pr;
 	if (!isObject(pr) || !Number.isInteger(pr.number) || Number(pr.number) <= 0 || typeof pr.title !== "string") {
 		return { error: "pr.number and pr.title are required" };
@@ -658,21 +663,8 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 		if (!isConfidence(finding.confidence_score)) {
 			return { error: `finding ${index + 1} has invalid confidence_score` };
 		}
-		if (finding.code_location !== null) {
-			const location = finding.code_location;
-			if (!isObject(location) || typeof location.commentable !== "boolean") {
-				return { error: `finding ${index + 1} has invalid code_location` };
-			}
-			if (location.absolute_file_path !== null && typeof location.absolute_file_path !== "string") {
-				return { error: `finding ${index + 1} has invalid absolute_file_path` };
-			}
-			if (location.side !== null && location.side !== "LEFT" && location.side !== "RIGHT") {
-				return { error: `finding ${index + 1} has invalid side` };
-			}
-			if (!isObject(location.line_range) || !Number.isInteger(location.line_range.start) || !Number.isInteger(location.line_range.end)) {
-				return { error: `finding ${index + 1} has invalid line_range` };
-			}
-		}
+		const locationError = validateFindingLocation(finding as ReviewFindingLike, index);
+		if (locationError) return { error: locationError };
 	}
 	if (!isObject(value.notes)) return { error: "notes must be an object" };
 	for (const key of ["correctness", "security", "performance"] as const) {
@@ -694,6 +686,88 @@ export function shouldPublishReview(review: ReviewLike): boolean {
 	return review.disposition === "reviewed";
 }
 
+interface DiffHunk {
+	left: Set<number>;
+	right: Set<number>;
+}
+
+function parsePatchHunks(patch: string): DiffHunk[] {
+	const hunks: DiffHunk[] = [];
+	let current: DiffHunk | undefined;
+	let left = 0;
+	let right = 0;
+	for (const line of patch.split("\n")) {
+		const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+		if (header) {
+			left = Number(header[1]);
+			right = Number(header[2]);
+			current = { left: new Set<number>(), right: new Set<number>() };
+			hunks.push(current);
+			continue;
+		}
+		if (!current || line.startsWith("\\")) continue;
+		if (line.startsWith("+")) {
+			current.right.add(right++);
+		} else if (line.startsWith("-")) {
+			current.left.add(left++);
+		} else if (line.startsWith(" ")) {
+			current.left.add(left++);
+			current.right.add(right++);
+		}
+	}
+	return hunks;
+}
+
+export interface ChangedFileLike {
+	filename?: string;
+	patch?: string;
+}
+
+function safeRelativePath(value: string): boolean {
+	if (!value || value.startsWith("/") || value.includes("\\") || /[\0-\x1f\x7f]/.test(value)) return false;
+	const segments = value.split("/");
+	return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function validateFindingLocation(finding: ReviewFindingLike, index: number): string | undefined {
+	const location = finding.code_location;
+	const label = `finding ${index + 1}`;
+	if (location === null) return undefined;
+	if (!isObject(location) || typeof location.commentable !== "boolean") {
+		return `${label} has invalid code_location`;
+	}
+	const path = location.absolute_file_path;
+	if (path !== null && typeof path !== "string") return `${label} has invalid absolute_file_path`;
+	const side = location.side;
+	if (side !== null && side !== "LEFT" && side !== "RIGHT") return `${label} has invalid side`;
+	const range = location.line_range;
+	if (!isObject(range) || !Number.isInteger(range.start) || !Number.isInteger(range.end)) {
+		return `${label} has invalid line_range`;
+	}
+	const start = Number(range.start);
+	const end = Number(range.end);
+	if (path === null) {
+		if (location.commentable) return `${label}: commentable location is missing a repo-relative path`;
+		if (side !== null || start !== 0 || end !== 0) {
+			return `${label}: location without a path must use null side and a 0:0 range`;
+		}
+		return undefined;
+	}
+	if (!safeRelativePath(path)) return `${label}: invalid repo-relative path`;
+	if (side !== "LEFT" && side !== "RIGHT") return `${label}: side must be LEFT or RIGHT`;
+	if (start <= 0 || end < start) return `${label}: invalid line range`;
+	return undefined;
+}
+
+function isInlineSeverity(finding: ReviewFindingLike): boolean {
+	const severity = String(finding.severity ?? "").toUpperCase();
+	return ["P0", "P1", "P2", "P3"].includes(severity);
+}
+
+function publishCommentAnchor(comment: PublishComment): string {
+	return `${comment.path}:${comment.side}:${comment.start_line ?? comment.line}:${comment.line}`;
+}
+
 function cell(value: string): string {
 	return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
 }
@@ -705,10 +779,6 @@ function findingLocation(finding: ReviewFindingLike): string {
 	const end = location.line_range?.end;
 	if (!Number.isInteger(start) || !Number.isInteger(end)) return location.absolute_file_path;
 	return `${location.absolute_file_path}:${start}${end !== start ? `-${end}` : ""} ${(location.side ?? "RIGHT").toUpperCase()}`;
-}
-
-function publishCommentAnchor(comment: PublishComment): string {
-	return `${comment.path}:${comment.side}:${comment.start_line ?? comment.line}:${comment.line}`;
 }
 
 function findingAnchor(finding: ReviewFindingLike): string | undefined {
@@ -786,115 +856,62 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 	return lines.join("\n").trim();
 }
 
-interface DiffHunk {
-	left: Set<number>;
-	right: Set<number>;
-}
-
-function parsePatchHunks(patch: string): DiffHunk[] {
-	const hunks: DiffHunk[] = [];
-	let current: DiffHunk | undefined;
-	let left = 0;
-	let right = 0;
-	for (const line of patch.split("\n")) {
-		const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-		if (header) {
-			left = Number(header[1]);
-			right = Number(header[2]);
-			current = { left: new Set<number>(), right: new Set<number>() };
-			hunks.push(current);
-			continue;
-		}
-		if (!current || line.startsWith("\\")) continue;
-		if (line.startsWith("+")) {
-			current.right.add(right++);
-		} else if (line.startsWith("-")) {
-			current.left.add(left++);
-		} else if (line.startsWith(" ")) {
-			current.left.add(left++);
-			current.right.add(right++);
-		}
-	}
-	return hunks;
-}
-
-export interface ChangedFileLike {
-	filename?: string;
-	patch?: string;
-}
-
-function safeRelativePath(value: string): boolean {
-	if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) return false;
-	const segments = value.split("/");
-	return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
-}
-
-function isInlineSeverity(finding: ReviewFindingLike): boolean {
-	const severity = String(finding.severity ?? "").toUpperCase();
-	return ["P0", "P1", "P2", "P3"].includes(severity);
-}
-
-export interface CommentValidationResult {
+interface InlineSelection {
 	comments: PublishComment[];
+	diagnostics: string[];
 	errors: string[];
-	warnings?: string[];
 }
 
-export function validateInlineComments(
+function buildPublishComment(
+	path: string,
+	body: string,
+	side: "LEFT" | "RIGHT",
+	start: number,
+	end: number,
+): PublishComment {
+	return {
+		path,
+		body,
+		line: end,
+		side,
+		...(start < end ? { start_line: start, start_side: side } : {}),
+	};
+}
+
+function selectInlineComments(
 	review: ReviewLike,
-	changedFiles: ChangedFileLike[],
-): CommentValidationResult {
-	const errors: string[] = [];
-	const warnings: string[] = [];
-	const comments: PublishComment[] = [];
+	changedFiles: readonly ChangedFileLike[],
+): InlineSelection {
 	const files = new Map<string, ChangedFileLike>();
 	for (const file of changedFiles) {
-		if (file.filename) files.set(file.filename, file);
+		if (!file || typeof file.filename !== "string") continue;
+		const existing = files.get(file.filename);
+		if (!existing || (!existing.patch && file.patch)) files.set(file.filename, file);
 	}
+	const comments: PublishComment[] = [];
+	const diagnostics: string[] = [];
+	const errors: string[] = [];
 	const anchors = new Set<string>();
+	const hunkCache = new Map<string, DiffHunk[]>();
 	for (const [index, finding] of (review.findings ?? []).entries()) {
+		const locationError = finding.code_location === undefined
+			? undefined
+			: validateFindingLocation(finding, index);
+		if (locationError) {
+			errors.push(locationError);
+			continue;
+		}
+		if (!finding.code_location?.commentable || !isInlineSeverity(finding)) continue;
 		const location = finding.code_location;
-		if (!location?.commentable || !isInlineSeverity(finding)) continue;
-		const path = String(location.absolute_file_path ?? "");
-		const side = String(location.side ?? "").toUpperCase();
-		const start = location.line_range?.start;
-		const end = location.line_range?.end;
 		const label = `finding ${index + 1}`;
-		if (!safeRelativePath(path)) {
-			errors.push(`${label}: invalid repo-relative path`);
-			continue;
-		}
-		if (side !== "LEFT" && side !== "RIGHT") {
-			errors.push(`${label}: side must be LEFT or RIGHT`);
-			continue;
-		}
-		if (!Number.isInteger(start) || !Number.isInteger(end) || Number(start) <= 0 || Number(end) < Number(start)) {
-			errors.push(`${label}: invalid line range`);
-			continue;
-		}
-		const file = files.get(path);
-		if (!file) {
-			errors.push(`${label}: path is not a changed file`);
-			continue;
-		}
-		if (!file.patch) {
-			// GitHub legitimately omits patch metadata for some large, binary, or transiently unavailable diffs.
-			// Keep the complete finding in the review summary rather than sending an unvalidated inline anchor.
-			warnings.push(`${label}: diff patch is unavailable; kept in the review summary`);
-			continue;
-		}
-		const sideKey = side === "LEFT" ? "left" : "right";
-		const hunk = parsePatchHunks(file.patch).find(
-			(candidate) => candidate[sideKey].has(Number(start)) && candidate[sideKey].has(Number(end)),
-		);
-		if (!hunk) {
-			errors.push(`${label}: line range is not inside one diff hunk on ${side}`);
-			continue;
-		}
-		const anchor = `${path}:${side}:${start}:${end}`;
-		const body = [`**${String(finding.title ?? "Review finding").trim()}**`, finding.body?.trim()]
-			.filter(Boolean)
-			.join("\n\n");
+		const path = location.absolute_file_path as string;
+		const side = location.side as "LEFT" | "RIGHT";
+		const start = Number(location.line_range?.start);
+		const end = Number(location.line_range?.end);
+		const body = [
+			finding.title?.trim() ? `**${finding.title.trim()}**` : "",
+			finding.body?.trim(),
+		].filter(Boolean).join("\n\n");
 		if (!body || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 			errors.push(`${label}: comment body is empty or too large`);
 			continue;
@@ -903,23 +920,77 @@ export function validateInlineComments(
 			errors.push(`${label}: comment body contains a reserved pi-pr-review marker`);
 			continue;
 		}
-		// GitHub receives one comment per anchor; later findings remain in the top-level summary.
-		if (anchors.has(anchor)) continue;
+		const comment = buildPublishComment(path, body, side, start, end);
+		const file = files.get(path);
+		if (!file) {
+			diagnostics.push(`${label}: path is not a changed file; kept in the review summary`);
+			continue;
+		}
+		if (typeof file.patch !== "string" || file.patch.length === 0) {
+			diagnostics.push(`${label}: diff patch is unavailable; kept in the review summary`);
+			continue;
+		}
+		let hunks = hunkCache.get(path);
+		if (!hunks) {
+			hunks = parsePatchHunks(file.patch);
+			hunkCache.set(path, hunks);
+		}
+		const sideKey = side === "LEFT" ? "left" : "right";
+		if (!hunks.some((hunk) => hunk[sideKey].has(start) && hunk[sideKey].has(end))) {
+			diagnostics.push(
+				`${label}: line range is not inside one diff hunk on ${side}; kept in the review summary`,
+			);
+			continue;
+		}
+		const anchor = publishCommentAnchor(comment);
+		if (anchors.has(anchor)) {
+			diagnostics.push(`${label}: duplicate inline anchor; kept in the review summary`);
+			continue;
+		}
 		anchors.add(anchor);
-		comments.push({
-			path,
-			body,
-			line: Number(end),
-			side,
-			...(Number(start) < Number(end) ? { start_line: Number(start), start_side: side } : {}),
-		});
+		if (comments.length >= MAX_INLINE_COMMENTS) {
+			diagnostics.push(
+				`${label}: inline comment limit of ${MAX_INLINE_COMMENTS} reached; kept in the review summary`,
+			);
+			continue;
+		}
+		comments.push(comment);
 	}
-	if (comments.length > MAX_INLINE_COMMENTS) {
-		errors.push(`too many inline comments (${comments.length}; max ${MAX_INLINE_COMMENTS})`);
-	}
-	return { comments, errors, warnings };
+	return { comments, diagnostics, errors };
 }
 
+export interface CommentValidationResult {
+	comments: PublishComment[];
+	errors: string[];
+	warnings?: string[];
+}
+
+function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewParseResult {
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(review);
+	} catch {
+		return { error: "review could not be serialized for publication" };
+	}
+	if (typeof serialized !== "string") {
+		return { error: "review could not be serialized for publication" };
+	}
+	return parsePublishableReview(serialized);
+}
+
+export function validateInlineComments(
+	review: ReviewLike,
+	changedFiles: readonly ChangedFileLike[],
+): CommentValidationResult {
+	const selected = selectInlineComments(review, changedFiles);
+	return {
+		comments: selected.comments,
+		errors: selected.errors,
+		warnings: selected.diagnostics,
+	};
+}
+
+/** Compatibility helper for callers that fold would-be inline findings into a body-only review. */
 export function collectFoldedComments(review: ReviewLike): CommentValidationResult {
 	const comments: PublishComment[] = [];
 	const errors: string[] = [];
@@ -950,17 +1021,12 @@ export function collectFoldedComments(review: ReviewLike): CommentValidationResu
 			errors.push(`${label}: folded comment body contains a reserved pi-pr-review marker`);
 			continue;
 		}
-		comments.push({
-			path,
-			body,
-			line: Number(end),
-			side,
-			...(Number(start) < Number(end) ? { start_line: Number(start), start_side: side } : {}),
-		});
+		comments.push(buildPublishComment(path, body, side, Number(start), Number(end)));
 	}
 	return { comments, errors, warnings: [] };
 }
 
+/** Compatibility formatter for body-only reviews assembled by earlier consumers. */
 export function foldInlineComments(summary: string, comments: PublishComment[]): string {
 	if (comments.length === 0) return summary;
 	const lines = [summary, "", "### Inline findings (folded for a non-open PR)", ""];
@@ -980,6 +1046,59 @@ function validateReviewBody(body: string): string | undefined {
 	if (containsReservedReviewMarker(body)) return "review content contains a reserved pi-pr-review marker";
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) return "review body exceeds 65536 UTF-8 bytes";
 	return undefined;
+}
+
+function hasInlineCandidates(review: ReviewLike): boolean {
+	return (review.findings ?? []).some(
+		(finding) => finding.code_location?.commentable === true && isInlineSeverity(finding),
+	);
+}
+
+function buildLosslessReviewPayload(input: {
+	review: ReviewLike;
+	commitId: string;
+	markerHeadSha: string;
+	allowInlineComments: boolean;
+	changedFiles?: readonly ChangedFileLike[];
+	bodyPreamble?: string;
+	diagnostics?: readonly string[];
+}): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
+	const diagnostics = [...(input.diagnostics ?? [])];
+	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.commitId)) {
+		return { diagnostics, errors: ["publication commit ID must be a full hexadecimal commit SHA"] };
+	}
+	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.markerHeadSha)) {
+		return { diagnostics, errors: ["publication marker head must be a full hexadecimal commit SHA"] };
+	}
+	const markerHeadSha = input.markerHeadSha.toLowerCase();
+	if (input.review.pr?.head_sha?.toLowerCase() !== markerHeadSha) {
+		return { diagnostics, errors: ["publication marker head does not match the validated review head"] };
+	}
+	if (input.bodyPreamble && containsReservedReviewMarker(input.bodyPreamble)) {
+		return { diagnostics, errors: ["publication preamble contains a reserved pi-pr-review marker"] };
+	}
+	const selected = input.allowInlineComments
+		? selectInlineComments(input.review, input.changedFiles ?? [])
+		: { comments: [], diagnostics: [], errors: [] };
+	diagnostics.push(...selected.diagnostics);
+	if (selected.errors.length > 0) return { diagnostics, errors: selected.errors };
+
+	let content = buildReviewSummary(input.review, selected.comments);
+	if (diagnostics.length > 0) {
+		content = `${content}\n\n### Publication diagnostics\n\n${diagnostics.map((item) => `- ${item}`).join("\n")}`;
+	}
+	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
+	const bodyError = validateReviewBody(content);
+	if (bodyError) return { diagnostics, errors: [bodyError] };
+	const body = `${content}\n\n${canonicalReviewMarker(markerHeadSha)}`;
+	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+		return { diagnostics, errors: ["final review body exceeds 65536 UTF-8 bytes"] };
+	}
+	const payload = buildPullReviewPayload(input.commitId.toLowerCase(), body, selected.comments);
+	if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
+		return { diagnostics, errors: ["review payload is too large"] };
+	}
+	return { payload, diagnostics, errors: [] };
 }
 
 interface GhResult {
@@ -1046,15 +1165,49 @@ export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryB
 	return binding;
 }
 
-function flattenPages<T>(value: unknown): T[] {
-	if (!Array.isArray(value)) return [];
-	if (value.every(Array.isArray)) return value.flat() as T[];
-	return value as T[];
+function normalizeChangedFilePages(value: unknown): ChangedFileLike[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	if (value.some(Array.isArray) && !value.every(Array.isArray)) return undefined;
+	const entries: unknown[] = value.every(Array.isArray) ? value.flat() : value;
+	const files: ChangedFileLike[] = [];
+	for (const entry of entries) {
+		if (!isObject(entry) || typeof entry.filename !== "string") return undefined;
+		if (entry.patch !== undefined && entry.patch !== null && typeof entry.patch !== "string") {
+			return undefined;
+		}
+		files.push({
+			filename: entry.filename,
+			...(typeof entry.patch === "string" ? { patch: entry.patch } : {}),
+		});
+	}
+	return files;
 }
 
 interface AuthoredBody {
-	body?: string | null;
-	user?: { login?: string | null } | null;
+	body: string | null;
+	user: { login: string | null } | null;
+}
+
+function normalizeAuthoredBodyPages(value: unknown): AuthoredBody[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	if (value.some(Array.isArray) && !value.every(Array.isArray)) return undefined;
+	const entries: unknown[] = value.every(Array.isArray) ? value.flat() : value;
+	const authoredBodies: AuthoredBody[] = [];
+	for (const entry of entries) {
+		if (!isObject(entry) || (entry.body !== null && typeof entry.body !== "string")) {
+			return undefined;
+		}
+		const user = entry.user;
+		if (user === null) {
+			authoredBodies.push({ body: entry.body, user: null });
+			continue;
+		}
+		if (!isObject(user)) return undefined;
+		const login = user.login;
+		if (login !== null && typeof login !== "string") return undefined;
+		authoredBodies.push({ body: entry.body, user: { login } });
+	}
+	return authoredBodies;
 }
 
 export function bodyHasHeadMarker(body: string | null | undefined, normalizedHeadSha: string): boolean {
@@ -1078,11 +1231,15 @@ async function hasExistingMarker(
 		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/reviews?per_page=100`),
 		cwd,
 	);
+	const reviews = normalizeAuthoredBodyPages(reviewPages);
+	if (!reviews) throw new Error("invalid paginated pull review response");
 	const commentPages = await ghJson<unknown>(
 		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/issues/${prNumber}/comments?per_page=100`),
 		cwd,
 	);
-	return [...flattenPages<AuthoredBody>(reviewPages), ...flattenPages<AuthoredBody>(commentPages)].some(
+	const comments = normalizeAuthoredBodyPages(commentPages);
+	if (!comments) throw new Error("invalid paginated issue comment response");
+	return [...reviews, ...comments].some(
 		(item) =>
 			item.user?.login?.toLowerCase() === identity.toLowerCase() &&
 			bodyHasHeadMarker(item.body, normalizedHeadSha),
@@ -1204,6 +1361,23 @@ export async function publishPullReview(input: {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
+	const snapshot = canonicalReviewSnapshot(review);
+	const validatedReview = snapshot.review;
+	if (!validatedReview) {
+		return {
+			status: "failed",
+			message: `publication planning failed: ${snapshot.error ?? "review is not publishable"}`,
+		};
+	}
+	if (!shouldPublishReview(validatedReview)) {
+		return { status: "failed", message: "only completed reviewed dispositions can be published" };
+	}
+	if (validatedReview.pr?.number !== prNumber) {
+		return { status: "failed", message: "validated review PR number does not match the publication target" };
+	}
+	if (validatedReview.pr?.head_sha?.toLowerCase() !== normalizedHeadSha) {
+		return { status: "failed", message: "validated review head does not match the publication target" };
+	}
 
 	let repository: string;
 	let hostname: string;
@@ -1224,7 +1398,6 @@ export async function publishPullReview(input: {
 	}
 	if (!identity) return { status: "failed", message: "invalid GitHub identity" };
 
-	const marker = canonicalReviewMarker(normalizedHeadSha);
 	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
 	return withPublishLock(lockKey, async () => {
 		let pull: PullState;
@@ -1247,57 +1420,38 @@ export async function publishPullReview(input: {
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
-		let comments: PublishComment[] = [];
-		let inlineWarningCount = 0;
-		if (!isOpen) {
-			const candidates = collectFoldedComments(review);
-			if (candidates.errors.length > 0) {
-				return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
-			}
-			comments = candidates.comments;
-		} else if (headPlan.allowInlineComments) {
-			const candidates = collectFoldedComments(review);
-			if (candidates.errors.length > 0) {
-				return { status: "failed", message: `inline candidate validation failed: ${candidates.errors.join("; ")}` };
-			}
-			if (candidates.comments.length > 0) {
-				let filePages: unknown;
-				try {
-					filePages = await ghJson<unknown>(
-						githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
-						cwd,
-					);
-				} catch (error) {
-					return { status: "failed", message: `changed-file lookup failed: ${String(error)}` };
-				}
-				const validated = validateInlineComments(review, flattenPages<ChangedFileLike>(filePages));
-				if (validated.errors.length > 0) {
-					return { status: "failed", message: `inline validation failed: ${validated.errors.join("; ")}` };
-				}
-				comments = validated.comments;
-				inlineWarningCount = validated.warnings?.length ?? 0;
+		let allowInlineComments = isOpen && headPlan.allowInlineComments;
+		let changedFiles: readonly ChangedFileLike[] = [];
+		let changedFileLookupFailed = false;
+		if (allowInlineComments && hasInlineCandidates(validatedReview)) {
+			try {
+				const filePages = await ghJson<unknown>(
+					githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/files?per_page=100`),
+					cwd,
+				);
+				const normalizedFiles = normalizeChangedFilePages(filePages);
+				if (!normalizedFiles) throw new Error("invalid changed-file JSON response");
+				changedFiles = normalizedFiles;
+			} catch {
+				allowInlineComments = false;
+				changedFileLookupFailed = true;
 			}
 		}
-
-		const summary = buildReviewSummary(review, comments);
-		const bodyError = validateReviewBody(summary);
-		if (bodyError) return { status: "failed", message: bodyError };
-		const lifecycleBody = isOpen ? summary : foldInlineComments(summary, comments);
-		const disclosedBody = headPlan.stale
-			? `${buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha)}\n\n${lifecycleBody}`
-			: lifecycleBody;
-		const reviewBody = `${disclosedBody}\n\n${marker}`;
-		if (Buffer.byteLength(reviewBody, "utf8") > MAX_BODY_BYTES) {
-			return { status: "failed", message: "final review body exceeds 65536 UTF-8 bytes" };
+		const built = buildLosslessReviewPayload({
+			review: validatedReview,
+			commitId: headPlan.commitId,
+			markerHeadSha: normalizedHeadSha,
+			allowInlineComments,
+			changedFiles,
+			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
+			...(headPlan.stale
+				? { bodyPreamble: buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha) }
+				: {}),
+		});
+		if (!built.payload) {
+			return { status: "failed", message: `publication planning failed: ${built.errors.join("; ")}` };
 		}
-		const payload = buildPullReviewPayload(
-			headPlan.commitId,
-			reviewBody,
-			isOpen && headPlan.allowInlineComments ? comments : [],
-		);
-		if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
-			return { status: "failed", message: "review payload is too large" };
-		}
+		const payload = built.payload;
 
 		try {
 			const refreshed = await ghJson<PullState>(
@@ -1322,10 +1476,12 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `final head check failed: ${String(error)}` };
 		}
 
-		const inlineWarning = inlineWarningCount > 0
-			? `; ${inlineWarningCount} inline finding${inlineWarningCount === 1 ? "" : "s"} kept in the summary because GitHub omitted diff patch metadata`
-			: "";
-		const degraded = !isOpen || headPlan.stale || inlineWarningCount > 0;
+		const inlineWarning = built.diagnostics.length === 0
+			? ""
+			: changedFileLookupFailed
+				? `; ${CHANGED_FILE_LOOKUP_DIAGNOSTIC}`
+				: `; ${built.diagnostics.length} inline finding${built.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${built.diagnostics.join("; ")}`;
+		const degraded = !isOpen || headPlan.stale || built.diagnostics.length > 0;
 		const post = await runGh(
 			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
 			cwd,

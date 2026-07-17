@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +19,7 @@ import {
 	githubApiArgs,
 	isAffirmativeReviewConfirmation,
 	isNonOpenConfirmationPrompt,
+	MAX_INLINE_COMMENTS,
 	parseDirectPublishRequest,
 	parsePublishableReview,
 	parsePublishExistingArgs,
@@ -86,6 +87,131 @@ const changedFiles = [
 const autoOff = resolveAutoPostSetting({ autoPostReviews: false });
 const sessionA = { id: "session-a", startedAt: "2026-07-13T00:00:00.000Z" };
 
+async function diagnosePullPublication(
+	candidateReview: ReviewLike,
+	files: Array<{ filename: string; patch?: string }>,
+	options: {
+		postFailure?: string;
+		filesFailure?: string;
+		filesJson?: string;
+		reviewsJson?: string;
+		commentsJson?: string;
+		state?: string;
+		mergedAt?: string | null;
+		allowNonOpen?: boolean;
+	} = {},
+): Promise<{
+	result: Awaited<ReturnType<typeof publishPullReview>>;
+	postCount: number;
+	payload?: Record<string, unknown>;
+	calls: string[];
+}> {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-diagnostic-"));
+	const gh = join(dir, "gh");
+	const callsPath = join(dir, "calls.log");
+	const filesPath = join(dir, "files.json");
+	const reviewsPath = join(dir, "reviews.json");
+	const commentsPath = join(dir, "comments.json");
+	const payloadPath = join(dir, "payload.json");
+	const postSentinel = join(dir, "post-attempted");
+	writeFileSync(filesPath, options.filesJson ?? JSON.stringify([files]));
+	writeFileSync(reviewsPath, options.reviewsJson ?? "[]");
+	writeFileSync(commentsPath, options.commentsJson ?? "[]");
+	writeFileSync(
+		gh,
+		`#!/usr/bin/env bash
+set -euo pipefail
+args="$*"
+printf '%s\n' "$args" >> "$GH_FAKE_CALLS"
+if [[ "$args" == "repo view --json nameWithOwner,url" ]]; then
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+elif [[ "$args" == *" user --jq .login"* ]]; then
+  echo 'reviewer'
+elif [[ "$args" == *"--method POST"* ]]; then
+  printf 'post\n' >> "$GH_FAKE_POST_SENTINEL"
+  cat > "$GH_FAKE_PAYLOAD"
+  if [[ -n "\${GH_FAKE_POST_FAILURE:-}" ]]; then
+    echo "$GH_FAKE_POST_FAILURE" >&2
+    exit 1
+  fi
+  echo '{"id":44,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-44"}'
+elif [[ "$args" == *"pulls/7/reviews?per_page=100"* ]]; then
+  cat "$GH_FAKE_REVIEWS"
+elif [[ "$args" == *"issues/7/comments?per_page=100"* ]]; then
+  cat "$GH_FAKE_COMMENTS"
+elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
+  if [[ -n "\${GH_FAKE_FILES_FAILURE:-}" ]]; then
+    echo "$GH_FAKE_FILES_FAILURE" >&2
+    exit 1
+  fi
+  cat "$GH_FAKE_FILES"
+elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
+  printf '{"state":"%s","draft":false,"merged_at":%s,"head":{"sha":"%s"}}\n' "$GH_FAKE_STATE" "$GH_FAKE_MERGED_AT" "$GH_FAKE_CURRENT"
+else
+  echo "unexpected gh args: $args" >&2
+  exit 1
+fi
+`,
+	);
+	chmodSync(gh, 0o755);
+	const environment = {
+		PATH: process.env.PATH,
+		GH_FAKE_CALLS: process.env.GH_FAKE_CALLS,
+		GH_FAKE_FILES: process.env.GH_FAKE_FILES,
+		GH_FAKE_FILES_FAILURE: process.env.GH_FAKE_FILES_FAILURE,
+		GH_FAKE_REVIEWS: process.env.GH_FAKE_REVIEWS,
+		GH_FAKE_COMMENTS: process.env.GH_FAKE_COMMENTS,
+		GH_FAKE_PAYLOAD: process.env.GH_FAKE_PAYLOAD,
+		GH_FAKE_POST_FAILURE: process.env.GH_FAKE_POST_FAILURE,
+		GH_FAKE_POST_SENTINEL: process.env.GH_FAKE_POST_SENTINEL,
+		GH_FAKE_CURRENT: process.env.GH_FAKE_CURRENT,
+		GH_FAKE_STATE: process.env.GH_FAKE_STATE,
+		GH_FAKE_MERGED_AT: process.env.GH_FAKE_MERGED_AT,
+	};
+	process.env.PATH = `${dir}:${environment.PATH ?? ""}`;
+	process.env.GH_FAKE_CALLS = callsPath;
+	process.env.GH_FAKE_FILES = filesPath;
+	if (options.filesFailure === undefined) delete process.env.GH_FAKE_FILES_FAILURE;
+	else process.env.GH_FAKE_FILES_FAILURE = options.filesFailure;
+	process.env.GH_FAKE_REVIEWS = reviewsPath;
+	process.env.GH_FAKE_COMMENTS = commentsPath;
+	process.env.GH_FAKE_PAYLOAD = payloadPath;
+	if (options.postFailure === undefined) delete process.env.GH_FAKE_POST_FAILURE;
+	else process.env.GH_FAKE_POST_FAILURE = options.postFailure;
+	process.env.GH_FAKE_POST_SENTINEL = postSentinel;
+	process.env.GH_FAKE_CURRENT = "a".repeat(40);
+	process.env.GH_FAKE_STATE = options.state ?? "open";
+	process.env.GH_FAKE_MERGED_AT = options.mergedAt ? JSON.stringify(options.mergedAt) : "null";
+	try {
+		const result = await publishPullReview({
+			cwd: dir,
+			prNumber: 7,
+			headSha: "a".repeat(40),
+			allowNonOpen: options.allowNonOpen ?? false,
+			expectedRepository: { hostname: "github.com", repository: "owner/repo" },
+			review: candidateReview,
+		});
+		return {
+			result,
+			postCount: existsSync(postSentinel)
+				? readFileSync(postSentinel, "utf8").trim().split("\n").filter(Boolean).length
+				: 0,
+			...(existsSync(payloadPath)
+				? { payload: JSON.parse(readFileSync(payloadPath, "utf8")) as Record<string, unknown> }
+				: {}),
+			calls: existsSync(callsPath)
+				? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
+				: [],
+		};
+	} finally {
+		for (const [key, value] of Object.entries(environment)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
 describe("automatic posting configuration", () => {
 	test("defaults to disabled", () => {
 		expect(resolveAutoPostSetting({})).toEqual({ value: false, valid: true, source: "default" });
@@ -127,12 +253,12 @@ describe("automatic posting configuration", () => {
 		expect(renderer).toContain("const publishingConfig = resolvePublishingConfig(ctx)");
 		expect(renderer).toContain("publishingConfig.allowStale.valid && publishingConfig.allowStale.value");
 		const publisher = renderer.slice(
-			renderer.indexOf("async function maybePublishReview"),
+			renderer.indexOf("async function publishCompletedReview"),
 			renderer.indexOf("export default function"),
 		);
 		expect(publisher).not.toContain("resolvePublishingConfig");
-		expect(publisher).toContain("decideReviewPublication(invocation)");
-		expect(publisher).toContain("allowStale: invocation.allowStalePublish");
+		expect(publisher).toContain("decideReviewPublication(record.invocation)");
+		expect(publisher).toContain("record.invocation.allowStalePublish");
 	});
 });
 
@@ -434,14 +560,25 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
-	test("does not retry publication without the repository binding used for caching", () => {
+	test("parses stored assistant text only to choose a persistence reference", () => {
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
 		const publisher = extension.slice(
-			extension.indexOf("async function maybePublishReview"),
+			extension.indexOf("async function publishCompletedReview"),
 			extension.indexOf("export default function"),
 		);
-		expect(publisher).toContain("if (!expectedRepository)");
-		expect(publisher).toContain("no publish-only cache is available");
+		const turnEnd = extension.slice(
+			extension.indexOf('pi.on("turn_end"'),
+			extension.indexOf('pi.on("message_end"'),
+		);
+		const messageEnd = extension.slice(extension.indexOf('pi.on("message_end"'));
+		expect(publisher).toContain("expectedRepository: record.repository");
+		expect(publisher).not.toContain("parsePublishableReview");
+		expect(turnEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
+		expect(turnEnd).toContain("publishCompletedReview(pending.record");
+		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		expect(extension).toContain("no publish-only cache is available");
 	});
 
 	test("keeps stale protection by default and degrades an explicit override", () => {
@@ -524,7 +661,8 @@ fi
 			expect(payload.body).toContain("a".repeat(40));
 			expect(payload.body).toContain(current);
 			expect(payload.body).toContain("At publish preflight");
-			expect(payload.body).toContain("[P2] Handle empty input");
+			expect(payload.body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(payload.body.split("Optional naming cleanup.")).toHaveLength(2);
 		} finally {
 			if (previousPath === undefined) delete process.env.PATH;
 			else process.env.PATH = previousPath;
@@ -623,6 +761,18 @@ fi
 		expect(prompt).toContain("permits stale publication");
 		expect(prompt).not.toContain("pr_review_publish");
 	});
+
+	test("documents the cached single-post contract", () => {
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		const prompt = readFileSync(new URL("../prompts/pr-review.md", import.meta.url), "utf8");
+		for (const document of [readme, prompt]) {
+			expect(document).toContain("caches one validated completed review");
+			expect(document).toContain("`autoPostReviews` and `--comment` publish that cached review after completion");
+			expect(document).toContain("builds one `COMMENT` payload and sends at most one GitHub review `POST`");
+			expect(document).toContain("first 50 eligible P0–P3 findings with valid, unique diff anchors are inline");
+			expect(document).toContain("All other findings that pass content validation stay in the top-level review body");
+		}
+	});
 });
 
 describe("non-open publication authorization", () => {
@@ -634,6 +784,91 @@ describe("non-open publication authorization", () => {
 	test("permits trusted override or confirmed authority for body-only review", () => {
 		expect(authorizePullLifecycle("closed", null, true)).toEqual({ lifecycle: "non_open" });
 		expect(authorizePullLifecycle("open", null, false)).toEqual({ lifecycle: "open" });
+	});
+
+	test("posts authorized closed and merged reviews body-only through publishPullReview", async () => {
+		for (const lifecycle of [
+			{ label: "closed", state: "closed", mergedAt: null },
+			{ label: "merged", state: "open", mergedAt: "2026-07-16T12:00:00Z" },
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, {
+				state: lifecycle.state,
+				mergedAt: lifecycle.mergedAt,
+				allowNonOpen: true,
+			});
+			expect(diagnostic.result.status).toBe("posted_degraded");
+			expect(diagnostic.result.message).toContain("body-only COMMENT review posted for non-open PR");
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.payload?.event).toBe("COMMENT");
+			expect(diagnostic.payload?.comments).toBeUndefined();
+			const body = String(diagnostic.payload?.body);
+			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
+			expect(body).toContain(canonicalReviewMarker("a".repeat(40)));
+			expect(
+				diagnostic.calls.filter((call) => call.includes("pulls/7/files?per_page=100")),
+			).toEqual([]);
+		}
+	});
+});
+
+describe("duplicate publication preflight", () => {
+	const authored = (body: string | null, login: string | null) => ({
+		body,
+		user: login === null ? null : { login },
+	});
+
+	test("accepts valid flat and slurped duplicate response arrays", async () => {
+		for (const responses of [
+			{
+				reviewsJson: JSON.stringify([authored("ordinary review", "another-user")]),
+				commentsJson: JSON.stringify([authored(null, null)]),
+			},
+			{
+				reviewsJson: JSON.stringify([[authored("page one", "another-user")], []]),
+				commentsJson: JSON.stringify([[], [authored("page two", "another-user")]]),
+			},
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("posted");
+			expect(diagnostic.postCount).toBe(1);
+		}
+	});
+
+	test("recognizes matching markers in valid flat reviews and slurped comments", async () => {
+		const marker = canonicalReviewMarker("a".repeat(40));
+		for (const responses of [
+			{
+				reviewsJson: JSON.stringify([authored(marker, "reviewer")]),
+				commentsJson: "[]",
+			},
+			{
+				reviewsJson: "[[]]",
+				commentsJson: JSON.stringify([[authored(`prefix\n${marker}`, "reviewer")]]),
+			},
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("skipped_duplicate");
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+		}
+	});
+
+	test("fails closed on malformed duplicate response shapes before any POST", async () => {
+		for (const responses of [
+			{ reviewsJson: "not-json" },
+			{ commentsJson: JSON.stringify({ body: "not an array" }) },
+			{ reviewsJson: JSON.stringify([[], authored("mixed", "another-user")]) },
+			{ commentsJson: JSON.stringify([42]) },
+			{ reviewsJson: JSON.stringify([[{ body: false, user: { login: "another-user" } }]]) },
+			{ commentsJson: JSON.stringify([{}]) },
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
+			expect(diagnostic.result.status).toBe("failed");
+			expect(diagnostic.result.message).toContain("GitHub preflight failed");
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+		}
 	});
 });
 
@@ -662,13 +897,375 @@ describe("strict publication parsing", () => {
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
 	});
 
+	test("canonically rejects malformed locations and encoded reserved markers", () => {
+		const malformed: ReviewLike = JSON.parse(JSON.stringify(review));
+		malformed.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		expect(parsePublishableReview(JSON.stringify(malformed)).error).toContain("invalid repo-relative path");
+
+		const reserved: ReviewLike = JSON.parse(JSON.stringify(review));
+		reserved.findings![0]!.body = "<!-- pi-pr-review: forged -->";
+		const encoded = JSON.stringify(reserved).replace("<!--", "\\u003c!--");
+		expect(parsePublishableReview(encoded).error).toContain("reserved pi-pr-review marker");
+	});
+
 	test("suppresses publication for validated skipped outcomes", () => {
 		expect(shouldPublishReview(review)).toBeTrue();
 		expect(shouldPublishReview({ ...review, disposition: "skipped" })).toBeFalse();
 	});
 });
 
+describe("single lossless publication payload", () => {
+	test("posts one COMMENT payload with every finding body represented exactly once", async () => {
+		const diagnostic = await diagnosePullPublication(review, changedFiles);
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+		expect(diagnostic.payload?.event).toBe("COMMENT");
+		expect(diagnostic.payload?.comments as unknown[]).toHaveLength(1);
+		expect(String(diagnostic.payload?.body)).toContain(canonicalReviewMarker("a".repeat(40)));
+		const payloadText = JSON.stringify(diagnostic.payload);
+		for (const body of ["Empty input currently returns the wrong value.", "Optional naming cleanup."]) {
+			expect(payloadText.split(body)).toHaveLength(2);
+		}
+	});
+
+	test("keeps every recoverable placement failure in the one payload with ordered diagnostics", async () => {
+		const finding = (title: string, path: string, start: number, body: string) => ({
+			title,
+			severity: "P2",
+			blocking: false,
+			body,
+			confidence_score: 0.9,
+			code_location: {
+				absolute_file_path: path,
+				line_range: { start, end: start },
+				side: "RIGHT" as const,
+				commentable: true,
+			},
+		});
+		const mixed: ReviewLike = {
+			...review,
+			findings: [
+				finding("[P2] First inline", "src/parser.ts", 2, "First body."),
+				finding("[P2] Duplicate anchor", "src/parser.ts", 2, "Duplicate body."),
+				finding("[P2] Outside hunk", "src/parser.ts", 20, "Outside body."),
+				finding("[P2] Unchanged path", "src/unchanged.ts", 4, "Unchanged body."),
+				finding("[P2] Missing patch", "src/large.ts", 1, "Patchless body."),
+			],
+		};
+		const diagnostic = await diagnosePullPublication(mixed, [
+			...changedFiles,
+			{ filename: "src/large.ts" },
+		]);
+		expect(diagnostic.result.status).toBe("posted_degraded");
+		expect(diagnostic.postCount).toBe(1);
+		const comments = diagnostic.payload?.comments as Array<Record<string, unknown>>;
+		expect(comments).toHaveLength(1);
+		expect(comments[0]?.body).toContain("[P2] First inline");
+		const expectedDiagnostics = [
+			"finding 2: duplicate inline anchor; kept in the review summary",
+			"finding 3: line range is not inside one diff hunk on RIGHT; kept in the review summary",
+			"finding 4: path is not a changed file; kept in the review summary",
+			"finding 5: diff patch is unavailable; kept in the review summary",
+		];
+		const body = String(diagnostic.payload?.body);
+		let previous = -1;
+		for (const item of expectedDiagnostics) {
+			const at = body.indexOf(item);
+			expect(at).toBeGreaterThan(previous);
+			previous = at;
+		}
+		const payloadText = JSON.stringify(diagnostic.payload);
+		for (const findingBody of [
+			"First body.",
+			"Duplicate body.",
+			"Outside body.",
+			"Unchanged body.",
+			"Patchless body.",
+		]) {
+			expect(payloadText.split(findingBody)).toHaveLength(2);
+		}
+	});
+
+	test("fails malformed, unsafe, and reserved review content before any write", async () => {
+		const unsafe: ReviewLike = JSON.parse(JSON.stringify(review));
+		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		const malformed: ReviewLike = JSON.parse(JSON.stringify(review));
+		malformed.findings![0]!.code_location!.line_range = { start: 0, end: 0 };
+		const reserved: ReviewLike = JSON.parse(JSON.stringify(review));
+		reserved.findings![0]!.body = "<!-- PI-PR-REVIEW: forged -->";
+		for (const [candidate, expected] of [
+			[unsafe, "invalid repo-relative path"],
+			[malformed, "invalid line range"],
+			[reserved, "reserved pi-pr-review marker"],
+		] as const) {
+			const diagnostic = await diagnosePullPublication(candidate, changedFiles);
+			expect(diagnostic.result.status).toBe("failed");
+			expect(diagnostic.result.message).toContain(expected);
+			expect(diagnostic.postCount).toBe(0);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+		}
+	});
+
+	test("validates limits only against the payload selected for publication", async () => {
+		const findingCount = 40;
+		const large: ReviewLike = {
+			...review,
+			findings: Array.from({ length: findingCount }, (_, index) => ({
+				title: `[P2] Large finding ${index + 1}`,
+				severity: "P2",
+				blocking: false,
+				body: `${index + 1}: ${"x".repeat(1_800)}`,
+				confidence_score: 0.9,
+				code_location: {
+					absolute_file_path: "src/large.ts",
+					line_range: { start: index + 1, end: index + 1 },
+					side: "RIGHT",
+					commentable: true,
+				},
+			})),
+		};
+		const patch = [
+			`@@ -1,${findingCount} +1,${findingCount} @@`,
+			...Array.from({ length: findingCount }, (_, index) => ` line ${index + 1}`),
+		].join("\n");
+		const inline = await diagnosePullPublication(large, [{ filename: "src/large.ts", patch }]);
+		expect(inline.result.status).toBe("posted");
+		expect(inline.postCount).toBe(1);
+		expect(inline.payload?.comments as unknown[]).toHaveLength(findingCount);
+
+		const degraded = await diagnosePullPublication(large, [{ filename: "src/large.ts", patch }], {
+			filesFailure: "gh: changed-file lookup unavailable",
+		});
+		expect(degraded.result.status).toBe("failed");
+		expect(degraded.result.message).toContain("review body exceeds 65536 UTF-8 bytes");
+		expect(degraded.postCount).toBe(0);
+	});
+
+	test("fails an oversized selected payload before POST", async () => {
+		const findingCount = 15;
+		const oversized: ReviewLike = {
+			...review,
+			findings: Array.from({ length: findingCount }, (_, index) => ({
+				title: `[P2] Payload finding ${index + 1}`,
+				severity: "P2",
+				blocking: false,
+				body: `${index + 1}: ${"y".repeat(60_000)}`,
+				confidence_score: 0.9,
+				code_location: {
+					absolute_file_path: "src/large.ts",
+					line_range: { start: index + 1, end: index + 1 },
+					side: "RIGHT",
+					commentable: true,
+				},
+			})),
+		};
+		const patch = [
+			`@@ -1,${findingCount} +1,${findingCount} @@`,
+			...Array.from({ length: findingCount }, (_, index) => ` line ${index + 1}`),
+		].join("\n");
+		const diagnostic = await diagnosePullPublication(oversized, [{ filename: "src/large.ts", patch }]);
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("review payload is too large");
+		expect(diagnostic.postCount).toBe(0);
+	});
+});
+
+describe("lossless publication diagnostics", () => {
+	test("degrades a safe changed-file anchor outside its diff hunk and posts once", async () => {
+		const outsideHunk: ReviewLike = JSON.parse(JSON.stringify(review));
+		outsideHunk.findings = [outsideHunk.findings![0]!];
+		outsideHunk.findings[0]!.code_location!.line_range = { start: 20, end: 20 };
+		const files = [{ filename: "src/parser.ts", patch: changedFiles[0]!.patch }];
+		const warning = "finding 1: line range is not inside one diff hunk on RIGHT; kept in the review summary";
+
+		expect(
+			decideReviewPublication({
+				mode: "auto",
+				prNumber: 7,
+				allowNonOpen: false,
+				allowStalePublish: true,
+				autoPost: resolveAutoPostSetting({ autoPostReviews: true }),
+			}),
+		).toEqual({ publish: true, source: "user config" });
+		expect(parsePublishableReview(JSON.stringify(outsideHunk)).review).toBeDefined();
+		expect(validateInlineComments(outsideHunk, files)).toEqual({
+			comments: [],
+			errors: [],
+			warnings: [warning],
+		});
+
+		const diagnostic = await diagnosePullPublication(outsideHunk, files);
+		expect(diagnostic.result.status).toBe("posted_degraded");
+		expect(diagnostic.result.message).toContain(warning);
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.payload?.event).toBe("COMMENT");
+		expect(diagnostic.payload?.comments).toBeUndefined();
+		const body = String(diagnostic.payload?.body);
+		expect(body).toContain("[P2] Handle empty input");
+		expect(body).toContain("Empty input currently returns the wrong value.");
+		expect(body).toContain("src/parser.ts:20 RIGHT");
+		expect(body).toContain(warning);
+	});
+
+	test("degrades changed-file command and JSON failures with one diagnostic and one POST", async () => {
+		const warning = "changed-file lookup failed; all inline findings kept in the review summary";
+		for (const options of [
+			{ filesFailure: "gh: changed-file lookup unavailable" },
+			{ filesJson: "not-json" },
+		]) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, options);
+			expect(diagnostic.result.status).toBe("posted_degraded");
+			expect(diagnostic.result.message).toContain(warning);
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+			expect(diagnostic.payload?.event).toBe("COMMENT");
+			expect(diagnostic.payload?.comments).toBeUndefined();
+			const body = String(diagnostic.payload?.body);
+			expect(body.match(new RegExp(warning, "g"))).toHaveLength(1);
+			expect(body).not.toContain("path is not a changed file");
+			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
+			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
+		}
+	});
+
+	test("keeps the first 50 unique candidates inline and posts overflow losslessly once", async () => {
+		const inlineCount = MAX_INLINE_COMMENTS + 1;
+		const overLimit: ReviewLike = {
+			...review,
+			findings: Array.from({ length: inlineCount }, (_, index) => ({
+				title: `[P2] Diagnostic finding ${index + 1}`,
+				severity: "P2",
+				blocking: false,
+				body: `Unique diagnostic body ${index + 1}.`,
+				confidence_score: 0.9,
+				code_location: {
+					absolute_file_path: "src/parser.ts",
+					line_range: { start: index + 1, end: index + 1 },
+					side: "RIGHT",
+					commentable: true,
+				},
+			})),
+		};
+		const patch = [
+			`@@ -1,${inlineCount} +1,${inlineCount} @@`,
+			...Array.from({ length: inlineCount }, (_, index) => ` line ${index + 1}`),
+		].join("\n");
+		const files = [{ filename: "src/parser.ts", patch }];
+		const warning = `finding ${inlineCount}: inline comment limit of ${MAX_INLINE_COMMENTS} reached; kept in the review summary`;
+
+		expect(
+			decideReviewPublication({
+				mode: "auto",
+				prNumber: 7,
+				allowNonOpen: false,
+				allowStalePublish: true,
+				autoPost: resolveAutoPostSetting({ autoPostReviews: true }),
+			}),
+		).toEqual({ publish: true, source: "user config" });
+		expect(parsePublishableReview(JSON.stringify(overLimit)).review).toBeDefined();
+		const validation = validateInlineComments(overLimit, files);
+		expect(validation.comments).toHaveLength(MAX_INLINE_COMMENTS);
+		expect(validation.comments.map((comment) => comment.line)).toEqual(
+			Array.from({ length: MAX_INLINE_COMMENTS }, (_, index) => index + 1),
+		);
+		expect(validation.errors).toEqual([]);
+		expect(validation.warnings).toEqual([warning]);
+
+		const diagnostic = await diagnosePullPublication(overLimit, files);
+		expect(diagnostic.result.status).toBe("posted_degraded");
+		expect(diagnostic.result.message).toContain(warning);
+		expect(diagnostic.postCount).toBe(1);
+		const comments = diagnostic.payload?.comments as Array<Record<string, unknown>>;
+		expect(comments).toHaveLength(MAX_INLINE_COMMENTS);
+		expect(comments.map((comment) => comment.line)).toEqual(
+			Array.from({ length: MAX_INLINE_COMMENTS }, (_, index) => index + 1),
+		);
+		const payloadText = JSON.stringify(diagnostic.payload);
+		for (let index = 1; index <= inlineCount; index++) {
+			expect(payloadText).toContain(`[P2] Diagnostic finding ${index}`);
+			expect(payloadText.split(`Unique diagnostic body ${index}.`)).toHaveLength(2);
+		}
+		const body = String(diagnostic.payload?.body);
+		expect(body).toContain(`src/parser.ts:${inlineCount} RIGHT`);
+		expect(body).toContain(`Unique diagnostic body ${inlineCount}.`);
+		expect(body).toContain(warning);
+	});
+
+	test("does not build or send a fallback payload after a server rejection", async () => {
+		const diagnostic = await diagnosePullPublication(review, changedFiles, {
+			postFailure: "gh: HTTP 422: Validation Failed (invalid inline position)",
+		});
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("HTTP 422");
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.payload?.event).toBe("COMMENT");
+		expect(diagnostic.payload?.comments as unknown[]).toHaveLength(1);
+	});
+
+	test("keeps every rejected or ambiguous POST outcome single-shot", async () => {
+		for (const scenario of [
+			{ failure: "gh: HTTP 403: Forbidden", status: "failed" },
+			{ failure: "gh: HTTP 422: Validation Failed", status: "failed" },
+			{ failure: "gh: HTTP 500: Internal Server Error", status: "indeterminate" },
+			{ failure: "gh: connection reset by peer", status: "indeterminate" },
+		] as const) {
+			const diagnostic = await diagnosePullPublication(review, changedFiles, {
+				postFailure: scenario.failure,
+			});
+			expect(diagnostic.result.status).toBe(scenario.status);
+			expect(diagnostic.result.message).toContain(scenario.failure);
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+		}
+	});
+
+	test("fails an unsafe location before any write", async () => {
+		const unsafe: ReviewLike = JSON.parse(JSON.stringify(review));
+		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		const diagnostic = await diagnosePullPublication(unsafe, changedFiles);
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("invalid repo-relative path");
+		expect(diagnostic.postCount).toBe(0);
+		expect(diagnostic.payload).toBeUndefined();
+	});
+});
+
 describe("atomic COMMENT review payload", () => {
+	test("keeps the public summary tolerant and preserves its findings table", () => {
+		const tolerant: ReviewLike = {
+			...review,
+			findings: [
+				{
+					title: "[P2] Pipe | title\ncontinued",
+					severity: "P2|urgent",
+					body: "The tolerant formatter still includes this body.",
+					code_location: {
+						absolute_file_path: "src/parser.ts",
+						line_range: { start: 0, end: 0 },
+						side: "SIDEWAYS",
+						commentable: true,
+					},
+				},
+			],
+		};
+		const summary = buildReviewSummary(tolerant);
+		expect(summary).toContain("| Severity | Summary-only finding | Location |");
+		expect(summary).toContain(
+			"| P2\\|urgent | [P2] Pipe \\| title continued | `src/parser.ts:0 SIDEWAYS` |",
+		);
+		expect(summary).toContain("The tolerant formatter still includes this body.");
+	});
+
+	test("keeps standalone exported payload objects mutable", () => {
+		const comments = [{ path: "src/parser.ts", body: "Finding", line: 2, side: "RIGHT" as const }];
+		const payload = buildPullReviewPayload("a".repeat(40), "Summary", comments);
+		payload.body = "Updated summary";
+		payload.comments![0]!.line = 3;
+		expect(payload.body).toBe("Updated summary");
+		expect(payload.comments?.[0]?.line).toBe(3);
+	});
+
 	test("groups validated inline comments under one hardcoded COMMENT review", () => {
 		const validated = validateInlineComments(review, changedFiles);
 		expect(validated.errors).toEqual([]);
@@ -686,6 +1283,51 @@ describe("atomic COMMENT review payload", () => {
 			line: 3,
 			side: "RIGHT",
 		});
+	});
+
+	test("validates findings-only ReviewLike input without requiring a publication envelope", () => {
+		const findingsOnly: ReviewLike = { findings: [review.findings![0]!] };
+		expect(parsePublishableReview(JSON.stringify(findingsOnly)).review).toBeUndefined();
+		expect(collectFoldedComments(findingsOnly)).toMatchObject({ errors: [], comments: [{ path: "src/parser.ts" }] });
+		expect(validateInlineComments(findingsOnly, changedFiles)).toEqual({
+			comments: [{
+				path: "src/parser.ts",
+				body: "**[P2] Handle empty input**\n\nEmpty input currently returns the wrong value.",
+				start_line: 2,
+				start_side: "RIGHT",
+				line: 3,
+				side: "RIGHT",
+			}],
+			errors: [],
+			warnings: [],
+		});
+	});
+
+	test("rejects unsafe, malformed, oversized, and reserved findings-only inline input", () => {
+		const partialReview = (): ReviewLike => ({
+			findings: [JSON.parse(JSON.stringify(review.findings![0]!))],
+		});
+		const unsafe = partialReview();
+		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		const malformed = partialReview();
+		malformed.findings![0]!.code_location!.line_range = { start: 0, end: 0 };
+		const oversized = partialReview();
+		oversized.findings![0]!.body = "x".repeat(65_536);
+		const reserved = partialReview();
+		reserved.findings![0]!.body = "<!-- PI-PR-REVIEW: forged -->";
+
+		for (const [candidate, expected] of [
+			[unsafe, "invalid repo-relative path"],
+			[malformed, "invalid line range"],
+			[oversized, "comment body is empty or too large"],
+			[reserved, "reserved pi-pr-review marker"],
+		] as const) {
+			const validated = validateInlineComments(candidate, changedFiles);
+			expect(validated.comments).toEqual([]);
+			expect(validated.errors).toHaveLength(1);
+			expect(validated.errors[0]).toContain(expected);
+			expect(validated.warnings).toEqual([]);
+		}
 	});
 
 	test("keeps nits and noncommentable findings even when anchors collide", () => {
@@ -739,12 +1381,13 @@ describe("atomic COMMENT review payload", () => {
 		expect(summary).toContain("This distinct issue targets the same diff range.");
 	});
 
-	test("rejects anchors outside changed diff metadata", () => {
+	test("demotes anchors outside changed diff metadata", () => {
 		const invalid: ReviewLike = JSON.parse(JSON.stringify(review));
 		invalid.findings![0]!.code_location!.line_range = { start: 20, end: 20 };
 		const result = validateInlineComments(invalid, changedFiles);
 		expect(result.comments).toEqual([]);
-		expect(result.errors[0]).toContain("not inside one diff hunk");
+		expect(result.errors).toEqual([]);
+		expect(result.warnings?.[0]).toContain("not inside one diff hunk");
 	});
 
 	test("keeps findings in the summary when GitHub omits patch metadata", () => {
@@ -759,17 +1402,14 @@ describe("atomic COMMENT review payload", () => {
 		expect(summary).toContain("[P2] Handle empty input");
 	});
 
-	test("folds inline findings exactly once into a body-only non-open review", () => {
+	test("preserves the folded-comment compatibility exports", () => {
 		const folded = collectFoldedComments(review);
 		expect(folded.errors).toEqual([]);
 		expect(folded.comments).toHaveLength(1);
 		const summary = buildReviewSummary(review, folded.comments);
 		const body = foldInlineComments(summary, folded.comments);
-		const payload = buildPullReviewPayload("b".repeat(40), body, []);
-		expect(payload.event).toBe("COMMENT");
-		expect(payload.comments).toBeUndefined();
-		expect(payload.body).toContain("Inline findings (folded for a non-open PR)");
-		expect(payload.body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
+		expect(body).toContain("Inline findings (folded for a non-open PR)");
+		expect(body.match(/\[P2\] Handle empty input/g)).toHaveLength(1);
 	});
 
 	test("uses and reconciles a case-insensitive canonical same-head marker", () => {

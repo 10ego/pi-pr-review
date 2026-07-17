@@ -174,6 +174,6 @@ describe("extension telemetry boundaries", () => {
 		expect(messageEnd.indexOf('persistTelemetry("terminal_response")')).toBeLessThan(
 			messageEnd.indexOf("pendingCompletion ="),
 		);
-		expect(turnEnd.indexOf("pi.appendEntry(")).toBeLessThan(turnEnd.indexOf("await maybePublishReview"));
+		expect(turnEnd.indexOf("pi.appendEntry(")).toBeLessThan(turnEnd.indexOf("await publishCompletedReview"));
 	});
 });
