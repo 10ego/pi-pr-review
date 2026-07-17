@@ -114,6 +114,7 @@ Common settings:
 /pr-review-config tools=read,bash,grep,find,ls
 /pr-review-config auto_post_reviews=true
 /pr-review-config allow_stale_publish=false
+/pr-review-config approve_max_priority_level=P2
 /pr-review-config medium=unset
 ```
 
@@ -152,7 +153,8 @@ Example:
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
   "autoPostReviews": false,
-  "allowStalePublish": true
+  "allowStalePublish": true,
+  "approveMaxPriorityLevel": "off"
 }
 ```
 
@@ -247,7 +249,16 @@ Each finding includes:
 | `P3` | Low-priority improvement. |
 | `nit` | Trivial or optional. |
 
-The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. The displayed verdict is advisory even when the review is published, because publication always uses the GitHub `COMMENT` event.
+The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to a severity level (e.g. `P2`), a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead.
+
+| Setting | Behavior |
+|---|---|
+| `off` (default) | Always `COMMENT`; never auto-approve. |
+| `P2` | `APPROVE` if verdict is `approve` and all findings are P2/P3/nit. |
+| `P3` | `APPROVE` if verdict is `approve` and all findings are P3/nit. |
+| `nit` | `APPROVE` only if verdict is `approve` and all findings are nits. |
+
+Configure it with `/pr-review-config approve_max_priority_level=P2`. The setting follows the same user/project overlay pattern as `autoPostReviews`.
 
 ## Safety and cost
 
