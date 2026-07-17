@@ -16,6 +16,7 @@ const APPROVE_PRIORITY_RANK: Record<string, number> = {
 	P2: 2,
 	P3: 1,
 	nit: 0,
+	NIT: 0,
 };
 
 export interface ApproveMaxPriorityLevelResolution {
@@ -69,7 +70,7 @@ export function findingsWithinApproveMaxPriority(
 	if (maxRank === undefined) return false;
 	const findings = Array.isArray(review.findings) ? review.findings : [];
 	return findings.every(
-		(finding) => APPROVE_PRIORITY_RANK[String(finding.severity ?? "").toUpperCase()] ?? Infinity <= maxRank,
+		(finding) => (APPROVE_PRIORITY_RANK[String(finding.severity ?? "").toUpperCase()] ?? Infinity) <= maxRank,
 	);
 }
 

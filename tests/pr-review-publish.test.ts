@@ -28,11 +28,16 @@ import {
 	publishPullReview,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
+	resolveApproveMaxPriorityLevelSetting,
+	APPROVE_EVENT,
+	findingsWithinApproveMaxPriority,
+	shouldApproveReview,
 	restoreCompletedReviewBranch,
 	ReviewInvocationGate,
 	shouldPublishReview,
 	validateInlineComments,
 	validateReviewInvocation,
+	type ApproveMaxPriorityLevel,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
 
@@ -259,6 +264,138 @@ describe("automatic posting configuration", () => {
 		expect(publisher).not.toContain("resolvePublishingConfig");
 		expect(publisher).toContain("decideReviewPublication(record.invocation)");
 		expect(publisher).toContain("record.invocation.allowStalePublish");
+	});
+});
+
+describe("auto-approve priority gate", () => {
+	const approveReview: ReviewLike = {
+		pr: { number: 7, title: "Test", head_sha: "a".repeat(40) },
+		disposition: "reviewed",
+		verification: "Tests passed.",
+		overview: "Clean change.",
+		strengths: ["Good tests"],
+		findings: [
+			{ title: "P2 issue", severity: "P2", blocking: false, body: "Minor.", confidence_score: 0.8, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 1, end: 1 }, side: "RIGHT", commentable: true } },
+			{ title: "nit", severity: "nit", blocking: false, body: "Nit.", confidence_score: 0.7, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } },
+		],
+		notes: { correctness: "OK", security: "", performance: "" },
+		verdict: "approve",
+		overall_correctness: "patch is correct",
+		overall_explanation: "LGTM",
+		overall_confidence_score: 0.9,
+	};
+
+	const requestChangesReview: ReviewLike = {
+		...approveReview,
+		findings: [
+			{ title: "P0 bug", severity: "P0", blocking: true, body: "Crash.", confidence_score: 0.95, code_location: { absolute_file_path: "src/a.ts", line_range: { start: 1, end: 1 }, side: "RIGHT", commentable: true } },
+		],
+		verdict: "request_changes",
+		overall_correctness: "patch is incorrect",
+	};
+
+	test("resolveApproveMaxPriorityLevelSetting defaults to off", () => {
+		expect(resolveApproveMaxPriorityLevelSetting({})).toEqual({ value: "off", valid: true, source: "default" });
+	});
+
+	test("resolveApproveMaxPriorityLevelSetting accepts valid user values", () => {
+		expect(resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "P2" })).toEqual({
+			value: "P2", valid: true, source: "user",
+		});
+		expect(resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "P3" })).toEqual({
+			value: "P3", valid: true, source: "user",
+		});
+		expect(resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "off" })).toEqual({
+			value: "off", valid: true, source: "user",
+		});
+		expect(resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "nit" })).toEqual({
+			value: "nit", valid: true, source: "user",
+		});
+	});
+
+	test("resolveApproveMaxPriorityLevelSetting project overlays user", () => {
+		expect(
+			resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "P2" }, { approveMaxPriorityLevel: "P3" }),
+		).toEqual({ value: "P3", valid: true, source: "project" });
+	});
+
+	test("resolveApproveMaxPriorityLevelSetting rejects invalid values", () => {
+		const result = resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: "P4" });
+		expect(result.value).toBe("off");
+		expect(result.valid).toBeFalse();
+		const result2 = resolveApproveMaxPriorityLevelSetting({ approveMaxPriorityLevel: 42 });
+		expect(result2.valid).toBeFalse();
+	});
+
+	test("findingsWithinApproveMaxPriority respects severity ranking", () => {
+		// P2 + nit findings, max=P2 → allowed
+		expect(findingsWithinApproveMaxPriority(approveReview, "P2")).toBeTrue();
+		// max=P3 → P2 is above, not allowed
+		expect(findingsWithinApproveMaxPriority(approveReview, "P3")).toBeFalse();
+		// max=nit → P2 is above, not allowed
+		expect(findingsWithinApproveMaxPriority(approveReview, "nit")).toBeFalse();
+		// max=P0 → everything allowed
+		expect(findingsWithinApproveMaxPriority(approveReview, "P0")).toBeTrue();
+		// max=off → never allowed
+		expect(findingsWithinApproveMaxPriority(approveReview, "off")).toBeFalse();
+	});
+
+	test("findingsWithinApproveMaxPriority handles empty findings", () => {
+		const noFindings = { ...approveReview, findings: [] };
+		expect(findingsWithinApproveMaxPriority(noFindings, "P3")).toBeTrue();
+		expect(findingsWithinApproveMaxPriority(noFindings, "nit")).toBeTrue();
+		expect(findingsWithinApproveMaxPriority(noFindings, "off")).toBeFalse();
+	});
+
+	test("shouldApproveReview requires approve verdict and valid gate", () => {
+		// verdict=approve, max=P2, findings within → true
+		expect(shouldApproveReview(approveReview, "P2")).toBeTrue();
+		// verdict=approve, max=off → false
+		expect(shouldApproveReview(approveReview, "off")).toBeFalse();
+		// verdict=approve, max=P3 but findings has P2 → false
+		expect(shouldApproveReview(approveReview, "P3")).toBeFalse();
+		// verdict=request_changes → always false
+		expect(shouldApproveReview(requestChangesReview, "P0")).toBeFalse();
+	});
+
+	test("buildPullReviewPayload defaults to COMMENT and supports APPROVE override", () => {
+		const commentPayload = buildPullReviewPayload("a".repeat(40), "body", []);
+		expect(commentPayload.event).toBe("COMMENT");
+		const approvePayload = buildPullReviewPayload("a".repeat(40), "body", [], APPROVE_EVENT);
+		expect(approvePayload.event).toBe("APPROVE");
+	});
+
+	test("invocation gate captures approveMaxPriorityLevel", () => {
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7 --comment"), { value: true, valid: true, source: "user" }, true, "P2");
+		const invocation = gate.consume()!;
+		expect(invocation.approveMaxPriorityLevel).toBe("P2");
+	});
+
+	test("invocation gate defaults approveMaxPriorityLevel to off", () => {
+		const gate = new ReviewInvocationGate();
+		gate.begin(parsePublishMode("/pr-review 7 --comment"), { value: true, valid: true, source: "user" });
+		const invocation = gate.consume()!;
+		expect(invocation.approveMaxPriorityLevel).toBe("off");
+	});
+
+	test("persisted invocation without approveMaxPriorityLevel defaults to off on restore", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: { value: false, valid: true, source: "user" } as const };
+		// This invocation lacks approveMaxPriorityLevel; parsePersistedInvocation should default to "off"
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const record = cache.remember(approveReview, invocation as any, repository);
+		const persisted = cache.persist(record, { id: "test", startedAt: "2026-01-01T00:00:00.000Z" });
+		// Remove the field from the persisted data to simulate an old record
+		const legacyPersisted = {
+			...persisted,
+			invocation: { ...persisted.invocation, approveMaxPriorityLevel: undefined },
+		};
+		delete (legacyPersisted.invocation as any).approveMaxPriorityLevel;
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(legacyPersisted, { id: "test", startedAt: "2026-01-01T00:00:00.000Z" })).toBeTrue();
+		const recovered = restored.get(7, repository)!;
+		expect(recovered.invocation.approveMaxPriorityLevel).toBe("off");
 	});
 });
 
