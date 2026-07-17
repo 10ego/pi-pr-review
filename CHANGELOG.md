@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.5](https://github.com/10ego/pi-pr-review/compare/v1.10.4...v1.10.5) (2026-07-17)
+
+
+### Miscellaneous Chores
+
+* **release:** harden Node 24 automation ([#32](https://github.com/10ego/pi-pr-review/issues/32)) ([6b670b3](https://github.com/10ego/pi-pr-review/commit/6b670b3a1e33f3f2392027ae79c159afd9738690))
+
 ## [1.10.4](https://github.com/10ego/pi-pr-review/compare/v1.10.3...v1.10.4) (2026-07-15)
 
 
