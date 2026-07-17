@@ -6,6 +6,85 @@ export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
 export type CompletionAction = "continue_tools" | "accept_final" | "clear_invocation";
 
+/** Maximum severity that may appear in a review for auto-APPROVE to be granted. */
+export type ApproveMaxPriorityLevel = "off" | "P0" | "P1" | "P2" | "P3" | "nit";
+
+const APPROVE_PRIORITY_LEVELS = ["P0", "P1", "P2", "P3", "nit"] as const;
+const APPROVE_PRIORITY_RANK: Record<string, number> = {
+	P0: 4,
+	P1: 3,
+	P2: 2,
+	P3: 1,
+	nit: 0,
+};
+
+export interface ApproveMaxPriorityLevelResolution {
+	readonly value: ApproveMaxPriorityLevel;
+	readonly valid: boolean;
+	readonly source: AutoPostSource;
+	readonly error?: string;
+}
+
+function isValidApproveLevel(value: unknown): value is ApproveMaxPriorityLevel {
+	return value === "off" || (typeof value === "string" && APPROVE_PRIORITY_LEVELS.includes(value as (typeof APPROVE_PRIORITY_LEVELS)[number]));
+}
+
+/** Resolve the auto-approve priority gate with trusted project config overlaying user config. */
+export function resolveApproveMaxPriorityLevelSetting(
+	user: unknown,
+	trustedProject?: unknown,
+): ApproveMaxPriorityLevelResolution {
+	if (hasOwn(trustedProject, "approveMaxPriorityLevel")) {
+		const value = (trustedProject as { approveMaxPriorityLevel?: unknown }).approveMaxPriorityLevel;
+		return isValidApproveLevel(value)
+			? { value, valid: true, source: "project" }
+			: {
+					value: "off",
+					valid: false,
+					source: "project",
+					error: `project approveMaxPriorityLevel must be one of: off, ${APPROVE_PRIORITY_LEVELS.join(", ")}`,
+				};
+	}
+	if (hasOwn(user, "approveMaxPriorityLevel")) {
+		const value = (user as { approveMaxPriorityLevel?: unknown }).approveMaxPriorityLevel;
+		return isValidApproveLevel(value)
+			? { value, valid: true, source: "user" }
+			: {
+					value: "off",
+					valid: false,
+					source: "user",
+					error: `user approveMaxPriorityLevel must be one of: off, ${APPROVE_PRIORITY_LEVELS.join(", ")}`,
+				};
+	}
+	return { value: "off", valid: true, source: "default" };
+}
+
+/** Whether all findings in a review are at or below the configured maximum priority. */
+export function findingsWithinApproveMaxPriority(
+	review: ReviewLike,
+	level: ApproveMaxPriorityLevel,
+): boolean {
+	if (level === "off") return false;
+	const maxRank = APPROVE_PRIORITY_RANK[level];
+	if (maxRank === undefined) return false;
+	const findings = Array.isArray(review.findings) ? review.findings : [];
+	return findings.every(
+		(finding) => APPROVE_PRIORITY_RANK[String(finding.severity ?? "").toUpperCase()] ?? Infinity <= maxRank,
+	);
+}
+
+/** Decide whether a review should be published as APPROVE instead of COMMENT. */
+export function shouldApproveReview(
+	review: ReviewLike,
+	approveMaxPriorityLevel: ApproveMaxPriorityLevel,
+): boolean {
+	return (
+		review.verdict === "approve" &&
+		approveMaxPriorityLevel !== "off" &&
+		findingsWithinApproveMaxPriority(review, approveMaxPriorityLevel)
+	);
+}
+
 export function classifyAssistantCompletion(
 	stopReason: string | undefined,
 	hasToolCall: boolean,
@@ -127,6 +206,8 @@ export interface ReviewInvocation {
 	readonly allowStalePublish: boolean;
 	/** Trusted automatic-posting decision captured before review execution begins. */
 	readonly autoPost: Readonly<AutoPostResolution>;
+	/** Trusted auto-approve priority gate captured before review execution begins. */
+	readonly approveMaxPriorityLevel: ApproveMaxPriorityLevel;
 }
 
 export interface ReviewPublicationDecision {
@@ -222,6 +303,7 @@ export class ReviewInvocationGate {
 		parsed: PublishModeParseResult,
 		autoPost: AutoPostResolution,
 		allowStalePublish = true,
+		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
 	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
@@ -242,6 +324,7 @@ export class ReviewInvocationGate {
 			allowNonOpen: parsed.allowNonOpen === true,
 			allowStalePublish,
 			autoPost: snapshot,
+			approveMaxPriorityLevel,
 		});
 		this.currentPhase = "reviewing";
 		return { accepted: true };
@@ -297,6 +380,8 @@ export function githubApiArgs(hostname: string, ...args: string[]): string[] {
 }
 
 export const REVIEW_EVENT = "COMMENT" as const;
+export const APPROVE_EVENT = "APPROVE" as const;
+export type ReviewEventType = typeof REVIEW_EVENT | typeof APPROVE_EVENT;
 export const MAX_INLINE_COMMENTS = 50;
 const MAX_BODY_BYTES = 65_536;
 const MAX_PAYLOAD_BYTES = 900_000;
@@ -315,20 +400,21 @@ export interface PublishComment {
 
 export interface PullReviewPayload {
 	commit_id: string;
-	event: typeof REVIEW_EVENT;
+	event: ReviewEventType;
 	body: string;
 	comments?: PublishComment[];
 }
 
-/** Build the only GitHub review payload this package can emit. */
+/** Build the GitHub review payload, optionally with an APPROVE event. */
 export function buildPullReviewPayload(
 	headSha: string,
 	body: string,
 	comments: PublishComment[],
+	event: ReviewEventType = REVIEW_EVENT,
 ): PullReviewPayload {
 	return {
 		commit_id: headSha,
-		event: REVIEW_EVENT,
+		event,
 		body,
 		...(comments.length > 0 ? { comments } : {}),
 	};
@@ -465,6 +551,10 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 			source: autoPost.source as AutoPostSource,
 			...(typeof autoPost.error === "string" ? { error: autoPost.error } : {}),
 		},
+		// Schema v2 records created before this setting existed inherit the safe
+		// default: auto-approve is disabled (publication uses COMMENT only).
+		approveMaxPriorityLevel:
+			isValidApproveLevel(value.approveMaxPriorityLevel) ? value.approveMaxPriorityLevel : "off",
 	};
 }
 
@@ -1077,6 +1167,7 @@ function buildLosslessReviewPayload(input: {
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
 	diagnostics?: readonly string[];
+	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
 	const diagnostics = [...(input.diagnostics ?? [])];
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(input.commitId)) {
@@ -1109,7 +1200,12 @@ function buildLosslessReviewPayload(input: {
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 		return { diagnostics, errors: ["final review body exceeds 65536 UTF-8 bytes"] };
 	}
-	const payload = buildPullReviewPayload(input.commitId.toLowerCase(), body, selected.comments);
+	const payload = buildPullReviewPayload(
+		input.commitId.toLowerCase(),
+		body,
+		selected.comments,
+		input.event ?? REVIEW_EVENT,
+	);
 	if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
 		return { diagnostics, errors: ["review payload is too large"] };
 	}
@@ -1369,10 +1465,20 @@ export async function publishPullReview(input: {
 	headSha: string;
 	allowNonOpen: boolean;
 	allowStale?: boolean;
+	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
 }): Promise<PublishResult> {
-	const { cwd, prNumber, headSha, allowNonOpen, allowStale = false, expectedRepository, review } = input;
+	const {
+		cwd,
+		prNumber,
+		headSha,
+		allowNonOpen,
+		allowStale = false,
+		approveMaxPriorityLevel = "off",
+		expectedRepository,
+		review,
+	} = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
 	const normalizedHeadSha = headSha.toLowerCase();
@@ -1452,12 +1558,14 @@ export async function publishPullReview(input: {
 				changedFileLookupFailed = true;
 			}
 		}
+		const isApprove = isOpen && !headPlan.stale && shouldApproveReview(validatedReview, approveMaxPriorityLevel);
 		const built = buildLosslessReviewPayload({
 			review: validatedReview,
 			commitId: headPlan.commitId,
 			markerHeadSha: normalizedHeadSha,
 			allowInlineComments,
 			changedFiles,
+			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale
 				? { bodyPreamble: buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha) }
@@ -1497,6 +1605,7 @@ export async function publishPullReview(input: {
 				? `; ${CHANGED_FILE_LOOKUP_DIAGNOSTIC}`
 				: `; ${built.diagnostics.length} inline finding${built.diagnostics.length === 1 ? "" : "s"} kept in the summary: ${built.diagnostics.join("; ")}`;
 		const degraded = !isOpen || headPlan.stale || built.diagnostics.length > 0;
+		const eventLabel = payload.event === APPROVE_EVENT ? "APPROVE" : "COMMENT";
 		const post = await runGh(
 			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
 			cwd,
@@ -1514,7 +1623,7 @@ export async function publishPullReview(input: {
 				message: headPlan.stale
 					? `body-only stale COMMENT review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
 					: isOpen
-						? `GitHub COMMENT review posted${inlineWarning}`
+						? `GitHub ${eventLabel} review posted${inlineWarning}`
 						: "body-only COMMENT review posted for non-open PR",
 				reviewId: response.id,
 				url: response.html_url,

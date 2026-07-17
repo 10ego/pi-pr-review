@@ -401,15 +401,16 @@ describe("trusted invocation mode", () => {
 			allowNonOpen: false,
 			allowStalePublish: true,
 			autoPost: autoOff,
+			approveMaxPriorityLevel: "off",
 		});
 	});
 
 	test("final JSON must match the invocation PR", () => {
 		expect(
-			validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff }),
+			validateReviewInvocation(review, { mode: "force", prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
 		).toBeUndefined();
 		expect(
-			validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff }),
+			validateReviewInvocation(review, { mode: "force", prNumber: 8, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" }),
 		).toContain("does not match");
 	});
 
@@ -429,6 +430,7 @@ describe("trusted invocation mode", () => {
 			allowNonOpen: true,
 			allowStalePublish: true,
 			autoPost: autoOff,
+			approveMaxPriorityLevel: "off",
 		});
 		expect(gate.peek()).toBeUndefined();
 	});
@@ -455,6 +457,7 @@ describe("trusted invocation mode", () => {
 			allowNonOpen: false,
 			allowStalePublish: true,
 			autoPost: autoOff,
+			approveMaxPriorityLevel: "off",
 		});
 		expect(parsePublishableReview("not json").review).toBeUndefined();
 		expect(gate.peek()).toBeUndefined();
@@ -476,7 +479,7 @@ describe("publish-only completed review command", () => {
 
 	test("retains the latest completed review under its repository and PR", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		cache.remember(review, invocation, repository);
 		expect(cache.get(7, repository)).toEqual({ review, invocation, repository });
@@ -495,7 +498,7 @@ describe("publish-only completed review command", () => {
 
 	test("restores only validated state from the same Pi session instance", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA);
@@ -523,7 +526,7 @@ describe("publish-only completed review command", () => {
 
 	test("restores referenced reviews without duplicating raw JSON", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA, "review-message", review);
@@ -544,7 +547,7 @@ describe("publish-only completed review command", () => {
 
 	test("rebuilds cache state for reloads and session-tree navigation", () => {
 		const cache = new CompletedReviewCache();
-		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff };
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
 		const record = cache.remember(review, invocation, repository);
 		const persisted = cache.persist(record, sessionA);
