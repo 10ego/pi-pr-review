@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/10ego/pi-pr-review/compare/v1.10.7...v1.11.0) (2026-07-17)
+
+
+### Features
+
+* submit APPROVE review event with configurable priority gate ([#35](https://github.com/10ego/pi-pr-review/issues/35)) ([ec47045](https://github.com/10ego/pi-pr-review/commit/ec47045245541c9182ac7e1b120765bbc5e77696))
+
 ## [1.10.7](https://github.com/10ego/pi-pr-review/compare/v1.10.6...v1.10.7) (2026-07-17)
 
 
