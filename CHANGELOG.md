@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.6](https://github.com/10ego/pi-pr-review/compare/v1.10.5...v1.10.6) (2026-07-17)
+
+
+### Bug Fixes
+
+* **publish:** simplify reliable review posting ([#31](https://github.com/10ego/pi-pr-review/issues/31)) ([7d93560](https://github.com/10ego/pi-pr-review/commit/7d935604b620a51b04708633da7c4dc0850d6096))
+
 ## [1.10.5](https://github.com/10ego/pi-pr-review/compare/v1.10.4...v1.10.5) (2026-07-17)
 
 
