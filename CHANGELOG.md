@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.7](https://github.com/10ego/pi-pr-review/compare/v1.10.6...v1.10.7) (2026-07-17)
+
+
+### Bug Fixes
+
+* **publish:** auto-heal a Markdown-fenced review JSON object ([#37](https://github.com/10ego/pi-pr-review/issues/37)) ([9ecdd05](https://github.com/10ego/pi-pr-review/commit/9ecdd05e8f00b56176c52f5ca50fcf55698bd2b8))
+
 ## [1.10.6](https://github.com/10ego/pi-pr-review/compare/v1.10.5...v1.10.6) (2026-07-17)
 
 
