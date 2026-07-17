@@ -2,6 +2,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	ReviewInvocationGate,
+	type ApproveMaxPriorityLevel,
 	type AutoPostResolution,
 	type PublishModeParseResult,
 	type ReviewInvocation,
@@ -103,11 +104,12 @@ export class ReviewLoopCoordinator {
 		source: ReviewLoopInputSource,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 		allowStalePublish = true,
+		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
 	): { accepted: boolean; error?: string } {
 		if (source !== "interactive" && source !== "rpc") {
 			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
 		}
-		const started = this.invocationGate.begin(parsed, autoPost, allowStalePublish);
+		const started = this.invocationGate.begin(parsed, autoPost, allowStalePublish, approveMaxPriorityLevel);
 		if (!started.accepted) return started;
 		const current = sessionBinding(ctx);
 		this.binding = {

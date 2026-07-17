@@ -32,11 +32,13 @@ import {
 	publishPullReview,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
+	resolveApproveMaxPriorityLevelSetting,
 	resolveRepositoryBinding,
 	restoreCompletedReviewBranch,
 	shouldPublishReview,
 	validateReviewInvocation,
 	type AutoPostResolution,
+	type ApproveMaxPriorityLevelResolution,
 	type CompletedReviewRecord,
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
@@ -336,11 +338,13 @@ function readJsonObject(filePath: string): ConfigReadResult {
 interface PublishingConfigResolution {
 	autoPost: AutoPostResolution;
 	allowStale: AutoPostResolution;
+	approveMaxPriority: ApproveMaxPriorityLevelResolution;
 }
 
 function invalidPublishingConfig(source: "user" | "project", error: string): PublishingConfigResolution {
 	const invalid = { value: false, valid: false, source, error } as const;
-	return { autoPost: invalid, allowStale: invalid };
+	const invalidLevel = { value: "off" as const, valid: false, source, error } as const;
+	return { autoPost: invalid, allowStale: invalid, approveMaxPriority: invalidLevel };
 }
 
 function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolution {
@@ -358,6 +362,7 @@ function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolut
 	return {
 		autoPost: resolveAutoPostSetting(user.value, project?.value),
 		allowStale: resolveAllowStalePublishSetting(user.value, project?.value),
+		approveMaxPriority: resolveApproveMaxPriorityLevelSetting(user.value, project?.value),
 	};
 }
 
@@ -367,7 +372,8 @@ function notifyPublishResult(
 	ctx: ExtensionContext,
 ): void {
 	if (result.status === "posted") {
-		ctx.ui.notify(`PR review posted as COMMENT (${source})${result.url ? `: ${result.url}` : ""}`, "info");
+		const label = result.message.includes("APPROVE") ? "APPROVE" : "COMMENT";
+		ctx.ui.notify(`PR review posted as ${label} (${source})${result.url ? `: ${result.url}` : ""}`, "info");
 	} else if (result.status === "posted_degraded") {
 		ctx.ui.notify(`PR review posted (${source}): ${result.message}${result.url ? ` ${result.url}` : ""}`, "warning");
 	} else if (result.status === "skipped_duplicate") {
@@ -415,6 +421,7 @@ async function publishCompletedReview(
 		headSha,
 		allowNonOpen: record.invocation.allowNonOpen,
 		allowStale,
+		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
 	});
@@ -674,6 +681,7 @@ export default function registerReviewTable(
 			source,
 			ctx,
 			publishingConfig.allowStale.valid && publishingConfig.allowStale.value,
+			publishingConfig.approveMaxPriority.valid ? publishingConfig.approveMaxPriority.value : "off",
 		);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
