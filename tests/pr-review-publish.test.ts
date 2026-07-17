@@ -891,10 +891,23 @@ describe("strict publication parsing", () => {
 		expect(parsePublishableReview(JSON.stringify(review)).review?.pr?.number).toBe(7);
 	});
 
-	test("rejects prose, fenced drafts, and partial objects", () => {
+	test("rejects prose and partial objects", () => {
 		expect(parsePublishableReview(`review follows\n${JSON.stringify(review)}`).review).toBeUndefined();
-		expect(parsePublishableReview(`\`\`\`json\n${JSON.stringify(review)}\n\`\`\``).review).toBeUndefined();
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
+	});
+
+	test("auto-heals a Markdown-fenced review object", () => {
+		// A model that wraps the review in a ```json fence must still parse without
+		// triggering an output-repair round-trip.
+		const fenced = (lang: string) => `\`\`\`${lang}\n${JSON.stringify(review)}\n\`\`\``;
+		expect(parsePublishableReview(fenced("json")).review?.pr?.number).toBe(7);
+		expect(parsePublishableReview(fenced("")).review?.pr?.number).toBe(7);
+		expect(parsePublishableReview(fenced("JSON")).review?.pr?.number).toBe(7);
+		// Surrounding whitespace around the fence is tolerated.
+		expect(parsePublishableReview(`\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n`).review?.pr?.number).toBe(7);
+		// Prose before/after the fence, or an inner body that is not JSON, is still rejected.
+		expect(parsePublishableReview(`here it is\n${fenced("json")}`).review).toBeUndefined();
+		expect(parsePublishableReview(`\`\`\`json\nnot an object\n\`\`\``).review).toBeUndefined();
 	});
 
 	test("canonically rejects malformed locations and encoded reserved markers", () => {

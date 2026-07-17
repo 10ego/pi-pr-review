@@ -619,11 +619,26 @@ function isConfidence(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
 }
 
-/** Publication accepts only one complete JSON object, never fenced/prose-wrapped drafts. */
+/**
+ * Strip a single surrounding Markdown fenced code block (```lang … ```) so a model
+ * response that wraps the review object in a code fence — despite the instruction
+ * to emit exactly one JSON object — can still be parsed without a repair round-trip.
+ * Prose-wrapped or mixed drafts are intentionally left untouched (still rejected).
+ * Returns the original text when there is no recognizable outer fence.
+ */
+function stripMarkdownCodeFence(text: string): string {
+	const match = text.trim().match(/^```[^\n]*\n([\s\S]*)\n```[ \t]*$/);
+	return match ? match[1] : text;
+}
+
+/**
+ * Publication accepts one complete JSON object. A single surrounding Markdown code
+ * fence is tolerated and stripped; prose-wrapped or partial drafts are rejected.
+ */
 export function parsePublishableReview(text: string): PublishableReviewParseResult {
 	let value: unknown;
 	try {
-		value = JSON.parse(text.trim());
+		value = JSON.parse(stripMarkdownCodeFence(text).trim());
 	} catch {
 		return { error: "final response is not exactly one JSON object" };
 	}
