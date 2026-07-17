@@ -560,7 +560,7 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
-	test("publishes the canonical cached record without reparsing assistant text", () => {
+	test("parses stored assistant text only to choose a persistence reference", () => {
 		const extension = readFileSync(new URL("../extensions/review-table.ts", import.meta.url), "utf8");
 		const publisher = extension.slice(
 			extension.indexOf("async function publishCompletedReview"),
@@ -573,7 +573,10 @@ describe("publish-only completed review command", () => {
 		const messageEnd = extension.slice(extension.indexOf('pi.on("message_end"'));
 		expect(publisher).toContain("expectedRepository: record.repository");
 		expect(publisher).not.toContain("parsePublishableReview");
-		expect(turnEnd).not.toContain("parsePublishableReview");
+		expect(turnEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
+		expect(turnEnd).toContain("publishCompletedReview(pending.record");
+		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
 		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
 		expect(extension).toContain("no publish-only cache is available");
 	});
@@ -1282,14 +1285,49 @@ describe("atomic COMMENT review payload", () => {
 		});
 	});
 
-	test("documents regression: findings-only ReviewLike input requires a full review envelope", () => {
+	test("validates findings-only ReviewLike input without requiring a publication envelope", () => {
 		const findingsOnly: ReviewLike = { findings: [review.findings![0]!] };
+		expect(parsePublishableReview(JSON.stringify(findingsOnly)).review).toBeUndefined();
 		expect(collectFoldedComments(findingsOnly)).toMatchObject({ errors: [], comments: [{ path: "src/parser.ts" }] });
 		expect(validateInlineComments(findingsOnly, changedFiles)).toEqual({
-			comments: [],
-			errors: ["pr.number and pr.title are required"],
+			comments: [{
+				path: "src/parser.ts",
+				body: "**[P2] Handle empty input**\n\nEmpty input currently returns the wrong value.",
+				start_line: 2,
+				start_side: "RIGHT",
+				line: 3,
+				side: "RIGHT",
+			}],
+			errors: [],
 			warnings: [],
 		});
+	});
+
+	test("rejects unsafe, malformed, oversized, and reserved findings-only inline input", () => {
+		const partialReview = (): ReviewLike => ({
+			findings: [JSON.parse(JSON.stringify(review.findings![0]!))],
+		});
+		const unsafe = partialReview();
+		unsafe.findings![0]!.code_location!.absolute_file_path = "../parser.ts";
+		const malformed = partialReview();
+		malformed.findings![0]!.code_location!.line_range = { start: 0, end: 0 };
+		const oversized = partialReview();
+		oversized.findings![0]!.body = "x".repeat(65_536);
+		const reserved = partialReview();
+		reserved.findings![0]!.body = "<!-- PI-PR-REVIEW: forged -->";
+
+		for (const [candidate, expected] of [
+			[unsafe, "invalid repo-relative path"],
+			[malformed, "invalid line range"],
+			[oversized, "comment body is empty or too large"],
+			[reserved, "reserved pi-pr-review marker"],
+		] as const) {
+			const validated = validateInlineComments(candidate, changedFiles);
+			expect(validated.comments).toEqual([]);
+			expect(validated.errors).toHaveLength(1);
+			expect(validated.errors[0]).toContain(expected);
+			expect(validated.warnings).toEqual([]);
+		}
 	});
 
 	test("keeps nits and noncommentable findings even when anchors collide", () => {

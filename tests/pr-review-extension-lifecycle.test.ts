@@ -514,28 +514,32 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.notifications.some((message) => message.includes("PR review publish failed"))).toBeTrue();
 	});
 
-	test("documents regression: pretty-printed exact JSON embeds the review while still posting", async () => {
+	test("persists a reference for pretty, noncanonical equivalent assistant JSON", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
-		const prettyJson = JSON.stringify(review, null, 2);
-		expect(JSON.parse(prettyJson)).toEqual(review);
-		expect(prettyJson).not.toBe(JSON.stringify(review));
+		const noncanonicalJson = JSON.stringify(review, null, 2).replace(
+			"Lifecycle review",
+			"Lifecycle\\u0020review",
+		);
+		expect(JSON.parse(noncanonicalJson)).toEqual(review);
+		expect(noncanonicalJson).toContain("\\u0020");
+		expect(noncanonicalJson).not.toBe(JSON.stringify(review));
 		const message = {
 			role: "assistant",
 			stopReason: "stop",
-			content: [{ type: "text", text: prettyJson }],
+			content: [{ type: "text", text: noncanonicalJson }],
 		};
 		await harness.emit("message_end", { message });
-		const assistantEntry = harness.appendMessage(message, "pretty-assistant-review");
+		const assistantEntry = harness.appendMessage(message, "noncanonical-assistant-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
 
 		const persisted = harness.branch.findLast(
 			(entry) => entry.type === "custom" && entry.customType === COMPLETED_REVIEW_ENTRY_TYPE,
 		);
-		expect(assistantEntry.id).toBe("pretty-assistant-review");
-		expect(persisted?.data.reviewEntryId).toBeUndefined();
-		expect(persisted?.data.review).toEqual(review);
+		expect(assistantEntry.id).toBe("noncanonical-assistant-review");
+		expect(persisted?.data.reviewEntryId).toBe(assistantEntry.id);
+		expect(persisted?.data.review).toBeUndefined();
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()?.body).toContain("Checks lifecycle persistence.");
 		expect(harness.notifications.some((notification) => notification.includes("PR review posted"))).toBeTrue();

@@ -706,14 +706,15 @@ export default function registerReviewTable(
 				return;
 			}
 			const leaf = ctx.sessionManager.getLeafEntry();
-			const referencesRecord = leaf?.type === "message" && leaf.message.role === "assistant" &&
-				assistantText(leaf.message as { content?: MessagePart[] }).trim() === JSON.stringify(pending.record.review);
-			const reviewEntryId = referencesRecord ? leaf.id : undefined;
+			const leafReview = leaf?.type === "message" && leaf.message.role === "assistant"
+				? parsePublishableReview(assistantText(leaf.message as { content?: MessagePart[] })).review
+				: undefined;
+			const reviewEntryId = leafReview ? leaf?.id : undefined;
 			try {
 				// Persist before any GitHub preflight so a failed post always remains retryable.
 				pi.appendEntry(
 					COMPLETED_REVIEW_ENTRY_TYPE,
-					completedReviews.persist(pending.record, pending.session, reviewEntryId, referencesRecord ? pending.record.review : undefined),
+					completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview),
 				);
 			} catch (error) {
 				ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");

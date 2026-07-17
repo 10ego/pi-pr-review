@@ -894,6 +894,13 @@ function selectInlineComments(
 	const anchors = new Set<string>();
 	const hunkCache = new Map<string, DiffHunk[]>();
 	for (const [index, finding] of (review.findings ?? []).entries()) {
+		const locationError = finding.code_location === undefined
+			? undefined
+			: validateFindingLocation(finding, index);
+		if (locationError) {
+			errors.push(locationError);
+			continue;
+		}
 		if (!finding.code_location?.commentable || !isInlineSeverity(finding)) continue;
 		const location = finding.code_location;
 		const label = `finding ${index + 1}`;
@@ -907,6 +914,10 @@ function selectInlineComments(
 		].filter(Boolean).join("\n\n");
 		if (!body || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 			errors.push(`${label}: comment body is empty or too large`);
+			continue;
+		}
+		if (containsReservedReviewMarker(body)) {
+			errors.push(`${label}: comment body contains a reserved pi-pr-review marker`);
 			continue;
 		}
 		const comment = buildPublishComment(path, body, side, start, end);
@@ -971,11 +982,7 @@ export function validateInlineComments(
 	review: ReviewLike,
 	changedFiles: readonly ChangedFileLike[],
 ): CommentValidationResult {
-	const snapshot = canonicalReviewSnapshot(review);
-	if (!snapshot.review) {
-		return { comments: [], errors: [snapshot.error ?? "invalid review"], warnings: [] };
-	}
-	const selected = selectInlineComments(snapshot.review, changedFiles);
+	const selected = selectInlineComments(review, changedFiles);
 	return {
 		comments: selected.comments,
 		errors: selected.errors,
