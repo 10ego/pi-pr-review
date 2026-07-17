@@ -53,7 +53,7 @@ Tier→model mapping is set with `/pr-review-config`; if a tier is unset the sub
 
 Arguments for this run: `$@`
 - `$1` is the PR number (required).
-- `--comment` explicitly requests one GitHub `COMMENT` review for this run, even when automatic posting is disabled.
+- `--comment` explicitly requests one GitHub review for this run, even when automatic posting is disabled. It is `COMMENT` by default and may be a gated `APPROVE` when approval configuration qualifies the final review.
 - `--no-comment` suppresses posting for this run, even when automatic posting is enabled.
 - With no review-mode flag, use the balanced five-pass default.
 - `--balanced` explicitly selects the same balanced default for backward compatibility.
@@ -99,7 +99,7 @@ gh api --hostname "$repo_host" user --jq .login
 
 **Duplicate-review reconciliation.** Prior issue comments and formal review bodies are authoritative only when authored by the current `gh` identity and containing the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If prior content is unmarked, treat it as unknown/stale and continue; it cannot prove the current head was reviewed. The publishing extension performs an additional identity-scoped, paginated duplicate check immediately before any write.
 
-Otherwise continue and set final `disposition: "reviewed"`. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally. If publication is enabled, the extension folds inline findings into one body-only formal `COMMENT` review; the orchestrator still emits only JSON.
+Otherwise continue and set final `disposition: "reviewed"`. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally. If publication is enabled, the extension folds inline findings into one body-only formal review; it is `COMMENT` by default and may be a gated `APPROVE`. The orchestrator still emits only JSON.
 
 ## Step 2 — Gather project convention files
 
@@ -196,7 +196,7 @@ The orchestrator must never call `gh` to post comments or reviews. Always finish
 
 After exact-contract validation, the extension caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run. `/pr-review-publish` and a matching direct request publish only the cache and never start or rerun review agents. On a later turn, the extension intercepts that direct input before an agent turn and permits stale publication without asking the orchestrator to recreate the review.
 
-Every authorized publish path builds one `COMMENT` payload and sends at most one GitHub review `POST`. The event is always `COMMENT`, never `APPROVE` or `REQUEST_CHANGES`. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale reviews and authorized closed or merged reviews are body-only. A failed write never triggers a fallback POST.
+Every authorized publish path builds one GitHub review payload and sends at most one review `POST`. It is `COMMENT` by default, or `APPROVE` only when the trusted approval configuration qualifies an `approve` verdict; it never submits `REQUEST_CHANGES`. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale reviews and authorized closed or merged reviews are body-only. A stale review may record a qualified `APPROVE` only with the separate trusted `allowStaleApprovals: true` opt-in captured before review execution. A failed write never triggers a fallback POST.
 
 Every path retains the same safety gates: captured posting authority, exact repository/PR/review binding, safe locations, no reserved review markers, bounded bodies and payloads, current-head and stale policy, draft and lifecycle checks, non-open authorization, same-head duplicate detection, and a final head check. Unknown lifecycle states and unconfirmed non-open writes fail closed. The session-backed cache survives extension reloads and session resumes but remains bound to the originating session instance and repository. If the captured stale setting disabled publication, the user may explicitly run `/pr-review-publish <PR-NUM> --allow-stale`. Never rerun the review merely to change posting intent, and never attempt a direct GitHub write yourself.
 
