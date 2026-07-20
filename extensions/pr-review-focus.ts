@@ -47,6 +47,7 @@ export class ReviewFocusView implements Component {
 	private followTail = true;
 	private unsubscribe?: () => void;
 	private closed = false;
+	private renderTimer?: ReturnType<typeof setTimeout>;
 
 	constructor(
 		private readonly tui: Pick<TUI, "requestRender" | "terminal">,
@@ -74,7 +75,7 @@ export class ReviewFocusView implements Component {
 		} else {
 			this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, snapshot.passes.length - 1));
 		}
-		this.tui.requestRender();
+		this.scheduleRender();
 	}
 
 	handleInput(data: string): void {
@@ -199,6 +200,18 @@ export class ReviewFocusView implements Component {
 	dispose(): void {
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
+		if (this.renderTimer !== undefined) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+		}
+	}
+
+	private scheduleRender(): void {
+		if (this.closed || this.renderTimer !== undefined) return;
+		this.renderTimer = setTimeout(() => {
+			this.renderTimer = undefined;
+			if (!this.closed) this.tui.requestRender();
+		}, 16);
 	}
 
 	private pageSize(): number {
