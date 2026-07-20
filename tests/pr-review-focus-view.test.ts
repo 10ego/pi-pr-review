@@ -120,6 +120,14 @@ describe("review focus TUI", () => {
 		expect(h.view.render(80).join("\n")).toContain("[1/2] correctness");
 	});
 
+	test("coalesces burst snapshot updates into one render frame", async () => {
+		const h = viewHarness();
+		for (let index = 0; index < 25; index++) h.view.update({ ...snapshot(), sequence: 5 + index });
+		expect(h.renders()).toBe(0);
+		await Bun.sleep(25);
+		expect(h.renders()).toBe(1);
+	});
+
 	test("scrolls long output and Escape only closes the viewer", () => {
 		const h = viewHarness();
 		const tail = h.view.render(60).join("\n");
@@ -136,11 +144,14 @@ describe("review focus TUI", () => {
 		expect(h.closes()).toBe(1);
 	});
 
-	test("closes synchronously when loop authority purges the snapshot", () => {
+	test("closes synchronously when loop authority purges the snapshot", async () => {
 		const h = viewHarness();
+		h.view.update({ ...snapshot(), sequence: 5 });
 		h.view.update(undefined);
 		expect(h.closes()).toBe(1);
 		expect(h.unsubscribes()).toBe(1);
+		await Bun.sleep(25);
+		expect(h.renders()).toBe(0);
 	});
 });
 
