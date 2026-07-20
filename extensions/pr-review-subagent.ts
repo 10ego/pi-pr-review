@@ -816,20 +816,21 @@ async function runSelfReviewAttempt(
 const OUTPUT_REPAIR_SYSTEM_PROMPT = [
 	"You are an isolated output-repair subagent for a completed PR review.",
 	"You have no tools. Do not review the PR, add findings, remove findings, or change the review's substance.",
-	"Convert the supplied completed-review text into exactly one JSON object that satisfies the OUTPUT FORMAT requested by the parent review prompt.",
+	"Convert the supplied completed-review text into exactly one JSON object that satisfies the supplied output contract.",
 	"Return only that JSON object: no Markdown, headings, prose, or code fences. If the source cannot be safely converted, return it unchanged so host validation rejects it.",
 ].join("\\n");
 
 /** Run the configured light-tier model as a no-tools, one-shot JSON-format repairer. */
 export async function repairReviewOutput(
 	text: string,
+	outputContract: string,
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
 	signal?: AbortSignal,
 ): Promise<string | undefined> {
 	const result = await runSubagentPass(loadConfig(ctx), ctx, {
 		id: "output-repair",
 		tier: "light",
-		objective: `Reformat this completed review without changing its substance:\n\n--- completed review ---\n${text}`,
+		objective: `Reformat this completed review without changing its substance.\n\n--- required output contract ---\n${outputContract}\n\n--- completed review ---\n${text}`,
 		toolPolicy: "none",
 		systemPrompt: OUTPUT_REPAIR_SYSTEM_PROMPT,
 	}, signal);

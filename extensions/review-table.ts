@@ -91,6 +91,8 @@ type MessagePart = { type: string; text?: string };
 const OWN_REVIEW_PROMPT = fs.realpathSync(
 	fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url)),
 );
+const REVIEW_PROMPT_TEXT = fs.readFileSync(OWN_REVIEW_PROMPT, "utf8");
+const REVIEW_OUTPUT_CONTRACT = REVIEW_PROMPT_TEXT.slice(REVIEW_PROMPT_TEXT.indexOf("## OUTPUT FORMAT"));
 
 function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
 	try {
@@ -492,6 +494,11 @@ export default function registerReviewTable(
 	let outputRepairAttempted = false;
 	let outputRepairCancelled = false;
 	let outputRepairGeneration = 0;
+	const clearOutputRepair = () => {
+		outputRepairGeneration++;
+		outputRepairAttempted = false;
+		outputRepairCancelled = false;
+	};
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -565,8 +572,7 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		outputRepairAttempted = false;
-		outputRepairCancelled = false;
+		clearOutputRepair();
 		telemetryTracker.clear();
 	};
 
@@ -588,8 +594,7 @@ export default function registerReviewTable(
 		selfReviewCoordinator.clear();
 		if (!outputRepairCancelled) return;
 		loopCoordinator.clear();
-		outputRepairAttempted = false;
-		outputRepairCancelled = false;
+		clearOutputRepair();
 		persistTelemetry("cleared");
 	});
 
@@ -597,8 +602,7 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		outputRepairAttempted = false;
-		outputRepairCancelled = false;
+		clearOutputRepair();
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 		const session = sessionIdentity(ctx);
@@ -617,11 +621,14 @@ export default function registerReviewTable(
 		selfReviewCoordinator.clear();
 		if (outputRepairAttempted) {
 			outputRepairCancelled = true;
+			loopCoordinator.clear();
+			clearOutputRepair();
+			persistTelemetry("cleared");
 			ctx.abort();
-			ctx.ui.notify("PR review output correction was cancelled; overlapping input was not queued, so retry it when the agent settles", "warning");
+			ctx.ui.notify("PR review output correction was cancelled; overlapping input was not queued, so retry it", "warning");
 			return { action: "handled" as const };
 		}
-		outputRepairAttempted = false;
+		clearOutputRepair();
 		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
@@ -750,8 +757,7 @@ export default function registerReviewTable(
 				ctx.ui.notify("PR review was not posted: automatic output correction attempted to call tools", "error");
 				ctx.abort();
 				loopCoordinator.clear();
-				outputRepairAttempted = false;
-				outputRepairCancelled = false;
+				clearOutputRepair();
 				persistTelemetry("cleared");
 				return;
 			}
@@ -768,8 +774,7 @@ export default function registerReviewTable(
 		}
 		if (completion === "clear_invocation") {
 			loopCoordinator.clear();
-			outputRepairAttempted = false;
-			outputRepairCancelled = false;
+			clearOutputRepair();
 			persistTelemetry("cleared");
 			return;
 		}
@@ -789,34 +794,55 @@ export default function registerReviewTable(
 		if (active && !publishable?.review && !outputRepairAttempted) {
 			const error = publishable?.error ?? "final review JSON is invalid";
 			if (loopCoordinator.suspendToolsForRepair()) {
+				const lease = loopCoordinator.repairLease(ctx);
+				if (!lease) {
+					ctx.ui.notify("Automatic PR review output correction was skipped because its review lease was lost", "warning");
+					return;
+				}
 				outputRepairAttempted = true;
 				outputRepairCancelled = false;
 				const repairGeneration = ++outputRepairGeneration;
+				const isActiveRepair = () => !outputRepairCancelled && repairGeneration === outputRepairGeneration &&
+					loopCoordinator.isRepairLeaseActive(lease, ctx);
 				ctx.ui.notify(`PR review output is invalid (${error}); asking the light repair subagent once`, "warning");
-				void repairReviewOutput(text, ctx).then(async (repairedText) => {
-					// Input/session cancellation or a newer repair revokes this asynchronous result.
-					if (outputRepairCancelled || repairGeneration !== outputRepairGeneration || !loopCoordinator.peek()) return;
+				void repairReviewOutput(text, REVIEW_OUTPUT_CONTRACT, ctx, lease.signal).then(async (repairedText) => {
+					if (!isActiveRepair()) return;
 					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
-					const invocation = loopCoordinator.consume();
-					outputRepairAttempted = false;
-					outputRepairCancelled = false;
-					if (!invocation) return;
-					persistTelemetry("terminal_response");
 					if (!repaired?.review) {
-						ctx.ui.notify("PR review was not posted: light output correction did not produce valid final JSON", "error");
+						if (isActiveRepair()) {
+							loopCoordinator.consume();
+							clearOutputRepair();
+							persistTelemetry("terminal_response");
+							ctx.ui.notify("PR review was not posted: light output correction did not produce valid final JSON", "error");
+						}
 						return;
 					}
+					const invocation = loopCoordinator.peek();
+					if (!invocation || !isActiveRepair()) return;
 					const completion = await resolveCompletion(repaired, invocation, ctx);
+					if (!isActiveRepair()) return;
 					if (completion && "record" in completion) {
+						if (completion.session) {
+							try {
+								pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, completedReviews.persist(completion.record, completion.session));
+							} catch (persistError) {
+								ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(persistError)}`, "warning");
+							}
+						}
+						if (!isActiveRepair()) return;
 						await publishCompletedReview(completion.record, { kind: "frozen-invocation" }, ctx);
 					} else if (completion && "error" in completion) {
 						ctx.ui.notify(`PR review was not posted: ${completion.error}`, "error");
 					}
+					if (isActiveRepair()) {
+						loopCoordinator.consume();
+						clearOutputRepair();
+						persistTelemetry("terminal_response");
+					}
 				}).catch(() => {
-					if (outputRepairCancelled || repairGeneration !== outputRepairGeneration || !loopCoordinator.peek()) return;
+					if (!isActiveRepair()) return;
 					loopCoordinator.consume();
-					outputRepairAttempted = false;
-					outputRepairCancelled = false;
+					clearOutputRepair();
 					persistTelemetry("terminal_response");
 					ctx.ui.notify("PR review was not posted: light output correction failed", "error");
 				});
@@ -829,8 +855,7 @@ export default function registerReviewTable(
 		// Persist timing before publication so network/write latency is never coupled to review wall time.
 		const invocation = active ? loopCoordinator.consume() : undefined;
 		if (invocation) {
-			outputRepairAttempted = false;
-			outputRepairCancelled = false;
+			clearOutputRepair();
 			persistTelemetry("terminal_response");
 		}
 		const review = publishable?.review

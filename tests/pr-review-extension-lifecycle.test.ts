@@ -397,6 +397,7 @@ describe("completed review extension lifecycle", () => {
 
 		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+		expect(harness.branch.some((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE)).toBeTrue();
 		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
@@ -426,7 +427,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
-	test("keeps tools suspended until a cancelled repair definitively settles", async () => {
+	test("immediately clears and aborts a cancelled repair", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const invalid = {
@@ -444,7 +445,7 @@ describe("completed review extension lifecycle", () => {
 		});
 		expect(overlap).toContainEqual({ action: "handled" });
 		expect(harness.abortCount()).toBe(1);
-		expect(harness.activeTools()).toEqual([]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 		expect(harness.notifications.some((message) => message.includes("was not queued"))).toBeTrue();
 
 		const staleCorrection = {
@@ -456,7 +457,7 @@ describe("completed review extension lifecycle", () => {
 		harness.appendMessage(staleCorrection, "stale-correction");
 		await harness.emit("turn_end", { message: staleCorrection, toolResults: [] });
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeFalse();
-		expect(harness.activeTools()).toEqual([]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 
 		await harness.emit("agent_settled", {});
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
