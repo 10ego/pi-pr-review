@@ -48,6 +48,7 @@ import {
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
 } from "../lib/pr-review-loop.ts";
+import { repairReviewOutput } from "./pr-review-subagent.ts";
 import { SelfReviewPermitCoordinator } from "../lib/pr-self-review.ts";
 import {
 	ReviewTelemetryTracker,
@@ -490,6 +491,7 @@ export default function registerReviewTable(
 	};
 	let outputRepairAttempted = false;
 	let outputRepairCancelled = false;
+	let outputRepairGeneration = 0;
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
@@ -789,20 +791,35 @@ export default function registerReviewTable(
 			if (loopCoordinator.suspendToolsForRepair()) {
 				outputRepairAttempted = true;
 				outputRepairCancelled = false;
-				ctx.ui.notify(`PR review output is invalid (${error}); automatically correcting it once`, "warning");
-				pi.sendMessage(
-					{
-						customType: "pr-review-output-repair",
-						content: [
-							`The completed PR review could not be accepted because ${error}.`,
-							"This is the only automatic correction attempt. Do not call tools, redo the review, or change its substance.",
-							"Re-emit the same completed review as exactly one JSON object satisfying the required OUTPUT FORMAT. Emit no Markdown fences, prose, headings, or trailing text.",
-						].join(" "),
-						display: false,
-						details: { error, attempt: 1 },
-					},
-					{ triggerTurn: true, deliverAs: "followUp" },
-				);
+				const repairGeneration = ++outputRepairGeneration;
+				ctx.ui.notify(`PR review output is invalid (${error}); asking the light repair subagent once`, "warning");
+				void repairReviewOutput(text, ctx).then(async (repairedText) => {
+					// Input/session cancellation or a newer repair revokes this asynchronous result.
+					if (outputRepairCancelled || repairGeneration !== outputRepairGeneration || !loopCoordinator.peek()) return;
+					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
+					const invocation = loopCoordinator.consume();
+					outputRepairAttempted = false;
+					outputRepairCancelled = false;
+					if (!invocation) return;
+					persistTelemetry("terminal_response");
+					if (!repaired?.review) {
+						ctx.ui.notify("PR review was not posted: light output correction did not produce valid final JSON", "error");
+						return;
+					}
+					const completion = await resolveCompletion(repaired, invocation, ctx);
+					if (completion && "record" in completion) {
+						await publishCompletedReview(completion.record, { kind: "frozen-invocation" }, ctx);
+					} else if (completion && "error" in completion) {
+						ctx.ui.notify(`PR review was not posted: ${completion.error}`, "error");
+					}
+				}).catch(() => {
+					if (outputRepairCancelled || repairGeneration !== outputRepairGeneration || !loopCoordinator.peek()) return;
+					loopCoordinator.consume();
+					outputRepairAttempted = false;
+					outputRepairCancelled = false;
+					persistTelemetry("terminal_response");
+					ctx.ui.notify("PR review was not posted: light output correction failed", "error");
+				});
 				return;
 			}
 			ctx.ui.notify("Automatic PR review output correction was skipped because tools could not be disabled", "warning");

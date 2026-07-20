@@ -798,7 +798,8 @@ describe("publish-only completed review command", () => {
 		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
 		expect(turnEnd).toContain("publishCompletedReview(pending.record");
 		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
-		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		// The live response and a light-subagent repair output are both strictly parsed.
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(2);
 		expect(extension).toContain("no publish-only cache is available");
 	});
 
@@ -974,7 +975,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
-		expect(readme).toContain("automatically asks the same agent to correct its completed output once");
+		expect(readme).toContain("runs the configured `light` subagent once to reformat the completed output");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
