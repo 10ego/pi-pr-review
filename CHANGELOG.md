@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/10ego/pi-pr-review/compare/v1.11.0...v1.11.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **focus:** coalesce live viewer redraws ([#40](https://github.com/10ego/pi-pr-review/issues/40)) ([6553eb1](https://github.com/10ego/pi-pr-review/commit/6553eb1c0ade7881b220269b22adf22e4a5d7e59))
+
 ## [1.11.0](https://github.com/10ego/pi-pr-review/compare/v1.10.7...v1.11.0) (2026-07-17)
 
 
