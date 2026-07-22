@@ -48,7 +48,6 @@ import {
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
 } from "../lib/pr-review-loop.ts";
-import { repairReviewOutput } from "./pr-review-subagent.ts";
 import { SelfReviewPermitCoordinator } from "../lib/pr-self-review.ts";
 import {
 	ReviewTelemetryTracker,
@@ -87,6 +86,17 @@ interface Review {
 }
 
 type MessagePart = { type: string; text?: string };
+type ReviewOutputRepair = (
+	text: string,
+	outputContract: string,
+	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+	signal?: AbortSignal,
+) => Promise<string | undefined>;
+
+const defaultReviewOutputRepair: ReviewOutputRepair = async (...args) => {
+	const { repairReviewOutput } = await import("./pr-review-subagent.ts");
+	return repairReviewOutput(...args);
+};
 
 const OWN_REVIEW_PROMPT = fs.realpathSync(
 	fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url)),
@@ -439,7 +449,7 @@ export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
-	repairOutput = repairReviewOutput,
+	repairOutput: ReviewOutputRepair = defaultReviewOutputRepair,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -458,7 +468,11 @@ export default function registerReviewTable(
 		restoreCompletedReviewBranch(completedReviews, ctx.sessionManager.getBranch(), session);
 	};
 	type PendingCompletion =
-		| { readonly record: CompletedReviewRecord; readonly session?: CompletedReviewSessionIdentity }
+		| {
+			readonly record: CompletedReviewRecord;
+			readonly replacedRecord?: CompletedReviewRecord;
+			readonly session?: CompletedReviewSessionIdentity;
+		}
 		| { readonly error: string };
 	let pendingCompletion: PendingCompletion | undefined;
 	const completionError = (invocation: ReviewInvocation, failure?: string): PendingCompletion | undefined => {
@@ -478,12 +492,15 @@ export default function registerReviewTable(
 		try {
 			const repository = await resolveRepositoryBinding(ctx.cwd);
 			// Cache before publication preflight; persist after Pi stores the assistant message.
-			const record = completedReviews.remember(parsed.review, invocation, repository);
+			const replacement = completedReviews.replace(parsed.review, invocation, repository);
+			const { record } = replacement;
 			const session = sessionIdentity(ctx);
 			if (!session) {
 				ctx.ui.notify("Completed review cache will not survive reload: session identity is unavailable", "warning");
 			}
-			return session ? { record, session } : { record };
+			return session
+				? { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}), session }
+				: { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}) };
 		} catch (error) {
 			ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
 			return completionError(
@@ -822,7 +839,9 @@ export default function registerReviewTable(
 					if (!invocation || !isActiveRepair()) return;
 					const completion = await resolveCompletion(repaired, invocation, ctx);
 					if (!isActiveRepair()) {
-						if (completion && "record" in completion) completedReviews.forget(completion.record);
+						if (completion && "record" in completion) {
+							completedReviews.restoreReplacement(completion.record, completion.replacedRecord);
+						}
 						return;
 					}
 					if (completion && "record" in completion) {
