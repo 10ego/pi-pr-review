@@ -188,7 +188,7 @@ Publishing is off by default.
 
 The extension—not the model—owns publishing. After a successful review, it caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
 
-If the agent's final review is not valid exact-contract JSON, the extension logs the reason and automatically asks the same agent to correct its completed output once, with tools disabled and the original posting authority unchanged. An invalid correction, a tool call, or overlapping input stops publication rather than starting another correction loop.
+If the agent's final review is not valid exact-contract JSON, the extension logs the reason and runs the configured `light` subagent once to reformat the completed output, with tools disabled and the original posting authority unchanged. An invalid correction or overlapping input stops publication rather than starting another correction loop.
 
 You can publish the cache later with `/pr-review-publish 123`, or directly ask the agent to “post the inline review,” “post it as an inline review,” or “publish the review for PR #123.” The extension handles that request directly before an agent turn. `/pr-review-publish` and a matching direct request publish only the cache; they never start or rerun review agents. Unnumbered direct requests select the latest cached review for the current repository. Only fresh interactive/RPC input can use the direct path.
 

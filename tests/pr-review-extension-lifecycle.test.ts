@@ -40,6 +40,11 @@ mock.module("typebox", () => ({
 		}),
 	},
 }));
+let repairOutput = "";
+const repairReviewOutput = async () => {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	return repairOutput;
+};
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
@@ -92,18 +97,20 @@ interface HarnessOptions {
 	projectConfig?: Record<string, unknown>;
 	operationLogPath?: string;
 	persistenceFailure?: string;
+	repositoryDelayMs?: number;
 }
 
 const tempDirs: string[] = [];
 let previousPath: string | undefined;
 
 afterEach(() => {
+	repairOutput = "";
 	if (previousPath !== undefined) process.env.PATH = previousPath;
 	previousPath = undefined;
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function installFakeGh(): string {
+function installFakeGh(repositoryDelayMs = 0): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-lifecycle-"));
 	tempDirs.push(dir);
 	const gh = join(dir, "gh");
@@ -112,6 +119,7 @@ function installFakeGh(): string {
 		`#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == "repo view --json nameWithOwner,url" ]]; then
+  sleep ${repositoryDelayMs / 1000}
   echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
 else
   echo 'intentional lifecycle-test stop' >&2
@@ -231,7 +239,7 @@ function createHarness(
 		getHeader: () => ({ type: "session", id: identity.id, timestamp: identity.startedAt, cwd: "/tmp" }),
 		getLeafEntry: () => branch.at(-1),
 	};
-	const cwd = installFakeGh();
+	const cwd = installFakeGh(options.repositoryDelayMs);
 	if (options.projectConfig) {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
 		writeFileSync(join(cwd, ".pi", "pr-review.json"), JSON.stringify(options.projectConfig));
@@ -281,7 +289,7 @@ function createHarness(
 	};
 	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
 	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
-	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator);
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput);
 	return {
 		handlers,
 		commands,
@@ -368,8 +376,9 @@ async function exercisePostingPath(
 }
 
 describe("completed review extension lifecycle", () => {
-	test("automatically corrects invalid final JSON once and attempts publication", async () => {
+	test("uses the light subagent to correct invalid final JSON once and attempts publication", async () => {
 		const harness = createHarness();
+		repairOutput = JSON.stringify(review);
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		// Prose-prefixed output is not auto-healable (only a single surrounding code
 		// fence is), so it still routes through the one-shot repair path.
@@ -379,32 +388,16 @@ describe("completed review extension lifecycle", () => {
 			content: [{ type: "text", text: `Here is the completed review:\n${JSON.stringify(review)}` }],
 		};
 		await harness.emit("message_end", { message: preamble });
-		expect(harness.sentMessages).toHaveLength(1);
-		expect(harness.sentMessages[0]?.message).toMatchObject({
-			customType: "pr-review-output-repair",
-			display: false,
-		});
-		expect(harness.sentMessages[0]?.message.content).toContain("exactly one JSON object");
-		expect(harness.sentMessages[0]?.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-		expect(harness.notifications.some((message) => message.includes("automatically correcting"))).toBeTrue();
+		expect(harness.sentMessages).toHaveLength(0);
+		expect(harness.notifications.some((message) => message.includes("light repair subagent"))).toBeTrue();
 		expect(harness.activeTools()).toEqual([]);
 
-		harness.appendMessage(preamble, "preamble-review");
-		await harness.emit("turn_end", { message: preamble, toolResults: [] });
-		expect(harness.notifications.some((message) => message.includes("was not posted"))).toBeFalse();
-
 		const payloadPath = installFakePublishingGh();
-		const corrected = {
-			role: "assistant",
-			stopReason: "stop",
-			content: [{ type: "text", text: JSON.stringify(review) }],
-		};
-		await harness.emit("message_end", { message: corrected });
-		harness.appendMessage(corrected, "corrected-review");
-		await harness.emit("turn_end", { message: corrected, toolResults: [] });
+		await new Promise((resolve) => setTimeout(resolve, 700));
 
-		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+		expect(harness.branch.some((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE)).toBeTrue();
 		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
@@ -429,12 +422,12 @@ describe("completed review extension lifecycle", () => {
 		});
 
 		expect(harness.abortCount()).toBe(1);
-		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.notifications.some((message) => message.includes("correction attempted to call tools"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
-	test("keeps tools suspended until a cancelled repair definitively settles", async () => {
+	test("immediately clears and aborts a cancelled repair", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const invalid = {
@@ -452,7 +445,7 @@ describe("completed review extension lifecycle", () => {
 		});
 		expect(overlap).toContainEqual({ action: "handled" });
 		expect(harness.abortCount()).toBe(1);
-		expect(harness.activeTools()).toEqual([]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 		expect(harness.notifications.some((message) => message.includes("was not queued"))).toBeTrue();
 
 		const staleCorrection = {
@@ -464,10 +457,26 @@ describe("completed review extension lifecycle", () => {
 		harness.appendMessage(staleCorrection, "stale-correction");
 		await harness.emit("turn_end", { message: staleCorrection, toolResults: [] });
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeFalse();
-		expect(harness.activeTools()).toEqual([]);
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 
 		await harness.emit("agent_settled", {});
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
+	test("forgets a repaired completion when cancellation wins during repository resolution", async () => {
+		const harness = createHarness([], session, { repositoryDelayMs: 200 });
+		repairOutput = JSON.stringify(review);
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "not json" }] },
+		});
+		// Let the mocked repair start the deliberately delayed repository lookup.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		await harness.emit("input", { text: "cancel", source: "interactive", streamingBehavior: "steer" });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		const probe = installPublishingProbe();
+		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
+		expect(probe.postCount()).toBe(0);
 	});
 
 	test("stops after one automatic correction attempt", async () => {
@@ -479,20 +488,15 @@ describe("completed review extension lifecycle", () => {
 			content: [{ type: "text", text: "not json" }],
 		};
 		await harness.emit("message_end", { message: invalid });
-		expect(harness.sentMessages).toHaveLength(1);
+		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.activeTools()).toEqual([]);
-		await harness.emit("turn_end", { message: invalid, toolResults: [] });
+		await new Promise((resolve) => setTimeout(resolve, 20));
 
+		// The failed light repair consumes the one-shot authority, so a later
+		// malformed assistant message cannot start another repair loop.
 		await harness.emit("message_end", { message: invalid });
-		harness.appendMessage(invalid, "invalid-retry");
-		await harness.emit("turn_end", { message: invalid, toolResults: [] });
-
-		expect(harness.sentMessages).toHaveLength(1);
-		expect(
-			harness.notifications.some((message) =>
-				message.includes("PR review was not posted: final response is not exactly one JSON object"),
-			),
-		).toBeTrue();
+		expect(harness.sentMessages).toHaveLength(0);
+		expect(harness.notifications.some((message) => message.includes("light output correction did not produce valid final JSON"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 

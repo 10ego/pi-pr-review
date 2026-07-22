@@ -233,6 +233,24 @@ export class ReviewLoopCoordinator {
 		this.setToolsEnabled(false);
 	}
 
+	/** Return the current loop's abortable lease while its tools are suspended for output repair. */
+	repairLease(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): ReviewLoopLease | undefined {
+		const phase = this.invocationGate.phase();
+		if (!this.binding || this.suspendedTools === undefined || (phase !== "reviewing" && phase !== "confirmed")) return undefined;
+		if (!sameBinding(this.binding, ctx) || this.binding.controller.signal.aborted) {
+			this.clear();
+			return undefined;
+		}
+		return Object.freeze({ generation: this.binding.generation, signal: this.binding.controller.signal });
+	}
+
+	/** Check a repair lease without re-enabling the review tools. */
+	isRepairLeaseActive(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return !!this.binding && this.suspendedTools !== undefined &&
+			this.binding.generation === lease.generation && !lease.signal.aborted &&
+			(this.phase() === "reviewing" || this.phase() === "confirmed") && sameBinding(this.binding, ctx);
+	}
+
 	/** Hide every tool for a format-only repair turn while retaining invocation authority. */
 	suspendToolsForRepair(): boolean {
 		const phase = this.invocationGate.phase();

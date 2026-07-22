@@ -603,17 +603,26 @@ export class CompletedReviewCache {
 	private readonly reviews = new Map<string, CompletedReviewRecord>();
 
 	remember(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): CompletedReviewRecord {
+		return this.replace(review, invocation, repository).record;
+	}
+
+	/** Replace one PR record while retaining its predecessor for cancellation rollback. */
+	replace(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): {
+		record: CompletedReviewRecord;
+		previous?: CompletedReviewRecord;
+	} {
 		const record = {
 			review,
 			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
+		const previous = this.reviews.get(key);
 		// Refresh insertion order so unnumbered direct publish requests bind to
 		// the most recently completed review in this repository.
 		this.reviews.delete(key);
 		this.reviews.set(key, record);
-		return record;
+		return previous ? { record, previous } : { record };
 	}
 
 	persist(
@@ -673,6 +682,20 @@ export class CompletedReviewCache {
 		}
 		this.remember(parsed.review, invocation, value.repository);
 		return true;
+	}
+
+	/** Remove this exact record without deleting a newer completion for the same PR. */
+	forget(record: CompletedReviewRecord): void {
+		const key = completedReviewKey(record.repository, record.invocation.prNumber);
+		if (this.reviews.get(key) === record) this.reviews.delete(key);
+	}
+
+	/** Undo a replacement only when this exact record is still current. */
+	restoreReplacement(record: CompletedReviewRecord, previous: CompletedReviewRecord | undefined): void {
+		const key = completedReviewKey(record.repository, record.invocation.prNumber);
+		if (this.reviews.get(key) !== record) return;
+		this.reviews.delete(key);
+		if (previous) this.reviews.set(key, previous);
 	}
 
 	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {

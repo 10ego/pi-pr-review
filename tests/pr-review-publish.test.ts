@@ -714,6 +714,20 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
+	test("restores the prior completion when a replacement is cancelled", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const prior = cache.remember(review, invocation, repository);
+		const replacement = cache.replace({ ...review, overview: "Replacement" }, invocation, repository);
+		cache.restoreReplacement(replacement.record, replacement.previous);
+		expect(cache.get(7, repository)).toBe(prior);
+		// A newer replacement cannot be removed or rolled back by a stale cancellation.
+		const current = cache.replace({ ...review, overview: "Current" }, invocation, repository);
+		cache.restoreReplacement(replacement.record, replacement.previous);
+		expect(cache.get(7, repository)).toBe(current.record);
+	});
+
 	test("restores only validated state from the same Pi session instance", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
@@ -798,7 +812,8 @@ describe("publish-only completed review command", () => {
 		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
 		expect(turnEnd).toContain("publishCompletedReview(pending.record");
 		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
-		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
+		// The live response and a light-subagent repair output are both strictly parsed.
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(2);
 		expect(extension).toContain("no publish-only cache is available");
 	});
 
@@ -974,7 +989,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
-		expect(readme).toContain("automatically asks the same agent to correct its completed output once");
+		expect(readme).toContain("runs the configured `light` subagent once to reformat the completed output");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
