@@ -439,6 +439,7 @@ export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
+	repairOutput = repairReviewOutput,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -805,7 +806,7 @@ export default function registerReviewTable(
 				const isActiveRepair = () => !outputRepairCancelled && repairGeneration === outputRepairGeneration &&
 					loopCoordinator.isRepairLeaseActive(lease, ctx);
 				ctx.ui.notify(`PR review output is invalid (${error}); asking the light repair subagent once`, "warning");
-				void repairReviewOutput(text, REVIEW_OUTPUT_CONTRACT, ctx, lease.signal).then(async (repairedText) => {
+				void repairOutput(text, REVIEW_OUTPUT_CONTRACT, ctx, lease.signal).then(async (repairedText) => {
 					if (!isActiveRepair()) return;
 					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
 					if (!repaired?.review) {

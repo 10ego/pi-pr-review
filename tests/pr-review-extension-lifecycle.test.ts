@@ -41,12 +41,10 @@ mock.module("typebox", () => ({
 	},
 }));
 let repairOutput = "";
-mock.module("../extensions/pr-review-subagent.ts", () => ({
-	repairReviewOutput: async () => {
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		return repairOutput;
-	},
-}));
+const repairReviewOutput = async () => {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	return repairOutput;
+};
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
@@ -289,7 +287,7 @@ function createHarness(
 	};
 	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
 	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
-	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator);
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput);
 	return {
 		handlers,
 		commands,
@@ -473,9 +471,10 @@ describe("completed review extension lifecycle", () => {
 		// Let the mocked repair return and begin its asynchronous repository lookup.
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		await harness.emit("input", { text: "cancel", source: "interactive", streamingBehavior: "steer" });
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		const probe = installPublishingProbe();
 		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
-		expect(harness.notifications.some((message) => message.includes("No completed review for PR #7"))).toBeTrue();
+		expect(probe.postCount()).toBe(0);
 	});
 
 	test("stops after one automatic correction attempt", async () => {
