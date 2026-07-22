@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.2](https://github.com/10ego/pi-pr-review/compare/v1.11.1...v1.11.2) (2026-07-22)
+
+
+### Bug Fixes
+
+* **publish:** repair malformed reviews with light subagent ([#42](https://github.com/10ego/pi-pr-review/issues/42)) ([6bb2f1b](https://github.com/10ego/pi-pr-review/commit/6bb2f1b5d7c42ab0233be27b7fa75984eb0b6357))
+
 ## [1.11.1](https://github.com/10ego/pi-pr-review/compare/v1.11.0...v1.11.1) (2026-07-20)
 
 
