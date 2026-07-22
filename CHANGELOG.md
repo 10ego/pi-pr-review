@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.3](https://github.com/10ego/pi-pr-review/compare/v1.11.2...v1.11.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **publish:** downgrade self-approval to comment ([#44](https://github.com/10ego/pi-pr-review/issues/44)) ([f7c8b71](https://github.com/10ego/pi-pr-review/commit/f7c8b71ca587fb9551bbb24448e70de9733b135b))
+
 ## [1.11.2](https://github.com/10ego/pi-pr-review/compare/v1.11.1...v1.11.2) (2026-07-22)
 
 
