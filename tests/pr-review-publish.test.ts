@@ -108,6 +108,7 @@ async function diagnosePullPublication(
 		allowStaleApprovals?: boolean;
 		currentHead?: string;
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
+		prAuthor?: string;
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -155,7 +156,7 @@ elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
   fi
   cat "$GH_FAKE_FILES"
 elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
-  printf '{"state":"%s","draft":false,"merged_at":%s,"head":{"sha":"%s"}}\n' "$GH_FAKE_STATE" "$GH_FAKE_MERGED_AT" "$GH_FAKE_CURRENT"
+  printf '{"state":"%s","draft":false,"merged_at":%s,"head":{"sha":"%s"},"user":{"login":"%s"}}\n' "$GH_FAKE_STATE" "$GH_FAKE_MERGED_AT" "$GH_FAKE_CURRENT" "$GH_FAKE_PR_AUTHOR"
 else
   echo "unexpected gh args: $args" >&2
   exit 1
@@ -176,6 +177,7 @@ fi
 		GH_FAKE_CURRENT: process.env.GH_FAKE_CURRENT,
 		GH_FAKE_STATE: process.env.GH_FAKE_STATE,
 		GH_FAKE_MERGED_AT: process.env.GH_FAKE_MERGED_AT,
+		GH_FAKE_PR_AUTHOR: process.env.GH_FAKE_PR_AUTHOR,
 	};
 	process.env.PATH = `${dir}:${environment.PATH ?? ""}`;
 	process.env.GH_FAKE_CALLS = callsPath;
@@ -191,6 +193,7 @@ fi
 	process.env.GH_FAKE_CURRENT = options.currentHead ?? "a".repeat(40);
 	process.env.GH_FAKE_STATE = options.state ?? "open";
 	process.env.GH_FAKE_MERGED_AT = options.mergedAt ? JSON.stringify(options.mergedAt) : "null";
+	process.env.GH_FAKE_PR_AUTHOR = options.prAuthor ?? "another-user";
 	try {
 		const result = await publishPullReview({
 			cwd: dir,
@@ -406,6 +409,14 @@ describe("auto-approve priority gate", () => {
 		expect(open.result.status).toBe("posted");
 		expect(open.result.event).toBe("APPROVE");
 		expect(open.payload?.event).toBe("APPROVE");
+
+		const selfAuthored = await diagnosePullPublication(approveReview, approveFiles, {
+			approveMaxPriorityLevel: "P2",
+			prAuthor: "reviewer",
+		});
+		expect(selfAuthored.result.status).toBe("posted");
+		expect(selfAuthored.result.event).toBe("COMMENT");
+		expect(selfAuthored.payload?.event).toBe("COMMENT");
 
 		const staleDefault = await diagnosePullPublication(approveReview, approveFiles, {
 			approveMaxPriorityLevel: "P2",
