@@ -820,7 +820,10 @@ export default function registerReviewTable(
 					const invocation = loopCoordinator.peek();
 					if (!invocation || !isActiveRepair()) return;
 					const completion = await resolveCompletion(repaired, invocation, ctx);
-					if (!isActiveRepair()) return;
+					if (!isActiveRepair()) {
+						if (completion && "record" in completion) completedReviews.forget(completion.record);
+						return;
+					}
 					if (completion && "record" in completion) {
 						if (completion.session) {
 							try {

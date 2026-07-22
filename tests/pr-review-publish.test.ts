@@ -714,6 +714,18 @@ describe("publish-only completed review command", () => {
 		expect(cache.get(7, repository)).toBeUndefined();
 	});
 
+	test("forgets only the exact cancelled completion", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const cancelled = cache.remember(review, invocation, repository);
+		const replacement = cache.remember({ ...review, overview: "Replacement" }, invocation, repository);
+		cache.forget(cancelled);
+		expect(cache.get(7, repository)).toBe(replacement);
+		cache.forget(replacement);
+		expect(cache.get(7, repository)).toBeUndefined();
+	});
+
 	test("restores only validated state from the same Pi session instance", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };

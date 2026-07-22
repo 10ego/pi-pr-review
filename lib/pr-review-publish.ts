@@ -675,6 +675,12 @@ export class CompletedReviewCache {
 		return true;
 	}
 
+	/** Remove this exact record without deleting a newer completion for the same PR. */
+	forget(record: CompletedReviewRecord): void {
+		const key = completedReviewKey(record.repository, record.invocation.prNumber);
+		if (this.reviews.get(key) === record) this.reviews.delete(key);
+	}
+
 	get(prNumber: number, repository: RepositoryBinding): CompletedReviewRecord | undefined {
 		return this.reviews.get(completedReviewKey(repository, prNumber));
 	}
