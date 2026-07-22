@@ -97,6 +97,7 @@ interface HarnessOptions {
 	projectConfig?: Record<string, unknown>;
 	operationLogPath?: string;
 	persistenceFailure?: string;
+	repositoryDelayMs?: number;
 }
 
 const tempDirs: string[] = [];
@@ -109,7 +110,7 @@ afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function installFakeGh(): string {
+function installFakeGh(repositoryDelayMs = 0): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-lifecycle-"));
 	tempDirs.push(dir);
 	const gh = join(dir, "gh");
@@ -118,6 +119,7 @@ function installFakeGh(): string {
 		`#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == "repo view --json nameWithOwner,url" ]]; then
+  sleep ${repositoryDelayMs / 1000}
   echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
 else
   echo 'intentional lifecycle-test stop' >&2
@@ -237,7 +239,7 @@ function createHarness(
 		getHeader: () => ({ type: "session", id: identity.id, timestamp: identity.startedAt, cwd: "/tmp" }),
 		getLeafEntry: () => branch.at(-1),
 	};
-	const cwd = installFakeGh();
+	const cwd = installFakeGh(options.repositoryDelayMs);
 	if (options.projectConfig) {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
 		writeFileSync(join(cwd, ".pi", "pr-review.json"), JSON.stringify(options.projectConfig));
@@ -462,13 +464,13 @@ describe("completed review extension lifecycle", () => {
 	});
 
 	test("forgets a repaired completion when cancellation wins during repository resolution", async () => {
-		const harness = createHarness();
+		const harness = createHarness([], session, { repositoryDelayMs: 200 });
 		repairOutput = JSON.stringify(review);
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		await harness.emit("message_end", {
 			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "not json" }] },
 		});
-		// Let the mocked repair return and begin its asynchronous repository lookup.
+		// Let the mocked repair start the deliberately delayed repository lookup.
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		await harness.emit("input", { text: "cancel", source: "interactive", streamingBehavior: "steer" });
 		await new Promise((resolve) => setTimeout(resolve, 700));
