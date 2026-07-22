@@ -1425,6 +1425,7 @@ interface PullState {
 	draft?: boolean;
 	merged_at?: string | null;
 	head?: { sha?: string };
+	user?: { login?: string };
 }
 
 export interface HeadPublicationPlan {
@@ -1626,7 +1627,11 @@ export async function publishPullReview(input: {
 		}
 		// Stale publication authorization is independent from merge-relevant stale
 		// approval. The latter requires its own explicit frozen config opt-in.
+		// GitHub rejects a formal APPROVE from the PR author. Downgrade before the
+		// single write rather than retrying a rejected review as COMMENT.
+		const isSelfAuthored = pull.user?.login?.toLowerCase() === identity.toLowerCase();
 		const isApprove =
+			!isSelfAuthored &&
 			(!headPlan.stale || allowStaleApprovals) &&
 			shouldApproveReview(validatedReview, approveMaxPriorityLevel);
 		const built = buildLosslessReviewPayload({

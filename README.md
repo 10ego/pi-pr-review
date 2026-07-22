@@ -251,7 +251,7 @@ Each finding includes:
 | `P3` | Low-priority improvement. |
 | `nit` | Trivial or optional. |
 
-The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to `P2`, `P3`, or `nit`, a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead. A stale publication additionally requires `allowStaleApprovals: true`; authorized non-open publications do not.
+The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to `P2`, `P3`, or `nit`, a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead. GitHub does not permit authors to approve their own PRs, so a self-authored PR is published as `COMMENT` even when it otherwise qualifies. A stale publication additionally requires `allowStaleApprovals: true`; authorized non-open publications do not.
 
 | Setting | Behavior |
 |---|---|
