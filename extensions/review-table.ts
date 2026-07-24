@@ -93,9 +93,21 @@ type ReviewOutputRepair = (
 	signal?: AbortSignal,
 ) => Promise<string | undefined>;
 
+type ReviewOutputFallbackPost = (
+	text: string,
+	invocation: ReviewInvocation,
+	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+	signal?: AbortSignal,
+) => Promise<{ status: "posted" | "skipped" | "failed"; message?: string; url?: string }>;
+
 const defaultReviewOutputRepair: ReviewOutputRepair = async (...args) => {
 	const { repairReviewOutput } = await import("./pr-review-subagent.ts");
 	return repairReviewOutput(...args);
+};
+
+const defaultReviewOutputFallbackPost: ReviewOutputFallbackPost = async (...args) => {
+	const { postReviewOutputWithGh } = await import("./pr-review-subagent.ts");
+	return postReviewOutputWithGh(...args);
 };
 
 const OWN_REVIEW_PROMPT = fs.realpathSync(
@@ -450,6 +462,7 @@ export default function registerReviewTable(
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
 	repairOutput: ReviewOutputRepair = defaultReviewOutputRepair,
+	postFallbackOutput: ReviewOutputFallbackPost = defaultReviewOutputFallbackPost,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -827,11 +840,37 @@ export default function registerReviewTable(
 					if (!isActiveRepair()) return;
 					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
 					if (!repaired?.review) {
+						const invocation = loopCoordinator.peek();
+						const publication = invocation ? decideReviewPublication(invocation) : undefined;
+						if (invocation && publication?.publish && isActiveRepair()) {
+							ctx.ui.notify(
+								"Light output correction did not produce valid final JSON; asking the light model to make one COMMENT-only gh posting attempt",
+								"warning",
+							);
+							const fallback = await postFallbackOutput(text, invocation, ctx, lease.signal);
+							if (!isActiveRepair()) return;
+							if (fallback.status === "posted") {
+								ctx.ui.notify(`PR review posted by light gh fallback${fallback.url ? `: ${fallback.url}` : ""}`, "info");
+							} else if (fallback.status === "skipped") {
+								ctx.ui.notify(`PR review fallback skipped${fallback.message ? `: ${fallback.message}` : ""}`, "warning");
+							} else {
+								ctx.ui.notify(
+									`PR review was not posted: light gh fallback failed${fallback.message ? `: ${fallback.message}` : ""}`,
+									"error",
+								);
+							}
+						} else if (isActiveRepair()) {
+							ctx.ui.notify(
+								publication?.error
+									? `PR review was not posted: ${publication.error}`
+									: "PR review was not posted: light output correction did not produce valid final JSON",
+								"error",
+							);
+						}
 						if (isActiveRepair()) {
 							loopCoordinator.consume();
 							clearOutputRepair();
 							persistTelemetry("terminal_response");
-							ctx.ui.notify("PR review was not posted: light output correction did not produce valid final JSON", "error");
 						}
 						return;
 					}

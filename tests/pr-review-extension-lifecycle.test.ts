@@ -41,9 +41,18 @@ mock.module("typebox", () => ({
 	},
 }));
 let repairOutput = "";
+let fallbackPostResult: { status: "posted" | "skipped" | "failed"; message?: string; url?: string } = {
+	status: "failed",
+	message: "test fallback stop",
+};
+const fallbackPostCalls: Array<{ text: string; invocation: any }> = [];
 const repairReviewOutput = async () => {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	return repairOutput;
+};
+const postFallbackOutput = async (text: string, invocation: any) => {
+	fallbackPostCalls.push({ text, invocation });
+	return fallbackPostResult;
 };
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
@@ -105,6 +114,8 @@ let previousPath: string | undefined;
 
 afterEach(() => {
 	repairOutput = "";
+	fallbackPostResult = { status: "failed", message: "test fallback stop" };
+	fallbackPostCalls.splice(0);
 	if (previousPath !== undefined) process.env.PATH = previousPath;
 	previousPath = undefined;
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -289,7 +300,7 @@ function createHarness(
 	};
 	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
 	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
-	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput);
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput, postFallbackOutput);
 	return {
 		handlers,
 		commands,
@@ -479,7 +490,29 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(0);
 	});
 
-	test("stops after one automatic correction attempt", async () => {
+	test("falls back to one light-model gh posting attempt after invalid correction output", async () => {
+		const harness = createHarness();
+		fallbackPostResult = {
+			status: "posted",
+			url: "https://github.com/owner/repo/pull/7#pullrequestreview-99",
+		};
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const invalid = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "completed review prose" }],
+		};
+		await harness.emit("message_end", { message: invalid });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		expect(fallbackPostCalls).toHaveLength(1);
+		expect(fallbackPostCalls[0]?.text).toBe("completed review prose");
+		expect(fallbackPostCalls[0]?.invocation.prNumber).toBe(7);
+		expect(harness.notifications.some((message) => message.includes("posted by light gh fallback"))).toBeTrue();
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
+	test("stops after one failed correction and fallback posting attempt", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const invalid = {
@@ -492,11 +525,25 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).toEqual([]);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 
-		// The failed light repair consumes the one-shot authority, so a later
-		// malformed assistant message cannot start another repair loop.
+		// Both one-shot attempts consume authority, so a later malformed
+		// assistant message cannot start another repair or posting loop.
 		await harness.emit("message_end", { message: invalid });
 		expect(harness.sentMessages).toHaveLength(0);
-		expect(harness.notifications.some((message) => message.includes("light output correction did not produce valid final JSON"))).toBeTrue();
+		expect(fallbackPostCalls).toHaveLength(1);
+		expect(harness.notifications.some((message) => message.includes("light gh fallback failed"))).toBeTrue();
+		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
+	test("does not grant gh fallback posting without frozen publication authority", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "not json" }] },
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		expect(fallbackPostCalls).toHaveLength(0);
+		expect(harness.notifications.some((message) => message.includes("did not produce valid final JSON"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
