@@ -41,18 +41,15 @@ mock.module("typebox", () => ({
 	},
 }));
 let repairOutput = "";
-let fallbackPostResult: { status: "posted" | "skipped" | "failed"; message?: string; url?: string } = {
-	status: "failed",
-	message: "test fallback stop",
-};
-const fallbackPostCalls: Array<{ text: string; invocation: any }> = [];
+let fallbackPayload: { commit_id: string; event: "COMMENT"; body: string } | undefined;
+const fallbackPayloadCalls: Array<{ text: string; reviewedHeadSha: string }> = [];
 const repairReviewOutput = async () => {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	return repairOutput;
 };
-const postFallbackOutput = async (text: string, invocation: any) => {
-	fallbackPostCalls.push({ text, invocation });
-	return fallbackPostResult;
+const prepareFallbackPayload = async (text: string, reviewedHeadSha: string) => {
+	fallbackPayloadCalls.push({ text, reviewedHeadSha });
+	return fallbackPayload;
 };
 
 const reviewTable = (await import("../extensions/review-table.ts")).default;
@@ -114,8 +111,8 @@ let previousPath: string | undefined;
 
 afterEach(() => {
 	repairOutput = "";
-	fallbackPostResult = { status: "failed", message: "test fallback stop" };
-	fallbackPostCalls.splice(0);
+	fallbackPayload = undefined;
+	fallbackPayloadCalls.splice(0);
 	if (previousPath !== undefined) process.env.PATH = previousPath;
 	previousPath = undefined;
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -164,6 +161,8 @@ function installPublishingProbe(options: {
 	patchless?: boolean;
 	postFailure?: string;
 	operationLogPath?: string;
+	state?: "open" | "closed";
+	mergedAt?: string | null;
 } = {}): PublishingProbe {
 	const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-publish-tool-"));
 	tempDirs.push(dir);
@@ -202,7 +201,7 @@ elif [[ "$args" == *"pulls/7/reviews?per_page=100"* || "$args" == *"issues/7/com
 elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
   echo '${changedFiles}'
 elif [[ "$args" == *"repos/owner/repo/pulls/7"* ]]; then
-  printf '{"state":"open","draft":false,"merged_at":null,"head":{"sha":"%s"}}\n' '${currentHead}'
+  printf '{"state":"${options.state ?? "open"}","draft":false,"merged_at":${options.mergedAt ? JSON.stringify(options.mergedAt) : "null"},"head":{"sha":"%s"}}\n' '${currentHead}'
 else
   echo "unexpected gh args: $args" >&2
   exit 1
@@ -300,7 +299,7 @@ function createHarness(
 	};
 	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
 	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
-	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput, postFallbackOutput);
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, repairReviewOutput, prepareFallbackPayload);
 	return {
 		handlers,
 		commands,
@@ -490,47 +489,51 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(0);
 	});
 
-	test("falls back to one light-model gh posting attempt after invalid correction output", async () => {
+	test("falls back to one light-model payload and host-owned gh posting attempt", async () => {
 		const harness = createHarness();
-		fallbackPostResult = {
-			status: "posted",
-			url: "https://github.com/owner/repo/pull/7#pullrequestreview-99",
+		const probe = installPublishingProbe();
+		fallbackPayload = {
+			commit_id: "a".repeat(40),
+			event: "COMMENT",
+			body: "completed review prose",
 		};
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const malformed = `Here is the completed review:\n${JSON.stringify(review)}`;
 		const invalid = {
 			role: "assistant",
 			stopReason: "stop",
-			content: [{ type: "text", text: "completed review prose" }],
+			content: [{ type: "text", text: malformed }],
 		};
 		await harness.emit("message_end", { message: invalid });
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 700));
 
-		expect(fallbackPostCalls).toHaveLength(1);
-		expect(fallbackPostCalls[0]?.text).toBe("completed review prose");
-		expect(fallbackPostCalls[0]?.invocation.prNumber).toBe(7);
-		expect(harness.notifications.some((message) => message.includes("posted by light gh fallback"))).toBeTrue();
+		expect(fallbackPayloadCalls).toEqual([{ text: malformed, reviewedHeadSha: "a".repeat(40) }]);
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(probe.payload()?.body).toContain("completed review prose");
+		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
-	test("stops after one failed correction and fallback posting attempt", async () => {
+	test("stops after one failed correction and fallback payload attempt", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const invalid = {
 			role: "assistant",
 			stopReason: "stop",
-			content: [{ type: "text", text: "not json" }],
+			content: [{ type: "text", text: `Review:\n${JSON.stringify(review)}` }],
 		};
 		await harness.emit("message_end", { message: invalid });
 		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.activeTools()).toEqual([]);
-		await new Promise((resolve) => setTimeout(resolve, 20));
+		await new Promise((resolve) => setTimeout(resolve, 700));
 
 		// Both one-shot attempts consume authority, so a later malformed
 		// assistant message cannot start another repair or posting loop.
 		await harness.emit("message_end", { message: invalid });
 		expect(harness.sentMessages).toHaveLength(0);
-		expect(fallbackPostCalls).toHaveLength(1);
-		expect(harness.notifications.some((message) => message.includes("light gh fallback failed"))).toBeTrue();
+		expect(fallbackPayloadCalls).toHaveLength(1);
+		expect(harness.notifications.some((message) => message.includes("did not produce a valid COMMENT payload"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
@@ -542,7 +545,7 @@ describe("completed review extension lifecycle", () => {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 20));
 
-		expect(fallbackPostCalls).toHaveLength(0);
+		expect(fallbackPayloadCalls).toHaveLength(0);
 		expect(harness.notifications.some((message) => message.includes("did not produce valid final JSON"))).toBeTrue();
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
@@ -867,9 +870,9 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.notifications.some((message) => message.includes("Invalid /pr-review-publish"))).toBeTrue();
 	});
 
-	test("suspends review tools while awaiting non-open confirmation", async () => {
+	test("preserves confirmed non-open authority through fallback publication", async () => {
 		const harness = createHarness();
-		await harness.emit("input", { text: "/pr-review 7", source: "rpc" });
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "rpc" });
 		await harness.emit("message_end", {
 			message: {
 				role: "assistant",
@@ -884,6 +887,19 @@ describe("completed review extension lifecycle", () => {
 
 		await harness.emit("input", { text: "yes", source: "rpc" });
 		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
+
+		const probe = installPublishingProbe({ state: "closed", mergedAt: "2026-07-24T00:00:00Z" });
+		fallbackPayload = { commit_id: "a".repeat(40), event: "COMMENT", body: "confirmed fallback" };
+		await harness.emit("message_end", {
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: `Review:\n${JSON.stringify(review)}` }],
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 700));
+		expect(probe.postCount()).toBe(1);
+		expect(harness.notifications.some((message) => message.includes("non-open PR"))).toBeTrue();
 	});
 
 	test("does not append a redundant anchor for summarized tree navigation", async () => {

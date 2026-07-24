@@ -30,6 +30,7 @@ import {
 	parsePublishMode,
 	parsePublishableReview,
 	publishPullReview,
+	publishPullReviewBody,
 	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
@@ -93,21 +94,21 @@ type ReviewOutputRepair = (
 	signal?: AbortSignal,
 ) => Promise<string | undefined>;
 
-type ReviewOutputFallbackPost = (
+type ReviewOutputFallbackPayload = (
 	text: string,
-	invocation: ReviewInvocation,
+	reviewedHeadSha: string,
 	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
 	signal?: AbortSignal,
-) => Promise<{ status: "posted" | "skipped" | "failed"; message?: string; url?: string }>;
+) => Promise<{ commit_id: string; event: "COMMENT"; body: string } | undefined>;
 
 const defaultReviewOutputRepair: ReviewOutputRepair = async (...args) => {
 	const { repairReviewOutput } = await import("./pr-review-subagent.ts");
 	return repairReviewOutput(...args);
 };
 
-const defaultReviewOutputFallbackPost: ReviewOutputFallbackPost = async (...args) => {
-	const { postReviewOutputWithGh } = await import("./pr-review-subagent.ts");
-	return postReviewOutputWithGh(...args);
+const defaultReviewOutputFallbackPayload: ReviewOutputFallbackPayload = async (...args) => {
+	const { prepareReviewOutputGhPayload } = await import("./pr-review-subagent.ts");
+	return prepareReviewOutputGhPayload(...args);
 };
 
 const OWN_REVIEW_PROMPT = fs.realpathSync(
@@ -201,6 +202,22 @@ function parseReview(text: string): Review | null {
 		if (best) return best; // prefer a match from an earlier (more specific) source
 	}
 	return best;
+}
+
+function fallbackReviewedHead(prNumber: number, ...sources: Array<string | undefined>): string | undefined {
+	for (const source of sources) {
+		if (!source) continue;
+		const candidate = parseReview(source);
+		const headSha = candidate?.pr?.head_sha;
+		if (
+			candidate?.pr?.number === prNumber &&
+			typeof headSha === "string" &&
+			/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)
+		) {
+			return headSha.toLowerCase();
+		}
+	}
+	return undefined;
 }
 
 const SEVERITY_RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 };
@@ -462,7 +479,7 @@ export default function registerReviewTable(
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
 	repairOutput: ReviewOutputRepair = defaultReviewOutputRepair,
-	postFallbackOutput: ReviewOutputFallbackPost = defaultReviewOutputFallbackPost,
+	prepareFallbackPayload: ReviewOutputFallbackPayload = defaultReviewOutputFallbackPayload,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -840,30 +857,64 @@ export default function registerReviewTable(
 					if (!isActiveRepair()) return;
 					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
 					if (!repaired?.review) {
-						const invocation = loopCoordinator.peek();
+						const activeInvocation = loopCoordinator.peek();
+						const invocation = activeInvocation
+							? {
+								...activeInvocation,
+								allowNonOpen: activeInvocation.allowNonOpen || loopCoordinator.phase() === "confirmed",
+							}
+							: undefined;
 						const publication = invocation ? decideReviewPublication(invocation) : undefined;
-						if (invocation && publication?.publish && isActiveRepair()) {
+						const reviewedHeadSha = invocation
+							? fallbackReviewedHead(invocation.prNumber, text)
+							: undefined;
+						if (invocation && publication?.publish && reviewedHeadSha && isActiveRepair()) {
 							ctx.ui.notify(
-								"Light output correction did not produce valid final JSON; asking the light model to make one COMMENT-only gh posting attempt",
+								"Light output correction did not produce valid final JSON; asking the light model for one COMMENT payload for host-owned gh publication",
 								"warning",
 							);
-							const fallback = await postFallbackOutput(text, invocation, ctx, lease.signal);
+							let expectedRepository;
+							try {
+								expectedRepository = await resolveRepositoryBinding(ctx.cwd);
+							} catch (error) {
+								if (isActiveRepair()) {
+									ctx.ui.notify(`PR review was not posted: fallback repository lookup failed: ${String(error)}`, "error");
+									loopCoordinator.consume();
+									clearOutputRepair();
+									persistTelemetry("terminal_response");
+								}
+								return;
+							}
 							if (!isActiveRepair()) return;
-							if (fallback.status === "posted") {
-								ctx.ui.notify(`PR review posted by light gh fallback${fallback.url ? `: ${fallback.url}` : ""}`, "info");
-							} else if (fallback.status === "skipped") {
-								ctx.ui.notify(`PR review fallback skipped${fallback.message ? `: ${fallback.message}` : ""}`, "warning");
+							const payload = await prepareFallbackPayload(text, reviewedHeadSha, ctx, lease.signal);
+							if (!isActiveRepair()) return;
+							if (
+								!payload ||
+								payload.commit_id !== reviewedHeadSha ||
+								payload.event !== "COMMENT" ||
+								typeof payload.body !== "string"
+							) {
+								ctx.ui.notify("PR review was not posted: light gh fallback did not produce a valid COMMENT payload", "error");
 							} else {
-								ctx.ui.notify(
-									`PR review was not posted: light gh fallback failed${fallback.message ? `: ${fallback.message}` : ""}`,
-									"error",
-								);
+								const result = await publishPullReviewBody({
+									cwd: ctx.cwd,
+									prNumber: invocation.prNumber,
+									headSha: reviewedHeadSha,
+									allowNonOpen: invocation.allowNonOpen,
+									allowStale: invocation.allowStalePublish,
+									expectedRepository,
+									body: payload.body,
+								});
+								if (!isActiveRepair()) return;
+								notifyPublishResult(result, "light gh fallback", ctx);
 							}
 						} else if (isActiveRepair()) {
 							ctx.ui.notify(
 								publication?.error
 									? `PR review was not posted: ${publication.error}`
-									: "PR review was not posted: light output correction did not produce valid final JSON",
+									: publication?.publish && !reviewedHeadSha
+										? "PR review was not posted: malformed output did not contain a trustworthy reviewed head"
+										: "PR review was not posted: light output correction did not produce valid final JSON",
 								"error",
 							);
 						}
