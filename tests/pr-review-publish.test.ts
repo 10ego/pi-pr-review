@@ -26,6 +26,7 @@ import {
 	parsePublishMode,
 	planHeadPublication,
 	publishPullReview,
+	publishPullReviewBody,
 	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
@@ -109,6 +110,7 @@ async function diagnosePullPublication(
 		currentHead?: string;
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 		prAuthor?: string;
+		bodyOnly?: string;
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -195,17 +197,22 @@ fi
 	process.env.GH_FAKE_MERGED_AT = options.mergedAt ? JSON.stringify(options.mergedAt) : "null";
 	process.env.GH_FAKE_PR_AUTHOR = options.prAuthor ?? "another-user";
 	try {
-		const result = await publishPullReview({
+		const common = {
 			cwd: dir,
 			prNumber: 7,
 			headSha: "a".repeat(40),
 			allowNonOpen: options.allowNonOpen ?? false,
 			allowStale: options.allowStale ?? false,
-			allowStaleApprovals: options.allowStaleApprovals ?? false,
-			approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 			expectedRepository: { hostname: "github.com", repository: "owner/repo" },
-			review: candidateReview,
-		});
+		};
+		const result = options.bodyOnly === undefined
+			? await publishPullReview({
+					...common,
+					allowStaleApprovals: options.allowStaleApprovals ?? false,
+					approveMaxPriorityLevel: options.approveMaxPriorityLevel,
+					review: candidateReview,
+				})
+			: await publishPullReviewBody({ ...common, body: options.bodyOnly });
 		return {
 			result,
 			postCount: existsSync(postSentinel)
@@ -485,6 +492,57 @@ describe("auto-approve priority gate", () => {
 		const recovered = restored.get(7, repository)!;
 		expect(recovered.invocation.allowStaleApprovals).toBeFalse();
 		expect(recovered.invocation.approveMaxPriorityLevel).toBe("off");
+	});
+});
+
+describe("host-owned malformed-output publication", () => {
+	test("binds body-only COMMENT publication to reviewed-head stale and identity gates", async () => {
+		const current = await diagnosePullPublication(review, changedFiles, { bodyOnly: "Fallback review body" });
+		expect(current.result.status).toBe("posted");
+		expect(current.payload?.event).toBe("COMMENT");
+		expect(current.payload?.commit_id).toBe("a".repeat(40));
+		expect(current.payload?.comments).toBeUndefined();
+		expect(String(current.payload?.body)).toContain(canonicalReviewMarker("a".repeat(40)));
+
+		const staleDenied = await diagnosePullPublication(review, changedFiles, {
+			bodyOnly: "Fallback review body",
+			currentHead: "b".repeat(40),
+		});
+		expect(staleDenied.result.status).toBe("failed");
+		expect(staleDenied.postCount).toBe(0);
+
+		const staleAllowed = await diagnosePullPublication(review, changedFiles, {
+			bodyOnly: "Fallback review body",
+			currentHead: "b".repeat(40),
+			allowStale: true,
+		});
+		expect(staleAllowed.result.status).toBe("posted_degraded");
+		expect(staleAllowed.payload?.commit_id).toBe("b".repeat(40));
+		expect(String(staleAllowed.payload?.body)).toContain("generated for commit");
+		expect(String(staleAllowed.payload?.body)).toContain(canonicalReviewMarker("a".repeat(40)));
+
+		const marker = canonicalReviewMarker("a".repeat(40));
+		const otherIdentity = await diagnosePullPublication(review, changedFiles, {
+			bodyOnly: "Fallback review body",
+			reviewsJson: JSON.stringify([{ body: marker, user: { login: "someone-else" } }]),
+		});
+		expect(otherIdentity.result.status).toBe("posted");
+		expect(otherIdentity.postCount).toBe(1);
+
+		const sameIdentity = await diagnosePullPublication(review, changedFiles, {
+			bodyOnly: "Fallback review body",
+			reviewsJson: JSON.stringify([{ body: marker, user: { login: "reviewer" } }]),
+		});
+		expect(sameIdentity.result.status).toBe("skipped_duplicate");
+		expect(sameIdentity.postCount).toBe(0);
+	});
+
+	test("rejects reserved markers before any fallback write", async () => {
+		const result = await diagnosePullPublication(review, changedFiles, {
+			bodyOnly: `unsafe ${canonicalReviewMarker("a".repeat(40))}`,
+		});
+		expect(result.result.status).toBe("failed");
+		expect(result.postCount).toBe(0);
 	});
 });
 
