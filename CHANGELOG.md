@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.4](https://github.com/10ego/pi-pr-review/compare/v1.11.3...v1.11.4) (2026-07-28)
+
+
+### Bug Fixes
+
+* **publish:** fall back to light gh posting ([#46](https://github.com/10ego/pi-pr-review/issues/46)) ([c986737](https://github.com/10ego/pi-pr-review/commit/c98673750d9e447bf639f9f63f7fb4512e45ad68))
+
 ## [1.11.3](https://github.com/10ego/pi-pr-review/compare/v1.11.2...v1.11.3) (2026-07-22)
 
 
