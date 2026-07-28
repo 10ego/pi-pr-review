@@ -1524,6 +1524,143 @@ async function withPublishLock<T>(key: string, operation: () => Promise<T>): Pro
 	}
 }
 
+/** Publish a model-formatted body through the same host-owned GitHub write boundary. */
+export async function publishPullReviewBody(input: {
+	cwd: string;
+	prNumber: number;
+	headSha: string;
+	allowNonOpen: boolean;
+	allowStale?: boolean;
+	expectedRepository?: RepositoryBinding;
+	body: string;
+}): Promise<PublishResult> {
+	const {
+		cwd,
+		prNumber,
+		headSha,
+		allowNonOpen,
+		allowStale = false,
+		expectedRepository,
+		body,
+	} = input;
+	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
+	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
+	const normalizedHeadSha = headSha.toLowerCase();
+	const bodyError = validateReviewBody(body);
+	if (bodyError) return { status: "failed", message: `publication planning failed: ${bodyError}` };
+
+	let repository: string;
+	let hostname: string;
+	let identity: string;
+	try {
+		const binding = await resolveRepositoryBinding(cwd);
+		repository = binding.repository;
+		hostname = binding.hostname;
+		if (
+			expectedRepository &&
+			completedReviewKey(expectedRepository, prNumber) !== completedReviewKey(binding, prNumber)
+		) {
+			return { status: "failed", message: "current GitHub repository does not match the fallback review repository" };
+		}
+		identity = await ghText(githubApiArgs(hostname, "user", "--jq", ".login"), cwd);
+	} catch (error) {
+		return { status: "failed", message: `GitHub identity/repository lookup failed: ${String(error)}` };
+	}
+	if (!identity) return { status: "failed", message: "invalid GitHub identity" };
+
+	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
+	return withPublishLock(lockKey, async () => {
+		let pull: PullState;
+		let headPlan: HeadPublicationPlan;
+		let isOpen: boolean;
+		try {
+			pull = await ghJson<PullState>(githubApiArgs(hostname, `repos/${repository}/pulls/${prNumber}`), cwd);
+			const planned = planHeadPublication(normalizedHeadSha, pull.head?.sha, allowStale);
+			if (!planned.plan) return { status: "failed", message: planned.error ?? "invalid PR head" };
+			headPlan = planned.plan;
+			if (pull.draft) return { status: "failed", message: "draft PR reviews are not automatically published" };
+			const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
+			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
+			isOpen = lifecycle.lifecycle === "open";
+			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
+				return { status: "skipped_duplicate", message: "same head already reviewed by this GitHub identity" };
+			}
+		} catch (error) {
+			return { status: "failed", message: `GitHub preflight failed: ${String(error)}` };
+		}
+
+		const content = headPlan.stale
+			? `${buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha)}\n\n${body.trim()}`
+			: body.trim();
+		const finalBody = `${content}\n\n${canonicalReviewMarker(normalizedHeadSha)}`;
+		if (Buffer.byteLength(finalBody, "utf8") > MAX_BODY_BYTES) {
+			return { status: "failed", message: "publication planning failed: final review body exceeds 65536 UTF-8 bytes" };
+		}
+		const payload = buildPullReviewPayload(headPlan.commitId, finalBody, []);
+		if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_PAYLOAD_BYTES) {
+			return { status: "failed", message: "publication planning failed: review payload is too large" };
+		}
+
+		try {
+			const refreshed = await ghJson<PullState>(
+				githubApiArgs(hostname, `repos/${repository}/pulls/${prNumber}`),
+				cwd,
+			);
+			if (refreshed.head?.sha?.toLowerCase() !== headPlan.currentHeadSha) {
+				return { status: "failed", message: "PR head changed during publish preflight" };
+			}
+			if (refreshed.draft) return { status: "failed", message: "PR became a draft during publish preflight" };
+			const lifecycle = authorizePullLifecycle(refreshed.state, refreshed.merged_at, allowNonOpen);
+			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid refreshed PR lifecycle" };
+			if ((lifecycle.lifecycle === "open") !== isOpen) {
+				return { status: "failed", message: "PR open/closed state changed during publish preflight" };
+			}
+		} catch (error) {
+			return { status: "failed", message: `final head check failed: ${String(error)}` };
+		}
+
+		const degraded = !isOpen || headPlan.stale;
+		const post = await runGh(
+			githubApiArgs(hostname, "--method", "POST", `repos/${repository}/pulls/${prNumber}/reviews`, "--input", "-"),
+			cwd,
+			JSON.stringify(payload),
+		);
+		if (post.exitCode === 0) {
+			let response: { id?: number; html_url?: string } = {};
+			try {
+				response = JSON.parse(post.stdout);
+			} catch {
+				/* GitHub accepted the POST even if response metadata is unavailable. */
+			}
+			return {
+				status: degraded ? "posted_degraded" : "posted",
+				message: headPlan.stale
+					? `body-only stale COMMENT review posted (${headPlan.reviewedHeadSha} -> ${headPlan.currentHeadSha})`
+					: isOpen ? "GitHub COMMENT review posted" : "body-only COMMENT review posted for non-open PR",
+				event: REVIEW_EVENT,
+				reviewId: response.id,
+				url: response.html_url,
+			};
+		}
+
+		try {
+			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
+				return {
+					status: degraded ? "posted_degraded" : "posted",
+					message: "GitHub COMMENT review found during failure reconciliation",
+					event: REVIEW_EVENT,
+					reconciled: true,
+				};
+			}
+		} catch {
+			/* reconciliation failure is handled below */
+		}
+		const detail = post.errorMessage || post.stderr || "gh review request failed";
+		if (/HTTP\s+4\d\d/i.test(detail) && !post.timedOut) return { status: "failed", message: detail };
+		return { status: "indeterminate", message: `${detail}; no matching marker found after reconciliation` };
+	});
+}
+
 export async function publishPullReview(input: {
 	cwd: string;
 	prNumber: number;
