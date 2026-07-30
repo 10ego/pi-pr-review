@@ -412,6 +412,29 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
+	test("repairs multiple review JSON objects into one publication", async () => {
+		const harness = createHarness();
+		const probe = installPublishingProbe();
+		repairOutput = JSON.stringify(review);
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const multipleJson = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{
+				type: "text",
+				text: `${JSON.stringify(review)}\n${JSON.stringify(review)}`,
+			}],
+		};
+		await harness.emit("message_end", { message: multipleJson });
+		await new Promise((resolve) => setTimeout(resolve, 700));
+
+		expect(harness.notifications.some((message) => message.includes("light repair subagent"))).toBeTrue();
+		expect(fallbackPayloadCalls).toHaveLength(0);
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()).toMatchObject({ commit_id: "a".repeat(40), event: "COMMENT" });
+		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
+	});
+
 	test("aborts and revokes repair authority when the correction attempts a tool call", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
