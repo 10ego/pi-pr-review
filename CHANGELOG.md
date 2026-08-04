@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.6](https://github.com/10ego/pi-pr-review/compare/v1.11.5...v1.11.6) (2026-08-04)
+
+
+### Bug Fixes
+
+* **review:** shorten published review comments ([#50](https://github.com/10ego/pi-pr-review/issues/50)) ([f900c10](https://github.com/10ego/pi-pr-review/commit/f900c10345054e683cee84ff1396b12050dbd3be))
+
 ## [1.11.5](https://github.com/10ego/pi-pr-review/compare/v1.11.4...v1.11.5) (2026-08-04)
 
 
