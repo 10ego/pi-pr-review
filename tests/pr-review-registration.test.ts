@@ -44,10 +44,14 @@ mock.module("@earendil-works/pi-tui", () => ({
 	}),
 }));
 mock.module("typebox", () => {
-	const schema = () => ({});
+	const schema = (options: Record<string, unknown> = {}) => ({ ...options });
 	return {
 		Type: {
-			Array: schema,
+			Array: (items: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+				type: "array",
+				items,
+				...options,
+			}),
 			Boolean: schema,
 			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema,
@@ -57,7 +61,7 @@ mock.module("typebox", () => {
 				properties,
 				...options,
 			}),
-			Optional: schema,
+			Optional: (value: Record<string, unknown>) => value,
 			String: schema,
 			Union: schema,
 		},
@@ -79,6 +83,7 @@ afterEach(() => {
 function registrationHarness() {
 	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 	const tools = new Set<string>();
+	const toolDefinitions = new Map<string, any>();
 	const commands = new Set<string>();
 	let activeTools = ["read"];
 	const pi = {
@@ -89,6 +94,7 @@ function registrationHarness() {
 		},
 		registerTool(definition: { name: string }) {
 			tools.add(definition.name);
+			toolDefinitions.set(definition.name, definition);
 			if (!activeTools.includes(definition.name)) activeTools.push(definition.name);
 		},
 		registerCommand(name: string) {
@@ -103,7 +109,7 @@ function registrationHarness() {
 		getCommands: () => [],
 		sendMessage() {},
 	};
-	return { handlers, tools, commands, activeTools: () => [...activeTools], pi };
+	return { handlers, tools, toolDefinitions, commands, activeTools: () => [...activeTools], pi };
 }
 
 function expectWholeExtensionRegistered(harness: ReturnType<typeof registrationHarness>) {
@@ -133,6 +139,20 @@ async function beginDirectTask(harness: ReturnType<typeof registrationHarness>, 
 }
 
 describe("extension registration without self-review prerequisites", () => {
+	test("presents batch passes as the first explicit JSON array parameter", () => {
+		const harness = registrationHarness();
+		registerPrReview(harness.pi as any);
+
+		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
+		expect(Object.keys(parameters.properties)[0]).toBe("passes");
+		expect(parameters.properties.passes).toMatchObject({
+			type: "array",
+			items: { type: "object" },
+		});
+		expect(parameters.properties.passes.description).toContain("JSON array");
+		expect(parameters.properties.context.description).toContain("Do not embed other tool parameters");
+	});
+
 	test("registers without Git and keeps the startup PATH failure local to self-review", async () => {
 		process.env.PATH = "";
 		const harness = registrationHarness();
