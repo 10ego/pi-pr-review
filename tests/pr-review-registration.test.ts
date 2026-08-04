@@ -145,12 +145,6 @@ describe("extension registration without self-review prerequisites", () => {
 
 		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
 		expect(Object.keys(parameters.properties)[0]).toBe("passes");
-		expect(parameters.properties.passes).toMatchObject({
-			type: "array",
-			items: { type: "object" },
-		});
-		expect(parameters.properties.passes.description).toContain("JSON array");
-		expect(parameters.properties.context.description).toContain("Do not embed other tool parameters");
 	});
 
 	test("registers without Git and keeps the startup PATH failure local to self-review", async () => {

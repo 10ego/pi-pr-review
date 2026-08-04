@@ -41,6 +41,8 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("For an ordinary diff use `max_parallel: 5`");
 		expect(prompt).toContain("Do **not** dispatch `conventions-maintainability`");
 		expect(prompt).toContain("`passes` must be a top-level JSON array");
+		expect(extension).toContain("Required JSON array of independent review-pass objects");
+		expect(extension).toContain("Do not embed other tool parameters in this string");
 	});
 
 	test("preserves the comprehensive six-pass review behind full mode", () => {
