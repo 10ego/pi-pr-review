@@ -417,7 +417,9 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.sentMessages).toHaveLength(0);
 		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
 		expect(harness.branch.some((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE)).toBeTrue();
-		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
+		const postedBody = JSON.parse(readFileSync(payloadPath, "utf8")).body as string;
+		expect(postedBody).toContain("**Verdict:** Approve — No issues found.");
+		expect(postedBody).not.toContain("Checks lifecycle persistence");
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
 	});
 
@@ -631,7 +633,8 @@ describe("completed review extension lifecycle", () => {
 		expect(persisted?.data.reviewEntryId).toBe(assistantEntry.id);
 		expect(persisted?.data.review).toBeUndefined();
 		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.body).toContain("Checks lifecycle persistence.");
+		expect(probe.payload()?.body).toContain("**Verdict:** Approve — No issues found.");
+		expect(probe.payload()?.body).not.toContain("Checks lifecycle persistence.");
 		expect(harness.notifications.some((notification) => notification.includes("PR review posted"))).toBeTrue();
 	});
 
@@ -993,7 +996,8 @@ describe("end-to-end review posting invariants", () => {
 		expect(payloads.slash).toEqual(payloads.automatic);
 		expect(payloads.direct).toEqual(payloads.automatic);
 		expect(payloads.automatic.event).toBe("COMMENT");
-		expect(payloads.automatic.body).toContain("Checks lifecycle persistence.");
+		expect(payloads.automatic.body).toContain("**Verdict:** Approve — No issues found.");
+		expect(payloads.automatic.body).not.toContain("Checks lifecycle persistence.");
 		expect(payloads.automatic.body).toContain("<!-- pi-pr-review:");
 	});
 
