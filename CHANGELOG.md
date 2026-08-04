@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.7](https://github.com/10ego/pi-pr-review/compare/v1.11.6...v1.11.7) (2026-08-04)
+
+
+### Bug Fixes
+
+* **review:** preserve batch passes as JSON array ([#52](https://github.com/10ego/pi-pr-review/issues/52)) ([9778992](https://github.com/10ego/pi-pr-review/commit/977899296a2a676480145080fb358891908dbaab))
+
 ## [1.11.6](https://github.com/10ego/pi-pr-review/compare/v1.11.5...v1.11.6) (2026-08-04)
 
 
