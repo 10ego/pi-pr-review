@@ -337,6 +337,15 @@ function persistedInlineReview(identity = session, allowStalePublish = true): an
 	return cache.persist(record, identity);
 }
 
+async function waitForCondition(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (condition()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("condition was not reached before timeout");
+}
+
 function completedReviewMessage(): any {
 	return {
 		role: "assistant",
@@ -426,7 +435,9 @@ describe("completed review extension lifecycle", () => {
 			}],
 		};
 		await harness.emit("message_end", { message: multipleJson });
-		await new Promise((resolve) => setTimeout(resolve, 700));
+		await waitForCondition(() =>
+			harness.notifications.some((message) => message.includes("PR review posted")),
+		);
 
 		expect(harness.notifications.some((message) => message.includes("light repair subagent"))).toBeTrue();
 		expect(fallbackPayloadCalls).toHaveLength(0);
