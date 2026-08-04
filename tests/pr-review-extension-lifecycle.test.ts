@@ -337,6 +337,15 @@ function persistedInlineReview(identity = session, allowStalePublish = true): an
 	return cache.persist(record, identity);
 }
 
+async function waitForCondition(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (condition()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("condition was not reached before timeout");
+}
+
 function completedReviewMessage(): any {
 	return {
 		role: "assistant",
@@ -410,6 +419,31 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.branch.some((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE)).toBeTrue();
 		expect(JSON.parse(readFileSync(payloadPath, "utf8")).body).toContain("Checks lifecycle persistence");
 		expect(harness.activeTools()).toEqual(BASE_ACTIVE_TOOLS);
+	});
+
+	test("repairs multiple review JSON objects into one publication", async () => {
+		const harness = createHarness();
+		const probe = installPublishingProbe();
+		repairOutput = JSON.stringify(review);
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const multipleJson = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{
+				type: "text",
+				text: `${JSON.stringify(review)}\n${JSON.stringify(review)}`,
+			}],
+		};
+		await harness.emit("message_end", { message: multipleJson });
+		await waitForCondition(() =>
+			harness.notifications.some((message) => message.includes("PR review posted")),
+		);
+
+		expect(harness.notifications.some((message) => message.includes("light repair subagent"))).toBeTrue();
+		expect(fallbackPayloadCalls).toHaveLength(0);
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()).toMatchObject({ commit_id: "a".repeat(40), event: "COMMENT" });
+		expect(harness.notifications.some((message) => message.includes("PR review posted"))).toBeTrue();
 	});
 
 	test("aborts and revokes repair authority when the correction attempts a tool call", async () => {
