@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.5](https://github.com/10ego/pi-pr-review/compare/v1.11.4...v1.11.5) (2026-08-04)
+
+
+### Tests
+
+* **publish:** cover multiple review JSON outputs ([#48](https://github.com/10ego/pi-pr-review/issues/48)) ([cf0c926](https://github.com/10ego/pi-pr-review/commit/cf0c926ddcd646427b3c7d0d109a5b9955cb958a))
+
 ## [1.11.4](https://github.com/10ego/pi-pr-review/compare/v1.11.3...v1.11.4) (2026-07-28)
 
 
