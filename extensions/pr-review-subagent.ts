@@ -1118,11 +1118,44 @@ const ReviewSubagentParams = Type.Object({
 });
 
 const ReviewSubagentsParams = Type.Object({
-	context: Type.Optional(
-		Type.String({
+	// Keep the required structured value first and the free-form context last.
+	// Some model tool encoders follow schema order; putting a long scalar first can
+	// cause malformed markup to absorb every later argument into that string.
+	passes: Type.Array(
+		Type.Object({
+			id: Type.Optional(
+				Type.String({
+					description: "Stable pass label used in the ordered batch result, e.g. overview, conventions, correctness.",
+				}),
+			),
+			tier: StringEnum(["light", "medium", "heavy"] as const, {
 			description:
-				"Shared PR metadata and cross-cutting requirements for every pass. Supply a large complete diff through context_file to avoid duplicating it in tool arguments.",
+					"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
+			}),
+			objective: Type.String({
+				description: "Precise instruction for this pass — what to review and what to return.",
+			}),
+			context: Type.Optional(
+				Type.String({
+					description: "Optional pass-specific context appended after the shared context.",
+				}),
+			),
+			context_file: Type.Optional(
+				Type.String({
+					description: "Optional pass-specific unified-diff shard. When set, this pass receives the shard instead of the top-level context_file.",
+				}),
+			),
+			tool_policy: Type.Optional(
+				StringEnum(["none", "configured"] as const, {
+					description:
+						"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. The resolved policy remains fixed across fallback model attempts.",
+				}),
+			),
 		}),
+		{
+			description:
+				"Required JSON array of independent review-pass objects to run concurrently. Pass this as an array value, never as serialized JSON, XML-like markup, or text inside context. Results are returned in this same order.",
+		},
 	),
 	context_file: Type.Optional(
 		Type.String({
@@ -1153,40 +1186,11 @@ const ReviewSubagentsParams = Type.Object({
 			description: "Add a bounded direct-diff P3/nit scan to the light overview pass; heavy passes remain P0-P2 only.",
 		}),
 	),
-	passes: Type.Array(
-		Type.Object({
-			id: Type.Optional(
-				Type.String({
-					description: "Stable pass label used in the ordered batch result, e.g. overview, conventions, correctness.",
-				}),
-			),
-			tier: StringEnum(["light", "medium", "heavy"] as const, {
-				description:
-					"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
-			}),
-			objective: Type.String({
-				description: "Precise instruction for this pass — what to review and what to return.",
-			}),
-			context: Type.Optional(
-				Type.String({
-					description: "Optional pass-specific context appended after the shared context.",
-				}),
-			),
-			context_file: Type.Optional(
-				Type.String({
-					description: "Optional pass-specific unified-diff shard. When set, this pass receives the shard instead of the top-level context_file.",
-				}),
-			),
-			tool_policy: Type.Optional(
-				StringEnum(["none", "configured"] as const, {
-					description:
-					"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. The resolved policy remains fixed across fallback model attempts.",
-				}),
-			),
+	context: Type.Optional(
+		Type.String({
+			description:
+				"Shared PR metadata and cross-cutting requirements for every pass. Supply a large complete diff through context_file to avoid duplicating it in tool arguments. Do not embed other tool parameters in this string.",
 		}),
-		{
-			description: "Independent review passes to run concurrently. Results are returned in this same order.",
-		},
 	),
 });
 
@@ -1448,6 +1452,7 @@ export default function registerPrReviewSubagents(
 			"Run independent light/medium/heavy PR-review passes concurrently in isolated subagents with shared PR context",
 		promptGuidelines: [
 			"Prefer review_subagents over separate review_subagent calls for independent /pr-review passes; it guarantees bounded parallel execution instead of relying on the orchestrator to emit concurrent tool calls.",
+			"Always provide `passes` as the tool call's top-level JSON array of pass objects. Never serialize it or append any parameter markup to `context`.",
 			"Fetch PR metadata and the unified diff once. Prefer the captured diff path in `context_file` plus compact metadata in `context`; for large multi-file diffs shard_count=2 or 3 runs every requested lens over every balanced whole-file shard.",
 			"If any pass reports status=failed, treat the review evidence as incomplete: rerun that pass or perform it inline before finalizing the JSON.",
 		],
