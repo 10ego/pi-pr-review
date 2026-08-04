@@ -936,8 +936,8 @@ function publishCommentAnchor(comment: PublishComment): string {
 	return `${comment.path}:${comment.side}:${comment.start_line ?? comment.line}:${comment.line}`;
 }
 
-function cell(value: string): string {
-	return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+function inlineText(value: string): string {
+	return value.replace(/\r?\n/g, " ").trim();
 }
 
 function findingLocation(finding: ReviewFindingLike): string {
@@ -963,14 +963,6 @@ function findingAnchor(finding: ReviewFindingLike): string | undefined {
 
 export function buildReviewSummary(review: ReviewLike, inlineComments: PublishComment[] = []): string {
 	const lines: string[] = [];
-	const number = review.pr?.number;
-	const title = String(review.pr?.title ?? "").replace(/\r?\n/g, " ").trim();
-	lines.push(`## Code Review${number != null ? ` — PR #${number}${title ? `: ${title}` : ""}` : ""}`, "");
-	if (review.verification?.trim()) lines.push(`**Verification:** ${review.verification.trim()}`, "");
-	if (review.overview?.trim()) lines.push("### Overview", "", review.overview.trim(), "");
-	if (review.strengths?.length) {
-		lines.push("### Strengths", "", ...review.strengths.map((strength) => `- ${String(strength).replace(/^\s*-\s*/, "").trim()}`), "");
-	}
 	const findings = Array.isArray(review.findings) ? review.findings : [];
 	const inlineAnchors = new Map<string, number>();
 	for (const comment of inlineComments) {
@@ -987,40 +979,27 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 		else inlineAnchors.set(anchor, remaining - 1);
 		return false;
 	});
-	lines.push(
-		`### Findings — ${findings.length} total (${inlineComments.length} inline, ${summaryFindings.length} summary-only)`,
-		"",
-	);
+
 	if (findings.length === 0) {
-		lines.push("_No issues found._", "");
+		lines.push("No issues found.", "");
 	} else if (summaryFindings.length === 0) {
-		lines.push(`_All ${inlineComments.length} findings are attached inline below this review._`, "");
+		lines.push("See inline feedback.", "");
 	} else {
-		lines.push("| Severity | Summary-only finding | Location |", "|---|---|---|");
+		lines.push("### Feedback", "");
 		for (const finding of summaryFindings) {
-			lines.push(
-				`| ${cell(String(finding.severity ?? "—"))} | ${cell(String(finding.title ?? "(untitled)"))} | \`${cell(findingLocation(finding))}\` |`,
-			);
-		}
-		lines.push("");
-		for (const finding of summaryFindings) {
-			lines.push(`#### ${String(finding.title ?? "Finding")}`, `\`${findingLocation(finding)}\``, "");
-			if (finding.body?.trim()) lines.push(finding.body.trim(), "");
+			lines.push(`**${inlineText(String(finding.title ?? "Finding"))}** — \`${inlineText(findingLocation(finding))}\``);
+			if (finding.body?.trim()) lines.push(finding.body.trim());
+			lines.push("");
 		}
 	}
-	const notes = review.notes;
-	if (notes?.correctness || notes?.security || notes?.performance) {
-		lines.push("### Correctness / Security / Performance", "");
-		if (notes.correctness) lines.push(`- **Correctness:** ${notes.correctness}`);
-		if (notes.security) lines.push(`- **Security:** ${notes.security}`);
-		if (notes.performance) lines.push(`- **Performance:** ${notes.performance}`);
-		lines.push("");
-	}
-	lines.push("### Verdict", "", `**Suggested verdict:** ${review.verdict ?? "comment"}`);
-	if (review.overall_explanation?.trim()) lines.push("", review.overall_explanation.trim());
-	if (typeof review.overall_confidence_score === "number") {
-		lines.push("", `_Confidence: ${review.overall_confidence_score.toFixed(2)}_`);
-	}
+
+	const verdict = review.verdict === "request_changes"
+		? "Request changes"
+		: review.verdict === "approve"
+			? "Approve"
+			: "Comment";
+	const explanation = review.overall_explanation?.trim();
+	lines.push(`**Verdict:** ${verdict}${explanation ? ` — ${explanation}` : ""}`);
 	return lines.join("\n").trim();
 }
 

@@ -1550,7 +1550,7 @@ describe("lossless publication diagnostics", () => {
 });
 
 describe("atomic COMMENT review payload", () => {
-	test("keeps the public summary tolerant and preserves its findings table", () => {
+	test("keeps the public review concise and focused on feedback and verdict", () => {
 		const tolerant: ReviewLike = {
 			...review,
 			findings: [
@@ -1568,11 +1568,13 @@ describe("atomic COMMENT review payload", () => {
 			],
 		};
 		const summary = buildReviewSummary(tolerant);
-		expect(summary).toContain("| Severity | Summary-only finding | Location |");
-		expect(summary).toContain(
-			"| P2\\|urgent | [P2] Pipe \\| title continued | `src/parser.ts:0 SIDEWAYS` |",
-		);
+		expect(summary).toContain("### Feedback");
+		expect(summary).toContain("**[P2] Pipe | title continued** — `src/parser.ts:0 SIDEWAYS`");
 		expect(summary).toContain("The tolerant formatter still includes this body.");
+		expect(summary).toContain("**Verdict:** Request changes — The empty-input case is incorrect.");
+		for (const omitted of ["Code Review", "Verification", "Overview", "Strengths", "Correctness / Security / Performance", "Confidence"]) {
+			expect(summary).not.toContain(omitted);
+		}
 	});
 
 	test("keeps standalone exported payload objects mutable", () => {
@@ -1589,7 +1591,7 @@ describe("atomic COMMENT review payload", () => {
 		expect(validated.errors).toEqual([]);
 		expect(validated.comments).toHaveLength(1); // nits remain in the top-level summary
 		const summary = buildReviewSummary(review, validated.comments);
-		expect(summary).toContain("2 total (1 inline, 1 summary-only)");
+		expect(summary).toContain("### Feedback");
 		expect(summary).not.toContain("[P2] Handle empty input");
 		expect(summary).toContain("[nit] Rename tmp");
 		const payload = buildPullReviewPayload("a".repeat(40), summary, validated.comments);
@@ -1693,9 +1695,8 @@ describe("atomic COMMENT review payload", () => {
 		expect(validated.comments[0]?.body).toContain("[P2] Handle empty input");
 
 		const summary = buildReviewSummary(colliding, validated.comments);
-		expect(summary).toContain("3 total (1 inline, 2 summary-only)");
-		expect(summary).not.toContain("#### [P2] Handle empty input");
-		expect(summary).toContain("#### [P2] Preserve the second issue");
+		expect(summary).not.toContain("**[P2] Handle empty input**");
+		expect(summary).toContain("**[P2] Preserve the second issue**");
 		expect(summary).toContain("This distinct issue targets the same diff range.");
 	});
 
@@ -1716,7 +1717,7 @@ describe("atomic COMMENT review payload", () => {
 			"finding 1: diff patch is unavailable; kept in the review summary",
 		]);
 		const summary = buildReviewSummary(review, result.comments);
-		expect(summary).toContain("2 total (0 inline, 2 summary-only)");
+		expect(summary).toContain("### Feedback");
 		expect(summary).toContain("[P2] Handle empty input");
 	});
 
