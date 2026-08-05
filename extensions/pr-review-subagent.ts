@@ -1049,35 +1049,30 @@ function combineContexts(shared: string | undefined, specific: string | undefine
 
 const SelfReviewSubagentParams = Type.Object({}, { additionalProperties: false });
 
-const PrReviewVerifyParams = Type.Union([
-	Type.Object(
-		{
-			action: Type.Literal("list", {
-				description: "Discover applicable trusted user-level baseline profile names for the current repository.",
-			}),
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{
-			action: Type.Literal("run"),
-			pr_number: Type.Integer({
-				minimum: 1,
-				description: "GitHub pull request number whose pull ref must be fetched.",
-			}),
-			head_sha: Type.String({
-				pattern: "^[0-9a-f]{40}$",
-				description: "Exact full lowercase headRefOid captured from current PR metadata.",
-			}),
-			baseline_name: Type.String({
-				pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
-				description: "Exact name returned by action=list. The command and timeout come only from user config.",
-			}),
-		},
-		// Explicitly reject legacy command/timeout override fields and all other extras.
-		{ additionalProperties: false },
-	),
-]);
+// Keep the model-facing schema flat. Some tool consumers do not expose fields
+// that exist only under a root anyOf, causing otherwise well-prompted calls to
+// arrive as {} and fail validation before the extension can provide feedback.
+const PrReviewVerifyParams = Type.Object(
+	{
+		action: StringEnum(["list", "run"] as const, {
+			description: "Use list to discover applicable trusted baselines; use run to execute one discovered name.",
+		}),
+		pr_number: Type.Optional(Type.Integer({
+			minimum: 1,
+			description: "Required for action=run. GitHub pull request number whose pull ref must be fetched.",
+		})),
+		head_sha: Type.Optional(Type.String({
+			pattern: "^[0-9a-f]{40}$",
+			description: "Required for action=run. Exact full lowercase headRefOid captured from current PR metadata.",
+		})),
+		baseline_name: Type.Optional(Type.String({
+			pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+			description: "Required for action=run. Exact name returned by action=list; command and timeout come only from user config.",
+		})),
+	},
+	// Explicitly reject legacy command/timeout override fields and all other extras.
+	{ additionalProperties: false },
+);
 
 const ReviewSubagentParams = Type.Object({
 	tier: StringEnum(["light", "medium", "heavy"] as const, {
@@ -1312,10 +1307,24 @@ export default function registerPrReviewSubagents(
 			const config = loadConfig(ctx);
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_verify");
 			if (params.action === "list") {
+				if (params.pr_number !== undefined || params.head_sha !== undefined || params.baseline_name !== undefined) {
+					return {
+						content: [{ type: "text", text: "pr_review_verify action=list accepts only the action field." }],
+						isError: true,
+						details: { authorized: true, reason: "invalid_list_arguments" },
+					};
+				}
 				const discovery = await discoverVerificationBaselines(ctx.cwd, config.verificationBaselines, executionSignal, { startupPath: trustedStartupPath });
 				return {
 					content: [{ type: "text", text: JSON.stringify(discovery, null, 2) }],
 					details: discovery,
+				};
+			}
+			if (params.pr_number === undefined || params.head_sha === undefined || params.baseline_name === undefined) {
+				return {
+					content: [{ type: "text", text: "pr_review_verify action=run requires pr_number, head_sha, and baseline_name." }],
+					isError: true,
+					details: { authorized: true, reason: "missing_run_arguments" },
 				};
 			}
 			if (params.pr_number !== loopCoordinator.peek()?.prNumber) {

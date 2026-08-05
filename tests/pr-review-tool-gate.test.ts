@@ -109,6 +109,37 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("verification reports action-specific argument errors after flat-schema validation", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const tool = h.tools.get("pr_review_verify");
+
+		const missingRun = await tool.execute("verify-run", { action: "run" }, undefined, undefined, h.ctx);
+		expect(missingRun).toMatchObject({
+			isError: true,
+			details: { authorized: true, reason: "missing_run_arguments" },
+		});
+		expect(missingRun.content[0].text).toContain("requires pr_number, head_sha, and baseline_name");
+
+		const pollutedList = await tool.execute(
+			"verify-list",
+			{ action: "list", pr_number: 7 },
+			undefined,
+			undefined,
+			h.ctx,
+		);
+		expect(pollutedList).toMatchObject({
+			isError: true,
+			details: { authorized: true, reason: "invalid_list_arguments" },
+		});
+		expect(pollutedList.content[0].text).toContain("accepts only the action field");
+	});
+
 	test("the config command revokes authority even though extension commands bypass input events", async () => {
 		const h = harness();
 		h.coordinator.begin(
