@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.8](https://github.com/10ego/pi-pr-review/compare/v1.11.7...v1.11.8) (2026-08-05)
+
+
+### Bug Fixes
+
+* **review:** flatten verification tool schema ([#54](https://github.com/10ego/pi-pr-review/issues/54)) ([9438e83](https://github.com/10ego/pi-pr-review/commit/9438e83bfa9a9e0c6a1287d14646aa5a0431ade0))
+
 ## [1.11.7](https://github.com/10ego/pi-pr-review/compare/v1.11.6...v1.11.7) (2026-08-04)
 
 
