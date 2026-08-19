@@ -160,6 +160,31 @@ describe("review subprocess policy and task transport", () => {
 		expect(result.errorMessage).toBe("Review synthesis deadline expired while this lane was still running.");
 	});
 
+	test("an attempt timeout that already began termination is not relabeled by a later host abort", async () => {
+		if (process.platform === "win32") return;
+		const controller = new AbortController();
+		// Trap TERM so the drain stays open long enough for the late abort to land.
+		const script = 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);';
+		const resultPromise = runReviewSubprocess(
+			process.execPath,
+			["-e", script],
+			process.cwd(),
+			"review task",
+			controller.signal,
+			() => {},
+			undefined,
+			{ deadlineMs: performance.now() + 150, terminationGraceMs: 400, cleanupReserveMs: 400 },
+		);
+		// The attempt deadline terminates at ~150ms; abort mid-drain at ~300ms.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		controller.abort(reviewDeadlineError("synthesis"));
+		const result = await resultPromise;
+		expect(result.timedOut).toBeTrue();
+		expect(result.stopReason).toBe("timeout");
+		expect(result.deadlineExpired).toBeUndefined();
+		expect(result.errorMessage).toBe("Review attempt exceeded its host deadline.");
+	});
+
 	test("keeps a plain user abort distinct from host deadline timeouts", async () => {
 		if (process.platform === "win32") return;
 		const controller = new AbortController();

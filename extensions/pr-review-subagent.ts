@@ -557,11 +557,12 @@ export function runReviewSubprocess(
 			}
 		};
 		const onAbort = () => {
-			// A host total/synthesis deadline is a timeout, not user cancellation,
-			// and is disclosed as the external deadline that ended the lane.
+			// A host total/synthesis deadline is a timeout, not user cancellation.
+			// The kind is recorded only when it actually wins termination, so a
+			// coincidental host abort during an attempt-timeout drain cannot
+			// mislabel the lane.
 			const kind = reviewDeadlineKindOf(signal?.reason);
-			if (kind) result.deadlineExpired = kind;
-			terminate(kind ? "timeout" : "abort");
+			terminate(kind ? "timeout" : "abort", kind);
 		};
 		const cleanupAbort = () => {
 			if (killTimer) clearTimeout(killTimer);
@@ -724,9 +725,10 @@ export function runReviewSubprocess(
 			groupKillDeadline = now() + (deadline?.terminationGraceMs ?? 5_000);
 			checkGroupCleanupGrace();
 		};
-		const terminate = (reason: "abort" | "timeout") => {
+		const terminate = (reason: "abort" | "timeout", deadlineKind?: ReviewDeadlineKind) => {
 			if (settled || termination) return;
 			termination = reason;
+			if (deadlineKind) result.deadlineExpired = deadlineKind;
 			terminationStartedAt = now();
 			pendingClose ??= { code: 1, processSignal: undefined };
 			if (processGroupId !== undefined) {
@@ -1061,6 +1063,7 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 		stopReason: result.stopReason,
 		errorMessage: result.errorMessage,
 		lifecycle: result.status,
+		deadlineExpired: result.deadlineExpired,
 		attempts: result.attempts.map((attempt, index) => ({
 			ordinal: index + 1,
 			kind: attempt.kind,
@@ -1073,6 +1076,7 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 			stopReason: attempt.stopReason,
 			errorMessage: attempt.errorMessage,
 			lifecycle: attempt.status,
+			deadlineExpired: attempt.deadlineExpired,
 			retryable: attempt.retryable,
 			elapsedMs: attempt.elapsedMs,
 			firstEventMs: attempt.firstEventMs,
