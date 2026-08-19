@@ -523,7 +523,15 @@ describe("completed review extension lifecycle", () => {
 		expect(String(restoredProbe.payload()?.body)).not.toContain("Looks safe.");
 
 		const tamperedData = structuredClone(persisted!.data) as Record<string, unknown>;
-		tamperedData.laneArtifacts = [];
+		const persistedLane = (tamperedData.laneArtifacts as Array<Record<string, unknown>>)[0]!;
+		tamperedData.laneArtifacts = [{
+			...persistedLane,
+			generation: 9,
+			rawText: "",
+			exitCode: 1,
+			stopReason: "timeout",
+			lifecycle: "complete",
+		}];
 		const tampered = createHarness([
 			{ type: "custom", id: "markdown-tampered-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: tamperedData },
 		]);

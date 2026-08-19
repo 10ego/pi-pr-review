@@ -202,14 +202,17 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.verdict).toBe("comment");
 	});
 
-	test("never derives approval from a lazy blockquote continuation", () => {
-		const lazy = markdown.replace("**Verdict:** comment", "> Quoted paragraph\n**Verdict:** approve");
+	test.each([
+		["blockquote", "> Quoted paragraph"],
+		["list item", "- Listed paragraph"],
+	] as const)("never derives approval from a lazy %s continuation", (_kind, container) => {
+		const lazy = markdown.replace("**Verdict:** comment", `${container}\n**Verdict:** approve`);
 		const hidden = synthesizeReviewArtifact({ rawText: lazy, ...binding, laneArtifacts: [completeLane] });
 		expect(hidden.quality).toBe("raw");
 		expect(hidden.review.verdict).toBe("comment");
 		expect(hidden.mergeApprovalEligible).toBe(false);
 
-		const topLevel = lazy.replace("> Quoted paragraph\n", "> Quoted paragraph\n\n");
+		const topLevel = lazy.replace(`${container}\n`, `${container}\n\n`);
 		const visible = synthesizeReviewArtifact({ rawText: topLevel, ...binding, laneArtifacts: [completeLane] });
 		expect(visible.quality).toBe("fully_parsed");
 		expect(visible.review.verdict).toBe("approve");

@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import { classifyReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import type { ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
@@ -793,9 +793,18 @@ export class CompletedReviewCache {
 		// summarize. Current-schema restored approvals require a fully parsed,
 		// complete artifact and at least one validated complete host lane. Legacy
 		// records without this field retain their pre-field compatibility behavior.
+		const expectedGeneration = invocation.reviewBinding?.invocationGeneration;
 		const mergeApprovalEligible = persistedMergeApprovalEligible === true
-			? quality === "fully_parsed" && completeness === "complete" && !!laneArtifacts?.length &&
-				laneArtifacts.every((lane) => lane.lifecycle === "complete")
+			? quality === "fully_parsed" && completeness === "complete" && Number.isInteger(expectedGeneration) &&
+				!!laneArtifacts?.length && laneArtifacts.every((lane) =>
+					lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
+					classifyReviewLane({
+						tier: lane.tier,
+						rawText: lane.rawText,
+						exitCode: lane.exitCode,
+						stopReason: lane.stopReason,
+						errorMessage: lane.errorMessage,
+					}) === "complete")
 			: persistedMergeApprovalEligible;
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
