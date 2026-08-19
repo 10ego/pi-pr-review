@@ -15,6 +15,10 @@ import {
 	type ReviewFocusSnapshot,
 	type ReviewFocusSubscriber,
 } from "./pr-review-focus.ts";
+import {
+	ReviewLaneArtifactRegistry,
+	type ReviewLaneArtifact,
+} from "./pr-review-artifacts.ts";
 
 export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagent",
@@ -41,6 +45,10 @@ export interface ReviewLoopLease {
 
 export interface ReviewFocusPublisher {
 	publish(event: ReviewFocusPassEvent): boolean;
+}
+
+export interface ReviewArtifactPublisher {
+	retain(artifact: ReviewLaneArtifact): boolean;
 }
 
 function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
@@ -76,6 +84,7 @@ function sameBinding(
 export class ReviewLoopCoordinator {
 	private readonly invocationGate = new ReviewInvocationGate();
 	private readonly focusRegistry = new ReviewFocusRegistry();
+	private readonly artifactRegistry = new ReviewLaneArtifactRegistry();
 	private binding?: ReviewLoopBinding;
 	private suspendedTools?: string[];
 	private nextGeneration = 1;
@@ -125,6 +134,7 @@ export class ReviewLoopCoordinator {
 			controller: new AbortController(),
 		};
 		this.focusRegistry.open(this.binding.generation);
+		this.artifactRegistry.open(this.binding.generation);
 		this.setToolsEnabled(true);
 		return { accepted: true };
 	}
@@ -201,6 +211,26 @@ export class ReviewLoopCoordinator {
 				return this.focusRegistry.publish(lease.generation, descriptor.key, event);
 			},
 		});
+	}
+
+	createArtifactPublisher(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): ReviewArtifactPublisher | undefined {
+		if (!this.isLeaseActive(lease, ctx)) return undefined;
+		return Object.freeze({
+			retain: (artifact: ReviewLaneArtifact) => {
+				if (!this.isLeaseActive(lease, ctx)) return false;
+				return this.artifactRegistry.retain(lease.generation, artifact);
+			},
+		});
+	}
+
+	artifactSnapshot(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): readonly ReviewLaneArtifact[] | undefined {
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.snapshot(lease.generation) : undefined;
 	}
 
 	focusSnapshot(
@@ -280,7 +310,10 @@ export class ReviewLoopCoordinator {
 
 	private revokeBinding(): void {
 		const generation = this.binding?.generation;
-		if (generation !== undefined) this.focusRegistry.close(generation);
+		if (generation !== undefined) {
+			this.focusRegistry.close(generation);
+			this.artifactRegistry.close(generation);
+		}
 		this.binding?.controller.abort();
 		this.binding = undefined;
 		const suspendedTools = this.suspendedTools;

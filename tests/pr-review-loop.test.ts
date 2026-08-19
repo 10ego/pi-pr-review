@@ -148,6 +148,33 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.focusSnapshot(h.ctx as any)).toBeUndefined();
 	});
 
+	test("binds raw lane artifacts to the active generation and purges them on revocation", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
+		expect(publisher.retain({
+			generation: lease.generation,
+			key: "call-1:0",
+			passId: "correctness",
+			tier: "heavy",
+			rawText: "partial evidence",
+			exitCode: 1,
+			stopReason: "error",
+			lifecycle: "partial",
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 10,
+			toolElapsedMs: 0,
+			toolCallCount: 0,
+		})).toBeTrue();
+		expect(h.coordinator.artifactSnapshot(h.ctx as any)?.[0]?.rawText).toBe("partial evidence");
+
+		h.coordinator.clear();
+		expect(publisher.retain({} as any)).toBeFalse();
+		expect(h.coordinator.artifactSnapshot(h.ctx as any)).toBeUndefined();
+	});
+
 	test("fails closed when the session identity or cwd changes", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);

@@ -90,7 +90,9 @@ Viewer controls:
 | `Home` / `End` | Jump to the start or resume following live output. |
 | `Esc` | Return to the main thread without cancelling the review. |
 
-The view shows pass status, attempt/model, tool names and completion state, and bounded assistant output. It never stores the pass objective, input context, captured diff, raw child events, tool arguments, tool results, or stderr. Assistant text is sanitized and capped at 48 KiB per pass and 256 KiB across the active review; older text is evicted with an on-screen marker. State exists only in memory for the active session/cwd-bound `/pr-review` generation and is synchronously purged on completion, cancellation, replacement, or session/tree lifecycle changes.
+The view shows pass status, attempt/model, tool names and completion state, and bounded assistant output. It never stores the pass objective, input context, captured diff, raw child events, tool arguments, tool results, or stderr. Assistant text is sanitized and capped at 48 KiB per pass and 256 KiB across the active review; older text is evicted with an on-screen marker.
+
+The bounded viewer is a projection, not the authoritative lane result. Separately, the host retains an invocation-scoped artifact for each lane with its exact final assistant text, lifecycle (`complete`, `partial`, `timed_out`, or `failed`), requested/observed model, process outcome, attempt/fallback history, scheduling offsets, timing, and tool-use counts. Both stores exist only in memory for the active session/cwd-bound `/pr-review` generation and are synchronously purged on completion, cancellation, replacement, or session/tree lifecycle changes.
 
 The viewer intentionally cannot send prompts, steering, or follow-ups to reviewers. It is unavailable in print, JSON, and RPC modes and outside an active user-initiated `/pr-review` loop.
 
@@ -161,6 +163,8 @@ Example:
 ```
 
 Tier subprocesses retry configured fallbacks only for retryable quota, rate-limit, or capacity failures. If a tier is unset, it uses the nearest configured tier and then Pi's default model.
+
+Ordinary reviewer output is reconstructed from every text part of the authoritative final assistant message in order. A zero process exit is not enough to mark a lane complete: completion also requires a terminal `stop` and the expected lane sections (or an explicitly emitted `NO FINDINGS.` where that response is allowed). Empty success is never synthesized into `NO FINDINGS.`; length-limited, malformed, timed-out, and failed attempts retain their raw text with an explicit lifecycle. Batch details include raw text, attempt artifacts, lifecycle counts and elapsed totals, while the displayed batch remains in deterministic input order.
 
 ## One-shot self-review for top-level tasks
 

@@ -48,12 +48,19 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	classifyReviewLane,
+	finalAssistantText,
+	type ReviewLaneArtifact,
+	type ReviewLaneLifecycle,
+} from "../lib/pr-review-artifacts.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
 	reviewLoopDeniedResult,
+	type ReviewArtifactPublisher,
 	type ReviewFocusPublisher,
 } from "../lib/pr-review-loop.ts";
 import { runSelfReviewRpcSubprocess } from "../lib/pr-self-review-rpc.ts";
@@ -401,18 +408,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
-function finalAssistantText(messages: Message[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text" && part.text.trim()) return part.text;
-			}
-		}
-	}
-	return "";
-}
-
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
 		"You are a fast overview reviewer. Produce a concise overview of what the change does and how, list genuine strengths, and note high-level risk areas worth closer specialist review. Do not deep-dive into defects.",
@@ -483,6 +478,7 @@ async function writeTempPrompt(tier: Tier, body: string): Promise<{ dir: string;
 interface RunResult {
 	text: string;
 	exitCode: number;
+	processSignal?: string;
 	stderr: string;
 	stopReason?: string;
 	errorMessage?: string;
@@ -490,6 +486,7 @@ interface RunResult {
 	firstEventMs?: number;
 	firstAssistantMs?: number;
 	toolElapsedMs: number;
+	toolCallCount: number;
 }
 
 function runReviewSubprocess(
@@ -503,13 +500,15 @@ function runReviewSubprocess(
 ): Promise<RunResult> {
 	return new Promise<RunResult>((resolve) => {
 		const messages: Message[] = [];
-		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0 };
+		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0, toolCallCount: 0 };
 		const startedAt = monotonicNow();
 		let aborted = false;
 		let closed = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let activeTools = 0;
 		let activeToolsStartedAt = 0;
+		let updateAssistantText = "";
+		let assistantUpdatePending = false;
 
 		// Pi's print/json modes combine piped stdin into the initial user message.
 		// Keep the complete review task off argv: macOS rejects a single argument
@@ -532,7 +531,11 @@ function runReviewSubprocess(
 
 		const processEvent = (raw: unknown) => {
 			if (!raw || typeof raw !== "object") return;
-			const event = raw as { type?: string; message?: Message };
+			const event = raw as {
+				type?: string;
+				message?: Message;
+				assistantMessageEvent?: { type?: string; delta?: string };
+			};
 			try {
 				onEvent?.(event);
 			} catch {
@@ -543,14 +546,51 @@ function runReviewSubprocess(
 			if (event.type === "tool_execution_start") {
 				if (activeTools === 0) activeToolsStartedAt = now;
 				activeTools++;
+				result.toolCallCount++;
 			}
 			if (event.type === "tool_execution_end" && activeTools > 0) {
 				activeTools--;
 				if (activeTools === 0) result.toolElapsedMs += now - activeToolsStartedAt;
 			}
+			if (event.type === "message_start" && event.message) {
+				assistantUpdatePending = event.message.role === "assistant";
+				if (assistantUpdatePending) {
+					result.firstAssistantMs ??= now - startedAt;
+					updateAssistantText = "";
+					result.stopReason = undefined;
+					result.errorMessage = undefined;
+					result.model = event.message.model || undefined;
+				}
+			}
+			if (event.type === "message_update") {
+				// Pi 0.84.1 omits message from canonical update events. Bind their
+				// deltas to the assistant turn opened by message_start so a later turn
+				// cannot inherit evidence or model metadata from an earlier one.
+				let snapshotApplied = false;
+				if (event.message?.role === "assistant") {
+					result.firstAssistantMs ??= now - startedAt;
+					if (!assistantUpdatePending) {
+						assistantUpdatePending = true;
+						updateAssistantText = "";
+						result.stopReason = undefined;
+						result.errorMessage = undefined;
+					}
+					if (event.message.model) result.model = event.message.model;
+					const snapshot = finalAssistantText([event.message]);
+					if (snapshot) {
+						updateAssistantText = snapshot;
+						snapshotApplied = true;
+					}
+				}
+				if (assistantUpdatePending && !snapshotApplied && event.assistantMessageEvent?.type === "text_delta" &&
+					typeof event.assistantMessageEvent.delta === "string") {
+					updateAssistantText += event.assistantMessageEvent.delta;
+				}
+			}
 			if (event.type === "message_end" && event.message) {
 				messages.push(event.message);
 				if (event.message.role === "assistant") {
+					assistantUpdatePending = false;
 					result.firstAssistantMs ??= now - startedAt;
 					if (event.message.model) result.model = event.message.model;
 					if (event.message.stopReason) result.stopReason = event.message.stopReason;
@@ -571,7 +611,7 @@ function runReviewSubprocess(
 		// remains the authoritative subprocess outcome.
 		proc.stdin.on("error", () => {});
 		proc.stdin.end(input, "utf8");
-		proc.on("close", (code) => {
+		proc.on("close", (code, processSignal) => {
 			closed = true;
 			cleanupAbort();
 			decoder.end();
@@ -579,8 +619,9 @@ function runReviewSubprocess(
 				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
 				activeTools = 0;
 			}
-			result.text = finalAssistantText(messages);
-			result.exitCode = code ?? 0;
+			result.text = assistantUpdatePending ? updateAssistantText : finalAssistantText(messages);
+			result.processSignal = processSignal ?? undefined;
+			result.exitCode = code ?? (processSignal ? 1 : 0);
 			if (aborted) result.stopReason = "aborted";
 			resolve(result);
 		});
@@ -588,6 +629,7 @@ function runReviewSubprocess(
 			closed = true;
 			cleanupAbort();
 			if (activeTools > 0) result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
+			result.text = assistantUpdatePending ? updateAssistantText : finalAssistantText(messages);
 			result.exitCode = 1;
 			result.errorMessage = err.message;
 			resolve(result);
@@ -608,8 +650,12 @@ interface SubagentPassRequest {
 	toolPolicy?: ToolPolicy;
 	majorOnly?: boolean;
 	minorHygiene?: boolean;
+	expectedOutput?: "review_lane" | "nonempty";
 	systemPrompt?: string;
 	focusPublisher?: ReviewFocusPublisher;
+	artifactPublisher?: ReviewArtifactPublisher;
+	generation?: number;
+	artifactKey?: string;
 }
 
 interface ModelAttemptReport {
@@ -618,12 +664,15 @@ interface ModelAttemptReport {
 	usedTier?: Tier;
 	model?: string;
 	exitCode: number;
-	status: "completed" | "failed";
+	status: ReviewLaneLifecycle;
+	rawText: string;
 	retryable: boolean;
 	elapsedMs: number;
 	firstEventMs?: number;
 	firstAssistantMs?: number;
 	toolElapsedMs: number;
+	toolCallCount: number;
+	processSignal?: string;
 	stopReason?: string;
 	errorMessage?: string;
 }
@@ -634,10 +683,11 @@ interface SubagentPassResult {
 	usedTier?: Tier;
 	model?: string;
 	exitCode: number;
-	status: "completed" | "failed";
+	status: ReviewLaneLifecycle;
 	notice: string;
 	text: string;
 	stderr?: string;
+	processSignal?: string;
 	stopReason?: string;
 	errorMessage?: string;
 	attempts: ModelAttemptReport[];
@@ -645,6 +695,8 @@ interface SubagentPassResult {
 	retryableFailure: boolean;
 	toolPolicy: ToolPolicy;
 	elapsedMs: number;
+	startOffsetMs?: number;
+	endOffsetMs?: number;
 }
 
 function noticeForAttempt(tier: Tier, attempt: ModelAttempt): string {
@@ -661,9 +713,9 @@ function noticeForAttempt(tier: Tier, attempt: ModelAttempt): string {
 }
 
 function noticeForResult(tier: Tier, attempts: ModelAttemptReport[], finalNotice: string): string {
-	const failedBeforeSuccess = attempts.filter((a) => a.status === "failed").length;
-	if (failedBeforeSuccess > 0 && attempts.some((a) => a.status === "completed")) {
-		return `${finalNotice} (after ${failedBeforeSuccess} retry${failedBeforeSuccess === 1 ? "" : "ies"})`;
+	const incompleteBeforeSuccess = attempts.filter((a) => a.status !== "complete").length;
+	if (incompleteBeforeSuccess > 0 && attempts.some((a) => a.status === "complete")) {
+		return `${finalNotice} (after ${incompleteBeforeSuccess} retry${incompleteBeforeSuccess === 1 ? "" : "ies"})`;
 	}
 	return finalNotice;
 }
@@ -735,7 +787,7 @@ async function runSubagentAttempt(
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt };
 	} catch (e) {
 		return {
-			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e), toolElapsedMs: 0 },
+			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e), toolElapsedMs: 0, toolCallCount: 0 },
 			notice: noticeForAttempt(pass.tier, attempt),
 			elapsedMs: monotonicNow() - startedAt,
 		};
@@ -798,7 +850,7 @@ async function runSelfReviewAttempt(
 		return { result, modelSpec, elapsedMs: monotonicNow() - startedAt };
 	} catch (error) {
 		return {
-			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(error), toolElapsedMs: 0 },
+			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(error), toolElapsedMs: 0, toolCallCount: 0 },
 			modelSpec,
 			elapsedMs: monotonicNow() - startedAt,
 		};
@@ -832,9 +884,10 @@ export async function repairReviewOutput(
 		tier: "light",
 		objective: `Reformat this completed review without changing its substance.\n\n--- required output contract ---\n${outputContract}\n\n--- completed review ---\n${text}`,
 		toolPolicy: "none",
+		expectedOutput: "nonempty",
 		systemPrompt: OUTPUT_REPAIR_SYSTEM_PROMPT,
 	}, signal);
-	return result.status === "completed" && result.text.trim() ? result.text : undefined;
+	return result.status === "complete" && result.text.trim() ? result.text : undefined;
 }
 
 export interface GhFallbackPayload {
@@ -883,11 +936,59 @@ export async function prepareReviewOutputGhPayload(
 			"--- end completed review content ---",
 		].join("\n"),
 		toolPolicy: "none",
+		expectedOutput: "nonempty",
 		systemPrompt: GH_FALLBACK_PAYLOAD_SYSTEM_PROMPT,
 	}, signal);
-	return result.status === "completed"
+	return result.status === "complete"
 		? parseGhFallbackPayload(result.text, reviewedHeadSha)
 		: undefined;
+}
+
+function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResult): void {
+	if (!pass.artifactPublisher || pass.generation === undefined || !pass.artifactKey) return;
+	const finalAttempt = result.attempts.at(-1);
+	const artifact: ReviewLaneArtifact = {
+		generation: pass.generation,
+		key: pass.artifactKey,
+		passId: result.id,
+		tier: result.tier,
+		requestedModel: result.attempts[0]?.spec,
+		observedModel: result.model,
+		rawText: result.text,
+		exitCode: result.exitCode,
+		processSignal: result.processSignal,
+		stopReason: result.stopReason,
+		errorMessage: result.errorMessage,
+		lifecycle: result.status,
+		attempts: result.attempts.map((attempt, index) => ({
+			ordinal: index + 1,
+			kind: attempt.kind,
+			requestedModel: attempt.spec,
+			observedModel: attempt.model,
+			usedTier: attempt.usedTier,
+			rawText: attempt.rawText,
+			exitCode: attempt.exitCode,
+			processSignal: attempt.processSignal,
+			stopReason: attempt.stopReason,
+			errorMessage: attempt.errorMessage,
+			lifecycle: attempt.status,
+			retryable: attempt.retryable,
+			elapsedMs: attempt.elapsedMs,
+			firstEventMs: attempt.firstEventMs,
+			firstAssistantMs: attempt.firstAssistantMs,
+			toolElapsedMs: attempt.toolElapsedMs,
+			toolCallCount: attempt.toolCallCount,
+		})),
+		fallbackUsed: result.fallbackUsed,
+		elapsedMs: result.elapsedMs,
+		firstEventMs: finalAttempt?.firstEventMs,
+		firstAssistantMs: finalAttempt?.firstAssistantMs,
+		toolElapsedMs: finalAttempt?.toolElapsedMs ?? 0,
+		toolCallCount: finalAttempt?.toolCallCount ?? 0,
+		startOffsetMs: result.startOffsetMs,
+		endOffsetMs: result.endOffsetMs,
+	};
+	pass.artifactPublisher.retain(artifact);
 }
 
 async function runSubagentPass(
@@ -919,8 +1020,17 @@ async function runSubagentPass(
 			onText,
 			beforeSpawn,
 		);
-		const failed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-		const retryable = failed && isRetryableModelFailure(result);
+		const lifecycle = classifyReviewLane({
+			tier,
+			rawText: result.text,
+			exitCode: result.exitCode,
+			stopReason: result.stopReason,
+			errorMessage: result.errorMessage,
+			minorHygiene: pass.minorHygiene,
+			expectedOutput: pass.expectedOutput,
+		});
+		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+		const retryable = processFailed && isRetryableModelFailure(result);
 		lastResult = result;
 		lastNotice = notice;
 		reports.push({
@@ -929,28 +1039,32 @@ async function runSubagentPass(
 			usedTier: attempt.usedTier,
 			model: result.model ?? attempt.spec,
 			exitCode: result.exitCode,
-			status: failed ? "failed" : "completed",
+			status: lifecycle,
+			rawText: result.text,
 			retryable,
 			elapsedMs,
 			firstEventMs: result.firstEventMs,
 			firstAssistantMs: result.firstAssistantMs,
 			toolElapsedMs: result.toolElapsedMs,
+			toolCallCount: result.toolCallCount,
+			processSignal: result.processSignal,
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
 		});
 
-		if (!failed) {
+		if (lifecycle === "complete") {
 			pass.focusPublisher?.publish({ type: "completed" });
-			return {
+			const completed: SubagentPassResult = {
 				id: pass.id ?? tier,
 				tier,
 				usedTier: attempt.usedTier,
 				model: result.model ?? attempt.spec,
 				exitCode: result.exitCode,
-				status: "completed",
+				status: "complete",
 				notice: noticeForResult(tier, reports, notice),
-				text: result.text || "NO FINDINGS.",
+				text: result.text,
 				stderr: result.stderr || undefined,
+				processSignal: result.processSignal,
 				stopReason: result.stopReason,
 				errorMessage: result.errorMessage,
 				attempts: reports,
@@ -959,24 +1073,31 @@ async function runSubagentPass(
 				toolPolicy,
 				elapsedMs: monotonicNow() - startedAt,
 			};
+			retainPassArtifact(pass, completed);
+			return completed;
 		}
 
 		if (!retryable || signal?.aborted) break;
 		pass.focusPublisher?.publish({ type: "retrying" });
 	}
 
-	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available.", toolElapsedMs: 0 };
-	pass.focusPublisher?.publish({ type: signal?.aborted || final.stopReason === "aborted" ? "aborted" : "failed" });
-	return {
+	const final = lastResult ?? { text: "", exitCode: 1, stderr: "", errorMessage: "No model attempts were available.", toolElapsedMs: 0, toolCallCount: 0 };
+	const lifecycle = reports.at(-1)?.status ?? "failed";
+	pass.focusPublisher?.publish({
+		type: lifecycle === "partial" ? "partial" : lifecycle === "timed_out" ? "timed_out" :
+			signal?.aborted || final.stopReason === "aborted" ? "aborted" : "failed",
+	});
+	const incomplete: SubagentPassResult = {
 		id: pass.id ?? tier,
 		tier,
 		usedTier: reports.at(-1)?.usedTier,
 		model: reports.at(-1)?.model,
 		exitCode: final.exitCode,
-		status: "failed",
+		status: lifecycle,
 		notice: noticeForResult(tier, reports, lastNotice),
-		text: final.text || "",
+		text: final.text,
 		stderr: final.stderr || undefined,
+		processSignal: final.processSignal,
 		stopReason: final.stopReason,
 		errorMessage: final.errorMessage,
 		attempts: reports,
@@ -985,6 +1106,8 @@ async function runSubagentPass(
 		toolPolicy,
 		elapsedMs: monotonicNow() - startedAt,
 	};
+	retainPassArtifact(pass, incomplete);
+	return incomplete;
 }
 
 function normalizeMaxParallel(raw: unknown, count: number): number {
@@ -996,7 +1119,7 @@ function normalizeMaxParallel(raw: unknown, count: number): number {
 function formatAttemptSummary(result: SubagentPassResult): string {
 	if (result.attempts.length <= 1) return "";
 	return `attempts: ${result.attempts
-		.map((a) => `${a.status === "completed" ? "✓" : a.retryable ? "↻" : "✗"} ${a.spec ?? "pi default"}`)
+		.map((a) => `${a.status === "complete" ? "✓" : a.retryable ? "↻" : "✗"} ${a.spec ?? "pi default"} (${a.status})`)
 		.join(" → ")}`;
 }
 
@@ -1005,14 +1128,17 @@ function formatBatchResults(
 	maxParallel: number,
 	warnings: readonly string[] = [],
 ): string {
-	const failed = results.filter((r) => r.status === "failed");
+	const lifecycleCounts = Object.fromEntries(
+		(["complete", "partial", "timed_out", "failed"] as const).map((state) => [state, results.filter((r) => r.status === state).length]),
+	) as Record<ReviewLaneLifecycle, number>;
+	const incomplete = results.length - lifecycleCounts.complete;
 	const lines = [
-		`Review subagents completed: ${results.length - failed.length}/${results.length} succeeded (max_parallel=${maxParallel}).`,
+		`Review subagents completed: ${lifecycleCounts.complete}/${results.length} semantically complete (max_parallel=${maxParallel}; partial=${lifecycleCounts.partial}; timed_out=${lifecycleCounts.timed_out}; failed=${lifecycleCounts.failed}).`,
 		...warnings,
 	];
-	if (failed.length) {
+	if (incomplete) {
 		lines.push(
-			`WARNING: ${failed.length} pass(es) failed. Treat this as incomplete review evidence unless you rerun or cover the failed pass inline.`,
+			`WARNING: ${incomplete} pass(es) are incomplete. Preserve their raw evidence, then rerun or cover those passes inline before finalizing.`,
 		);
 	}
 	for (const result of results) {
@@ -1026,12 +1152,11 @@ function formatBatchResults(
 		);
 		const attemptSummary = formatAttemptSummary(result);
 		if (attemptSummary) lines.push(attemptSummary);
-		if (result.status === "failed") {
-			const detail = result.errorMessage || result.stderr || result.text || "(no output)";
+		if (result.text.length > 0) lines.push(result.text);
+		else {
+			const detail = result.errorMessage || result.stderr || "(no output)";
 			lines.push(`error: ${detail}`);
-			continue;
 		}
-		lines.push(result.text || "NO FINDINGS.");
 	}
 	return lines.join("\n");
 }
@@ -1387,11 +1512,13 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
+			const artifactKey = `${toolCallId}:single`;
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
-				key: `${toolCallId}:single`,
+				key: artifactKey,
 				label: `${tier} review`,
 				tier,
 			});
+			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
 			const config = loadConfig(ctx);
 			const result = await runSubagentPass(
 				config,
@@ -1404,6 +1531,9 @@ export default function registerPrReviewSubagents(
 					majorOnly: params.major_only === true,
 					minorHygiene: params.minor_hygiene === true,
 					focusPublisher,
+					artifactPublisher,
+					generation: lease.generation,
+					artifactKey,
 				},
 				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
@@ -1411,34 +1541,27 @@ export default function registerPrReviewSubagents(
 			);
 
 			const warnings = thinkingWarnings(config, [tier]);
-			if (result.status === "failed") {
-				const detail = result.errorMessage || result.stderr || result.text || "(no output)";
-				return {
-					content: [{ type: "text", text: [`Review subagent failed [${result.notice}]: ${detail}`, ...warnings].join("\n") }],
-					isError: true,
-					details: {
-						tier: result.tier,
-						usedTier: result.usedTier,
-						model: result.model,
-						exitCode: result.exitCode,
-						fallbackUsed: result.fallbackUsed,
-						retryableFailure: result.retryableFailure,
-						toolPolicy: result.toolPolicy,
-						elapsedMs: result.elapsedMs,
-						attempts: result.attempts,
-						contextFileBytes: loadedContext.contextFileBytes,
-					},
-				};
-			}
-
+			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			return {
-				content: [{ type: "text", text: [`[${result.notice}]`, ...warnings, "", result.text || "NO FINDINGS."].join("\n") }],
+				content: [{
+					type: "text",
+					text: result.status === "complete"
+						? [`[${result.notice}]`, ...warnings, "", result.text].join("\n")
+						: [`Review subagent ${result.status} [${result.notice}]. Raw output follows:`, ...warnings, "", detail].join("\n"),
+				}],
+				...(result.status !== "complete" ? { isError: true } : {}),
 				details: {
 					tier: result.tier,
 					usedTier: result.usedTier,
 					model: result.model,
 					exitCode: result.exitCode,
+					status: result.status,
+					rawText: result.text,
+					processSignal: result.processSignal,
+					stopReason: result.stopReason,
+					errorMessage: result.errorMessage,
 					fallbackUsed: result.fallbackUsed,
+					retryableFailure: result.retryableFailure,
 					toolPolicy: result.toolPolicy,
 					elapsedMs: result.elapsedMs,
 					attempts: result.attempts,
@@ -1551,14 +1674,21 @@ export default function registerPrReviewSubagents(
 					: [makePass(undefined, 0)];
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
-			const passes = passesWithoutFocus.map((pass, index) => ({
-				...pass,
-				focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, {
-					key: `${toolCallId}:${index}`,
-					label: pass.id ?? `${pass.tier} review`,
-					tier: pass.tier,
-				}),
-			}));
+			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
+			const passes = passesWithoutFocus.map((pass, index) => {
+				const artifactKey = `${toolCallId}:${index}`;
+				return {
+					...pass,
+					focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, {
+						key: artifactKey,
+						label: pass.id ?? `${pass.tier} review`,
+						tier: pass.tier,
+					}),
+					artifactPublisher,
+					generation: lease.generation,
+					artifactKey,
+				};
+			});
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
@@ -1578,6 +1708,9 @@ export default function registerPrReviewSubagents(
 					() => loopCoordinator.isLeaseActive(lease, ctx),
 				);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
+				result.startOffsetMs = startOffsetMs;
+				result.endOffsetMs = endOffsetMs;
+				retainPassArtifact(pass, result);
 				onUpdate?.({
 					content: [
 						{
@@ -1592,11 +1725,14 @@ export default function registerPrReviewSubagents(
 			const elapsedMs = monotonicNow() - batchStartedAt;
 			const results = scheduledResults.map((scheduled) => scheduled.result);
 
-			const failed = results.filter((r) => r.status === "failed");
+			const incomplete = results.filter((r) => r.status !== "complete");
+			const lifecycleCounts = Object.fromEntries(
+				(["complete", "partial", "timed_out", "failed"] as const).map((state) => [state, results.filter((r) => r.status === state).length]),
+			) as Record<ReviewLaneLifecycle, number>;
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
 				content: [{ type: "text", text: formatBatchResults(results, maxParallel, thinkingWarnings(config, usedTiers)) }],
-				...(failed.length > 0 ? { isError: true } : {}),
+				...(incomplete.length > 0 ? { isError: true } : {}),
 				details: {
 					maxParallel,
 					majorOnly,
@@ -1606,7 +1742,15 @@ export default function registerPrReviewSubagents(
 					contextFileBytes:
 						loadedContext.contextFileBytes +
 						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),
-					failedCount: failed.length,
+					failedCount: lifecycleCounts.failed,
+					incompleteCount: incomplete.length,
+					lifecycleCounts,
+					lifecycleElapsedMs: Object.fromEntries(
+						(["complete", "partial", "timed_out", "failed"] as const).map((state) => [
+							state,
+							results.filter((result) => result.status === state).reduce((total, result) => total + result.elapsedMs, 0),
+						]),
+					),
 					elapsedMs,
 					scheduling: {
 						clock: "monotonic",
@@ -1623,6 +1767,7 @@ export default function registerPrReviewSubagents(
 						usedTier: r.usedTier,
 						model: r.model,
 						exitCode: r.exitCode,
+						processSignal: r.processSignal,
 						status: r.status,
 						stopReason: r.stopReason,
 						errorMessage: r.errorMessage,
@@ -1633,9 +1778,11 @@ export default function registerPrReviewSubagents(
 						firstEventMs: r.attempts.at(-1)?.firstEventMs,
 						firstAssistantMs: r.attempts.at(-1)?.firstAssistantMs,
 						toolElapsedMs: r.attempts.at(-1)?.toolElapsedMs ?? 0,
+						toolCallCount: r.attempts.at(-1)?.toolCallCount ?? 0,
 						startOffsetMs,
 						endOffsetMs,
 						attempts: r.attempts,
+						rawText: r.text,
 						outputChars: r.text.length,
 					})),
 				},
