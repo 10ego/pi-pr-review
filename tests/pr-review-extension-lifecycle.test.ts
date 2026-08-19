@@ -510,7 +510,8 @@ describe("completed review extension lifecycle", () => {
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({
-			synthesisQuality: "fully_parsed", rawText: raw, expectedLaneCount: 1, mergeApprovalEligible: true,
+			synthesisQuality: "fully_parsed", rawText: raw,
+			expectedLaneKeys: ["correctness:0"], expectedLaneCount: 1, mergeApprovalEligible: true,
 		});
 		expect(persisted?.data).not.toHaveProperty("publicationBody");
 		const restored = createHarness([
@@ -528,6 +529,7 @@ describe("completed review extension lifecycle", () => {
 		tamperedData.laneArtifacts = [{
 			...persistedLane,
 			generation: 9,
+			key: "unexpected:0",
 			rawText: "",
 			exitCode: 1,
 			stopReason: "timeout",
@@ -971,6 +973,7 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const coordinator = harness.loopCoordinator;
 		const lease = coordinator.acquire(harness.ctx)!;
+		expect(coordinator.registerExpectedArtifacts(lease, ["call:0"], harness.ctx)).toBe(true);
 		const publisher = coordinator.createArtifactPublisher(lease, harness.ctx)!;
 		expect(publisher.retain({
 			generation: lease.generation, key: "call:0", passId: "correctness", requestedPassOrdinal: 0, tier: "heavy",

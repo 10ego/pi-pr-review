@@ -160,6 +160,7 @@ describe("invocation lane artifact retention", () => {
 		const registry = new ReviewLaneArtifactRegistry();
 		registry.open(7);
 		const retained = artifact();
+		expect(registry.expect(7, [retained.key])).toBeTrue();
 		expect(registry.retain(7, retained)).toBeTrue();
 		const snapshot = registry.snapshot(7)!;
 		expect(snapshot[0]?.rawText).toBe("NO FINDINGS.");
@@ -177,6 +178,8 @@ describe("invocation lane artifact retention", () => {
 	test("snapshots concurrent completions in requested-pass order", () => {
 		const registry = new ReviewLaneArtifactRegistry();
 		registry.open(7);
+		expect(registry.expect(7, ["call:0", "call:1"])).toBeTrue();
+		expect(registry.retain(7, artifact({ key: "unexpected", passId: "unexpected" }))).toBeFalse();
 		registry.retain(7, artifact({ key: "call:1", passId: "second", requestedPassOrdinal: 1 }));
 		registry.retain(7, artifact({ key: "call:0", passId: "first", requestedPassOrdinal: 0 }));
 		expect(registry.snapshot(7)?.map((lane) => lane.passId)).toEqual(["first", "second"]);

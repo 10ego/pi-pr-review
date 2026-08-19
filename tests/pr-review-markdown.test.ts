@@ -208,7 +208,7 @@ describe("Markdown-first canonical review artifacts", () => {
 	] as const)("never derives approval from a lazy %s continuation", (_kind, container) => {
 		const lazy = markdown.replace("**Verdict:** comment", `${container}\n**Verdict:** approve`);
 		const hidden = synthesizeReviewArtifact({
-			rawText: lazy, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+			rawText: lazy, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
 		});
 		expect(hidden.quality).toBe("raw");
 		expect(hidden.review.verdict).toBe("comment");
@@ -216,7 +216,7 @@ describe("Markdown-first canonical review artifacts", () => {
 
 		const topLevel = lazy.replace(`${container}\n`, `${container}\n\n`);
 		const visible = synthesizeReviewArtifact({
-			rawText: topLevel, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+			rawText: topLevel, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
 		});
 		expect(visible.quality).toBe("fully_parsed");
 		expect(visible.review.verdict).toBe("approve");
@@ -257,13 +257,21 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(withoutLanes.mergeApprovalEligible).toBe(false);
 
 		const missingLane = synthesizeReviewArtifact({
-			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 2,
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key, "missing:1"],
 		});
 		expect(missingLane.review.verdict).toBe("comment");
 		expect(missingLane.mergeApprovalEligible).toBe(false);
 
+		const unexpectedLane = synthesizeReviewArtifact({
+			rawText, ...binding,
+			laneArtifacts: [{ ...completeLane, key: "unexpected:0" }],
+			expectedLaneKeys: [completeLane.key],
+		});
+		expect(unexpectedLane.review.verdict).toBe("comment");
+		expect(unexpectedLane.mergeApprovalEligible).toBe(false);
+
 		const artifact = synthesizeReviewArtifact({
-			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
 		});
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.completeness).toBe("complete");

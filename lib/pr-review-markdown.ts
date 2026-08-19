@@ -12,6 +12,7 @@ export interface ReviewSynthesisArtifact {
 	readonly body: string;
 	readonly review: ReviewLike;
 	readonly laneArtifacts: readonly ReviewLaneArtifact[];
+	readonly expectedLaneKeys: readonly string[];
 	readonly expectedLaneCount: number;
 	readonly completeness: ReviewSynthesisCompleteness;
 	/** Whether this artifact may proceed to the host's remaining APPROVE gates. */
@@ -579,13 +580,14 @@ export function synthesizeReviewArtifact(input: {
 	prTitle: string;
 	headSha: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
-	expectedLaneCount?: number;
+	expectedLaneKeys?: readonly string[];
 	strictJsonReview?: ReviewLike;
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
-	const expectedLaneCount = Number.isInteger(input.expectedLaneCount) && Number(input.expectedLaneCount) >= 0
-		? Number(input.expectedLaneCount)
-		: 0;
+	const expectedLaneKeys = Object.freeze([
+		...new Set((input.expectedLaneKeys ?? []).filter((key): key is string => typeof key === "string" && !!key)),
+	]);
+	const expectedLaneCount = expectedLaneKeys.length;
 	if (input.strictJsonReview) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
@@ -607,6 +609,7 @@ export function synthesizeReviewArtifact(input: {
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
 					},
 			laneArtifacts: lanes,
+			expectedLaneKeys,
 			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: !bodyFallback,
@@ -630,6 +633,7 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body),
 			laneArtifacts: lanes,
+			expectedLaneKeys,
 			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: false,
@@ -659,6 +663,9 @@ export function synthesizeReviewArtifact(input: {
 	const bodySource = quality === "fully_parsed" ? raw : synthesisWithRetainedLaneEvidence(raw, lanes);
 	const body = safeReviewBodyWithLaneDisclosure(bodySource, lanes);
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
+	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
+		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
+		lanes.every((lane) => expectedLaneKeys.includes(lane.key));
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,
@@ -670,15 +677,15 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			safeFindings,
 			quality === "fully_parsed" && completeness === "complete",
-			expectedLaneCount > 0 && lanes.length === expectedLaneCount,
+			exactLaneCoverage,
 		),
 		laneArtifacts: lanes,
+		expectedLaneKeys,
 		expectedLaneCount,
 		completeness,
 		// Markdown approval requires exact host evidence for every registered
 		// dispatch; a nonempty subset cannot establish requested coverage.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" &&
-			expectedLaneCount > 0 && lanes.length === expectedLaneCount,
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
 		diagnostics: Object.freeze(canonicalParsed.unsafe
 			? ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"]
 			: quality === "partially_parsed"

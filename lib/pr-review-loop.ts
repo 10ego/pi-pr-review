@@ -313,6 +313,16 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
+	expectedArtifactKeys(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): readonly string[] | undefined {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
+			return this.artifactRegistry.expected(this.binding.generation);
+		}
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.expected(lease.generation) : undefined;
+	}
+
 	expectedArtifactCount(
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): number | undefined {

@@ -148,8 +148,15 @@ export class ReviewLaneArtifactRegistry {
 		return this.generation === generation ? this.expectedKeys.size : undefined;
 	}
 
+	expected(generation: number): readonly string[] | undefined {
+		return this.generation === generation ? Object.freeze([...this.expectedKeys]) : undefined;
+	}
+
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
-		if (this.generation !== generation || artifact.generation !== generation) return false;
+		if (
+			this.generation !== generation || artifact.generation !== generation ||
+			!this.expectedKeys.has(artifact.key)
+		) return false;
 		this.artifacts.set(artifact.key, Object.freeze({
 			...artifact,
 			attempts: Object.freeze(artifact.attempts.map((attempt) => Object.freeze({ ...attempt }))),

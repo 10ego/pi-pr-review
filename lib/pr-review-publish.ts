@@ -522,6 +522,7 @@ export interface CompletedReviewRecord {
 	/** Canonical synthesis diagnostics retained independently of the assistant message. */
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneKeys?: readonly string[];
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
@@ -548,6 +549,7 @@ export interface PersistedCompletedReview {
 	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneKeys?: readonly string[];
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
@@ -685,7 +687,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneKeys" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -698,6 +700,7 @@ export class CompletedReviewCache {
 			...(artifact?.synthesisQuality ? { synthesisQuality: artifact.synthesisQuality } : {}),
 			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
 			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
+			...(artifact?.expectedLaneKeys ? { expectedLaneKeys: artifact.expectedLaneKeys } : {}),
 			...(Number.isInteger(artifact?.expectedLaneCount) ? { expectedLaneCount: artifact!.expectedLaneCount } : {}),
 			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
 			...(typeof artifact?.mergeApprovalEligible === "boolean"
@@ -733,6 +736,7 @@ export class CompletedReviewCache {
 			...(record.synthesisQuality ? { synthesisQuality: record.synthesisQuality } : {}),
 			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
 			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
+			...(record.expectedLaneKeys ? { expectedLaneKeys: record.expectedLaneKeys } : {}),
 			...(Number.isInteger(record.expectedLaneCount) ? { expectedLaneCount: record.expectedLaneCount } : {}),
 			...(record.completeness ? { completeness: record.completeness } : {}),
 			...(typeof record.mergeApprovalEligible === "boolean"
@@ -787,6 +791,11 @@ export class CompletedReviewCache {
 			: undefined;
 		const rawText = typeof value.rawText === "string" ? value.rawText : undefined;
 		const laneArtifacts = parsePersistedLaneArtifacts(value.laneArtifacts);
+		const expectedLaneKeys = Array.isArray(value.expectedLaneKeys) && value.expectedLaneKeys.length <= 200 &&
+			value.expectedLaneKeys.every((key) => typeof key === "string" && !!key) &&
+			new Set(value.expectedLaneKeys).size === value.expectedLaneKeys.length
+			? value.expectedLaneKeys as string[]
+			: undefined;
 		const expectedLaneCount = Number.isInteger(value.expectedLaneCount) && Number(value.expectedLaneCount) >= 0
 			? Number(value.expectedLaneCount)
 			: undefined;
@@ -804,7 +813,9 @@ export class CompletedReviewCache {
 		const mergeApprovalEligible = persistedMergeApprovalEligible === true
 			? quality === "fully_parsed" && completeness === "complete" && Number.isInteger(expectedGeneration) &&
 				Number.isInteger(expectedLaneCount) && Number(expectedLaneCount) > 0 &&
-				laneArtifacts?.length === expectedLaneCount && laneArtifacts.every((lane) =>
+				expectedLaneKeys?.length === expectedLaneCount && laneArtifacts?.length === expectedLaneCount &&
+				new Set(laneArtifacts.map((lane) => lane.key)).size === expectedLaneCount &&
+				laneArtifacts.every((lane) => expectedLaneKeys.includes(lane.key) &&
 					lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
 					classifyReviewLane({
 						tier: lane.tier,
@@ -826,6 +837,7 @@ export class CompletedReviewCache {
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),
+			...(expectedLaneKeys ? { expectedLaneKeys } : {}),
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
 			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
