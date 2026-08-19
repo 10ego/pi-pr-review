@@ -46,6 +46,20 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 	});
 
+	test("parses CRLF Markdown equivalently while retaining exact raw text", () => {
+		const normalized = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const rawText = normalized.replace(/\n/g, "\r\n");
+		const artifact = synthesizeReviewArtifact({
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.rawText).toBe(rawText);
+		expect(artifact.body).toBe(normalized);
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.verdict).toBe("approve");
+		expect(artifact.mergeApprovalEligible).toBe(true);
+	});
+
 	test("preserves mixed parsed and unparsed findings in the original body", () => {
 		const mixed = markdown.replace(
 			"## Lane completeness",

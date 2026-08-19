@@ -626,7 +626,7 @@ export function synthesizeReviewArtifact(input: {
 				: []),
 		});
 	}
-	const raw = input.rawText.trim();
+	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		// The retained evidence itself can exceed the publication cap. Apply the
