@@ -516,9 +516,12 @@ export function runReviewSubprocess(
 		let terminationStartedAt: number | undefined;
 		let closed = false;
 		let settled = false;
+		let groupCleanupStarted = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 		let drainTimer: ReturnType<typeof setTimeout> | undefined;
+		let groupKillDeadline: number | undefined;
+		let pendingClose: { code: number | null; processSignal?: NodeJS.Signals | null; error?: Error } | undefined;
 		let activeTools = 0;
 		let activeToolsStartedAt = 0;
 		let updateAssistantText = "";
@@ -527,24 +530,31 @@ export function runReviewSubprocess(
 		// Pi's print/json modes combine piped stdin into the initial user message.
 		// Keep the complete review task off argv: macOS rejects a single argument
 		// near 1 MiB, while context_file intentionally supports up to 16 MiB.
-		const proc = spawn(command, args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
-		const terminate = (reason: "abort" | "timeout") => {
-			if (closed || settled || termination) return;
-			termination = reason;
-			terminationStartedAt = now();
-			proc.kill("SIGTERM");
-			const graceMs = deadline?.terminationGraceMs ?? 5_000;
-			killTimer = setTimeout(() => {
-				// ChildProcess.killed only means a signal was sent; escalate only when
-				// no close event was observed during the bounded grace period.
-				if (!closed) result.forcedTermination = true;
-				if (!closed) proc.kill("SIGKILL");
-			}, graceMs);
-			drainTimer = setTimeout(() => finish(1, undefined), graceMs + (deadline?.cleanupReserveMs ?? 1_000));
+		// A detached POSIX leader gives the host one process group to supervise,
+		// including reviewer tools which outlive or redirect stdio away from Pi.
+		const detached = process.platform !== "win32";
+		const proc = spawn(command, args, { cwd, shell: false, detached, stdio: ["pipe", "pipe", "pipe"] });
+		const processGroupId = detached ? proc.pid : undefined;
+		const groupExists = () => {
+			if (processGroupId === undefined) return false;
+			try {
+				process.kill(-processGroupId, 0);
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException).code !== "ESRCH";
+			}
+		};
+		const signalProcess = (processSignal: NodeJS.Signals) => {
+			try {
+				if (processGroupId !== undefined) process.kill(-processGroupId, processSignal);
+				else if (!closed) proc.kill(processSignal);
+			} catch {
+				// Concurrent exits are observed by close and the bounded group probe.
+			}
 		};
 		const onAbort = () => {
 			const reason = signal?.reason;
-			terminate(reason instanceof Error && /review total deadline expired/i.test(reason.message) ? "timeout" : "abort");
+			terminate(reason instanceof Error && /review (?:total|synthesis) deadline expired/i.test(reason.message) ? "timeout" : "abort");
 		};
 		const cleanupAbort = () => {
 			if (killTimer) clearTimeout(killTimer);
@@ -639,7 +649,6 @@ export function runReviewSubprocess(
 		proc.stdin.end(input, "utf8");
 		const finish = (code: number | null, processSignal: NodeJS.Signals | null | undefined, error?: Error) => {
 			if (settled) return;
-			closed = true;
 			cleanupAbort();
 			// Flush a final unterminated JSON record while processEvent is still
 			// authoritative. Marking settled first would silently discard it.
@@ -662,8 +671,83 @@ export function runReviewSubprocess(
 			} else if (error) result.errorMessage = error.message;
 			resolve(result);
 		};
-		proc.on("close", (code, processSignal) => finish(code, processSignal));
-		proc.on("error", (err) => finish(1, undefined, err));
+		const finishPending = () => {
+			const pending = pendingClose ?? { code: 1, processSignal: undefined };
+			finish(pending.code, pending.processSignal, pending.error);
+		};
+		const forceKillAndDrain = () => {
+			result.forcedTermination = true;
+			signalProcess("SIGKILL");
+			const cleanupDeadline = now() + (deadline?.cleanupReserveMs ?? 1_000);
+			const drain = () => {
+				if (closed && !groupExists()) {
+					finishPending();
+					return;
+				}
+				const remaining = cleanupDeadline - now();
+				if (remaining <= 0) {
+					signalProcess("SIGKILL");
+					finishPending();
+					return;
+				}
+				drainTimer = setTimeout(drain, Math.min(10, Math.max(1, remaining)));
+			};
+			drain();
+		};
+		const checkGroupCleanupGrace = () => {
+			if (!groupCleanupStarted || settled || groupKillDeadline === undefined) return;
+			if (killTimer) clearTimeout(killTimer);
+			if (closed && !groupExists()) {
+				finishPending();
+				return;
+			}
+			const remaining = groupKillDeadline - now();
+			if (remaining <= 0) {
+				forceKillAndDrain();
+				return;
+			}
+			killTimer = setTimeout(checkGroupCleanupGrace, closed ? Math.min(10, remaining) : remaining);
+		};
+		const beginGroupCleanup = () => {
+			if (groupCleanupStarted || settled || processGroupId === undefined) return;
+			groupCleanupStarted = true;
+			signalProcess("SIGTERM");
+			groupKillDeadline = now() + (deadline?.terminationGraceMs ?? 5_000);
+			checkGroupCleanupGrace();
+		};
+		const terminate = (reason: "abort" | "timeout") => {
+			if (settled || termination) return;
+			termination = reason;
+			terminationStartedAt = now();
+			pendingClose ??= { code: 1, processSignal: undefined };
+			if (processGroupId !== undefined) {
+				beginGroupCleanup();
+				return;
+			}
+			// Preserve direct-child behavior on platforms without POSIX groups.
+			signalProcess("SIGTERM");
+			const graceMs = deadline?.terminationGraceMs ?? 5_000;
+			killTimer = setTimeout(() => {
+				if (!closed) result.forcedTermination = true;
+				if (!closed) signalProcess("SIGKILL");
+			}, graceMs);
+			drainTimer = setTimeout(finishPending, graceMs + (deadline?.cleanupReserveMs ?? 1_000));
+		};
+		proc.on("close", (code, processSignal) => {
+			closed = true;
+			pendingClose = { code, processSignal };
+			if (processGroupId !== undefined && (termination || groupExists())) {
+				beginGroupCleanup();
+				checkGroupCleanupGrace();
+				return;
+			}
+			finishPending();
+		});
+		proc.on("error", (error) => {
+			closed = true;
+			pendingClose = { code: 1, processSignal: undefined, error };
+			finishPending();
+		});
 
 		if (deadline) {
 			const remaining = deadline.deadlineMs - now();
