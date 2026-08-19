@@ -60,8 +60,10 @@ import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
+	reviewDeadlineKindOf,
 	reviewLoopDeniedResult,
 	type ReviewArtifactPublisher,
+	type ReviewDeadlineKind,
 	type ReviewFocusPublisher,
 } from "../lib/pr-review-loop.ts";
 import { runSelfReviewRpcSubprocess } from "../lib/pr-self-review-rpc.ts";
@@ -489,6 +491,8 @@ interface RunResult {
 	errorMessage?: string;
 	model?: string;
 	timedOut?: boolean;
+	/** Which host invocation deadline (not the lane's own attempt deadline) ended this run. */
+	deadlineExpired?: ReviewDeadlineKind;
 	terminationGraceMs?: number;
 	forcedTermination?: boolean;
 	firstEventMs?: number;
@@ -553,8 +557,11 @@ export function runReviewSubprocess(
 			}
 		};
 		const onAbort = () => {
-			const reason = signal?.reason;
-			terminate(reason instanceof Error && /review (?:total|synthesis) deadline expired/i.test(reason.message) ? "timeout" : "abort");
+			// A host total/synthesis deadline is a timeout, not user cancellation,
+			// and is disclosed as the external deadline that ended the lane.
+			const kind = reviewDeadlineKindOf(signal?.reason);
+			if (kind) result.deadlineExpired = kind;
+			terminate(kind ? "timeout" : "abort");
 		};
 		const cleanupAbort = () => {
 			if (killTimer) clearTimeout(killTimer);
@@ -665,7 +672,9 @@ export function runReviewSubprocess(
 			if (termination === "timeout") {
 				result.timedOut = true;
 				result.stopReason = "timeout";
-				result.errorMessage ??= "Review attempt exceeded its host deadline.";
+				result.errorMessage ??= result.deadlineExpired
+					? `Review ${result.deadlineExpired} deadline expired while this lane was still running.`
+					: "Review attempt exceeded its host deadline.";
 			} else if (termination === "abort") {
 				result.stopReason = "aborted";
 			} else if (error) result.errorMessage = error.message;
@@ -1162,6 +1171,7 @@ async function runSubagentPass(
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
 			timedOut: result.timedOut,
+			deadlineExpired: result.deadlineExpired,
 			terminationGraceMs: result.terminationGraceMs,
 			forcedTermination: result.forcedTermination,
 			deadlineMs,
@@ -1191,6 +1201,7 @@ async function runSubagentPass(
 				toolPolicy,
 				elapsedMs: monotonicNow() - startedAt,
 				fallbackBudgetRejected,
+				deadlineExpired: result.deadlineExpired,
 				deadlineSource: budget?.source,
 				batchDeadlineMs: budget ? budget.batchDeadlineMs - budget.startedAtMs : undefined,
 				totalDeadlineMs: budget ? budget.totalDeadlineMs - budget.startedAtMs : undefined,
@@ -1228,6 +1239,7 @@ async function runSubagentPass(
 		toolPolicy,
 		elapsedMs: monotonicNow() - startedAt,
 		fallbackBudgetRejected,
+		deadlineExpired: final.deadlineExpired,
 		deadlineSource: budget?.source,
 		batchDeadlineMs: budget ? budget.batchDeadlineMs - budget.startedAtMs : undefined,
 		totalDeadlineMs: budget ? budget.totalDeadlineMs - budget.startedAtMs : undefined,
@@ -1249,6 +1261,12 @@ function formatAttemptSummary(result: SubagentPassResult): string {
 		.join(" → ")}`;
 }
 
+function deadlineExpiryCounts(results: readonly SubagentPassResult[]): Record<ReviewDeadlineKind, number> {
+	return Object.fromEntries(
+		(["total", "synthesis"] as const).map((kind) => [kind, results.filter((r) => r.deadlineExpired === kind).length]),
+	) as Record<ReviewDeadlineKind, number>;
+}
+
 function formatBatchResults(
 	results: SubagentPassResult[],
 	maxParallel: number,
@@ -1258,10 +1276,18 @@ function formatBatchResults(
 		(["complete", "partial", "timed_out", "failed"] as const).map((state) => [state, results.filter((r) => r.status === state).length]),
 	) as Record<ReviewLaneLifecycle, number>;
 	const incomplete = results.length - lifecycleCounts.complete;
+	const externalDeadlines = deadlineExpiryCounts(results);
+	const externalTotal = externalDeadlines.total + externalDeadlines.synthesis;
 	const lines = [
 		`Review subagents completed: ${lifecycleCounts.complete}/${results.length} semantically complete (max_parallel=${maxParallel}; partial=${lifecycleCounts.partial}; timed_out=${lifecycleCounts.timed_out}; failed=${lifecycleCounts.failed}).`,
 		...warnings,
 	];
+	if (externalTotal > 0) {
+		const kinds = (["total", "synthesis"] as const).filter((kind) => externalDeadlines[kind] > 0).join("/");
+		lines.push(
+			`WARNING: the host ${kinds} deadline expired while ${externalTotal} lane(s) were still running; those lane attempt budgets were not exceeded.`,
+		);
+	}
 	if (incomplete) {
 		lines.push(
 			`WARNING: ${incomplete} pass(es) are incomplete. Preserve their raw evidence, then rerun or cover those passes inline before finalizing.`,
@@ -1274,6 +1300,7 @@ function formatBatchResults(
 			`status: ${result.status}`,
 			`tool_policy: ${result.toolPolicy}`,
 			`elapsed_ms: ${result.elapsedMs}`,
+			...(result.deadlineExpired ? [`deadline_expired: ${result.deadlineExpired}`] : []),
 			result.notice,
 		);
 		const attemptSummary = formatAttemptSummary(result);
@@ -1896,6 +1923,7 @@ export default function registerPrReviewSubagents(
 					incompleteCount: incomplete.length,
 					fallbackStarts: results.filter((result) => result.attempts.length > 1).length,
 					fallbackBudgetRejections: results.filter((result) => result.fallbackBudgetRejected).length,
+					deadlineExpiries: deadlineExpiryCounts(results),
 					deadlineSource: lease.budget?.source,
 					deadlineWarnings: lease.budget?.warnings,
 					batchDeadlineMs: lease.budget ? lease.budget.batchDeadlineMs - lease.budget.startedAtMs : undefined,
@@ -1927,7 +1955,9 @@ export default function registerPrReviewSubagents(
 						status: r.status,
 						stopReason: r.stopReason,
 						errorMessage: r.errorMessage,
+						deadlineExpired: r.deadlineExpired,
 						fallbackUsed: r.fallbackUsed,
+						retryableFailure: r.retryableFailure,
 						retryableFailure: r.retryableFailure,
 						toolPolicy: r.toolPolicy,
 						elapsedMs: r.elapsedMs,

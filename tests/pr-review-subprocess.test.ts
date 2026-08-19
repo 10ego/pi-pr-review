@@ -2,9 +2,50 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, test } from "bun:test";
-import { runReviewSubprocess } from "../extensions/pr-review-subagent.ts";
-import { runSelfReviewRpcSubprocess } from "../lib/pr-self-review-rpc.ts";
+import { describe, expect, mock, test } from "bun:test";
+
+mock.module("@earendil-works/pi-ai", () => ({
+	StringEnum: () => ({}),
+}));
+mock.module("@earendil-works/pi-coding-agent", () => ({
+	CONFIG_DIR_NAME: ".pi",
+	getAgentDir: () => "/tmp/pi-pr-review-subprocess-agent",
+	getSelectListTheme: () => ({}),
+	getSettingsListTheme: () => ({}),
+}));
+mock.module("@earendil-works/pi-tui", () => ({
+	Container: class {},
+	fuzzyFilter: (items: unknown[]) => items,
+	getKeybindings: () => ({ matches: () => false }),
+	Input: class {},
+	SelectList: class {},
+	SettingsList: class {},
+	Text: class {},
+}));
+mock.module("typebox", () => {
+	const schema = () => ({});
+	return {
+		Type: {
+			Array: schema,
+			Boolean: schema,
+			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
+			Literal: schema,
+			Number: schema,
+			Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+				type: "object",
+				properties,
+				...options,
+			}),
+			Optional: schema,
+			String: schema,
+			Union: schema,
+		},
+	};
+});
+
+const { runReviewSubprocess } = await import("../extensions/pr-review-subagent.ts");
+const { combineAbortSignals, reviewDeadlineError } = await import("../lib/pr-review-loop.ts");
+const { runSelfReviewRpcSubprocess } = await import("../lib/pr-self-review-rpc.ts");
 
 const { readFileSync } = fs;
 
@@ -92,6 +133,53 @@ describe("review subprocess policy and task transport", () => {
 			} catch {}
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
+	});
+
+	test("discloses the host deadline that ended a lane instead of its attempt deadline", async () => {
+		if (process.platform === "win32") return;
+		const controller = new AbortController();
+		// The lane execution signal is combined from the loop lease signal.
+		const executionSignal = combineAbortSignals(controller.signal, undefined);
+		const script = 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);';
+		const resultPromise = runReviewSubprocess(
+			process.execPath,
+			["-e", script],
+			process.cwd(),
+			"review task",
+			executionSignal,
+			() => {},
+			undefined,
+			{ deadlineMs: performance.now() + 10_000, terminationGraceMs: 50, cleanupReserveMs: 200 },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		controller.abort(reviewDeadlineError("synthesis"));
+		const result = await resultPromise;
+		expect(result.timedOut).toBeTrue();
+		expect(result.stopReason).toBe("timeout");
+		expect(result.deadlineExpired).toBe("synthesis");
+		expect(result.errorMessage).toBe("Review synthesis deadline expired while this lane was still running.");
+	});
+
+	test("keeps a plain user abort distinct from host deadline timeouts", async () => {
+		if (process.platform === "win32") return;
+		const controller = new AbortController();
+		const script = 'process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000);';
+		const resultPromise = runReviewSubprocess(
+			process.execPath,
+			["-e", script],
+			process.cwd(),
+			"review task",
+			controller.signal,
+			() => {},
+			undefined,
+			{ deadlineMs: performance.now() + 10_000, terminationGraceMs: 50, cleanupReserveMs: 200 },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		controller.abort(new Error("user cancelled"));
+		const result = await resultPromise;
+		expect(result.stopReason).toBe("aborted");
+		expect(result.deadlineExpired).toBeUndefined();
+		expect(result.timedOut).toBeUndefined();
 	});
 
 	test("does not ask a model to serialize a GitHub review payload", () => {
