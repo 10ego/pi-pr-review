@@ -277,6 +277,75 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("correctness failed before producing evidence");
 	});
 
+	test("host-complete lane evidence overrides a paraphrased or omitted completion disclosure", () => {
+		const paraphrased = markdown.replace("All requested lanes completed.", "All five lanes finished successfully.");
+		const paraphrasedArtifact = synthesizeReviewArtifact({
+			rawText: paraphrased, ...binding,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(paraphrasedArtifact.completeness).toBe("complete");
+		expect(paraphrasedArtifact.quality).toBe("fully_parsed");
+		expect(paraphrasedArtifact.mergeApprovalEligible).toBe(true);
+
+		const sectionless = markdown.replace("## Lane completeness\nAll requested lanes completed.", "");
+		const sectionlessArtifact = synthesizeReviewArtifact({
+			rawText: sectionless, ...binding,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(sectionlessArtifact.completeness).toBe("complete");
+		expect(sectionlessArtifact.quality).toBe("fully_parsed");
+	});
+
+	test("host lane truth wins over a false assistant completion claim", () => {
+		const timedOutLane = {
+			...completeLane,
+			lifecycle: "timed_out" as const,
+			stopReason: "timeout" as const,
+			deadlineExpired: "synthesis" as const,
+		};
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown, ...binding,
+			laneArtifacts: [timedOutLane], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.body).toContain("Host verification found incomplete requested lanes.");
+		expect(artifact.body).toContain("timed_out=1");
+	});
+
+	test("an expected-but-unretained lane keeps an incomplete batch out of concise publication", () => {
+		const paraphrased = markdown.replace("All requested lanes completed.", "Both specialist lanes finished their review.");
+		const artifact = synthesizeReviewArtifact({
+			rawText: paraphrased, ...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [
+				completeExpectedLane,
+				{ key: "missing:1", tier: "heavy", minorHygiene: false },
+			],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.diagnostics).toContain("retained lane evidence does not cover every expected lane dispatch");
+
+		const unretained = synthesizeReviewArtifact({
+			rawText: paraphrased, ...binding,
+			laneArtifacts: [],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(unretained.completeness).toBe("incomplete");
+		expect(unretained.quality).not.toBe("fully_parsed");
+	});
+
+	test("names the exact structural reason a synthesis degraded", () => {
+		const stripped = markdown
+			.replace("## Overview\nPreserve the semantic review.", "")
+			.replace("## Lane completeness\nAll requested lanes completed.", "");
+		const artifact = synthesizeReviewArtifact({ rawText: stripped, ...binding });
+		expect(artifact.quality).toBe("partially_parsed");
+		expect(artifact.diagnostics).toContain("Overview section missing or empty");
+		expect(artifact.diagnostics).toContain("Lane completeness section absent or did not state the canonical completion line");
+	});
+
 	test("retains a fully parsed Markdown verdict only with host lane evidence", () => {
 		const rawText = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const withoutLanes = synthesizeReviewArtifact({ rawText, ...binding });
@@ -291,6 +360,8 @@ describe("Markdown-first canonical review artifacts", () => {
 			],
 		});
 		expect(missingLane.review.verdict).toBe("comment");
+		expect(missingLane.completeness).toBe("incomplete");
+		expect(missingLane.quality).not.toBe("fully_parsed");
 		expect(missingLane.mergeApprovalEligible).toBe(false);
 
 		const unexpectedLane = synthesizeReviewArtifact({

@@ -654,16 +654,37 @@ export function synthesizeReviewArtifact(input: {
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
+	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
+		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
+		new Set(expectedLaneDescriptors.map((lane) => lane.key)).size === expectedLaneCount &&
+		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
+			expected.key === lane.key && expected.tier === lane.tier &&
+			expected.minorHygiene === !!lane.minorHygiene));
+	// Host lane artifacts are authoritative whenever a batch ran: they already
+	// stop a false complete claim from upgrading incomplete lanes, and they must
+	// equally stop a paraphrased or omitted disclosure line from downgrading a
+	// host-complete batch to body-only publication. Completeness additionally
+	// requires the retained lanes to cover every expected dispatch, so an
+	// expected-but-unretained artifact cannot make an incomplete batch look
+	// complete through vacuous satisfaction.
+	const batchEvidencePresent = lanes.length > 0 || expectedLaneCount > 0;
+	const laneTruthClaimsComplete = batchEvidencePresent
+		? lanes.every((lane) => lane.lifecycle === "complete") &&
+			(expectedLaneCount === 0 || exactLaneCoverage)
+		: laneDisclosureClaimsComplete;
 	const preamble = documentPreamble(raw);
 	const verdictField = field(preamble, "Verdict");
 	const verdict = verdictField?.toLowerCase().replace(/[ -]+/g, "_");
-	const extractedControlsSafe = publicationSafeText(overview) && publicationSafeText(verification) &&
-		publicationSafeText(laneDisclosure) && publicationSafeText(verdictField) &&
+	// A missing section is a structural gap handled by hasStructure and
+	// diagnostics; only present-but-unsafe text disables inline extraction.
+	const safeIfPresent = (value: string | undefined) => value === undefined || publicationSafeText(value);
+	const extractedControlsSafe = safeIfPresent(overview) && safeIfPresent(verification) &&
+		safeIfPresent(laneDisclosure) && safeIfPresent(verdictField) &&
 		new Set(["approve", "request_changes", "comment"]).has(verdict ?? "") &&
 		fieldCount(preamble, "Verdict") === 1 && fieldCount(raw, "Verdict") === 1;
 	const canonicalParsed = parsed.unsafe ? parsed : { ...parsed, unsafe: !extractedControlsSafe };
-	const completeness = synthesisCompleteness(raw, lanes, laneDisclosureClaimsComplete);
-	const hasStructure = !!overview && !!verification && laneDisclosureClaimsComplete && extractedControlsSafe;
+	const completeness = synthesisCompleteness(raw, lanes, laneTruthClaimsComplete);
+	const hasStructure = !!overview && !!verification && laneTruthClaimsComplete && extractedControlsSafe;
 	const quality: ReviewSynthesisQuality = canonicalParsed.unsafe
 		? "raw"
 		: hasStructure && canonicalParsed.complete && completeness === "complete"
@@ -675,12 +696,6 @@ export function synthesizeReviewArtifact(input: {
 	const bodySource = quality === "fully_parsed" ? raw : synthesisWithRetainedLaneEvidence(raw, lanes);
 	const body = safeReviewBodyWithLaneDisclosure(bodySource, lanes);
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
-		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
-		new Set(expectedLaneDescriptors.map((lane) => lane.key)).size === expectedLaneCount &&
-		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
-			expected.key === lane.key && expected.tier === lane.tier &&
-			expected.minorHygiene === !!lane.minorHygiene));
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,
@@ -701,12 +716,33 @@ export function synthesizeReviewArtifact(input: {
 		// Markdown approval requires exact host evidence for every registered
 		// dispatch; a nonempty subset cannot establish requested coverage.
 		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
-		diagnostics: Object.freeze(canonicalParsed.unsafe
-			? ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"]
-			: quality === "partially_parsed"
-				? [completeness === "incomplete"
-					? "incomplete lane disclosure or evidence forced sanitized body-only publication"
-					: `${parsed.count - parsed.findings.length} finding section(s) could not be parsed and remain in the body`]
-				: quality === "raw" ? ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"] : []),
+		diagnostics: Object.freeze((() => {
+			if (canonicalParsed.unsafe) {
+				return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
+			}
+			if (quality === "fully_parsed") return [];
+			const reasons: string[] = [];
+			if (!overview) reasons.push("Overview section missing or empty");
+			if (!verification) reasons.push("Verification section missing or empty");
+			if (!laneTruthClaimsComplete) {
+				if (lanes.length > 0 && !lanes.every((lane) => lane.lifecycle === "complete")) {
+					reasons.push("host lane evidence contains incomplete lanes");
+				} else if (expectedLaneCount > 0 && !exactLaneCoverage) {
+					reasons.push("retained lane evidence does not cover every expected lane dispatch");
+				} else {
+					reasons.push("Lane completeness section absent or did not state the canonical completion line");
+				}
+			}
+			if (verdictField !== undefined && !new Set(["approve", "request_changes", "comment"]).has(verdict ?? "")) {
+				reasons.push("Verdict field outside the canonical set");
+			}
+			if (fieldCount(preamble, "Verdict") !== 1 || fieldCount(raw, "Verdict") !== 1) {
+				reasons.push("Verdict field count is not exactly one");
+			}
+			if (parsed.count > parsed.findings.length) {
+				reasons.push(`${parsed.count - parsed.findings.length} finding section(s) could not be parsed and remain in the body`);
+			}
+			return reasons.length > 0 ? reasons : ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"];
+		})()),
 	});
 }
