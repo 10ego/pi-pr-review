@@ -553,6 +553,9 @@ function retainedLaneEvidence(lanes: readonly ReviewLaneArtifact[]): string {
 	const lines = ["## Host-retained lane evidence", ""];
 	for (const lane of lanes.slice(0, MAX_DISCLOSED_LANES)) {
 		lines.push(`### ${disclosedPassId(lane.passId)} — ${lane.lifecycle}`, "");
+		if (lane.deadlineExpired) {
+			lines.push(`Host ${lane.deadlineExpired} deadline expired while this lane was still running.`, "");
+		}
 		const text = retainedLaneText(lane);
 		if (text) lines.push(text, "");
 		else lines.push(`No substantive output was retained${lane.errorMessage ? `: ${lane.errorMessage}` : "."}`, "");

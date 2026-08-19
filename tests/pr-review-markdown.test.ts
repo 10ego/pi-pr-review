@@ -442,6 +442,47 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("Substantive retained security finding.");
 	});
 
+	test("discloses the host deadline that ended a retained lane before its evidence", () => {
+		const lane = {
+			generation: 1,
+			key: "correctness:0",
+			passId: "correctness",
+			tier: "heavy",
+			rawText: "Partial correctness evidence flushed before termination.",
+			exitCode: 1,
+			stopReason: "timeout",
+			errorMessage: "Review synthesis deadline expired while this lane was still running.",
+			lifecycle: "timed_out",
+			deadlineExpired: "synthesis",
+			attempts: [{
+				ordinal: 1,
+				kind: "primary",
+				rawText: "",
+				exitCode: 143,
+				processSignal: "SIGTERM",
+				stopReason: "timeout",
+				lifecycle: "timed_out",
+				deadlineExpired: "synthesis",
+				retryable: true,
+				elapsedMs: 44,
+				toolElapsedMs: 0,
+				toolCallCount: 9,
+			}],
+			fallbackUsed: false,
+			elapsedMs: 44,
+			toolElapsedMs: 9,
+			toolCallCount: 9,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "",
+			...binding,
+			laneArtifacts: [lane],
+		});
+		expect(artifact.body).toContain("### correctness — timed_out");
+		expect(artifact.body.indexOf("Host synthesis deadline expired while this lane was still running."))
+			.toBeLessThan(artifact.body.indexOf("Partial correctness evidence flushed before termination."));
+	});
+
 	test("reserves exact incomplete shard disclosure after 70KB of retained fallback evidence", () => {
 		const lane = (passId: string, rawText: string, lifecycle: ReviewLaneArtifact["lifecycle"]): ReviewLaneArtifact => ({
 			generation: 1,

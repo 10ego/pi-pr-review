@@ -1,3 +1,5 @@
+import type { ReviewDeadlineKind } from "./pr-review-deadlines.ts";
+
 export type ReviewLaneLifecycle = "complete" | "partial" | "timed_out" | "failed";
 
 export interface ReviewLaneAttemptArtifact {
@@ -12,6 +14,8 @@ export interface ReviewLaneAttemptArtifact {
 	readonly stopReason?: string;
 	readonly errorMessage?: string;
 	readonly lifecycle: ReviewLaneLifecycle;
+	/** Host total/synthesis deadline that ended this attempt, when it caused termination. */
+	readonly deadlineExpired?: ReviewDeadlineKind;
 	readonly retryable: boolean;
 	readonly elapsedMs: number;
 	readonly firstEventMs?: number;
@@ -49,6 +53,8 @@ export interface ReviewLaneArtifact {
 	readonly stopReason?: string;
 	readonly errorMessage?: string;
 	readonly lifecycle: ReviewLaneLifecycle;
+	/** Host total/synthesis deadline that ended this lane, when it caused termination. */
+	readonly deadlineExpired?: ReviewDeadlineKind;
 	readonly attempts: readonly ReviewLaneAttemptArtifact[];
 	readonly fallbackUsed: boolean;
 	readonly elapsedMs: number;
