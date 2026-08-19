@@ -545,6 +545,18 @@ describe("completed review extension lifecycle", () => {
 		expect(tamperedProbe.payload()?.event).toBe("COMMENT");
 		expect(String(tamperedProbe.payload()?.body)).toContain("**Verdict:** Comment");
 
+		const missingRawData = structuredClone(persisted!.data) as Record<string, unknown>;
+		delete missingRawData.rawText;
+		const missingRaw = createHarness([
+			{ type: "custom", id: "markdown-missing-raw-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: missingRawData },
+		]);
+		await missingRaw.emit("session_start", { reason: "reload" });
+		const missingRawProbe = installPublishingProbe();
+		await missingRaw.commands.get("pr-review-publish")!("7", missingRaw.ctx);
+		expect(missingRawProbe.postCount()).toBe(1);
+		expect(missingRawProbe.payload()?.event).toBe("COMMENT");
+		expect(String(missingRawProbe.payload()?.body)).toContain("**Verdict:** Comment");
+
 		const stale = createHarness([
 			{ type: "custom", id: "markdown-stale-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data },
 		]);

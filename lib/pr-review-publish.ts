@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { classifyReviewLane, type ExpectedReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
-import type { ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
+import { synthesizeReviewArtifact, type ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
@@ -818,8 +818,28 @@ export class CompletedReviewCache {
 		// complete artifact and at least one validated complete host lane. Legacy
 		// records without this field retain their pre-field compatibility behavior.
 		const expectedGeneration = invocation.reviewBinding?.invocationGeneration;
+		let rawApprovalEvidenceValid = false;
+		if (persistedMergeApprovalEligible === true && rawText && invocation.reviewBinding) {
+			const rawStrict = parsePublishableReview(rawText);
+			const strictJsonReview = rawStrict.source === "json" && rawStrict.review &&
+				!validateReviewInvocation(rawStrict.review, invocation)
+				? rawStrict.review
+				: undefined;
+			const rebound = synthesizeReviewArtifact({
+				rawText,
+				prNumber: invocation.reviewBinding.prNumber,
+				prTitle: invocation.reviewBinding.prTitle,
+				headSha: invocation.reviewBinding.reviewedHeadSha,
+				laneArtifacts: laneArtifacts ?? [],
+				expectedLaneDescriptors: expectedLaneDescriptors ?? [],
+				...(strictJsonReview ? { strictJsonReview } : {}),
+			});
+			rawApprovalEvidenceValid = rebound.mergeApprovalEligible && rebound.review.verdict === "approve" &&
+				reviewHash(rebound.review) === reviewHash(parsed.review);
+		}
 		const mergeApprovalEligible = persistedMergeApprovalEligible === true
-			? quality === "fully_parsed" && completeness === "complete" && Number.isInteger(expectedGeneration) &&
+			? rawApprovalEvidenceValid && quality === "fully_parsed" && completeness === "complete" &&
+				Number.isInteger(expectedGeneration) &&
 				Number.isInteger(expectedLaneCount) && Number(expectedLaneCount) > 0 &&
 				expectedLaneDescriptors?.length === expectedLaneCount && laneArtifacts?.length === expectedLaneCount &&
 				new Set(laneArtifacts.map((lane) => lane.key)).size === expectedLaneCount &&
