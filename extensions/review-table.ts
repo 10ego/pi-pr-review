@@ -1,12 +1,13 @@
 /**
  * review-table
  *
- * Renders the /pr-review final JSON response as a readable TUI review and owns
- * configured GitHub publication after valid final JSON. Publishing is bound to raw
- * invocation flags/config, validates current PR state and anchors, and can emit only
- * one formal COMMENT review with associated inline comments.
+ * Renders the /pr-review Markdown-first canonical artifact as a readable TUI review
+ * and owns configured GitHub publication after terminal synthesis. Publishing is
+ * bound to host invocation state, validates current PR state and anchors, and emits
+ * at most one formal COMMENT or qualified APPROVE review with associated inline comments.
  *
- * Rendering only rewrites interactive TUI output. Print/json/rpc modes retain raw JSON.
+ * Rendering only rewrites interactive TUI output. Print/json/rpc modes retain the raw
+ * assistant response.
  */
 
 import * as fs from "node:fs";
@@ -422,7 +423,7 @@ async function publishCompletedReview(
 
 	const headSha = record.review.pr?.head_sha;
 	if (typeof headSha !== "string") {
-		ctx.ui.notify("PR review was not posted: cached final JSON is missing pr.head_sha", "error");
+		ctx.ui.notify("PR review was not posted: cached review artifact is missing pr.head_sha", "error");
 		return;
 	}
 	const result = await publishPullReview({
@@ -913,9 +914,9 @@ export default function registerReviewTable(
 				: text.trim()
 					? parseReview(text)
 					: null;
-		if (!review) return; // not a renderable /pr-review JSON payload — leave untouched
+		if (!review) return; // not a renderable /pr-review artifact — leave untouched
 
-		// Keep raw JSON for automation; only prettify for interactive terminals.
+		// Keep the raw assistant response for automation; only prettify interactive TUI output.
 		if (ctx.mode !== "tui") return;
 		const nonText = event.message.content.filter((part) => part.type !== "text");
 		return {
