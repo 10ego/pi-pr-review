@@ -514,7 +514,7 @@ export default function registerReviewTable(
 				: {}),
 			rawText: artifact.rawText,
 			laneArtifacts: artifact.laneArtifacts,
-			expectedLaneKeys: artifact.expectedLaneKeys,
+			expectedLaneDescriptors: artifact.expectedLaneDescriptors,
 			expectedLaneCount: artifact.expectedLaneCount,
 			completeness: artifact.completeness,
 			mergeApprovalEligible: artifact.mergeApprovalEligible,
@@ -872,7 +872,7 @@ export default function registerReviewTable(
 
 		const strict = active ? parsePublishableReview(text) : undefined;
 		const laneArtifacts = active ? loopCoordinator.artifactSnapshot(ctx) ?? [] : [];
-		const expectedLaneKeys = active ? loopCoordinator.expectedArtifactKeys(ctx) ?? [] : [];
+		const expectedLaneDescriptors = active ? loopCoordinator.expectedArtifactDescriptors(ctx) ?? [] : [];
 		// Only a non-Markdown JSON envelope may enter the approval-capable strict
 		// compatibility path. Fenced JSON remains Markdown with its raw body intact.
 		const trustedStrictReview = active && strict?.source === "json" && strict.review &&
@@ -886,7 +886,7 @@ export default function registerReviewTable(
 				prTitle: active.reviewBinding.prTitle,
 				headSha: active.reviewBinding.reviewedHeadSha,
 				laneArtifacts,
-				expectedLaneKeys,
+				expectedLaneDescriptors,
 				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
 			})
 			: undefined;

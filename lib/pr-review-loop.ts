@@ -18,6 +18,7 @@ import {
 } from "./pr-review-focus.ts";
 import {
 	ReviewLaneArtifactRegistry,
+	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
 import { createReviewBudget, type DeadlineResolution, type ReviewBudget } from "./pr-review-deadlines.ts";
@@ -289,10 +290,10 @@ export class ReviewLoopCoordinator {
 
 	registerExpectedArtifacts(
 		lease: ReviewLoopLease,
-		keys: readonly string[],
+		lanes: readonly ExpectedReviewLane[],
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): boolean {
-		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, keys);
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, lanes);
 	}
 
 	createArtifactPublisher(
@@ -313,9 +314,9 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
-	expectedArtifactKeys(
+	expectedArtifactDescriptors(
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
-	): readonly string[] | undefined {
+	): readonly ExpectedReviewLane[] | undefined {
 		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
 			return this.artifactRegistry.expected(this.binding.generation);
 		}

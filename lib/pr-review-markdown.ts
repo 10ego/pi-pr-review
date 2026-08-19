@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import type { ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import type { ExpectedReviewLane, ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import type { ReviewFindingLike, ReviewLike } from "./pr-review-publish.ts";
 
 export type ReviewSynthesisQuality = "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
@@ -12,7 +12,7 @@ export interface ReviewSynthesisArtifact {
 	readonly body: string;
 	readonly review: ReviewLike;
 	readonly laneArtifacts: readonly ReviewLaneArtifact[];
-	readonly expectedLaneKeys: readonly string[];
+	readonly expectedLaneDescriptors: readonly ExpectedReviewLane[];
 	readonly expectedLaneCount: number;
 	readonly completeness: ReviewSynthesisCompleteness;
 	/** Whether this artifact may proceed to the host's remaining APPROVE gates. */
@@ -580,14 +580,15 @@ export function synthesizeReviewArtifact(input: {
 	prTitle: string;
 	headSha: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
-	expectedLaneKeys?: readonly string[];
+	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	strictJsonReview?: ReviewLike;
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
-	const expectedLaneKeys = Object.freeze([
-		...new Set((input.expectedLaneKeys ?? []).filter((key): key is string => typeof key === "string" && !!key)),
-	]);
-	const expectedLaneCount = expectedLaneKeys.length;
+	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
+		.filter((lane) => !!lane && typeof lane.key === "string" && !!lane.key &&
+			new Set(["light", "medium", "heavy"]).has(lane.tier) && typeof lane.minorHygiene === "boolean")
+		.map((lane) => Object.freeze({ ...lane })));
+	const expectedLaneCount = expectedLaneDescriptors.length;
 	if (input.strictJsonReview) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
@@ -609,7 +610,7 @@ export function synthesizeReviewArtifact(input: {
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
 					},
 			laneArtifacts: lanes,
-			expectedLaneKeys,
+			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: !bodyFallback,
@@ -633,7 +634,7 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body),
 			laneArtifacts: lanes,
-			expectedLaneKeys,
+			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: false,
@@ -665,7 +666,10 @@ export function synthesizeReviewArtifact(input: {
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
 	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
 		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
-		lanes.every((lane) => expectedLaneKeys.includes(lane.key));
+		new Set(expectedLaneDescriptors.map((lane) => lane.key)).size === expectedLaneCount &&
+		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
+			expected.key === lane.key && expected.tier === lane.tier &&
+			expected.minorHygiene === !!lane.minorHygiene));
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,
@@ -680,7 +684,7 @@ export function synthesizeReviewArtifact(input: {
 			exactLaneCoverage,
 		),
 		laneArtifacts: lanes,
-		expectedLaneKeys,
+		expectedLaneDescriptors,
 		expectedLaneCount,
 		completeness,
 		// Markdown approval requires exact host evidence for every registered

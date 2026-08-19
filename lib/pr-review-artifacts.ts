@@ -27,6 +27,12 @@ export interface ReviewLaneAttemptArtifact {
 	readonly configuredDeadlineMs?: number;
 }
 
+export interface ExpectedReviewLane {
+	readonly key: string;
+	readonly tier: "light" | "medium" | "heavy";
+	readonly minorHygiene: boolean;
+}
+
 export interface ReviewLaneArtifact {
 	readonly generation: number;
 	readonly key: string;
@@ -34,6 +40,7 @@ export interface ReviewLaneArtifact {
 	/** Zero-based order assigned from the host's requested pass list. */
 	readonly requestedPassOrdinal?: number;
 	readonly tier: "light" | "medium" | "heavy";
+	readonly minorHygiene?: boolean;
 	readonly requestedModel?: string;
 	readonly observedModel?: string;
 	readonly rawText: string;
@@ -131,32 +138,41 @@ export function classifyReviewLane(input: ReviewLaneCompletionInput): ReviewLane
 export class ReviewLaneArtifactRegistry {
 	private generation?: number;
 	private readonly artifacts = new Map<string, ReviewLaneArtifact>();
-	private readonly expectedKeys = new Set<string>();
+	private readonly expectedLanes = new Map<string, ExpectedReviewLane>();
 
 	open(generation: number): void {
 		this.close();
 		this.generation = generation;
 	}
 
-	expect(generation: number, keys: readonly string[]): boolean {
-		if (this.generation !== generation || keys.length === 0 || keys.some((key) => !key)) return false;
-		for (const key of keys) this.expectedKeys.add(key);
+	expect(generation: number, lanes: readonly ExpectedReviewLane[]): boolean {
+		if (
+			this.generation !== generation || lanes.length === 0 ||
+			lanes.some((lane) => !lane.key || !new Set(["light", "medium", "heavy"]).has(lane.tier))
+		) return false;
+		for (const lane of lanes) {
+			const existing = this.expectedLanes.get(lane.key);
+			if (existing && (existing.tier !== lane.tier || existing.minorHygiene !== lane.minorHygiene)) return false;
+			this.expectedLanes.set(lane.key, Object.freeze({ ...lane }));
+		}
 		return true;
 	}
 
 	expectedCount(generation: number): number | undefined {
-		return this.generation === generation ? this.expectedKeys.size : undefined;
+		return this.generation === generation ? this.expectedLanes.size : undefined;
 	}
 
-	expected(generation: number): readonly string[] | undefined {
-		return this.generation === generation ? Object.freeze([...this.expectedKeys]) : undefined;
+	expected(generation: number): readonly ExpectedReviewLane[] | undefined {
+		return this.generation === generation ? Object.freeze([...this.expectedLanes.values()]) : undefined;
 	}
 
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
 		if (
 			this.generation !== generation || artifact.generation !== generation ||
-			!this.expectedKeys.has(artifact.key)
+			!this.expectedLanes.has(artifact.key)
 		) return false;
+		const expected = this.expectedLanes.get(artifact.key)!;
+		if (artifact.tier !== expected.tier || !!artifact.minorHygiene !== expected.minorHygiene) return false;
 		this.artifacts.set(artifact.key, Object.freeze({
 			...artifact,
 			attempts: Object.freeze(artifact.attempts.map((attempt) => Object.freeze({ ...attempt }))),
@@ -176,7 +192,7 @@ export class ReviewLaneArtifactRegistry {
 	close(generation?: number): void {
 		if (generation !== undefined && this.generation !== generation) return;
 		this.artifacts.clear();
-		this.expectedKeys.clear();
+		this.expectedLanes.clear();
 		this.generation = undefined;
 	}
 }

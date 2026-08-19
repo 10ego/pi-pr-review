@@ -1539,6 +1539,30 @@ describe("single lossless publication payload", () => {
 		expect(String(diagnostic.payload?.body)).not.toContain("### Other Notes");
 	});
 
+	test("uses retained synthesis when only the canonical marker exceeds the body limit", async () => {
+		const markerSuffixBytes = Buffer.byteLength(`\n\n${canonicalReviewMarker("a".repeat(40))}`, "utf8");
+		const makeReview = (body: string): ReviewLike => ({
+			...review,
+			findings: [{
+				title: "[P3] Boundary note", severity: "P3", blocking: false, body,
+				confidence_score: 0.9, code_location: null,
+			}],
+		});
+		const initial = buildReviewSummary(makeReview("x"));
+		const desiredContentBytes = 65_536 - markerSuffixBytes + 1;
+		const rationaleBytes = desiredContentBytes - Buffer.byteLength(initial, "utf8") + 1;
+		const boundary = makeReview("x".repeat(rationaleBytes));
+		expect(Buffer.byteLength(buildReviewSummary(boundary), "utf8")).toBe(desiredContentBytes);
+
+		const diagnostic = await diagnosePullPublication(boundary, [], {
+			fallbackPublicationBody: "Retained compact synthesis.",
+		});
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(String(diagnostic.payload?.body)).toContain("Retained compact synthesis.");
+		expect(String(diagnostic.payload?.body)).not.toContain("Boundary note");
+	});
+
 	test("fails an oversized selected payload before POST", async () => {
 		const findingCount = 15;
 		const oversized: ReviewLike = {

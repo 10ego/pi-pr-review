@@ -487,7 +487,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
-		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
@@ -511,7 +511,8 @@ describe("completed review extension lifecycle", () => {
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({
 			synthesisQuality: "fully_parsed", rawText: raw,
-			expectedLaneKeys: ["correctness:0"], expectedLaneCount: 1, mergeApprovalEligible: true,
+			expectedLaneDescriptors: [{ key: "correctness:0", tier: "heavy", minorHygiene: false }],
+			expectedLaneCount: 1, mergeApprovalEligible: true,
 		});
 		expect(persisted?.data).not.toHaveProperty("publicationBody");
 		const restored = createHarness([
@@ -528,11 +529,10 @@ describe("completed review extension lifecycle", () => {
 		const persistedLane = (tamperedData.laneArtifacts as Array<Record<string, unknown>>)[0]!;
 		tamperedData.laneArtifacts = [{
 			...persistedLane,
-			generation: 9,
-			key: "unexpected:0",
-			rawText: "",
-			exitCode: 1,
-			stopReason: "timeout",
+			tier: "light",
+			rawText: "Overview:\nLooks safe.\nStrengths:\nFocused coverage.",
+			exitCode: 0,
+			stopReason: "stop",
 			lifecycle: "complete",
 		}];
 		const tampered = createHarness([
@@ -587,7 +587,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
-		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
@@ -804,7 +804,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
-		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "Partial evidence retained.", exitCode: 1, lifecycle: "partial", attempts: [],
@@ -973,7 +973,7 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const coordinator = harness.loopCoordinator;
 		const lease = coordinator.acquire(harness.ctx)!;
-		expect(coordinator.registerExpectedArtifacts(lease, ["call:0"], harness.ctx)).toBe(true);
+		expect(coordinator.registerExpectedArtifacts(lease, [{ key: "call:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
 		const publisher = coordinator.createArtifactPublisher(lease, harness.ctx)!;
 		expect(publisher.retain({
 			generation: lease.generation, key: "call:0", passId: "correctness", requestedPassOrdinal: 0, tier: "heavy",

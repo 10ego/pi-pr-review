@@ -1043,6 +1043,7 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 		passId: result.id,
 		requestedPassOrdinal: pass.requestedPassOrdinal,
 		tier: result.tier,
+		minorHygiene: pass.minorHygiene === true,
 		requestedModel: result.attempts[0]?.spec,
 		observedModel: result.model,
 		rawText: result.text,
@@ -1638,7 +1639,11 @@ export default function registerPrReviewSubagents(
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			const artifactKey = `${toolCallId}:single`;
-			if (!loopCoordinator.registerExpectedArtifacts(lease, [artifactKey], ctx)) {
+			if (!loopCoordinator.registerExpectedArtifacts(lease, [{
+				key: artifactKey,
+				tier,
+				minorHygiene: params.minor_hygiene === true,
+			}], ctx)) {
 				return reviewLoopDeniedResult("review_subagent");
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
@@ -1826,7 +1831,11 @@ export default function registerPrReviewSubagents(
 					requestedPassOrdinal: index,
 				};
 			});
-			if (!loopCoordinator.registerExpectedArtifacts(lease, passes.map((pass) => pass.artifactKey), ctx)) {
+			if (!loopCoordinator.registerExpectedArtifacts(lease, passes.map((pass) => ({
+				key: pass.artifactKey,
+				tier: pass.tier,
+				minorHygiene: pass.minorHygiene === true,
+			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);

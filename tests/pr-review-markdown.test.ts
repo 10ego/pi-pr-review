@@ -29,6 +29,7 @@ const completeLane = {
 	exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [], fallbackUsed: false,
 	elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
 } satisfies ReviewLaneArtifact;
+const completeExpectedLane = { key: completeLane.key, tier: completeLane.tier, minorHygiene: false } as const;
 
 describe("Markdown-first canonical review artifacts", () => {
 	test("extracts safe findings while retaining the complete Markdown body", () => {
@@ -208,7 +209,7 @@ describe("Markdown-first canonical review artifacts", () => {
 	] as const)("never derives approval from a lazy %s continuation", (_kind, container) => {
 		const lazy = markdown.replace("**Verdict:** comment", `${container}\n**Verdict:** approve`);
 		const hidden = synthesizeReviewArtifact({
-			rawText: lazy, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
+			rawText: lazy, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
 		});
 		expect(hidden.quality).toBe("raw");
 		expect(hidden.review.verdict).toBe("comment");
@@ -216,7 +217,7 @@ describe("Markdown-first canonical review artifacts", () => {
 
 		const topLevel = lazy.replace(`${container}\n`, `${container}\n\n`);
 		const visible = synthesizeReviewArtifact({
-			rawText: topLevel, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
+			rawText: topLevel, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
 		});
 		expect(visible.quality).toBe("fully_parsed");
 		expect(visible.review.verdict).toBe("approve");
@@ -257,7 +258,10 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(withoutLanes.mergeApprovalEligible).toBe(false);
 
 		const missingLane = synthesizeReviewArtifact({
-			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key, "missing:1"],
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [
+				completeExpectedLane,
+				{ key: "missing:1", tier: "heavy", minorHygiene: false },
+			],
 		});
 		expect(missingLane.review.verdict).toBe("comment");
 		expect(missingLane.mergeApprovalEligible).toBe(false);
@@ -265,13 +269,13 @@ describe("Markdown-first canonical review artifacts", () => {
 		const unexpectedLane = synthesizeReviewArtifact({
 			rawText, ...binding,
 			laneArtifacts: [{ ...completeLane, key: "unexpected:0" }],
-			expectedLaneKeys: [completeLane.key],
+			expectedLaneDescriptors: [completeExpectedLane],
 		});
 		expect(unexpectedLane.review.verdict).toBe("comment");
 		expect(unexpectedLane.mergeApprovalEligible).toBe(false);
 
 		const artifact = synthesizeReviewArtifact({
-			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneKeys: [completeLane.key],
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
 		});
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.completeness).toBe("complete");

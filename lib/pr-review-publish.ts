@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { classifyReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import { classifyReviewLane, type ExpectedReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import type { ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
@@ -522,7 +522,7 @@ export interface CompletedReviewRecord {
 	/** Canonical synthesis diagnostics retained independently of the assistant message. */
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
-	expectedLaneKeys?: readonly string[];
+	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
@@ -549,7 +549,7 @@ export interface PersistedCompletedReview {
 	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
-	expectedLaneKeys?: readonly string[];
+	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
@@ -666,7 +666,8 @@ function parsePersistedLaneArtifacts(value: unknown): readonly ReviewLaneArtifac
 	const lanes = value.filter((lane): lane is Record<string, unknown> => isObject(lane));
 	if (lanes.length !== value.length || lanes.some((lane) =>
 		!Number.isInteger(lane.generation) || typeof lane.key !== "string" || typeof lane.passId !== "string" ||
-		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) || typeof lane.rawText !== "string" ||
+		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) ||
+		(lane.minorHygiene !== undefined && typeof lane.minorHygiene !== "boolean") || typeof lane.rawText !== "string" ||
 		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) || !Array.isArray(lane.attempts) ||
 		lane.attempts.some((attempt) => !isObject(attempt) || !Number.isInteger(attempt.ordinal) ||
 			typeof attempt.rawText !== "string" || !Number.isInteger(attempt.exitCode) || !lifecycles.has(String(attempt.lifecycle)))
@@ -687,7 +688,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneKeys" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -700,7 +701,9 @@ export class CompletedReviewCache {
 			...(artifact?.synthesisQuality ? { synthesisQuality: artifact.synthesisQuality } : {}),
 			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
 			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
-			...(artifact?.expectedLaneKeys ? { expectedLaneKeys: artifact.expectedLaneKeys } : {}),
+			...(artifact?.expectedLaneDescriptors
+				? { expectedLaneDescriptors: artifact.expectedLaneDescriptors }
+				: {}),
 			...(Number.isInteger(artifact?.expectedLaneCount) ? { expectedLaneCount: artifact!.expectedLaneCount } : {}),
 			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
 			...(typeof artifact?.mergeApprovalEligible === "boolean"
@@ -736,7 +739,9 @@ export class CompletedReviewCache {
 			...(record.synthesisQuality ? { synthesisQuality: record.synthesisQuality } : {}),
 			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
 			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
-			...(record.expectedLaneKeys ? { expectedLaneKeys: record.expectedLaneKeys } : {}),
+			...(record.expectedLaneDescriptors
+				? { expectedLaneDescriptors: record.expectedLaneDescriptors }
+				: {}),
 			...(Number.isInteger(record.expectedLaneCount) ? { expectedLaneCount: record.expectedLaneCount } : {}),
 			...(record.completeness ? { completeness: record.completeness } : {}),
 			...(typeof record.mergeApprovalEligible === "boolean"
@@ -791,10 +796,13 @@ export class CompletedReviewCache {
 			: undefined;
 		const rawText = typeof value.rawText === "string" ? value.rawText : undefined;
 		const laneArtifacts = parsePersistedLaneArtifacts(value.laneArtifacts);
-		const expectedLaneKeys = Array.isArray(value.expectedLaneKeys) && value.expectedLaneKeys.length <= 200 &&
-			value.expectedLaneKeys.every((key) => typeof key === "string" && !!key) &&
-			new Set(value.expectedLaneKeys).size === value.expectedLaneKeys.length
-			? value.expectedLaneKeys as string[]
+		const expectedLaneDescriptors = Array.isArray(value.expectedLaneDescriptors) &&
+			value.expectedLaneDescriptors.length <= 200 && value.expectedLaneDescriptors.every((lane) =>
+				isObject(lane) && typeof lane.key === "string" && !!lane.key &&
+				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean") &&
+			new Set(value.expectedLaneDescriptors.map((lane) => (lane as Record<string, unknown>).key)).size ===
+				value.expectedLaneDescriptors.length
+			? value.expectedLaneDescriptors as unknown as ExpectedReviewLane[]
 			: undefined;
 		const expectedLaneCount = Number.isInteger(value.expectedLaneCount) && Number(value.expectedLaneCount) >= 0
 			? Number(value.expectedLaneCount)
@@ -813,17 +821,21 @@ export class CompletedReviewCache {
 		const mergeApprovalEligible = persistedMergeApprovalEligible === true
 			? quality === "fully_parsed" && completeness === "complete" && Number.isInteger(expectedGeneration) &&
 				Number.isInteger(expectedLaneCount) && Number(expectedLaneCount) > 0 &&
-				expectedLaneKeys?.length === expectedLaneCount && laneArtifacts?.length === expectedLaneCount &&
+				expectedLaneDescriptors?.length === expectedLaneCount && laneArtifacts?.length === expectedLaneCount &&
 				new Set(laneArtifacts.map((lane) => lane.key)).size === expectedLaneCount &&
-				laneArtifacts.every((lane) => expectedLaneKeys.includes(lane.key) &&
-					lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
-					classifyReviewLane({
-						tier: lane.tier,
-						rawText: lane.rawText,
-						exitCode: lane.exitCode,
-						stopReason: lane.stopReason,
-						errorMessage: lane.errorMessage,
-					}) === "complete")
+				laneArtifacts.every((lane) => {
+					const expected = expectedLaneDescriptors.find((candidate) => candidate.key === lane.key);
+					return !!expected && lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
+						lane.tier === expected.tier && !!lane.minorHygiene === expected.minorHygiene &&
+						classifyReviewLane({
+							tier: expected.tier,
+							minorHygiene: expected.minorHygiene,
+							rawText: lane.rawText,
+							exitCode: lane.exitCode,
+							stopReason: lane.stopReason,
+							errorMessage: lane.errorMessage,
+						}) === "complete";
+				})
 			: persistedMergeApprovalEligible;
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
@@ -837,7 +849,7 @@ export class CompletedReviewCache {
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),
-			...(expectedLaneKeys ? { expectedLaneKeys } : {}),
+			...(expectedLaneDescriptors ? { expectedLaneDescriptors } : {}),
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
 			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
@@ -1401,9 +1413,11 @@ function buildLosslessReviewPayload(input: {
 	// transport diagnostics as if they were review findings.
 	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
+	const marker = canonicalReviewMarker(markerHeadSha);
 	let bodyError = validateReviewBody(content);
+	const finalBodyTooLarge = Buffer.byteLength(`${content}\n\n${marker}`, "utf8") > MAX_BODY_BYTES;
 	if (
-		bodyError === "review body exceeds 65536 UTF-8 bytes" &&
+		(bodyError === "review body exceeds 65536 UTF-8 bytes" || (!bodyError && finalBodyTooLarge)) &&
 		input.fallbackBodyOverride?.trim()
 	) {
 		const fallback = input.bodyPreamble?.trim()
@@ -1416,7 +1430,7 @@ function buildLosslessReviewPayload(input: {
 		}
 	}
 	if (bodyError) return { diagnostics, errors: [bodyError] };
-	const body = `${content}\n\n${canonicalReviewMarker(markerHeadSha)}`;
+	const body = `${content}\n\n${marker}`;
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 		return { diagnostics, errors: ["final review body exceeds 65536 UTF-8 bytes"] };
 	}

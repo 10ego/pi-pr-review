@@ -152,9 +152,13 @@ describe("review-loop authority", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
 		const lease = h.coordinator.acquire(h.ctx as any)!;
-		expect(h.coordinator.registerExpectedArtifacts(lease, ["call-1:0", "call-1:1"], h.ctx as any)).toBeTrue();
+		const expected = [
+			{ key: "call-1:0", tier: "heavy" as const, minorHygiene: false },
+			{ key: "call-1:1", tier: "heavy" as const, minorHygiene: false },
+		];
+		expect(h.coordinator.registerExpectedArtifacts(lease, expected, h.ctx as any)).toBeTrue();
 		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBe(2);
-		expect(h.coordinator.expectedArtifactKeys(h.ctx as any)).toEqual(["call-1:0", "call-1:1"]);
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toEqual(expected);
 		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
 		expect(publisher.retain({
 			generation: lease.generation,
@@ -177,7 +181,7 @@ describe("review-loop authority", () => {
 		expect(publisher.retain({} as any)).toBeFalse();
 		expect(h.coordinator.artifactSnapshot(h.ctx as any)).toBeUndefined();
 		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBeUndefined();
-		expect(h.coordinator.expectedArtifactKeys(h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toBeUndefined();
 	});
 
 	test("expires the total budget, aborts work, and preserves artifacts until partial synthesis consumes them", async () => {
@@ -197,7 +201,9 @@ describe("review-loop authority", () => {
 			() => deadlineCallbacks++,
 		);
 		const lease = h.coordinator.acquire(h.ctx as any)!;
-		expect(h.coordinator.registerExpectedArtifacts(lease, ["call:0"], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
 		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
 		publisher.retain({
 			generation: lease.generation, key: "call:0", passId: "security", tier: "heavy",
@@ -274,7 +280,9 @@ describe("review-loop authority", () => {
 			},
 		);
 		const lease = h.coordinator.acquire(h.ctx as any)!;
-		expect(h.coordinator.registerExpectedArtifacts(lease, ["call:0"], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
 		publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
 		await expired;
 		expect(retainedAfterExpiry).toBeTrue();
