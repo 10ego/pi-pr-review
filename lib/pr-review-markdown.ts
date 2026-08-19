@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import type { ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import type { ReviewFindingLike, ReviewLike } from "./pr-review-publish.ts";
 
@@ -26,6 +27,8 @@ function synthesisCompleteness(
 }
 
 const MAX_SYNTHESIS_BODY_BYTES = 60_000;
+const MAX_DISCLOSED_LANES = 64;
+const MAX_DISCLOSED_PASS_ID_BYTES = 160;
 const MAX_INLINE_BODY_BYTES = 65_536;
 const MAX_PATH_BYTES = 4_096;
 const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
@@ -404,17 +407,83 @@ function retainedLaneText(lane: ReviewLaneArtifact): string {
 	return "";
 }
 
+function disclosedPassId(passId: string): string {
+	const normalized = passId.replace(new RegExp(UNSAFE_TEXT_CONTROL.source, "g"), "_").replace(/[\r\n]/g, "_").trim();
+	const sanitized = normalized.replace(/[^A-Za-z0-9._:@/-]+/g, "_") || "unnamed-pass";
+	const needsDigest = sanitized !== normalized || Buffer.byteLength(sanitized, "utf8") > MAX_DISCLOSED_PASS_ID_BYTES;
+	if (!needsDigest) return sanitized;
+	const digest = createHash("sha256").update(passId).digest("hex").slice(0, 16);
+	const suffix = `… [sha256:${digest}]`;
+	const prefixBudget = MAX_DISCLOSED_PASS_ID_BYTES - Buffer.byteLength(suffix, "utf8");
+	let low = 0;
+	let high = sanitized.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (Buffer.byteLength(sanitized.slice(0, mid), "utf8") <= prefixBudget) low = mid;
+		else high = mid - 1;
+	}
+	return `${sanitized.slice(0, low)}${suffix}`;
+}
+
+function incompleteLaneDisclosure(lanes: readonly ReviewLaneArtifact[]): string {
+	const incomplete = lanes.filter((lane) => lane.lifecycle !== "complete");
+	if (incomplete.length === 0) return "";
+	const counts = (["partial", "timed_out", "failed"] as const)
+		.map((lifecycle) => `${lifecycle}=${incomplete.filter((lane) => lane.lifecycle === lifecycle).length}`)
+		.join("; ");
+	const disclosed = incomplete.slice(0, MAX_DISCLOSED_LANES);
+	return [
+		"Host-verified incomplete requested lenses/shards:",
+		`Exact incomplete lifecycle counts: ${counts}.`,
+		...disclosed.map((lane) => `- ${JSON.stringify(disclosedPassId(lane.passId))} — \`${lane.lifecycle}\``),
+		...(incomplete.length > disclosed.length
+			? [`- ${incomplete.length - disclosed.length} additional incomplete lane identifier(s) omitted; exact lifecycle counts remain above.`]
+			: []),
+	].join("\n");
+}
+
+function bindIncompleteLaneDisclosure(raw: string, lanes: readonly ReviewLaneArtifact[]): string {
+	const disclosure = incompleteLaneDisclosure(lanes);
+	if (!disclosure) return raw;
+	const text = raw.replace(/All requested lanes completed\.?/gi, "Host verification found incomplete requested lanes.");
+	const headings = markdownHeadings(text);
+	const matches = headings.filter((heading) => heading.level === 2 && heading.name.toLowerCase() === "lane completeness");
+	if (matches.length !== 1) {
+		return `${text.trim()}\n\n## Host-verified lane completeness\n${disclosure}`.trim();
+	}
+	const match = matches[0]!;
+	const bodyStart = match.index + match.length;
+	const next = headings.find((heading) => heading.index > match.index && heading.level <= match.level);
+	const bodyEnd = next?.index ?? text.length;
+	const assistantDisclosure = text.slice(bodyStart, bodyEnd).trim();
+	return `${text.slice(0, bodyStart)}\n${assistantDisclosure}${assistantDisclosure ? "\n\n" : ""}${disclosure}\n\n${text.slice(bodyEnd)}`.trim();
+}
+
+function safeReviewBodyWithLaneDisclosure(raw: string, lanes: readonly ReviewLaneArtifact[]): string {
+	const bound = bindIncompleteLaneDisclosure(raw, lanes);
+	const body = safeReviewBody(bound);
+	const disclosure = incompleteLaneDisclosure(lanes);
+	if (!disclosure || body.includes(disclosure)) return body;
+	const suffix = sanitize(`\n\n## Host-verified lane completeness\n${disclosure}`);
+	const prefixBudget = MAX_SYNTHESIS_BODY_BYTES - Buffer.byteLength(suffix, "utf8") - 2;
+	if (prefixBudget <= 0) return safeReviewBody(suffix);
+	return `${truncateUtf8(sanitize(bound), prefixBudget)}\n\n${suffix}`;
+}
+
 function laneFallback(lanes: readonly ReviewLaneArtifact[]): string {
 	const lines = ["# PR Review", "", "**Verdict:** comment", "", "## Lane completeness", ""];
 	if (lanes.length === 0) {
 		lines.push("- No synthesis or retained lane output was available.");
 		return lines.join("\n");
 	}
-	for (const lane of lanes) {
-		lines.push(`### ${lane.passId} — ${lane.lifecycle}`, "");
+	for (const lane of lanes.slice(0, MAX_DISCLOSED_LANES)) {
+		lines.push(`### ${disclosedPassId(lane.passId)} — ${lane.lifecycle}`, "");
 		const text = retainedLaneText(lane);
 		if (text) lines.push(text, "");
 		else lines.push(`No substantive output was retained${lane.errorMessage ? `: ${lane.errorMessage}` : "."}`, "");
+	}
+	if (lanes.length > MAX_DISCLOSED_LANES) {
+		lines.push(`### ${lanes.length - MAX_DISCLOSED_LANES} additional lane artifact(s) omitted`, "");
 	}
 	return lines.join("\n").trim();
 }
@@ -433,7 +502,7 @@ export function synthesizeReviewArtifact(input: {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
 		const bodyFallback = !safe || completeness === "incomplete";
-		const body = bodyFallback ? safeReviewBody(input.rawText) : "";
+		const body = bodyFallback ? safeReviewBodyWithLaneDisclosure(input.rawText, lanes) : "";
 		return Object.freeze({
 			quality: bodyFallback ? "raw" as const : "fully_parsed" as const,
 			rawText: input.rawText,
@@ -459,7 +528,10 @@ export function synthesizeReviewArtifact(input: {
 	const raw = input.rawText.trim();
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
-		const body = safeReviewBody(laneFallback(lanes));
+		// The retained evidence itself can exceed the publication cap. Apply the
+		// same host-owned disclosure reservation used for raw synthesis so an
+		// early large lane cannot truncate away exact later incomplete shards.
+		const body = safeReviewBodyWithLaneDisclosure(laneFallback(lanes), lanes);
 		return Object.freeze({
 			quality: "lane_fallback" as const,
 			rawText: input.rawText,
@@ -487,8 +559,9 @@ export function synthesizeReviewArtifact(input: {
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	// Markdown is the durable semantic product. Keep it in the body even when
-	// deterministic extraction also makes safe inline placement available.
-	const body = safeReviewBody(raw);
+	// deterministic extraction also makes safe inline placement available. Host
+	// lane artifacts override contradictory assistant completion claims.
+	const body = safeReviewBodyWithLaneDisclosure(raw, lanes);
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
 	return Object.freeze({
 		quality,

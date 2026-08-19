@@ -27,7 +27,7 @@ describe("review invocation telemetry", () => {
 	test("measures direct wall time without summing overlapping review and baseline phases", () => {
 		let clock = 0;
 		const tracker = new ReviewTelemetryTracker(() => clock);
-		tracker.begin(7);
+		tracker.begin(7, { source: "default", totalMs: 900_000, batchMs: 720_000, synthesisMs: 60_000, terminationGraceMs: 5_000, cleanupReserveMs: 5_000 });
 		clock = 20;
 		tracker.toolStarted("batch", "review_subagents", { passes: [] });
 		clock = 30;
@@ -52,6 +52,7 @@ describe("review invocation telemetry", () => {
 		expect(telemetry.phases.humanConfirmationWait.elapsedMs).toBe(0);
 		expect(telemetry.phases.reviewSubagentTools.elapsedMs).toBe(60);
 		expect(telemetry.schemaVersion).toBe(2);
+		expect(telemetry.deadlines).toEqual({ source: "default", totalMs: 900_000, batchMs: 720_000, synthesisMs: 60_000, terminationGraceMs: 5_000, cleanupReserveMs: 5_000 });
 		expect(telemetry.phases.baselineVerificationTool.elapsedMs).toBe(20);
 		expect(telemetry.phases.baselineVerificationTool.intervals[0]?.toolName).toBe("pr_review_verify");
 		expect(telemetry.phases.overlapMs).toBe(20);

@@ -55,6 +55,7 @@ import {
 	type ReviewLaneLifecycle,
 } from "../lib/pr-review-artifacts.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
+import { attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
 	combineAbortSignals,
@@ -149,6 +150,8 @@ interface PrReviewConfig {
 	verificationBaselines: VerificationBaselines;
 	/** Tools granted to review subagents whose effective policy is configured. */
 	tools: string[];
+	/** Preserved host deadline object; resolved by the shared bounded lifecycle module. */
+	deadlines?: unknown;
 }
 
 const DEFAULT_TOOLS = ["read", "bash", "grep", "find", "ls"];
@@ -286,6 +289,7 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 		// the repository-controlled project overlay, even for trusted projects.
 		verificationBaselines: resolveUserVerificationBaselines(user, project),
 		tools: project.tools ?? user.tools ?? DEFAULT_TOOLS,
+		deadlines: project.deadlines ?? user.deadlines,
 	};
 }
 
@@ -307,6 +311,7 @@ function readUserConfig(): PrReviewConfig {
 		approveMaxPriorityLevel: approveMaxPriority.valid ? approveMaxPriority.value : "off",
 		verificationBaselines: resolveUserVerificationBaselines(raw),
 		tools: raw.tools ?? [...DEFAULT_TOOLS],
+		deadlines: raw.deadlines,
 	};
 }
 
@@ -483,13 +488,16 @@ interface RunResult {
 	stopReason?: string;
 	errorMessage?: string;
 	model?: string;
+	timedOut?: boolean;
+	terminationGraceMs?: number;
+	forcedTermination?: boolean;
 	firstEventMs?: number;
 	firstAssistantMs?: number;
 	toolElapsedMs: number;
 	toolCallCount: number;
 }
 
-function runReviewSubprocess(
+export function runReviewSubprocess(
 	command: string,
 	args: string[],
 	cwd: string,
@@ -497,14 +505,20 @@ function runReviewSubprocess(
 	signal: AbortSignal | undefined,
 	onText: (text: string) => void,
 	onEvent?: (event: unknown) => void,
+	deadline?: { deadlineMs: number; terminationGraceMs: number; cleanupReserveMs: number; now?: () => number },
 ): Promise<RunResult> {
 	return new Promise<RunResult>((resolve) => {
 		const messages: Message[] = [];
 		const result: RunResult = { text: "", exitCode: 0, stderr: "", toolElapsedMs: 0, toolCallCount: 0 };
-		const startedAt = monotonicNow();
-		let aborted = false;
+		const now = deadline?.now ?? monotonicNow;
+		const startedAt = now();
+		let termination: "abort" | "timeout" | undefined;
+		let terminationStartedAt: number | undefined;
 		let closed = false;
+		let settled = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+		let drainTimer: ReturnType<typeof setTimeout> | undefined;
 		let activeTools = 0;
 		let activeToolsStartedAt = 0;
 		let updateAssistantText = "";
@@ -514,23 +528,33 @@ function runReviewSubprocess(
 		// Keep the complete review task off argv: macOS rejects a single argument
 		// near 1 MiB, while context_file intentionally supports up to 16 MiB.
 		const proc = spawn(command, args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
-		const kill = () => {
-			if (closed || aborted) return;
-			aborted = true;
+		const terminate = (reason: "abort" | "timeout") => {
+			if (closed || settled || termination) return;
+			termination = reason;
+			terminationStartedAt = now();
 			proc.kill("SIGTERM");
+			const graceMs = deadline?.terminationGraceMs ?? 5_000;
 			killTimer = setTimeout(() => {
-				// ChildProcess.killed only means a signal was sent; it does not mean
-				// the process exited. Escalate based on the observed close event.
+				// ChildProcess.killed only means a signal was sent; escalate only when
+				// no close event was observed during the bounded grace period.
+				if (!closed) result.forcedTermination = true;
 				if (!closed) proc.kill("SIGKILL");
-			}, 5000);
+			}, graceMs);
+			drainTimer = setTimeout(() => finish(1, undefined), graceMs + (deadline?.cleanupReserveMs ?? 1_000));
+		};
+		const onAbort = () => {
+			const reason = signal?.reason;
+			terminate(reason instanceof Error && /review total deadline expired/i.test(reason.message) ? "timeout" : "abort");
 		};
 		const cleanupAbort = () => {
 			if (killTimer) clearTimeout(killTimer);
-			signal?.removeEventListener("abort", kill);
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			if (drainTimer) clearTimeout(drainTimer);
+			signal?.removeEventListener("abort", onAbort);
 		};
 
 		const processEvent = (raw: unknown) => {
-			if (!raw || typeof raw !== "object") return;
+			if (settled || !raw || typeof raw !== "object") return;
 			const event = raw as {
 				type?: string;
 				message?: Message;
@@ -602,42 +626,53 @@ function runReviewSubprocess(
 		};
 
 		const decoder = new ReviewJsonLineDecoder(processEvent);
-		proc.stdout.on("data", (data) => decoder.push(data.toString()));
+		proc.stdout.on("data", (data) => {
+			if (!settled) decoder.push(data.toString());
+		});
 		proc.stderr.on("data", (data) => {
-			result.stderr += data.toString();
+			if (!settled) result.stderr += data.toString();
 		});
 		// A fast child failure can close stdin before the buffered task is flushed.
 		// Observe EPIPE so it cannot become an unhandled stream error; close/exit
 		// remains the authoritative subprocess outcome.
 		proc.stdin.on("error", () => {});
 		proc.stdin.end(input, "utf8");
-		proc.on("close", (code, processSignal) => {
+		const finish = (code: number | null, processSignal: NodeJS.Signals | null | undefined, error?: Error) => {
+			if (settled) return;
 			closed = true;
 			cleanupAbort();
+			// Flush a final unterminated JSON record while processEvent is still
+			// authoritative. Marking settled first would silently discard it.
 			decoder.end();
+			settled = true;
 			if (activeTools > 0) {
-				result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
+				result.toolElapsedMs += now() - activeToolsStartedAt;
 				activeTools = 0;
 			}
 			result.text = assistantUpdatePending ? updateAssistantText : finalAssistantText(messages);
 			result.processSignal = processSignal ?? undefined;
 			result.exitCode = code ?? (processSignal ? 1 : 0);
-			if (aborted) result.stopReason = "aborted";
+			if (terminationStartedAt !== undefined) result.terminationGraceMs = Math.max(0, now() - terminationStartedAt);
+			if (termination === "timeout") {
+				result.timedOut = true;
+				result.stopReason = "timeout";
+				result.errorMessage ??= "Review attempt exceeded its host deadline.";
+			} else if (termination === "abort") {
+				result.stopReason = "aborted";
+			} else if (error) result.errorMessage = error.message;
 			resolve(result);
-		});
-		proc.on("error", (err) => {
-			closed = true;
-			cleanupAbort();
-			if (activeTools > 0) result.toolElapsedMs += monotonicNow() - activeToolsStartedAt;
-			result.text = assistantUpdatePending ? updateAssistantText : finalAssistantText(messages);
-			result.exitCode = 1;
-			result.errorMessage = err.message;
-			resolve(result);
-		});
+		};
+		proc.on("close", (code, processSignal) => finish(code, processSignal));
+		proc.on("error", (err) => finish(1, undefined, err));
 
+		if (deadline) {
+			const remaining = deadline.deadlineMs - now();
+			if (remaining <= 0) queueMicrotask(() => terminate("timeout"));
+			else deadlineTimer = setTimeout(() => terminate("timeout"), remaining);
+		}
 		if (signal) {
-			if (signal.aborted) kill();
-			else signal.addEventListener("abort", kill, { once: true });
+			if (signal.aborted) onAbort();
+			else signal.addEventListener("abort", onAbort, { once: true });
 		}
 	});
 }
@@ -676,6 +711,11 @@ interface ModelAttemptReport {
 	processSignal?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	timedOut?: boolean;
+	terminationGraceMs?: number;
+	forcedTermination?: boolean;
+	deadlineMs?: number;
+	configuredDeadlineMs?: number;
 }
 
 interface SubagentPassResult {
@@ -698,6 +738,10 @@ interface SubagentPassResult {
 	elapsedMs: number;
 	startOffsetMs?: number;
 	endOffsetMs?: number;
+	fallbackBudgetRejected?: boolean;
+	deadlineSource?: ReviewBudget["source"];
+	batchDeadlineMs?: number;
+	totalDeadlineMs?: number;
 }
 
 function noticeForAttempt(tier: Tier, attempt: ModelAttempt): string {
@@ -747,10 +791,18 @@ async function runSubagentAttempt(
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
 	beforeSpawn?: () => boolean,
-): Promise<{ result: RunResult; notice: string; elapsedMs: number }> {
+	budget?: ReviewBudget,
+): Promise<{ result: RunResult; notice: string; elapsedMs: number; deadlineMs?: number }> {
 	let tmp: { dir: string; filePath: string } | undefined;
 	const startedAt = monotonicNow();
+	const deadlineAtMs = budget
+		? attemptDeadline(budget, pass.tier, attempt.kind === "fallback", () => startedAt)
+		: undefined;
+	const deadlineMs = deadlineAtMs === undefined ? undefined : Math.max(0, deadlineAtMs - startedAt);
 	try {
+		if (deadlineAtMs !== undefined && deadlineAtMs <= startedAt) {
+			throw new Error("Review attempt timed out before it could start within the batch deadline.");
+		}
 		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
 		appendTierThinkingArgs(args, attempt.spec, config.thinkingLevels[pass.tier]);
@@ -784,13 +836,19 @@ async function runSubagentAttempt(
 					pass.focusPublisher?.publish(normalized);
 				}
 			},
+			budget ? {
+				deadlineMs: deadlineAtMs!,
+				terminationGraceMs: budget.config.terminationGraceMs,
+				cleanupReserveMs: budget.config.cleanupReserveMs,
+			} : undefined,
 		);
-		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt };
+		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt, deadlineMs };
 	} catch (e) {
 		return {
 			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e), toolElapsedMs: 0, toolCallCount: 0 },
 			notice: noticeForAttempt(pass.tier, attempt),
 			elapsedMs: monotonicNow() - startedAt,
+			deadlineMs,
 		};
 	} finally {
 		if (tmp) {
@@ -927,6 +985,11 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 			firstAssistantMs: attempt.firstAssistantMs,
 			toolElapsedMs: attempt.toolElapsedMs,
 			toolCallCount: attempt.toolCallCount,
+			timedOut: attempt.timedOut,
+			terminationGraceMs: attempt.terminationGraceMs,
+			forcedTermination: attempt.forcedTermination,
+			deadlineMs: attempt.deadlineMs,
+			configuredDeadlineMs: attempt.configuredDeadlineMs,
 		})),
 		fallbackUsed: result.fallbackUsed,
 		elapsedMs: result.elapsedMs,
@@ -936,6 +999,10 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 		toolCallCount: finalAttempt?.toolCallCount ?? 0,
 		startOffsetMs: result.startOffsetMs,
 		endOffsetMs: result.endOffsetMs,
+		fallbackBudgetRejected: result.fallbackBudgetRejected,
+		deadlineSource: result.deadlineSource,
+		batchDeadlineMs: result.batchDeadlineMs,
+		totalDeadlineMs: result.totalDeadlineMs,
 	};
 	pass.artifactPublisher.retain(artifact);
 }
@@ -947,6 +1014,7 @@ async function runSubagentPass(
 	signal: AbortSignal | undefined,
 	onText?: (text: string) => void,
 	beforeSpawn?: () => boolean,
+	budget?: ReviewBudget,
 ): Promise<SubagentPassResult> {
 	const startedAt = monotonicNow();
 	const tier = pass.tier;
@@ -955,10 +1023,18 @@ async function runSubagentPass(
 	const reports: ModelAttemptReport[] = [];
 	let lastResult: RunResult | undefined;
 	let lastNotice = noticeForAttempt(tier, attempts[0]!);
+	let fallbackBudgetRejected = false;
 
-	for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-		const attempt = attempts[attemptIndex]!;
-		const { result, notice, elapsedMs } = await runSubagentAttempt(
+	// One primary plus at most one configured fallback preserves user model quality
+	// while bounding retry amplification.
+	const boundedAttempts = attempts.slice(0, attempts[0]?.kind === "fallback" ? 1 : 2);
+	for (let attemptIndex = 0; attemptIndex < boundedAttempts.length; attemptIndex++) {
+		const attempt = boundedAttempts[attemptIndex]!;
+		if (attempt.kind === "fallback" && budget && !fallbackBudget(budget).allowed) {
+			fallbackBudgetRejected = true;
+			break;
+		}
+		const { result, notice, elapsedMs, deadlineMs } = await runSubagentAttempt(
 			config,
 			ctx,
 			pass,
@@ -968,6 +1044,7 @@ async function runSubagentPass(
 			signal,
 			onText,
 			beforeSpawn,
+			budget,
 		);
 		const lifecycle = classifyReviewLane({
 			tier,
@@ -979,7 +1056,7 @@ async function runSubagentPass(
 			expectedOutput: pass.expectedOutput,
 		});
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-		const retryable = processFailed && isRetryableModelFailure(result);
+		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;
 		lastNotice = notice;
 		reports.push({
@@ -999,6 +1076,13 @@ async function runSubagentPass(
 			processSignal: result.processSignal,
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
+			timedOut: result.timedOut,
+			terminationGraceMs: result.terminationGraceMs,
+			forcedTermination: result.forcedTermination,
+			deadlineMs,
+			configuredDeadlineMs: budget
+				? (attempt.kind === "fallback" ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier])
+				: undefined,
 		});
 
 		if (lifecycle === "complete") {
@@ -1021,6 +1105,10 @@ async function runSubagentPass(
 				retryableFailure: false,
 				toolPolicy,
 				elapsedMs: monotonicNow() - startedAt,
+				fallbackBudgetRejected,
+				deadlineSource: budget?.source,
+				batchDeadlineMs: budget ? budget.batchDeadlineMs - budget.startedAtMs : undefined,
+				totalDeadlineMs: budget ? budget.totalDeadlineMs - budget.startedAtMs : undefined,
 			};
 			retainPassArtifact(pass, completed);
 			return completed;
@@ -1054,6 +1142,10 @@ async function runSubagentPass(
 		retryableFailure: reports.at(-1)?.retryable ?? false,
 		toolPolicy,
 		elapsedMs: monotonicNow() - startedAt,
+		fallbackBudgetRejected,
+		deadlineSource: budget?.source,
+		batchDeadlineMs: budget ? budget.batchDeadlineMs - budget.startedAtMs : undefined,
+		totalDeadlineMs: budget ? budget.totalDeadlineMs - budget.startedAtMs : undefined,
 	};
 	retainPassArtifact(pass, incomplete);
 	return incomplete;
@@ -1487,9 +1579,10 @@ export default function registerPrReviewSubagents(
 				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
 				() => loopCoordinator.isLeaseActive(lease, ctx),
+				lease.budget,
 			);
 
-			const warnings = thinkingWarnings(config, [tier]);
+			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			return {
 				content: [{
@@ -1515,6 +1608,11 @@ export default function registerPrReviewSubagents(
 					elapsedMs: result.elapsedMs,
 					attempts: result.attempts,
 					contextFileBytes: loadedContext.contextFileBytes,
+					deadlineSource: result.deadlineSource,
+					deadlineWarnings: lease.budget?.warnings,
+					batchDeadlineMs: result.batchDeadlineMs,
+					totalDeadlineMs: result.totalDeadlineMs,
+					fallbackBudgetRejected: result.fallbackBudgetRejected,
 				},
 			};
 		},
@@ -1603,7 +1701,9 @@ export default function registerPrReviewSubagents(
 				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
 				const baseContext = combineContexts(sharedContext, loadedPassContexts[index]!.context);
 				const makePass = (shard: string | undefined, shardIndex: number): SubagentPassRequest => ({
-					id: shardIndex === 0 ? baseId : `${baseId}-shard-${shardIndex + 1}`,
+					// Every actual shard receives an explicit identity, including shard 1.
+					// The unsharded compatibility path retains the caller's exact base ID.
+					id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
 					tier,
 					objective: shard
 						? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
@@ -1656,6 +1756,7 @@ export default function registerPrReviewSubagents(
 					executionSignal,
 					undefined,
 					() => loopCoordinator.isLeaseActive(lease, ctx),
+					lease.budget,
 				);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
 				result.startOffsetMs = startOffsetMs;
@@ -1681,7 +1782,7 @@ export default function registerPrReviewSubagents(
 			) as Record<ReviewLaneLifecycle, number>;
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
-				content: [{ type: "text", text: formatBatchResults(results, maxParallel, thinkingWarnings(config, usedTiers)) }],
+				content: [{ type: "text", text: formatBatchResults(results, maxParallel, [...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
 				...(incomplete.length > 0 ? { isError: true } : {}),
 				details: {
 					maxParallel,
@@ -1694,6 +1795,12 @@ export default function registerPrReviewSubagents(
 						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),
 					failedCount: lifecycleCounts.failed,
 					incompleteCount: incomplete.length,
+					fallbackStarts: results.filter((result) => result.attempts.length > 1).length,
+					fallbackBudgetRejections: results.filter((result) => result.fallbackBudgetRejected).length,
+					deadlineSource: lease.budget?.source,
+					deadlineWarnings: lease.budget?.warnings,
+					batchDeadlineMs: lease.budget ? lease.budget.batchDeadlineMs - lease.budget.startedAtMs : undefined,
+					totalDeadlineMs: lease.budget ? lease.budget.totalDeadlineMs - lease.budget.startedAtMs : undefined,
 					lifecycleCounts,
 					lifecycleElapsedMs: Object.fromEntries(
 						(["complete", "partial", "timed_out", "failed"] as const).map((state) => [
@@ -2006,6 +2113,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		approveMaxPriorityLevel: base.approveMaxPriorityLevel,
 		verificationBaselines: { ...base.verificationBaselines },
 		tools: [...base.tools],
+		deadlines: base.deadlines,
 	};
 	for (const tier of TIERS) {
 		if (tier in patch.tiers) {

@@ -26,6 +26,14 @@ export interface ReviewPerformanceTelemetry {
 	totalWallMs: number;
 	/** Active review/orchestration time with human confirmation wait removed. */
 	activeReviewMs: number;
+	deadlines?: {
+		source: "default" | "user" | "project";
+		totalMs: number;
+		batchMs: number;
+		synthesisMs: number;
+		terminationGraceMs: number;
+		cleanupReserveMs: number;
+	};
 	phases: {
 		humanConfirmationWait: {
 			label: "human confirmation wait";
@@ -61,6 +69,7 @@ interface ActiveInterval {
 
 interface InvocationTiming {
 	prNumber: number;
+	deadlines?: ReviewPerformanceTelemetry["deadlines"];
 	startedAtMs: number;
 	activeSegmentStartedAtMs?: number;
 	activeElapsedMs: number;
@@ -129,10 +138,11 @@ export class ReviewTelemetryTracker {
 		return invocation.activeElapsedMs + segmentElapsed;
 	}
 
-	begin(prNumber: number): void {
+	begin(prNumber: number, deadlines?: ReviewPerformanceTelemetry["deadlines"]): void {
 		const startedAtMs = this.now();
 		this.invocation = {
 			prNumber,
+			deadlines,
 			startedAtMs,
 			activeSegmentStartedAtMs: startedAtMs,
 			activeElapsedMs: 0,
@@ -246,6 +256,7 @@ export class ReviewTelemetryTracker {
 			completion,
 			totalWallMs,
 			activeReviewMs,
+			...(invocation.deadlines ? { deadlines: invocation.deadlines } : {}),
 			phases: {
 				humanConfirmationWait: {
 					label: "human confirmation wait",

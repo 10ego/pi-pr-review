@@ -31,6 +31,8 @@ import {
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
+	resolveRepositoryBinding,
+	resolveReviewHostBinding,
 	APPROVE_EVENT,
 	findingsWithinApproveMaxPriority,
 	shouldApproveReview,
@@ -41,6 +43,125 @@ import {
 	validateReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
+
+describe("review host binding preflight", () => {
+	test("shares one deadline across dependent GitHub reads and never starts the second after timeout", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-deadline-"));
+		const gh = join(dir, "gh");
+		const calls = join(dir, "calls.log");
+		writeFileSync(gh, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+if [[ "$*" == "repo view --json nameWithOwner,url" ]]; then
+  sleep 1
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+else
+  echo 'second preflight must not start' >&2
+  exit 1
+fi
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveReviewHostBinding(dir, 7, { deadlineMs: startedAt + 500 })).rejects.toThrow(
+				"gh command timed out",
+			);
+			expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+				"repo view --json nameWithOwner,url",
+			]);
+		} finally {
+			process.env.PATH = previousPath;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("settles a timed-out read only after bounded minimum TERM/KILL cleanup with no child left running", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-cleanup-"));
+		const gh = join(dir, "gh");
+		const floated = join(dir, "floated");
+		writeFileSync(gh, `#!/usr/bin/env bash
+trap '' TERM
+( sleep 2; printf floated > ${JSON.stringify(floated)} ) &
+wait
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveReviewHostBinding(dir, 7, {
+				deadlineMs: startedAt + 50,
+				terminationGraceMs: 100,
+				cleanupReserveMs: 1_000,
+			})).rejects.toThrow("gh command timed out");
+			const elapsedMs = Number(process.hrtime.bigint()) / 1_000_000 - startedAt;
+			expect(elapsedMs).toBeGreaterThanOrEqual(40);
+			expect(elapsedMs).toBeLessThan(1_150);
+			await new Promise((resolve) => setTimeout(resolve, 2_050));
+			expect(existsSync(floated)).toBe(false);
+		} finally {
+			process.env.PATH = previousPath;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("kills a redirected same-group descendant after the GitHub leader closes first", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-leader-close-"));
+		const gh = join(dir, "gh");
+		const ready = join(dir, "descendant.pid");
+		const floated = join(dir, "floated");
+		const descendant = `
+const { writeFileSync } = require("node:fs");
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+setTimeout(() => writeFileSync(${JSON.stringify(floated)}, "floated"), 350);
+`;
+		writeFileSync(gh, `#!${process.execPath}
+const { existsSync } = require("node:fs");
+const { spawn } = require("node:child_process");
+if (process.argv.slice(2).join(" ") !== "repo view --json nameWithOwner,url") process.exit(2);
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" });
+const deadline = Date.now() + 1_000;
+const readyPoll = setInterval(() => {
+  if (existsSync(${JSON.stringify(ready)})) {
+    clearInterval(readyPoll);
+    process.stdout.write('{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}\\n', () => process.exit(0));
+  } else if (Date.now() >= deadline) {
+    clearInterval(readyPoll);
+    process.exit(3);
+  }
+}, 5);
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveRepositoryBinding(dir, {
+				deadlineMs: startedAt + 1_500,
+				terminationGraceMs: 100,
+				cleanupReserveMs: 300,
+			})).resolves.toEqual({ hostname: "github.com", repository: "owner/repo" });
+			const elapsedMs = Number(process.hrtime.bigint()) / 1_000_000 - startedAt;
+			// Resolution must include the required grace/KILL, without consuming the
+			// full cleanup reserve or leaving an escalation timer behind it.
+			expect(elapsedMs).toBeGreaterThanOrEqual(75);
+			expect(elapsedMs).toBeLessThan(500);
+			const descendantPid = Number(readFileSync(ready, "utf8"));
+			await new Promise((resolve) => setTimeout(resolve, 375));
+			expect(existsSync(floated)).toBe(false);
+			expect(() => process.kill(descendantPid, 0)).toThrow();
+		} finally {
+			process.env.PATH = previousPath;
+			if (existsSync(ready)) {
+				const descendantPid = Number(readFileSync(ready, "utf8"));
+				try { process.kill(descendantPid, "SIGKILL"); } catch { /* best effort */ }
+			}
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 const review: ReviewLike = {
 	pr: { number: 7, title: "Test review", head_sha: "a".repeat(40) },

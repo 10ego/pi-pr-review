@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import type { ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
+import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -1373,19 +1374,142 @@ interface GhResult {
 	errorMessage?: string;
 }
 
-function runGh(args: string[], cwd: string, input?: string, timeoutMs = 60_000): Promise<GhResult> {
+const GH_COMMAND_TIMEOUT_MS = 60_000;
+
+interface GhCommandLifecycle {
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
+	readonly cleanupReserveMs?: number;
+}
+
+function runGh(
+	args: string[],
+	cwd: string,
+	input?: string,
+	timeoutMs = GH_COMMAND_TIMEOUT_MS,
+	lifecycle: GhCommandLifecycle = {},
+): Promise<GhResult> {
 	return new Promise((resolve) => {
 		let settled = false;
+		let closed = false;
+		let groupCleanupStarted = false;
 		let stdout = "";
 		let stderr = "";
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+		let groupKillDeadline: number | undefined;
+		let termination: "timeout" | "abort" | undefined;
+		const detached = process.platform !== "win32";
+		const proc = spawn("gh", args, { cwd, shell: false, detached, stdio: ["pipe", "pipe", "pipe"] });
+		// A detached POSIX child's pid is also its process-group id. Preserve it:
+		// proc.pid continues to describe only the leader after that leader exits.
+		const processGroupId = detached ? proc.pid : undefined;
+		let pendingResult: GhResult | undefined;
+		const groupExists = () => {
+			if (processGroupId === undefined) return false;
+			try {
+				process.kill(-processGroupId, 0);
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException).code !== "ESRCH";
+			}
+		};
+		const signalProcess = (signal: NodeJS.Signals) => {
+			try {
+				if (processGroupId !== undefined) process.kill(-processGroupId, signal);
+				else if (!closed) proc.kill(signal);
+			} catch {
+				// ESRCH and concurrent exits are observed by the bounded group probe.
+			}
+		};
+		const onAbort = () => terminate("abort");
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
+			if (cleanupTimer) clearTimeout(cleanupTimer);
+			lifecycle.signal?.removeEventListener("abort", onAbort);
+		};
 		const finish = (result: GhResult) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			cleanup();
 			resolve(result);
 		};
-		const proc = spawn("gh", args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+		const finishPending = () => {
+			if (pendingResult) finish(pendingResult);
+		};
+		const forceKillAndDrain = () => {
+			signalProcess("SIGKILL");
+			const reserveMs = lifecycle.cleanupReserveMs ?? 1_000;
+			const cleanupDeadline = monotonicNow() + reserveMs;
+			const drain = () => {
+				if (closed && !groupExists()) {
+					finishPending();
+					return;
+				}
+				const remainingMs = cleanupDeadline - monotonicNow();
+				if (remainingMs <= 0) {
+					// Reassert KILL at the absolute cleanup boundary before bounded
+					// settlement, including when close/output delivery lagged.
+					signalProcess("SIGKILL");
+					finishPending();
+					return;
+				}
+				cleanupTimer = setTimeout(drain, Math.min(10, Math.max(1, remainingMs)));
+			};
+			drain();
+		};
+		const checkGroupCleanupGrace = () => {
+			if (!groupCleanupStarted || settled || groupKillDeadline === undefined) return;
+			if (killTimer) clearTimeout(killTimer);
+			if (closed && !groupExists()) {
+				finishPending();
+				return;
+			}
+			const remainingMs = groupKillDeadline - monotonicNow();
+			if (remainingMs <= 0) {
+				forceKillAndDrain();
+				return;
+			}
+			// A closed leader is not proof of group settlement. Poll during the
+			// remainder of grace so TERM-compliant groups can settle promptly.
+			killTimer = setTimeout(checkGroupCleanupGrace, closed ? Math.min(10, remainingMs) : remainingMs);
+		};
+		const beginGroupCleanup = () => {
+			if (groupCleanupStarted || settled || processGroupId === undefined) return;
+			groupCleanupStarted = true;
+			if (timer) clearTimeout(timer);
+			const graceMs = lifecycle.terminationGraceMs ?? 3_000;
+			signalProcess("SIGTERM");
+			groupKillDeadline = monotonicNow() + graceMs;
+			checkGroupCleanupGrace();
+		};
+		const terminate = (reason: "timeout" | "abort") => {
+			if (settled || termination) return;
+			termination = reason;
+			if (timer) clearTimeout(timer);
+			pendingResult = {
+				stdout,
+				stderr,
+				exitCode: 1,
+				timedOut: reason === "timeout",
+				errorMessage: reason === "timeout" ? "gh command timed out" : "gh command aborted",
+			};
+			if (processGroupId !== undefined) {
+				beginGroupCleanup();
+				return;
+			}
+			// Preserve the direct-child fallback on non-POSIX platforms.
+			signalProcess("SIGTERM");
+			const graceMs = lifecycle.terminationGraceMs ?? 3_000;
+			const reserveMs = lifecycle.cleanupReserveMs ?? 1_000;
+			killTimer = setTimeout(() => signalProcess("SIGKILL"), graceMs);
+			cleanupTimer = setTimeout(() => {
+				signalProcess("SIGKILL");
+				finishPending();
+			}, graceMs + reserveMs);
+		};
 		proc.stdout.on("data", (data) => (stdout += data.toString()));
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
@@ -1395,32 +1519,77 @@ function runGh(args: string[], cwd: string, input?: string, timeoutMs = 60_000):
 		proc.on("error", (error) =>
 			finish({ stdout, stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
 		);
-		proc.on("close", (code) => finish({ stdout, stderr, exitCode: code ?? 1, timedOut: false }));
+		proc.on("close", (code) => {
+			closed = true;
+			pendingResult = {
+				stdout,
+				stderr,
+				exitCode: termination ? 1 : code ?? 1,
+				timedOut: termination === "timeout",
+				...(termination ? { errorMessage: termination === "timeout" ? "gh command timed out" : "gh command aborted" } : {}),
+			};
+			if (processGroupId !== undefined) {
+				if (!groupCleanupStarted && groupExists()) beginGroupCleanup();
+				if (groupCleanupStarted) {
+					checkGroupCleanupGrace();
+					return;
+				}
+			}
+			finishPending();
+		});
 		if (input !== undefined) proc.stdin.end(input);
 		else proc.stdin.end();
-		timer = setTimeout(() => {
-			proc.kill("SIGTERM");
-			setTimeout(() => proc.kill("SIGKILL"), 3000);
-			finish({ stdout, stderr, exitCode: 1, timedOut: true, errorMessage: "gh command timed out" });
-		}, timeoutMs);
+		timer = setTimeout(() => terminate("timeout"), timeoutMs);
+		if (lifecycle.signal) {
+			if (lifecycle.signal.aborted) queueMicrotask(onAbort);
+			else lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+		}
 	});
 }
 
-async function ghText(args: string[], cwd: string): Promise<string> {
-	const result = await runGh(args, cwd);
+async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
+	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
 	return result.stdout.trim();
 }
 
-async function ghJson<T>(args: string[], cwd: string): Promise<T> {
-	const text = await ghText(args, cwd);
+async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
+	const text = await ghText(args, cwd, timeoutMs, lifecycle);
 	return JSON.parse(text) as T;
 }
 
-export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryBinding> {
+export interface GhPreflightDeadline {
+	readonly deadlineMs: number;
+	readonly now?: MonotonicNow;
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
+	readonly cleanupReserveMs?: number;
+}
+
+function preflightLifecycle(options?: GhPreflightDeadline): GhCommandLifecycle | undefined {
+	if (!options) return undefined;
+	return {
+		signal: options.signal,
+		terminationGraceMs: options.terminationGraceMs,
+		cleanupReserveMs: options.cleanupReserveMs,
+	};
+}
+
+function preflightTimeout(options?: GhPreflightDeadline): number | undefined {
+	if (!options) return undefined;
+	const remainingMs = Math.floor(options.deadlineMs - (options.now ?? monotonicNow)());
+	if (remainingMs <= 0) throw new Error("GitHub preflight exceeded the review invocation deadline");
+	// Preserve the established per-command ceiling while making both dependent
+	// reads consume the same invocation-wide allowance.
+	return Math.min(GH_COMMAND_TIMEOUT_MS, remainingMs);
+}
+
+export async function resolveRepositoryBinding(cwd: string, deadline?: GhPreflightDeadline): Promise<RepositoryBinding> {
 	const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
 		["repo", "view", "--json", "nameWithOwner,url"],
 		cwd,
+		preflightTimeout(deadline),
+		preflightLifecycle(deadline),
 	);
 	const repository = String(repoInfo.nameWithOwner ?? "");
 	const hostname = new URL(String(repoInfo.url ?? "")).hostname;
@@ -1520,12 +1689,18 @@ interface PullState {
 }
 
 /** Capture immutable publication identity and lifecycle before the review model runs. */
-export async function resolveReviewHostBinding(cwd: string, prNumber: number): Promise<ReviewHostBinding> {
+export async function resolveReviewHostBinding(
+	cwd: string,
+	prNumber: number,
+	deadline?: GhPreflightDeadline,
+): Promise<ReviewHostBinding> {
 	if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error("invalid PR number");
-	const repository = await resolveRepositoryBinding(cwd);
+	const repository = await resolveRepositoryBinding(cwd, deadline);
 	const pull = await ghJson<PullState>(
 		githubApiArgs(repository.hostname, `repos/${repository.repository}/pulls/${prNumber}`),
 		cwd,
+		preflightTimeout(deadline),
+		preflightLifecycle(deadline),
 	);
 	const reviewedHeadSha = pull.head?.sha?.toLowerCase();
 	if (!reviewedHeadSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(reviewedHeadSha)) {

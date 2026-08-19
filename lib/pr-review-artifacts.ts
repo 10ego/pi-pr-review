@@ -18,6 +18,13 @@ export interface ReviewLaneAttemptArtifact {
 	readonly firstAssistantMs?: number;
 	readonly toolElapsedMs: number;
 	readonly toolCallCount: number;
+	readonly timedOut?: boolean;
+	readonly terminationGraceMs?: number;
+	readonly forcedTermination?: boolean;
+	/** Effective runtime allowance after batch/total truncation. */
+	readonly deadlineMs?: number;
+	/** Configured tier/fallback cap before batch/total truncation. */
+	readonly configuredDeadlineMs?: number;
 }
 
 export interface ReviewLaneArtifact {
@@ -44,6 +51,10 @@ export interface ReviewLaneArtifact {
 	readonly toolCallCount: number;
 	readonly startOffsetMs?: number;
 	readonly endOffsetMs?: number;
+	readonly fallbackBudgetRejected?: boolean;
+	readonly deadlineSource?: "default" | "user" | "project";
+	readonly batchDeadlineMs?: number;
+	readonly totalDeadlineMs?: number;
 }
 
 /** Concatenate every text part from the authoritative final assistant message. */

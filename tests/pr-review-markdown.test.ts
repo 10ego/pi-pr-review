@@ -192,6 +192,31 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("**Verdict:** approve");
 	});
 
+	test("replaces a contradictory completion claim with exact timed-out shard disclosure", () => {
+		const lane = {
+			generation: 1, key: "security-performance:1", passId: "security-performance-shard-2", tier: "heavy",
+			rawText: "Partial security and performance evidence.", exitCode: 1, stopReason: "timeout",
+			lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 15_000,
+			toolElapsedMs: 0, toolCallCount: 0,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({ rawText: markdown, ...binding, laneArtifacts: [lane] });
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.body).toContain("Host-verified incomplete requested lenses/shards:");
+		expect(artifact.body).toContain('"security-performance-shard-2" — `timed_out`');
+		expect(artifact.body).not.toContain("All requested lanes completed.");
+		expect(artifact.review.verdict).toBe("comment");
+
+		const oversized = synthesizeReviewArtifact({
+			rawText: markdown.replace("Preserve the semantic review.", "x".repeat(70_000)),
+			...binding,
+			laneArtifacts: [lane],
+		});
+		expect(Buffer.byteLength(oversized.body, "utf8")).toBeLessThanOrEqual(60_000);
+		expect(oversized.body).toContain('"security-performance-shard-2" — `timed_out`');
+		expect(oversized.body).not.toContain("All requested lanes completed.");
+	});
+
 	test.each(["partial", "timed_out", "failed"] as const)(
 		"makes a %s lane incomplete and ineligible for fully parsed publication",
 		(lifecycle) => {
@@ -270,6 +295,71 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("lane_fallback");
 		expect(artifact.body).toContain("correctness — partial");
 		expect(artifact.body).toContain("Candidate evidence retained from the lane.");
+	});
+
+	test("reserves exact incomplete shard disclosure after 70KB of retained fallback evidence", () => {
+		const lane = (passId: string, rawText: string, lifecycle: ReviewLaneArtifact["lifecycle"]): ReviewLaneArtifact => ({
+			generation: 1,
+			key: `${passId}:0`,
+			passId,
+			tier: "heavy",
+			rawText,
+			exitCode: lifecycle === "complete" ? 0 : 1,
+			lifecycle,
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 10,
+			toolElapsedMs: 0,
+			toolCallCount: 0,
+		});
+		const artifact = synthesizeReviewArtifact({
+			rawText: "",
+			...binding,
+			laneArtifacts: [
+				lane("correctness:shard-1-of-2", "x".repeat(70_000), "complete"),
+				lane("security:shard-2-of-2", "late partial evidence", "timed_out"),
+			],
+		});
+
+		expect(Buffer.byteLength(artifact.body, "utf8")).toBeLessThanOrEqual(60_000);
+		expect(artifact.body).toContain("Host-verified incomplete requested lenses/shards:");
+		expect(artifact.body).toContain('- "security:shard-2-of-2" — `timed_out`');
+	});
+
+	test("bounds hostile pass identifiers and aggregate disclosure metadata without losing lifecycle state", () => {
+		const lane = (passId: string, lifecycle: ReviewLaneArtifact["lifecycle"]): ReviewLaneArtifact => ({
+			generation: 1, key: passId, passId, tier: "heavy", rawText: "", exitCode: 1, lifecycle,
+			attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+		});
+		const oversizedId = `hostile\n${"x".repeat(70_000)}\u0000tail`;
+		const oversized = synthesizeReviewArtifact({
+			rawText: "",
+			...binding,
+			laneArtifacts: [lane(oversizedId, "timed_out")],
+		});
+		expect(Buffer.byteLength(oversized.body, "utf8")).toBeLessThanOrEqual(60_000);
+		expect(oversized.body).toContain("[sha256:");
+		expect(oversized.body).toContain("timed_out=1");
+		expect(oversized.body).toContain("— `timed_out`");
+		expect(oversized.body).not.toContain("\u0000");
+
+		const many = Array.from({ length: 400 }, (_, index) =>
+			lane(`hostile-${index}-${"y".repeat(200)}`, index % 2 ? "partial" : "failed"));
+		const counted = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: many });
+		expect(Buffer.byteLength(counted.body, "utf8")).toBeLessThanOrEqual(60_000);
+		expect(counted.body).toContain("partial=200; timed_out=0; failed=200");
+		expect(counted.body).toContain("336 additional incomplete lane identifier(s) omitted");
+	});
+
+	test("preserves the explicit first-shard identity in deterministic fallback synthesis", () => {
+		const lane = {
+			generation: 1, key: "batch:0", passId: "overview-shard-1", tier: "light", rawText: "partial overview",
+			exitCode: 1, lifecycle: "partial", attempts: [], fallbackUsed: false, elapsedMs: 1,
+			toolElapsedMs: 0, toolCallCount: 0,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
+		expect(artifact.body).toContain("### overview-shard-1 — partial");
+		expect(artifact.body).toContain('- "overview-shard-1" — `partial`');
 	});
 
 	test("retains earlier partial attempt text when the terminal fallback is empty", () => {

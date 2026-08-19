@@ -155,6 +155,16 @@ Example:
     "heavy": "configured"
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
+  "deadlines": {
+    "attemptMs": { "light": 180000, "medium": 360000, "heavy": 480000 },
+    "fallbackAttemptMs": 180000,
+    "batchMs": 720000,
+    "synthesisMs": 60000,
+    "totalMs": 900000,
+    "terminationGraceMs": 5000,
+    "cleanupReserveMs": 5000,
+    "minimumFallbackMs": 30000
+  },
   "autoPostReviews": false,
   "allowStalePublish": true,
   "allowStaleApprovals": false,
@@ -162,7 +172,13 @@ Example:
 }
 ```
 
-Tier subprocesses retry configured fallbacks only for retryable quota, rate-limit, or capacity failures. If a tier is unset, it uses the nearest configured tier and then Pi's default model.
+Every invocation has a host-owned monotonic 15-minute hard cap, including the two GitHub identity/lifecycle preflights, synthesis, termination grace, and reserved cleanup. The dependent preflight calls share the one invocation budget, so they cannot each add an independent command timeout before review timing begins. Defaults bound light/medium/heavy attempts to 3/6/8 minutes, a fallback attempt to 3 minutes, and the concurrent batch to 12 minutes. The complete `deadlines` object may be replaced at user scope or by a trusted project; partial, malformed, non-integer, out-of-range, or internally inconsistent objects are rejected as a unit and the last valid/default finite budget remains active. Supported inclusive ranges are: attempts 30–720 seconds, fallback 30–360 seconds, batch 60–840 seconds, synthesis 10–120 seconds, total 120–1200 seconds, TERM grace 0.1–15 seconds, cleanup reserve 1–30 seconds, and minimum useful fallback 10–120 seconds. Minimum fallback must not exceed its attempt cap, and batch + synthesis + termination grace + cleanup must fit inside total.
+
+A timed-out or retryable quota/rate-limit/capacity lane may start at most one configured fallback attempt. It starts only when at least `minimumFallbackMs` plus cleanup reserve remains; the host never changes the configured model, thinking level, or tool policy to save time. If a tier is unset, its existing nearest-configured-tier/Pi-default behavior is unchanged.
+
+On an attempt deadline the host records timeout separately from user cancellation, sends TERM to the original child, waits only `terminationGraceMs`, then sends KILL if no exit was observed and stops draining after the cleanup reserve. Partial assistant text and telemetry survive this lifecycle. Batch/total expiry stops queued work and waiting lanes; completed and partial artifacts proceed to Markdown synthesis or deterministic lane assembly, identify every incomplete lens/shard, and remain eligible for the safe body-only `COMMENT` publication path. A timed-out lane is never reported as `NO FINDINGS` or full coverage.
+
+Initial operating targets are ordinary-review p50 ≤ 6 minutes and p95 ≤ 12 minutes, and large-review p50 ≤ 10 minutes and p95 ≤ 14 minutes, with the 15-minute hard cap authoritative. Invocation telemetry starts before GitHub preflight and records configured deadline source/caps, termination grace, cleanup reserve, and active wall time; batch details record first event/output timing, lifecycle counts, configured and effective batch-truncated attempt deadlines, fallback starts/budget rejections, and termination grace/escalation data. These are initial production targets, not a promise that every provider completes before its host deadline.
 
 Ordinary reviewer output is reconstructed from every text part of the authoritative final assistant message in order. A zero process exit is not enough to mark a lane complete: completion also requires a terminal `stop` and the expected lane sections (or an explicitly emitted `NO FINDINGS.` where that response is allowed). Empty success is never synthesized into `NO FINDINGS.`; length-limited, malformed, timed-out, and failed attempts retain their raw text with an explicit lifecycle. Batch details include raw text, attempt artifacts, lifecycle counts and elapsed totals, while the displayed batch remains in deterministic input order.
 

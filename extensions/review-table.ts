@@ -47,6 +47,8 @@ import {
 	type ReviewInvocation,
 } from "../lib/pr-review-publish.ts";
 import { synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
+import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
@@ -517,6 +519,16 @@ export default function registerReviewTable(
 	};
 
 	const telemetryTracker = new ReviewTelemetryTracker();
+	let nextPreflightGeneration = 1;
+	let activePreflight: { generation: number; controller: AbortController } | undefined;
+	const revokePreflight = () => {
+		if (!activePreflight) return;
+		activePreflight?.controller.abort(new Error("review GitHub preflight revoked"));
+		activePreflight = undefined;
+		telemetryTracker.clear();
+	};
+	const ownsPreflight = (preflight: { generation: number; controller: AbortController }) =>
+		activePreflight?.generation === preflight.generation && activePreflight.controller === preflight.controller;
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
 		if (!telemetry) return;
@@ -553,6 +565,7 @@ export default function registerReviewTable(
 			// Extension commands execute before input hooks, so every invocation —
 			// including malformed arguments — must revoke active review authority.
 			selfReviewCoordinator.clear();
+			revokePreflight();
 			const active = loopCoordinator.peek();
 			if (active) {
 				loopCoordinator.clear();
@@ -586,6 +599,7 @@ export default function registerReviewTable(
 	});
 
 	const revokeActiveLoop = () => {
+		revokePreflight();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -611,6 +625,7 @@ export default function registerReviewTable(
 	});
 
 	pi.on("session_tree", (event, ctx) => {
+		revokePreflight();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -629,6 +644,7 @@ export default function registerReviewTable(
 	pi.on("input", async (event, ctx) => {
 		// Any new input revokes the prior top-level task generation before it can
 		// authorize a replay or a queued/steering continuation.
+		revokePreflight();
 		selfReviewCoordinator.clear();
 
 		const source = event.source as ReviewLoopInputSource;
@@ -690,13 +706,44 @@ export default function registerReviewTable(
 
 		// Freeze trusted publication config and target binding before review tools or optional PR code can run.
 		const publishingConfig = resolvePublishingConfig(ctx);
+		const deadlineResolution = resolveReviewDeadlinesForContext(ctx);
+		const budget = createReviewBudget(deadlineResolution);
+		const preflight = {
+			generation: nextPreflightGeneration++,
+			controller: new AbortController(),
+		};
+		activePreflight = preflight;
+		telemetryTracker.begin(parsed.prNumber!, {
+			source: deadlineResolution.source,
+			totalMs: deadlineResolution.config.totalMs,
+			batchMs: deadlineResolution.config.batchMs,
+			synthesisMs: deadlineResolution.config.synthesisMs,
+			terminationGraceMs: deadlineResolution.config.terminationGraceMs,
+			cleanupReserveMs: deadlineResolution.config.cleanupReserveMs,
+		});
 		let reviewBinding;
 		try {
-			reviewBinding = await resolveReviewHostBinding(ctx.cwd, parsed.prNumber!);
+			reviewBinding = await resolveReviewHostBinding(ctx.cwd, parsed.prNumber!, {
+				deadlineMs: budget.totalDeadlineMs - budget.config.terminationGraceMs - budget.config.cleanupReserveMs,
+				signal: preflight.controller.signal,
+				terminationGraceMs: budget.config.terminationGraceMs,
+				cleanupReserveMs: budget.config.cleanupReserveMs,
+			});
 		} catch (error) {
+			// A newer input owns telemetry and authority. The revoked generation must
+			// neither notify nor clear the successor after its child has settled.
+			if (!ownsPreflight(preflight) || preflight.controller.signal.aborted) {
+				return { action: "handled" as const };
+			}
+			activePreflight = undefined;
 			ctx.ui.notify(`Invalid /pr-review invocation: host review binding failed: ${String(error)}`, "error");
+			persistTelemetry("cleared");
 			return { action: "handled" as const };
 		}
+		if (!ownsPreflight(preflight) || preflight.controller.signal.aborted) {
+			return { action: "handled" as const };
+		}
+		activePreflight = undefined;
 		const gate = loopCoordinator.begin(
 			parsed,
 			publishingConfig.autoPost,
@@ -706,12 +753,15 @@ export default function registerReviewTable(
 			publishingConfig.allowStaleApprovals.valid && publishingConfig.allowStaleApprovals.value,
 			publishingConfig.approveMaxPriority.valid ? publishingConfig.approveMaxPriority.value : "off",
 			reviewBinding,
+			deadlineResolution,
+			() => ctx.abort(),
+			budget,
 		);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
+			persistTelemetry("cleared");
 			return { action: "handled" as const };
 		}
-		telemetryTracker.begin(parsed.prNumber!);
 	});
 
 	pi.on("tool_execution_start", (event) => {
@@ -770,7 +820,7 @@ export default function registerReviewTable(
 			}
 			return;
 		}
-		if (completion === "clear_invocation") {
+		if (completion === "clear_invocation" && !loopCoordinator.totalDeadlineExpired()) {
 			loopCoordinator.clear();
 			persistTelemetry("cleared");
 			return;

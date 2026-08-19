@@ -386,6 +386,46 @@ async function exercisePostingPath(
 }
 
 describe("completed review extension lifecycle", () => {
+	test("includes GitHub binding preflight in invocation timing and deadline telemetry", async () => {
+		const harness = createHarness([], session, { repositoryDelayMs: 150 });
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const message = completedReviewMessage();
+		await harness.emit("message_end", { message });
+
+		const telemetry = harness.branch.findLast((entry) => entry.customType === "pr-review-telemetry")?.data;
+		expect(telemetry.activeReviewMs).toBeGreaterThanOrEqual(100);
+		expect(telemetry.deadlines).toMatchObject({
+			totalMs: 900_000,
+			terminationGraceMs: 5_000,
+			cleanupReserveMs: 5_000,
+		});
+	});
+
+	test("generation-fences a replaced preflight so its late settlement cannot revoke the successor", async () => {
+		const harness = createHarness([], session, { repositoryDelayMs: 250 });
+		const first = harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const second = harness.emit("input", { text: "/pr-review 8", source: "interactive" });
+		await first;
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		await second;
+		expect(harness.loopCoordinator.peek()?.prNumber).toBe(8);
+		expect(harness.activeTools()).toEqual([...BASE_ACTIVE_TOOLS, ...REVIEW_LOOP_TOOL_NAMES]);
+	});
+
+	test("actively aborts every overlapping GitHub preflight when cancellation input wins", async () => {
+		const harness = createHarness([], session, { repositoryDelayMs: 2_000 });
+		const first = harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const second = harness.emit("input", { text: "/pr-review 8", source: "interactive" });
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const cancelledAt = Date.now();
+		await harness.emit("input", { text: "cancel that review", source: "interactive" });
+		await Promise.all([first, second]);
+		expect(Date.now() - cancelledAt).toBeLessThan(750);
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+	});
+
 	test("publishes coherent Markdown without model-generated JSON", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
