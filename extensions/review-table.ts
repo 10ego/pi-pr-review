@@ -50,6 +50,7 @@ import { synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/p
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
+	REVIEW_LOOP_TOOL_NAMES,
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
 } from "../lib/pr-review-loop.ts";
@@ -519,6 +520,10 @@ export default function registerReviewTable(
 	};
 
 	const telemetryTracker = new ReviewTelemetryTracker();
+	const reviewToolNames = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
+	const activeToolGenerations = new Map<string, number>();
+	const generationsWithReviewTools = new Set<number>();
+	const generationsReadyForSynthesis = new Set<number>();
 	let nextPreflightGeneration = 1;
 	let activePreflight: { generation: number; controller: AbortController } | undefined;
 	const revokePreflight = () => {
@@ -764,16 +769,33 @@ export default function registerReviewTable(
 		}
 	});
 
-	pi.on("tool_execution_start", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
 		if (!loopCoordinator.peek()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
+		const lease = loopCoordinator.acquire(ctx);
+		if (!lease) return;
+		activeToolGenerations.set(event.toolCallId, lease.generation);
+		if (reviewToolNames.has(event.toolName)) generationsWithReviewTools.add(lease.generation);
 	});
 
 	pi.on("tool_execution_end", (event) => {
 		telemetryTracker.toolEnded(event.toolCallId);
+		const generation = activeToolGenerations.get(event.toolCallId);
+		activeToolGenerations.delete(event.toolCallId);
+		if (generation === undefined || !generationsWithReviewTools.has(generation)) return;
+		if ([...activeToolGenerations.values()].includes(generation)) return;
+		generationsWithReviewTools.delete(generation);
+		generationsReadyForSynthesis.add(generation);
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
+		// turn_end includes the complete tool-result set for the assistant turn.
+		// Start the synthesis cap here rather than at the first tool end so
+		// sequential or concurrently settling tool calls cannot consume it early.
+		for (const generation of generationsReadyForSynthesis) {
+			generationsReadyForSynthesis.delete(generation);
+			loopCoordinator.beginSynthesis(generation, ctx);
+		}
 		const pending = pendingCompletion;
 		pendingCompletion = undefined;
 		if (!pending) return;
@@ -820,7 +842,7 @@ export default function registerReviewTable(
 			}
 			return;
 		}
-		if (completion === "clear_invocation" && !loopCoordinator.totalDeadlineExpired()) {
+		if (completion === "clear_invocation" && !loopCoordinator.deadlineExpired()) {
 			loopCoordinator.clear();
 			persistTelemetry("cleared");
 			return;

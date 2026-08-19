@@ -209,6 +209,34 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.artifactSnapshot(h.ctx as any)).toBeUndefined();
 	});
 
+	test("enforces the synthesis cap from early batch completion instead of the total deadline", async () => {
+		const h = harness();
+		let deadlineCallbacks = 0;
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any,
+			true, false, "off", undefined,
+			{
+				source: "default", warnings: [],
+				config: {
+					attemptMs: { light: 40, medium: 40, heavy: 40 }, fallbackAttemptMs: 40,
+					batchMs: 100, synthesisMs: 20, totalMs: 1_000, terminationGraceMs: 10,
+					cleanupReserveMs: 10, minimumFallbackMs: 10,
+				},
+			},
+			() => deadlineCallbacks++,
+		);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		await new Promise((resolve) => setTimeout(resolve, 35));
+		expect(deadlineCallbacks).toBe(1);
+		expect(h.coordinator.synthesisDeadlineExpired()).toBeTrue();
+		expect(h.coordinator.totalDeadlineExpired()).toBeFalse();
+		expect(h.coordinator.deadlineExpired()).toBeTrue();
+		expect(lease.signal.aborted).toBeTrue();
+		expect(String(lease.signal.reason)).toContain("review synthesis deadline expired");
+		h.coordinator.clear();
+	});
+
 	test("accepts timed-out evidence during only the monotonic termination and cleanup window", async () => {
 		const h = harness();
 		const lifecycleStartedAt = performance.now();

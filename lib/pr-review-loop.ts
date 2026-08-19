@@ -40,8 +40,11 @@ interface ReviewLoopBinding {
 	readonly sessionStartedAt?: string;
 	readonly controller: AbortController;
 	readonly budget?: ReviewBudget;
+	readonly onDeadline?: () => void;
 	totalTimer?: ReturnType<typeof setTimeout>;
-	totalDeadlineExpired: boolean;
+	synthesisTimer?: ReturnType<typeof setTimeout>;
+	synthesisStarted: boolean;
+	deadlineKind?: "total" | "synthesis";
 }
 
 export interface ReviewLoopLease {
@@ -154,7 +157,8 @@ export class ReviewLoopCoordinator {
 			...current,
 			controller: new AbortController(),
 			budget,
-			totalDeadlineExpired: false,
+			onDeadline: onTotalDeadline,
+			synthesisStarted: false,
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -163,11 +167,12 @@ export class ReviewLoopCoordinator {
 				budget.totalDeadlineMs - budget.config.terminationGraceMs - budget.config.cleanupReserveMs - monotonicNow(),
 			);
 			binding.totalTimer = setTimeout(() => {
-				if (this.binding !== binding) return;
-				binding.totalDeadlineExpired = true;
+				if (this.binding !== binding || binding.deadlineKind) return;
+				binding.deadlineKind = "total";
+				if (binding.synthesisTimer) clearTimeout(binding.synthesisTimer);
 				binding.controller.abort(new Error("review total deadline expired"));
 				this.setToolsEnabled(false);
-				try { onTotalDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
+				try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
 			}, activeAllowanceMs);
 		}
 		this.focusRegistry.open(this.binding.generation);
@@ -222,6 +227,37 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
+	beginSynthesis(
+		generation: number,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		const binding = this.binding;
+		if (!binding || binding.generation !== generation || !sameBinding(binding, ctx) || binding.controller.signal.aborted) {
+			return false;
+		}
+		if (binding.synthesisStarted) return true;
+		binding.synthesisStarted = true;
+		if (!binding.budget) return true;
+		const activeTotalDeadline = binding.budget.totalDeadlineMs -
+			binding.budget.config.terminationGraceMs - binding.budget.config.cleanupReserveMs;
+		const synthesisDeadline = Math.min(
+			monotonicNow() + binding.budget.config.synthesisMs,
+			activeTotalDeadline,
+		);
+		const expire = () => {
+			if (this.binding !== binding || binding.deadlineKind) return;
+			binding.deadlineKind = "synthesis";
+			if (binding.totalTimer) clearTimeout(binding.totalTimer);
+			binding.controller.abort(new Error("review synthesis deadline expired"));
+			this.setToolsEnabled(false);
+			try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
+		};
+		const remaining = synthesisDeadline - monotonicNow();
+		if (remaining <= 0) queueMicrotask(expire);
+		else binding.synthesisTimer = setTimeout(expire, remaining);
+		return true;
+	}
+
 	isLeaseActive(
 		lease: ReviewLoopLease,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
@@ -232,7 +268,7 @@ export class ReviewLoopCoordinator {
 			!lease.signal.aborted &&
 			(this.phase() === "reviewing" || this.phase() === "confirmed") &&
 			sameBinding(this.binding, ctx);
-		if (!active && this.binding?.generation === lease.generation && !this.binding.totalDeadlineExpired) this.clear();
+		if (!active && this.binding?.generation === lease.generation && !this.binding.deadlineKind) this.clear();
 		return active;
 	}
 
@@ -260,7 +296,7 @@ export class ReviewLoopCoordinator {
 			retain: (artifact: ReviewLaneArtifact) => {
 				const active = this.isLeaseActive(lease, ctx);
 				const binding = this.binding;
-				const withinTerminationWindow = !active && !!binding?.totalDeadlineExpired &&
+				const withinTerminationWindow = !active && !!binding?.deadlineKind &&
 					binding.generation === lease.generation && !!binding.budget &&
 					sameBinding(binding, ctx) && monotonicNow() <= binding.budget.totalDeadlineMs;
 				if (!active && !withinTerminationWindow) return false;
@@ -272,15 +308,23 @@ export class ReviewLoopCoordinator {
 	artifactSnapshot(
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): readonly ReviewLaneArtifact[] | undefined {
-		if (this.binding?.totalDeadlineExpired && sameBinding(this.binding, ctx)) {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
 			return this.artifactRegistry.snapshot(this.binding.generation);
 		}
 		const lease = this.acquire(ctx);
 		return lease ? this.artifactRegistry.snapshot(lease.generation) : undefined;
 	}
 
+	deadlineExpired(): boolean {
+		return this.binding?.deadlineKind !== undefined;
+	}
+
 	totalDeadlineExpired(): boolean {
-		return this.binding?.totalDeadlineExpired === true;
+		return this.binding?.deadlineKind === "total";
+	}
+
+	synthesisDeadlineExpired(): boolean {
+		return this.binding?.deadlineKind === "synthesis";
 	}
 
 	focusSnapshot(
@@ -360,6 +404,7 @@ export class ReviewLoopCoordinator {
 
 	private revokeBinding(): void {
 		if (this.binding?.totalTimer) clearTimeout(this.binding.totalTimer);
+		if (this.binding?.synthesisTimer) clearTimeout(this.binding.synthesisTimer);
 		const generation = this.binding?.generation;
 		if (generation !== undefined) {
 			this.focusRegistry.close(generation);
