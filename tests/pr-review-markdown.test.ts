@@ -297,6 +297,32 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("Candidate evidence retained from the lane.");
 	});
 
+	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
+		const lane = {
+			generation: 1,
+			key: "security:0",
+			passId: "security-performance",
+			tier: "heavy",
+			rawText: "Substantive retained security finding.",
+			exitCode: 0,
+			lifecycle: "complete",
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 10,
+			toolElapsedMs: 0,
+			toolCallCount: 0,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "# PR Review\n\n## Overview\nSynthesis stopped before findings",
+			...binding,
+			laneArtifacts: [lane],
+		});
+		expect(artifact.quality).toBe("raw");
+		expect(artifact.body).toContain("Synthesis stopped before findings");
+		expect(artifact.body).toContain("## Host-retained lane evidence");
+		expect(artifact.body).toContain("Substantive retained security finding.");
+	});
+
 	test("reserves exact incomplete shard disclosure after 70KB of retained fallback evidence", () => {
 		const lane = (passId: string, rawText: string, lifecycle: ReviewLaneArtifact["lifecycle"]): ReviewLaneArtifact => ({
 			generation: 1,
