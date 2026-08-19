@@ -149,6 +149,7 @@ interface PublishingProbe {
 function installPublishingProbe(options: {
 	currentHead?: string;
 	patchless?: boolean;
+	inlinePatch?: boolean;
 	postFailure?: string;
 	operationLogPath?: string;
 	state?: "open" | "closed";
@@ -161,7 +162,15 @@ function installPublishingProbe(options: {
 	const callsPath = join(dir, "calls.log");
 	const postsPath = join(dir, "posts.log");
 	const failurePath = join(dir, "post-failure.txt");
-	const changedFiles = options.patchless ? '[[{"filename":"src/parser.ts","status":"modified"}]]' : "[[]]";
+	const changedFiles = options.patchless
+		? '[[{"filename":"src/parser.ts","status":"modified"}]]'
+		: options.inlinePatch
+			? JSON.stringify([[{
+				filename: "src/parser.ts",
+				status: "modified",
+				patch: "@@ -1,3 +1,3 @@\n line 1\n-line 2\n+line 2\n line 3",
+			}]])
+			: "[[]]";
 	const currentHead = options.currentHead ?? "a".repeat(40);
 	writeFileSync(failurePath, options.postFailure ?? "");
 	const recordPostOperation = options.operationLogPath
@@ -428,12 +437,13 @@ describe("completed review extension lifecycle", () => {
 
 	test("publishes coherent Markdown without model-generated JSON", async () => {
 		const harness = createHarness();
-		const probe = installPublishingProbe();
+		const probe = installPublishingProbe({ inlinePatch: true });
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
 		const markdown = [
 			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Checks Markdown publication.", "",
 			"## Verification", "Tests passed.", "", "## Findings", "", "### [P2] Guard empty input", "**Severity:** P2",
 			"**Rationale:** Empty input returns the wrong value.", "**Location:** `src/parser.ts:2-3 RIGHT`", "",
+			"### [nit] Rename tmp", "**Severity:** nit", "**Rationale:** This would make the intent clearer.", "",
 			"## Lane completeness", "All requested lanes completed.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: markdown }] };
@@ -442,7 +452,16 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()).toMatchObject({ commit_id: "a".repeat(40), event: "COMMENT" });
-		expect(JSON.stringify(probe.payload())).toContain("Empty input returns the wrong value.");
+		expect(probe.payload()?.comments).toHaveLength(1);
+		expect(JSON.stringify(probe.payload()?.comments)).toContain("Empty input returns the wrong value.");
+		const publicBody = String(probe.payload()?.body);
+		expect(publicBody).toContain([
+			"**Verdict:** Comment", "", "See the inline review comments for the primary findings.", "",
+			"### Other Notes", "", "**[nit] Rename tmp**", "", "This would make the intent clearer.",
+		].join("\n"));
+		expect(publicBody).not.toContain("Checks Markdown publication.");
+		expect(publicBody).not.toContain("Tests passed.");
+		expect(publicBody).not.toContain("Guard empty input");
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data.invocation.reviewBinding).toMatchObject({
 			repository: "owner/repo",
@@ -461,9 +480,9 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
-	test("publishes fully parsed Markdown as COMMENT even when its apparent verdict qualifies for approval", async () => {
+	test("publishes fully parsed complete Markdown through the host approval gates", async () => {
 		const harness = createHarness([], session, {
-			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
+			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3", allowStaleApprovals: true },
 		});
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
@@ -477,8 +496,35 @@ describe("completed review extension lifecycle", () => {
 		harness.appendMessage(message, "markdown-approve-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(String(probe.payload()?.body)).toContain("**Verdict:** approve");
+		expect(probe.payload()?.event).toBe("APPROVE");
+		expect(String(probe.payload()?.body)).toContain("**Verdict:** Approve");
+		expect(String(probe.payload()?.body)).not.toContain("Looks safe.");
+		expect(String(probe.payload()?.body)).not.toContain("Focused tests passed.");
+
+		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
+		expect(persisted?.data).toMatchObject({ synthesisQuality: "fully_parsed", rawText: raw });
+		expect(persisted?.data).not.toHaveProperty("publicationBody");
+		const restored = createHarness([
+			{ type: "custom", id: "markdown-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data },
+		]);
+		await restored.emit("session_start", { reason: "reload" });
+		const restoredProbe = installPublishingProbe();
+		await restored.commands.get("pr-review-publish")!("7", restored.ctx);
+		expect(restoredProbe.postCount()).toBe(1);
+		expect(restoredProbe.payload()?.event).toBe("APPROVE");
+		expect(String(restoredProbe.payload()?.body)).not.toContain("Looks safe.");
+
+		const stale = createHarness([
+			{ type: "custom", id: "markdown-stale-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data },
+		]);
+		await stale.emit("session_start", { reason: "reload" });
+		const staleProbe = installPublishingProbe({ currentHead: "b".repeat(40) });
+		await stale.commands.get("pr-review-publish")!("7 --allow-stale", stale.ctx);
+		expect(staleProbe.postCount()).toBe(1);
+		expect(staleProbe.payload()?.event).toBe("APPROVE");
+		expect(staleProbe.payload()?.comments).toBeUndefined();
+		expect(String(staleProbe.payload()?.body)).toContain("**Verdict:** Approve");
+		expect(String(staleProbe.payload()?.body)).not.toContain("Looks safe.");
 	});
 
 	test("ignores fake canonical headings in a pre block and retains the later visible P1", async () => {
@@ -502,7 +548,9 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(1);
 		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(String(probe.payload()?.body)).toContain("<pre>\n## Findings\nNo findings.");
+		expect(String(probe.payload()?.body)).toContain("**Verdict:** Request changes");
+		expect(String(probe.payload()?.body)).not.toContain("<pre>\n## Findings\nNo findings.");
+		expect(String(probe.payload()?.body)).toContain("### Other Notes");
 		expect(String(probe.payload()?.body)).toContain("Preserve the visible blocker");
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({ synthesisQuality: "fully_parsed", rawText: raw });
@@ -885,7 +933,7 @@ describe("completed review extension lifecycle", () => {
 		expect(persisted?.data.reviewEntryId).toBe(assistantEntry.id);
 		expect(persisted?.data.review).toBeUndefined();
 		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.body).toContain("**Verdict:** Approve — No issues found.");
+		expect(probe.payload()?.body).toContain("**Verdict:** Approve");
 		expect(probe.payload()?.body).not.toContain("Checks lifecycle persistence.");
 		expect(harness.notifications.some((notification) => notification.includes("PR review posted"))).toBeTrue();
 	});
@@ -1247,7 +1295,7 @@ describe("end-to-end review posting invariants", () => {
 		expect(payloads.slash).toEqual(payloads.automatic);
 		expect(payloads.direct).toEqual(payloads.automatic);
 		expect(payloads.automatic.event).toBe("COMMENT");
-		expect(payloads.automatic.body).toContain("**Verdict:** Approve — No issues found.");
+		expect(payloads.automatic.body).toContain("**Verdict:** Approve");
 		expect(payloads.automatic.body).not.toContain("Checks lifecycle persistence.");
 		expect(payloads.automatic.body).toContain("<!-- pi-pr-review:");
 	});

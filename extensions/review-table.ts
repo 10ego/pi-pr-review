@@ -503,7 +503,12 @@ export default function registerReviewTable(
 		// live; Pi persists this record after it stores the assistant message.
 		const replacement = completedReviews.replace(parsed.review, invocation, repository, artifact ? {
 			synthesisQuality: artifact.quality,
-			...(artifact.body ? { publicationBody: artifact.body } : {}),
+			// Keep the complete original Markdown in rawText. Only degraded output
+			// needs a body override; fully parsed output uses the concise renderer
+			// and can pass the host-owned approval gates at publication time.
+			...(artifact.body && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
+				? { publicationBody: artifact.body }
+				: {}),
 			rawText: artifact.rawText,
 			laneArtifacts: artifact.laneArtifacts,
 			completeness: artifact.completeness,

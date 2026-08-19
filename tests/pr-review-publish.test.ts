@@ -1222,7 +1222,8 @@ fi
 			expect(document).toContain("`autoPostReviews` and `--comment` publish that cached review after completion");
 			expect(document).toContain("builds one GitHub review payload and sends at most one review `POST`");
 			expect(document).toContain("first 50 eligible P0–P3 findings with valid, unique diff anchors are inline");
-			expect(document).toContain("All other findings that pass content validation stay in the top-level review body");
+			expect(document).toContain("`Other Notes`");
+			expect(document).toContain("overview, verification");
 		}
 	});
 });
@@ -1440,10 +1441,12 @@ describe("single lossless publication payload", () => {
 		const body = String(diagnostic.payload?.body);
 		let previous = -1;
 		for (const item of expectedDiagnostics) {
-			const at = body.indexOf(item);
+			const at = diagnostic.result.message.indexOf(item);
 			expect(at).toBeGreaterThan(previous);
+			expect(body).not.toContain(item);
 			previous = at;
 		}
+		expect(body).toContain("### Other Notes");
 		const payloadText = JSON.stringify(diagnostic.payload);
 		for (const findingBody of [
 			"First body.",
@@ -1574,7 +1577,8 @@ describe("lossless publication diagnostics", () => {
 		expect(body).toContain("[P2] Handle empty input");
 		expect(body).toContain("Empty input currently returns the wrong value.");
 		expect(body).toContain("src/parser.ts:20 RIGHT");
-		expect(body).toContain(warning);
+		expect(body).toContain("### Other Notes");
+		expect(body).not.toContain(warning);
 	});
 
 	test("degrades changed-file command and JSON failures with one diagnostic and one POST", async () => {
@@ -1591,7 +1595,9 @@ describe("lossless publication diagnostics", () => {
 			expect(diagnostic.payload?.event).toBe("COMMENT");
 			expect(diagnostic.payload?.comments).toBeUndefined();
 			const body = String(diagnostic.payload?.body);
-			expect(body.match(new RegExp(warning, "g"))).toHaveLength(1);
+			expect(body).not.toContain(warning);
+			expect(diagnostic.result.message.match(new RegExp(warning, "g"))).toHaveLength(1);
+			expect(body).toContain("### Other Notes");
 			expect(body).not.toContain("path is not a changed file");
 			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
 			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
@@ -1658,7 +1664,8 @@ describe("lossless publication diagnostics", () => {
 		const body = String(diagnostic.payload?.body);
 		expect(body).toContain(`src/parser.ts:${inlineCount} RIGHT`);
 		expect(body).toContain(`Unique diagnostic body ${inlineCount}.`);
-		expect(body).toContain(warning);
+		expect(body).toContain("### Other Notes");
+		expect(body).not.toContain(warning);
 	});
 
 	test("does not build or send a fallback payload after a server rejection", async () => {
@@ -1719,10 +1726,11 @@ describe("atomic COMMENT review payload", () => {
 			],
 		};
 		const summary = buildReviewSummary(tolerant);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toStartWith("**Verdict:** Request changes");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).toContain("**[P2] Pipe | title continued** — `src/parser.ts:0 SIDEWAYS`");
 		expect(summary).toContain("The tolerant formatter still includes this body.");
-		expect(summary).toContain("**Verdict:** Request changes — The empty-input case is incorrect.");
+		expect(summary).not.toContain("The empty-input case is incorrect.");
 		for (const omitted of ["Code Review", "Verification", "Overview", "Strengths", "Correctness / Security / Performance", "Confidence"]) {
 			expect(summary).not.toContain(omitted);
 		}
@@ -1742,7 +1750,8 @@ describe("atomic COMMENT review payload", () => {
 		expect(validated.errors).toEqual([]);
 		expect(validated.comments).toHaveLength(1); // nits remain in the top-level summary
 		const summary = buildReviewSummary(review, validated.comments);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toContain("See the inline review comments for the primary findings.");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).not.toContain("[P2] Handle empty input");
 		expect(summary).toContain("[nit] Rename tmp");
 		const payload = buildPullReviewPayload("a".repeat(40), summary, validated.comments);
@@ -1868,7 +1877,7 @@ describe("atomic COMMENT review payload", () => {
 			"finding 1: diff patch is unavailable; kept in the review summary",
 		]);
 		const summary = buildReviewSummary(review, result.comments);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).toContain("[P2] Handle empty input");
 	});
 

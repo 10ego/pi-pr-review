@@ -1073,7 +1073,6 @@ function findingAnchor(finding: ReviewFindingLike): string | undefined {
 }
 
 export function buildReviewSummary(review: ReviewLike, inlineComments: PublishComment[] = []): string {
-	const lines: string[] = [];
 	const findings = Array.isArray(review.findings) ? review.findings : [];
 	const inlineAnchors = new Map<string, number>();
 	for (const comment of inlineComments) {
@@ -1091,26 +1090,25 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 		return false;
 	});
 
-	if (findings.length === 0) {
-		lines.push("No issues found.", "");
-	} else if (summaryFindings.length === 0) {
-		lines.push("See inline feedback.", "");
-	} else {
-		lines.push("### Feedback", "");
-		for (const finding of summaryFindings) {
-			lines.push(`**${inlineText(String(finding.title ?? "Finding"))}** — \`${inlineText(findingLocation(finding))}\``);
-			if (finding.body?.trim()) lines.push(finding.body.trim());
-			lines.push("");
-		}
-	}
-
 	const verdict = review.verdict === "request_changes"
 		? "Request changes"
 		: review.verdict === "approve"
 			? "Approve"
 			: "Comment";
-	const explanation = review.overall_explanation?.trim();
-	lines.push(`**Verdict:** ${verdict}${explanation ? ` — ${explanation}` : ""}`);
+	const lines = [`**Verdict:** ${verdict}`];
+	if (inlineComments.length > 0) {
+		lines.push("", "See the inline review comments for the primary findings.");
+	}
+	if (summaryFindings.length > 0) {
+		lines.push("", "### Other Notes", "");
+		for (const finding of summaryFindings) {
+			const title = `**${inlineText(String(finding.title ?? "Finding"))}**`;
+			const location = findingLocation(finding);
+			lines.push(location === "summary-only" ? title : `${title} — \`${inlineText(location)}\``);
+			if (finding.body?.trim()) lines.push("", finding.body.trim());
+			lines.push("");
+		}
+	}
 	return lines.join("\n").trim();
 }
 
@@ -1343,10 +1341,10 @@ function buildLosslessReviewPayload(input: {
 	diagnostics.push(...selected.diagnostics);
 	if (selected.errors.length > 0) return { diagnostics, errors: selected.errors };
 
+	// Inline-placement diagnostics remain available to the host notification,
+	// while every affected finding is retained under Other Notes. Do not expose
+	// transport diagnostics as if they were review findings.
 	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
-	if (diagnostics.length > 0) {
-		content = `${content}\n\n### Publication diagnostics\n\n${diagnostics.map((item) => `- ${item}`).join("\n")}`;
-	}
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
 	const bodyError = validateReviewBody(content);
 	if (bodyError) return { diagnostics, errors: [bodyError] };

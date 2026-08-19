@@ -142,9 +142,9 @@ interface PrReviewConfig {
 	autoPostReviews: boolean;
 	/** Permit stale publication as body-only with reviewed/current SHAs disclosed. Enabled by default. */
 	allowStalePublish: boolean;
-	/** Permit otherwise-qualified stale strict JSON reviews to record APPROVE. Disabled by default. */
+	/** Permit otherwise-qualified stale fully parsed reviews to record APPROVE. Disabled by default. */
 	allowStaleApprovals: boolean;
-	/** Strict JSON maximum severity that permits APPROVE (Markdown is always COMMENT). */
+	/** Maximum severity that permits APPROVE for any fully parsed, complete review. */
 	approveMaxPriorityLevel: ApproveMaxPriorityLevel;
 	/** Trusted user-level named verification profiles. Project config never overlays these. */
 	verificationBaselines: VerificationBaselines;
@@ -2263,8 +2263,8 @@ function summarizeConfig(
 		),
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub review; default \`false\` |`,
 		`| \`allowStalePublish\` | \`${user.allowStalePublish}\` | \`${effective.allowStalePublish}\` (${allowStale.source}) | permit body-only stale publication with reviewed/current SHAs; default \`true\` |`,
-		`| \`allowStaleApprovals\` | \`${user.allowStaleApprovals}\` | \`${effective.allowStaleApprovals}\` (${allowStaleApprovals.source}) | permit qualified stale strict JSON reviews to record APPROVE; default \`false\` |`,
-		`| \`approveMaxPriorityLevel\` | \`${user.approveMaxPriorityLevel}\` | \`${effective.approveMaxPriorityLevel}\` (${approveMaxPriority.source}) | strict JSON max severity for APPROVE; Markdown is always COMMENT; default \`off\` |`,
+		`| \`allowStaleApprovals\` | \`${user.allowStaleApprovals}\` | \`${effective.allowStaleApprovals}\` (${allowStaleApprovals.source}) | permit qualified stale fully parsed reviews to record APPROVE; default \`false\` |`,
+		`| \`approveMaxPriorityLevel\` | \`${user.approveMaxPriorityLevel}\` | \`${effective.approveMaxPriorityLevel}\` (${approveMaxPriority.source}) | fully parsed review max severity for APPROVE; degraded output is COMMENT; default \`off\` |`,
 		`| \`verificationBaselines\` | \`${Object.keys(user.verificationBaselines).length} configured\` | user scope only | strict named argv profiles; project overlays ignored |`,
 		`| \`tools\` | \`${user.tools.join(",")}\` | \`${effective.tools.join(",")}\` | allowlist used when policy is \`configured\` |`,
 		"",
@@ -2308,7 +2308,7 @@ function summarizeConfig(
 		"- Disable automatic GitHub review posting: `/pr-review-config auto_post_reviews=false`",
 		"- Disable stale publication: `/pr-review-config allow_stale_publish=false`",
 		"- Enable stale publication (default): `/pr-review-config allow_stale_publish=true`",
-		"- Permit qualified stale strict JSON reviews to record APPROVE: `/pr-review-config allow_stale_approvals=true`",
+		"- Permit qualified stale fully parsed reviews to record APPROVE: `/pr-review-config allow_stale_approvals=true`",
 		"- Keep stale reviews as COMMENT (default): `/pr-review-config allow_stale_approvals=false`",
 		"- Enable strict JSON approval for low-severity reviews: `/pr-review-config approve_max_priority_level=P2`",
 		"- Disable auto-approve (default): `/pr-review-config approve_max_priority_level=off`",
@@ -2451,14 +2451,14 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 		{
 			id: "allow_stale_approvals",
 			label: "stale approval setting",
-			description: "Permit otherwise-qualified stale strict JSON reviews to record APPROVE. Disabled by default.",
+			description: "Permit otherwise-qualified stale fully parsed reviews to record APPROVE. Disabled by default.",
 			currentValue: String(cfg.allowStaleApprovals),
 			values: ["false", "true"],
 		},
 		{
 			id: "approve_max_priority_level",
 			label: "auto-approve priority gate",
-			description: "Strict JSON maximum severity that permits APPROVE; Markdown is always COMMENT. Enter/Space cycles values.",
+			description: "Fully parsed review maximum severity that permits APPROVE; degraded output is COMMENT. Enter/Space cycles values.",
 			currentValue: String(cfg.approveMaxPriorityLevel),
 			values: ["off", "P2", "P3", "nit"],
 		},

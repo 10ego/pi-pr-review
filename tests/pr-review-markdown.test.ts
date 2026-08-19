@@ -159,7 +159,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toBe(rawText);
 		expect(artifact.review.findings).toHaveLength(1);
 		expect(artifact.review.findings?.[0]?.severity).toBe("P1");
-		expect(artifact.review.verdict).toBe("comment");
+		expect(artifact.review.verdict).toBe("request_changes");
 	});
 
 	test("downgrades a canonical finding contained in a CommonMark type-7 HTML block", () => {
@@ -184,11 +184,12 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toEqual([]);
 	});
 
-	test("makes every Markdown-derived review COMMENT-only without changing its raw apparent verdict", () => {
+	test("retains a fully parsed Markdown verdict as semantic state for host publication gates", () => {
 		const rawText = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 		expect(artifact.quality).toBe("fully_parsed");
-		expect(artifact.review.verdict).toBe("comment");
+		expect(artifact.completeness).toBe("complete");
+		expect(artifact.review.verdict).toBe("approve");
 		expect(artifact.body).toContain("**Verdict:** approve");
 	});
 

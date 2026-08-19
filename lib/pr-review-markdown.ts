@@ -373,14 +373,27 @@ function publicationSafeStrictReview(review: ReviewLike): boolean {
 	return true;
 }
 
-function syntheticReview(prNumber: number, title: string, headSha: string, text: string, findings: ReviewFindingLike[] = []): ReviewLike {
+function syntheticReview(
+	prNumber: number,
+	title: string,
+	headSha: string,
+	text: string,
+	findings: ReviewFindingLike[] = [],
+	allowApparentVerdict = false,
+): ReviewLike {
 	const overview = section(text, "Overview") ?? text;
 	const verification = section(text, "Verification") ?? "Verification status was not structurally available.";
-	// Markdown is intentionally not trusted to select a merge-relevant event.
-	// Preserve its apparent verdict in the raw body, but make the canonical
-	// Markdown-derived review COMMENT-only. Strict host-bound JSON bypasses this
-	// synthetic representation and retains its otherwise-qualified approval.
-	const verdict = "comment";
+	// This is semantic review state, not a GitHub event. Publication may map a
+	// fully parsed, complete `approve` through the same host-owned approval gates
+	// as strict JSON. Degraded artifacts remain COMMENT-only at that boundary.
+	const apparentVerdict = field(text, "Verdict")?.toLowerCase().replace(/[ -]+/g, "_");
+	const apparentSemanticVerdict = allowApparentVerdict &&
+		(apparentVerdict === "approve" || apparentVerdict === "request_changes" || apparentVerdict === "comment")
+		? apparentVerdict
+		: "comment";
+	const verdict = findings.some((finding) => finding.severity === "P0" || finding.severity === "P1")
+		? "request_changes"
+		: apparentSemanticVerdict;
 	return {
 		pr: { number: prNumber, title, head_sha: headSha },
 		disposition: "reviewed",
@@ -582,7 +595,14 @@ export function synthesizeReviewArtifact(input: {
 		quality,
 		rawText: input.rawText,
 		body,
-		review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, safeFindings),
+		review: syntheticReview(
+			input.prNumber,
+			input.prTitle,
+			input.headSha,
+			body,
+			safeFindings,
+			quality === "fully_parsed" && completeness === "complete",
+		),
 		laneArtifacts: lanes,
 		completeness,
 		diagnostics: Object.freeze(canonicalParsed.unsafe
