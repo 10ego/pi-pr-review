@@ -2,6 +2,9 @@ import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type ReviewTier = "light" | "medium" | "heavy";
 
+/** Which host invocation deadline (total or synthesis) ended review work. */
+export type ReviewDeadlineKind = "total" | "synthesis";
+
 export interface ReviewDeadlineConfig {
 	attemptMs: Record<ReviewTier, number>;
 	fallbackAttemptMs: number;

@@ -410,6 +410,56 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
+	test("defers the synthesis cap across review-tool turns so later lanes are not starved", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: {
+				deadlines: {
+					attemptMs: { light: 30_000, medium: 30_000, heavy: 30_000 },
+					fallbackAttemptMs: 30_000,
+					batchMs: 60_000,
+					synthesisMs: 10_000,
+					totalMs: 120_000,
+					terminationGraceMs: 100,
+					cleanupReserveMs: 1_000,
+					minimumFallbackMs: 10_000,
+				},
+			},
+		});
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(harness.loopCoordinator.peek()?.prNumber).toBe(7);
+		// Step-2 discovery turn: a review tool runs and its turn ends, arming the cap.
+		await harness.emit("tool_execution_start", {
+			toolCallId: "verify-1",
+			toolName: "pr_review_verify",
+			args: { action: "list" },
+		});
+		await harness.emit("tool_execution_end", { toolCallId: "verify-1" });
+		const discoveryMessage = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "verified list" }] };
+		await harness.emit("turn_end", { message: discoveryMessage, toolResults: [] });
+		// The orchestrator composes the batch call in a later turn while the cap is armed.
+		await harness.emit("turn_start", { turnIndex: 2, timestamp: Date.now() });
+		await harness.emit("tool_execution_start", {
+			toolCallId: "batch-1",
+			toolName: "review_subagents",
+			args: { passes: [] },
+		});
+		// Past the original 10s synthesis window, the lanes must still be running.
+		await new Promise((resolve) => setTimeout(resolve, 10_500));
+		let lease = harness.loopCoordinator.acquire(harness.ctx);
+		expect(lease?.signal.aborted).toBeFalse();
+		expect(harness.loopCoordinator.synthesisDeadlineExpired()).toBeFalse();
+		expect(harness.abortCount()).toBe(0);
+		// The batch turn settles: the cap re-arms for the synthesis phase only.
+		await harness.emit("tool_execution_end", { toolCallId: "batch-1" });
+		const batchMessage = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "batch done" }] };
+		await harness.emit("turn_end", { message: batchMessage, toolResults: [] });
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(harness.loopCoordinator.synthesisDeadlineExpired()).toBeFalse();
+		lease = harness.loopCoordinator.acquire(harness.ctx);
+		expect(lease?.signal.aborted).toBeFalse();
+		harness.loopCoordinator.clear();
+	}, 30_000);
+
 	test("generation-fences a replaced preflight so its late settlement cannot revoke the successor", async () => {
 		const harness = createHarness([], session, { repositoryDelayMs: 250 });
 		const first = harness.emit("input", { text: "/pr-review 7", source: "interactive" });

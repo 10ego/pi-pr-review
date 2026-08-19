@@ -21,7 +21,7 @@ import {
 	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
-import { createReviewBudget, type DeadlineResolution, type ReviewBudget } from "./pr-review-deadlines.ts";
+import { createReviewBudget, type DeadlineResolution, type ReviewBudget, type ReviewDeadlineKind } from "./pr-review-deadlines.ts";
 import { monotonicNow } from "./pr-review-telemetry.ts";
 
 export const REVIEW_LOOP_TOOL_NAMES = [
@@ -46,6 +46,30 @@ interface ReviewLoopBinding {
 	synthesisTimer?: ReturnType<typeof setTimeout>;
 	synthesisStarted: boolean;
 	deadlineKind?: "total" | "synthesis";
+}
+
+export type { ReviewDeadlineKind };
+
+export interface ReviewDeadlineError extends Error {
+	readonly reviewDeadlineKind: ReviewDeadlineKind;
+}
+
+const REVIEW_DEADLINE_KIND_PATTERN = /review (total|synthesis) deadline expired/i;
+
+/** Host deadline aborts carry a typed kind so classification never depends on message text alone. */
+export function reviewDeadlineError(kind: ReviewDeadlineKind): ReviewDeadlineError {
+	return Object.assign(new Error(`review ${kind} deadline expired`), {
+		reviewDeadlineKind: kind,
+	}) as ReviewDeadlineError;
+}
+
+/** Identify the host total/synthesis deadline behind an abort reason, if any. */
+export function reviewDeadlineKindOf(reason: unknown): ReviewDeadlineKind | undefined {
+	if (!(reason instanceof Error)) return undefined;
+	const typed = (reason as Partial<ReviewDeadlineError>).reviewDeadlineKind;
+	if (typed === "total" || typed === "synthesis") return typed;
+	const matched = REVIEW_DEADLINE_KIND_PATTERN.exec(reason.message);
+	return matched ? (matched[1]!.toLowerCase() as ReviewDeadlineKind) : undefined;
 }
 
 export interface ReviewLoopLease {
@@ -171,7 +195,7 @@ export class ReviewLoopCoordinator {
 				if (this.binding !== binding || binding.deadlineKind) return;
 				binding.deadlineKind = "total";
 				if (binding.synthesisTimer) clearTimeout(binding.synthesisTimer);
-				binding.controller.abort(new Error("review total deadline expired"));
+				binding.controller.abort(reviewDeadlineError("total"));
 				this.setToolsEnabled(false);
 				try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
 			}, activeAllowanceMs);
@@ -246,16 +270,57 @@ export class ReviewLoopCoordinator {
 			activeTotalDeadline,
 		);
 		const expire = () => {
-			if (this.binding !== binding || binding.deadlineKind) return;
+			// A deferral between scheduling and firing must not abort live review work.
+			if (this.binding !== binding || binding.deadlineKind || !binding.synthesisStarted) return;
 			binding.deadlineKind = "synthesis";
 			if (binding.totalTimer) clearTimeout(binding.totalTimer);
-			binding.controller.abort(new Error("review synthesis deadline expired"));
+			binding.controller.abort(reviewDeadlineError("synthesis"));
 			this.setToolsEnabled(false);
 			try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
 		};
 		const remaining = synthesisDeadline - monotonicNow();
 		if (remaining <= 0) queueMicrotask(expire);
 		else binding.synthesisTimer = setTimeout(expire, remaining);
+		return true;
+	}
+
+	/**
+	 * Postpone an armed, unexpired synthesis cap because review work is active
+	 * again. The cap re-arms the next time a turn ends with review tools done;
+	 * an expired or never-armed binding is left untouched.
+	 */
+	deferSynthesis(
+		generation: number,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		const binding = this.binding;
+		if (!binding || binding.generation !== generation || !sameBinding(binding, ctx)) return false;
+		return this.disarmSynthesis(binding);
+	}
+
+	/**
+	 * Defer the armed synthesis cap for the current binding without acquiring a
+	 * lease. Unlike acquire(), this never clears an aborted or expired binding,
+	 * so a turn that starts after a deadline expiry cannot destroy the retained
+	 * artifacts reserved for degraded synthesis. Returns the deferred generation.
+	 */
+	deferActiveSynthesis(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): number | undefined {
+		const binding = this.binding;
+		const phase = this.invocationGate.phase();
+		if (!binding || this.suspendedTools !== undefined || (phase !== "reviewing" && phase !== "confirmed")) {
+			return undefined;
+		}
+		if (!sameBinding(binding, ctx) || binding.controller.signal.aborted) return undefined;
+		return this.disarmSynthesis(binding) ? binding.generation : undefined;
+	}
+
+	private disarmSynthesis(binding: ReviewLoopBinding): boolean {
+		if (binding.deadlineKind || binding.controller.signal.aborted || !binding.synthesisStarted) return false;
+		if (binding.synthesisTimer) clearTimeout(binding.synthesisTimer);
+		binding.synthesisTimer = undefined;
+		binding.synthesisStarted = false;
 		return true;
 	}
 
