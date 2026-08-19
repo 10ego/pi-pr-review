@@ -522,6 +522,18 @@ describe("completed review extension lifecycle", () => {
 		expect(restoredProbe.payload()?.event).toBe("APPROVE");
 		expect(String(restoredProbe.payload()?.body)).not.toContain("Looks safe.");
 
+		const tamperedData = structuredClone(persisted!.data) as Record<string, unknown>;
+		tamperedData.laneArtifacts = [];
+		const tampered = createHarness([
+			{ type: "custom", id: "markdown-tampered-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: tamperedData },
+		]);
+		await tampered.emit("session_start", { reason: "reload" });
+		const tamperedProbe = installPublishingProbe();
+		await tampered.commands.get("pr-review-publish")!("7", tampered.ctx);
+		expect(tamperedProbe.postCount()).toBe(1);
+		expect(tamperedProbe.payload()?.event).toBe("COMMENT");
+		expect(String(tamperedProbe.payload()?.body)).toContain("**Verdict:** Comment");
+
 		const stale = createHarness([
 			{ type: "custom", id: "markdown-stale-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data },
 		]);

@@ -202,6 +202,20 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.verdict).toBe("comment");
 	});
 
+	test("never derives approval from a lazy blockquote continuation", () => {
+		const lazy = markdown.replace("**Verdict:** comment", "> Quoted paragraph\n**Verdict:** approve");
+		const hidden = synthesizeReviewArtifact({ rawText: lazy, ...binding, laneArtifacts: [completeLane] });
+		expect(hidden.quality).toBe("raw");
+		expect(hidden.review.verdict).toBe("comment");
+		expect(hidden.mergeApprovalEligible).toBe(false);
+
+		const topLevel = lazy.replace("> Quoted paragraph\n", "> Quoted paragraph\n\n");
+		const visible = synthesizeReviewArtifact({ rawText: topLevel, ...binding, laneArtifacts: [completeLane] });
+		expect(visible.quality).toBe("fully_parsed");
+		expect(visible.review.verdict).toBe("approve");
+		expect(visible.mergeApprovalEligible).toBe(true);
+	});
+
 	test.each([
 		["top-level", "### [P1] Hidden outside Findings"],
 		["blockquoted", "> ### [P1] Hidden outside Findings"],

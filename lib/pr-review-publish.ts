@@ -786,13 +786,25 @@ export class CompletedReviewCache {
 		const completeness = value.completeness === "complete" || value.completeness === "incomplete"
 			? value.completeness
 			: undefined;
-		const mergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
+		const persistedMergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
 			? value.mergeApprovalEligible
 			: undefined;
+		// Never trust a persisted true independently of the evidence it claims to
+		// summarize. Current-schema restored approvals require a fully parsed,
+		// complete artifact and at least one validated complete host lane. Legacy
+		// records without this field retain their pre-field compatibility behavior.
+		const mergeApprovalEligible = persistedMergeApprovalEligible === true
+			? quality === "fully_parsed" && completeness === "complete" && !!laneArtifacts?.length &&
+				laneArtifacts.every((lane) => lane.lifecycle === "complete")
+			: persistedMergeApprovalEligible;
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
 			: undefined;
-		this.replace(parsed.review, invocation, value.repository, {
+		const restoredReview = persistedMergeApprovalEligible === true && mergeApprovalEligible === false &&
+			parsed.review.verdict === "approve"
+			? { ...parsed.review, verdict: "comment" }
+			: parsed.review;
+		this.replace(restoredReview, invocation, value.repository, {
 			...(publicationBody ? { publicationBody } : {}),
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),

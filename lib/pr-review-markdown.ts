@@ -96,7 +96,7 @@ function markdownStructure(text: string): { headings: MarkdownHeading[]; visible
 	};
 	let fence: { marker: "`" | "~"; length: number } | undefined;
 	let htmlBlock: HtmlBlock | undefined;
-	let paragraph: { index: number; lines: string[] } | undefined;
+	let paragraph: { index: number; lines: string[]; blockquote: boolean } | undefined;
 	let offset = 0;
 	for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
 		const line = lines[lineIndex]!;
@@ -117,6 +117,20 @@ function markdownStructure(text: string): { headings: MarkdownHeading[]; visible
 			continue;
 		}
 		const htmlStart = htmlBlockStart(line);
+		const atxStart = /^ {0,3}#{1,6}(?:[ \t]+|$)/.test(line);
+		const validFenceStart = !!fenceMatch && (fenceMatch[1]![0] === "~" || !fenceMatch[2]!.includes("`"));
+		// CommonMark permits a blockquote paragraph to continue lazily without a
+		// `>` marker. Such a line is still quoted content, so it cannot supply a
+		// host control field such as Verdict. Block constructs that interrupt a
+		// paragraph are processed normally below.
+		if (
+			paragraph?.blockquote && !/^ {0,3}>/.test(line) && line.trim() &&
+			!htmlStart && !atxStart && !validFenceStart
+		) {
+			hide(lineIndex);
+			offset += line.length + 1;
+			continue;
+		}
 		if (htmlStart && !("cannotInterruptParagraph" in htmlStart && htmlStart.cannotInterruptParagraph && paragraph)) {
 			hide(lineIndex);
 			paragraph = undefined;
@@ -124,9 +138,9 @@ function markdownStructure(text: string): { headings: MarkdownHeading[]; visible
 			offset += line.length + 1;
 			continue;
 		}
-		if (fenceMatch && (fenceMatch[1]![0] === "~" || !fenceMatch[2]!.includes("`"))) {
+		if (validFenceStart) {
 			hide(lineIndex);
-			fence = { marker: fenceMatch[1]![0] as "`" | "~", length: fenceMatch[1]!.length };
+			fence = { marker: fenceMatch![1]![0] as "`" | "~", length: fenceMatch![1]!.length };
 			paragraph = undefined;
 			offset += line.length + 1;
 			continue;
@@ -152,7 +166,10 @@ function markdownStructure(text: string): { headings: MarkdownHeading[]; visible
 			offset += line.length + 1;
 			continue;
 		}
-		paragraph ??= { index: offset, lines: [] };
+		const blockquote = /^ {0,3}>/.test(line);
+		if (!paragraph || (blockquote && !paragraph.blockquote)) {
+			paragraph = { index: offset, lines: [], blockquote };
+		}
 		paragraph.lines.push(paragraphLine.trim());
 
 		// A setext underline applies to the complete preceding paragraph, whose
