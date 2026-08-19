@@ -247,6 +247,11 @@ function section(text: string, name: string): string | undefined {
 	return markdownSection(text, name)?.body;
 }
 
+function documentPreamble(text: string): string {
+	const firstSection = markdownHeadings(text).find((heading) => heading.level === 2);
+	return firstSection ? text.slice(0, firstSection.index) : text;
+}
+
 function field(text: string, name: string): string | undefined {
 	const match = new RegExp(`^\\*\\*${name}:\\*\\*\\s*(.+?)\\s*$`, "im").exec(markdownVisibleText(text));
 	return match?.[1]?.trim();
@@ -646,10 +651,13 @@ export function synthesizeReviewArtifact(input: {
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
-	const verdict = field(raw, "Verdict")?.toLowerCase().replace(/[ -]+/g, "_");
+	const preamble = documentPreamble(raw);
+	const verdictField = field(preamble, "Verdict");
+	const verdict = verdictField?.toLowerCase().replace(/[ -]+/g, "_");
 	const extractedControlsSafe = publicationSafeText(overview) && publicationSafeText(verification) &&
-		publicationSafeText(laneDisclosure) && publicationSafeText(field(raw, "Verdict")) &&
-		new Set(["approve", "request_changes", "comment"]).has(verdict ?? "") && fieldCount(raw, "Verdict") === 1;
+		publicationSafeText(laneDisclosure) && publicationSafeText(verdictField) &&
+		new Set(["approve", "request_changes", "comment"]).has(verdict ?? "") &&
+		fieldCount(preamble, "Verdict") === 1 && fieldCount(raw, "Verdict") === 1;
 	const canonicalParsed = parsed.unsafe ? parsed : { ...parsed, unsafe: !extractedControlsSafe };
 	const completeness = synthesisCompleteness(raw, lanes, laneDisclosureClaimsComplete);
 	const hasStructure = !!overview && !!verification && laneDisclosureClaimsComplete && extractedControlsSafe;

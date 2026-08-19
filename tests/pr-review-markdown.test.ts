@@ -203,6 +203,19 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.verdict).toBe("comment");
 	});
 
+	test("rejects a visible Verdict field inside a canonical section", () => {
+		const rawText = markdown
+			.replace("**Verdict:** comment\n\n", "")
+			.replace("Preserve the semantic review.", "Preserve the semantic review.\n\n**Verdict:** approve");
+		const artifact = synthesizeReviewArtifact({
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.quality).toBe("raw");
+		expect(artifact.review.verdict).toBe("comment");
+		expect(artifact.mergeApprovalEligible).toBe(false);
+		expect(artifact.body).toContain("**Verdict:** approve");
+	});
+
 	test.each([
 		["blockquote", "> Quoted paragraph"],
 		["list item", "- Listed paragraph"],
