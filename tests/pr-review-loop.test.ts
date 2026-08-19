@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+	reviewDeadlineError,
+	reviewDeadlineKindOf,
 	REVIEW_LOOP_TOOL_NAMES,
 	ReviewLoopCoordinator,
 } from "../lib/pr-review-loop.ts";
@@ -298,6 +300,88 @@ describe("review-loop authority", () => {
 		await new Promise((resolve) => setTimeout(resolve, 45));
 		expect(publisher.retain({})).toBeFalse();
 		h.coordinator.clear();
+	});
+
+	test("defers an armed synthesis cap while review work runs again and re-arms from the new turn end", async () => {
+		const h = harness();
+		let deadlineCallbacks = 0;
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any,
+			true, false, "off", undefined,
+			{
+				source: "default", warnings: [],
+				config: {
+					attemptMs: { light: 200, medium: 200, heavy: 200 }, fallbackAttemptMs: 200,
+					batchMs: 500, synthesisMs: 25, totalMs: 2_000, terminationGraceMs: 10,
+					cleanupReserveMs: 10, minimumFallbackMs: 10,
+				},
+			},
+			() => deadlineCallbacks++,
+		);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		// First review-tool turn ends: the synthesis cap arms with a 25ms window.
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		// Review work resumes before expiry (turn start / review tool start).
+		expect(h.coordinator.deferSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(deadlineCallbacks).toBe(0);
+		expect(h.coordinator.synthesisDeadlineExpired()).toBeFalse();
+		expect(lease.signal.aborted).toBeFalse();
+		// The follow-up turn ends: the cap re-arms with a fresh window and still expires.
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(deadlineCallbacks).toBe(1);
+		expect(h.coordinator.synthesisDeadlineExpired()).toBeTrue();
+		expect(reviewDeadlineKindOf(lease.signal.reason)).toBe("synthesis");
+		h.coordinator.clear();
+	});
+
+	test("a deferral inside the immediate-expiry window cancels the pending cap", async () => {
+		const h = harness();
+		let deadlineCallbacks = 0;
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any,
+			true, false, "off", undefined,
+			{
+				source: "default", warnings: [],
+				config: {
+					attemptMs: { light: 500, medium: 500, heavy: 500 }, fallbackAttemptMs: 500,
+					batchMs: 500, synthesisMs: 0, totalMs: 2_000, terminationGraceMs: 10,
+					cleanupReserveMs: 10, minimumFallbackMs: 10,
+				},
+			},
+			() => deadlineCallbacks++,
+		);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		// The cap is scheduled on a microtask; deferring first must win the race.
+		expect(h.coordinator.deferSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(deadlineCallbacks).toBe(0);
+		expect(lease.signal.aborted).toBeFalse();
+		h.coordinator.clear();
+	});
+
+	test("deferSynthesis rejects never-armed, foreign, and expired bindings", () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any,
+		);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.deferSynthesis(lease.generation, h.ctx as any)).toBeFalse();
+		expect(h.coordinator.deferSynthesis(lease.generation + 1, h.ctx as any)).toBeFalse();
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.deferSynthesis(lease.generation + 1, h.ctx as any)).toBeFalse();
+		h.coordinator.clear();
+	});
+
+	test("typed deadline aborts disclose their kind without relying on message text", () => {
+		expect(reviewDeadlineKindOf(reviewDeadlineError("total"))).toBe("total");
+		expect(reviewDeadlineKindOf(reviewDeadlineError("synthesis"))).toBe("synthesis");
+		expect(reviewDeadlineKindOf(new Error("review SYNTHESIS deadline expired"))).toBe("synthesis");
+		expect(reviewDeadlineKindOf(new Error("unrelated abort"))).toBeUndefined();
+		expect(reviewDeadlineKindOf("review synthesis deadline expired")).toBeUndefined();
+		expect(reviewDeadlineKindOf(undefined)).toBeUndefined();
 	});
 
 	test("fails closed when the session identity or cwd changes", () => {

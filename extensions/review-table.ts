@@ -781,13 +781,29 @@ export default function registerReviewTable(
 		}
 	});
 
+	pi.on("turn_start", (_event, ctx) => {
+		// A turn that begins after review work (even without a review tool in
+		// flight, e.g. while the orchestrator composes the batch call) means the
+		// synthesis phase is not active. Postpone the armed cap and re-arm it at
+		// this turn's end so early review-tool turns cannot starve later lanes.
+		if (!loopCoordinator.peek()) return;
+		const lease = loopCoordinator.acquire(ctx);
+		if (!lease) return;
+		if (loopCoordinator.deferSynthesis(lease.generation, ctx)) {
+			generationsReadyForSynthesis.add(lease.generation);
+		}
+	});
+
 	pi.on("tool_execution_start", (event, ctx) => {
 		if (!loopCoordinator.peek()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
 		const lease = loopCoordinator.acquire(ctx);
 		if (!lease) return;
 		activeToolGenerations.set(event.toolCallId, lease.generation);
-		if (reviewToolNames.has(event.toolName)) generationsWithReviewTools.add(lease.generation);
+		if (reviewToolNames.has(event.toolName)) {
+			generationsWithReviewTools.add(lease.generation);
+			loopCoordinator.deferSynthesis(lease.generation, ctx);
+		}
 	});
 
 	pi.on("tool_execution_end", (event) => {
@@ -804,6 +820,7 @@ export default function registerReviewTable(
 		// turn_end includes the complete tool-result set for the assistant turn.
 		// Start the synthesis cap here rather than at the first tool end so
 		// sequential or concurrently settling tool calls cannot consume it early.
+		// Turns that deferred the cap re-arm it here with a fresh synthesis window.
 		for (const generation of generationsReadyForSynthesis) {
 			generationsReadyForSynthesis.delete(generation);
 			loopCoordinator.beginSynthesis(generation, ctx);
