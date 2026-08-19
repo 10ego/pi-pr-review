@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 mock.module("@earendil-works/pi-ai", () => ({
 	StringEnum: () => ({}),
@@ -153,6 +155,251 @@ describe("review tool execution gate", () => {
 		await h.commands.get("pr-review-config")!("show", h.ctx);
 		expect(lease.signal.aborted).toBeTrue();
 		expect(h.activeTools()).toEqual(["read"]);
+	});
+
+	test("ordinary review_subagents retains multipart final output in content, details, and artifacts", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-ordinary-multipart-"));
+		const child = path.join(root, "child.mjs");
+		const laneText = [
+			"- title: [P2] Preserve all lane evidence",
+			"- severity: P2",
+			"- why: multipart output must remain authoritative",
+			"- location: extensions/pr-review-subagent.ts:1-2",
+			"- side: RIGHT",
+			"- in_diff: yes",
+			"- pr_related: yes",
+			"- confidence: 0.99",
+		].join("\n");
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => {
+				const text = ${JSON.stringify(laneText)};
+				process.stdout.write(JSON.stringify({ type: "message_end", message: {
+					role: "assistant", model: "provider/observed", stopReason: "stop",
+					content: [
+						{ type: "text", text: text.slice(0, 73) },
+						{ type: "thinking", text: "ignored" },
+						{ type: "text", text: text.slice(73) },
+					],
+				} }));
+			});
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-multipart",
+				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				undefined,
+				undefined,
+				h.ctx,
+			);
+			expect(result.isError).not.toBeTrue();
+			expect(result.content[0].text).toContain(laneText);
+			expect(result.details.results[0]).toMatchObject({ rawText: laneText, model: "provider/observed", status: "complete" });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({
+				rawText: laneText,
+				observedModel: "provider/observed",
+				lifecycle: "complete",
+			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("ordinary review_subagents accepts an exit-zero unterminated NO FINDINGS event", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-ordinary-no-findings-"));
+		const child = path.join(root, "child.mjs");
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "NO FINDINGS." }] },
+			})));
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-no-findings",
+				{ passes: [{ id: "security", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				undefined, undefined, h.ctx,
+			);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details.results[0]).toMatchObject({ rawText: "NO FINDINGS.", status: "complete" });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({ rawText: "NO FINDINGS.", lifecycle: "complete" });
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("assigns and preserves explicit identities for every shard while keeping unsharded IDs compatible", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-explicit-shards-"));
+		const child = path.join(root, "child.mjs");
+		const diff = path.join(root, "repo", "diff.patch");
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "NO FINDINGS." }] },
+			})));
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			writeFileSync(diff, [
+				"diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1 @@", "-a", "+aa",
+				"diff --git a/b.ts b/b.ts", "--- a/b.ts", "+++ b/b.ts", "@@ -1 +1 @@", "-b", "+bb",
+			].join("\n"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-shards",
+				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context_file: diff, shard_count: 2 },
+				undefined, undefined, h.ctx,
+			);
+			expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			expect(result.details.scheduling.intervals.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			expect(result.content[0].text).toContain("## Pass: correctness-shard-1");
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("ordinary review_subagents retains canonical delta-only text when the child exits before message_end", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-ordinary-delta-"));
+		const child = path.join(root, "child.mjs");
+		const earlier = "earlier assistant turn";
+		const partial = "partial focus-visible evidence";
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => {
+				console.log(JSON.stringify({ type: "message_start", message: {
+					role: "assistant", model: "provider/tool-turn", content: [],
+				} }));
+				console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: {
+					type: "text_delta", delta: ${JSON.stringify(earlier)},
+				} }));
+				console.log(JSON.stringify({ type: "message_end", message: {
+					role: "assistant", model: "provider/tool-turn", stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "read-1", name: "read", arguments: {} }],
+				} }));
+				console.log(JSON.stringify({ type: "message_start", message: {
+					role: "assistant", model: "provider/delta-only", content: [],
+				} }));
+				for (const delta of [${JSON.stringify(partial.slice(0, 13))}, ${JSON.stringify(partial.slice(13))}]) {
+					console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: {
+						type: "text_delta", delta,
+					} }));
+				}
+			});
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-delta",
+				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				undefined,
+				undefined,
+				h.ctx,
+			);
+			const focusPass = h.coordinator.focusSnapshot(h.ctx)?.passes[0];
+			expect(result.isError).toBeTrue();
+			expect(result.content[0].text).toContain(partial);
+			expect(result.content[0].text).not.toContain(earlier);
+			expect(result.details.results[0]).toMatchObject({ rawText: partial, model: "provider/delta-only", status: "partial" });
+			expect(focusPass).toMatchObject({ assistantText: partial, model: "provider/delta-only", status: "partial" });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({
+				rawText: partial,
+				observedModel: "provider/delta-only",
+				lifecycle: "partial",
+			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("completes a batch with one lane timed out while retaining its partial output", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-deadline-batch-"));
+		const child = path.join(root, "child.mjs");
+		const complete = [
+			"- title: [P2] Complete bounded lane", "- severity: P2", "- why: fixture",
+			"- location: file.ts:1-1", "- side: RIGHT", "- in_diff: yes",
+			"- pr_related: yes", "- confidence: 0.9",
+		].join("\n");
+		writeFileSync(child, `
+			let input = "";
+			process.stdin.on("data", chunk => input += chunk);
+			process.stdin.on("end", () => {
+				if (input.includes("slow lane")) {
+					console.log(JSON.stringify({ type: "message_start", message: { role: "assistant", model: "fixture/slow", content: [] } }));
+					console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "partial slow evidence" } }));
+					setInterval(() => {}, 1000);
+				} else {
+					console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", model: "fixture/fast", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(complete)} }] } }));
+				}
+			});
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(
+				parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx,
+				true, false, "off", undefined,
+				{ source: "default", warnings: [], config: {
+					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 2_000,
+					batchMs: 1_000, synthesisMs: 100, totalMs: 1_300, terminationGraceMs: 50,
+					cleanupReserveMs: 50, minimumFallbackMs: 100,
+				} },
+			);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-deadline",
+				{ passes: [
+					{ id: "fast", tier: "heavy", objective: "fast lane" },
+					{ id: "slow", tier: "heavy", objective: "slow lane" },
+				], max_parallel: 2 },
+				undefined, undefined, h.ctx,
+			);
+			expect(result.isError).toBeTrue();
+			expect(result.details.lifecycleCounts).toEqual({ complete: 1, partial: 0, timed_out: 1, failed: 0 });
+			expect(result.details.results[0]).toMatchObject({ id: "fast", status: "complete" });
+			expect(result.details.results[1]).toMatchObject({ id: "slow", status: "timed_out", rawText: "partial slow evidence" });
+			expect(result.details.results[1].attempts[0]).toMatchObject({
+				configuredDeadlineMs: 2_000,
+			});
+			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(1_000);
+			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
+				configuredDeadlineMs: 2_000,
+			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test("the config command persists approval gates and explicit stale-approval opt-in", async () => {

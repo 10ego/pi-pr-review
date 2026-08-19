@@ -57,7 +57,7 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("For an ordinary diff use `max_parallel: 6`");
 		expect(prompt).toContain("mode-0600 temporary file is the exact base↔head `context_file`");
 		expect(prompt).toContain('gh pr diff $1 > "$diff_file" || { status=$?; rm -f -- "$diff_file"');
-		expect(prompt).toContain("remove it before every early return, skipped JSON, confirmation pause");
+		expect(prompt).toContain("remove it before every early return, skipped review, confirmation pause");
 		expect(prompt).toContain("first remove the captured temporary diff");
 		expect(prompt).toContain("Remove the captured temporary diff before stopping");
 		expect(prompt).toContain("Do not dump or embed the complete diff into the parent conversation");

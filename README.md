@@ -8,7 +8,7 @@ Give it a PR number and it will:
 - run focused review passes in parallel using models you choose;
 - validate candidate findings before reporting them;
 - render a structured review with severity, location, confidence, and verdict;
-- optionally publish one safe GitHub review with inline comments (`COMMENT` by default; gated `APPROVE` when configured).
+- optionally publish one safe GitHub review with inline comments (fully parsed, complete Markdown and strict host-bound JSON share the same gated `APPROVE` path; degraded reviews remain `COMMENT`).
 
 The default review prioritizes P0–P2 defects and allows up to three minor findings. Use `--full` for exhaustive convention, maintainability, and minor coverage.
 
@@ -45,7 +45,7 @@ Then review a PR in the current repository:
 /pr-review 123
 ```
 
-In the TUI, the result is rendered as a readable review. In `print`, `json`, and `rpc` modes, Pi returns the raw JSON payload.
+The semantic result is predictable human-readable Markdown in every mode. GitHub request JSON is generated only by host code and is never a model output contract.
 
 ## Review modes
 
@@ -90,7 +90,9 @@ Viewer controls:
 | `Home` / `End` | Jump to the start or resume following live output. |
 | `Esc` | Return to the main thread without cancelling the review. |
 
-The view shows pass status, attempt/model, tool names and completion state, and bounded assistant output. It never stores the pass objective, input context, captured diff, raw child events, tool arguments, tool results, or stderr. Assistant text is sanitized and capped at 48 KiB per pass and 256 KiB across the active review; older text is evicted with an on-screen marker. State exists only in memory for the active session/cwd-bound `/pr-review` generation and is synchronously purged on completion, cancellation, replacement, or session/tree lifecycle changes.
+The view shows pass status, attempt/model, tool names and completion state, and bounded assistant output. It never stores the pass objective, input context, captured diff, raw child events, tool arguments, tool results, or stderr. Assistant text is sanitized and capped at 48 KiB per pass and 256 KiB across the active review; older text is evicted with an on-screen marker.
+
+The bounded viewer is a projection, not the authoritative lane result. Separately, the host retains an invocation-scoped artifact for each lane with its exact final assistant text, lifecycle (`complete`, `partial`, `timed_out`, or `failed`), requested/observed model, process outcome, attempt/fallback history, scheduling offsets, timing, and tool-use counts. Both stores exist only in memory for the active session/cwd-bound `/pr-review` generation and are synchronously purged on completion, cancellation, replacement, or session/tree lifecycle changes.
 
 The viewer intentionally cannot send prompts, steering, or follow-ups to reviewers. It is unavailable in print, JSON, and RPC modes and outside an active user-initiated `/pr-review` loop.
 
@@ -153,6 +155,16 @@ Example:
     "heavy": "configured"
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
+  "deadlines": {
+    "attemptMs": { "light": 180000, "medium": 360000, "heavy": 480000 },
+    "fallbackAttemptMs": 180000,
+    "batchMs": 720000,
+    "synthesisMs": 60000,
+    "totalMs": 900000,
+    "terminationGraceMs": 5000,
+    "cleanupReserveMs": 5000,
+    "minimumFallbackMs": 30000
+  },
   "autoPostReviews": false,
   "allowStalePublish": true,
   "allowStaleApprovals": false,
@@ -160,7 +172,15 @@ Example:
 }
 ```
 
-Tier subprocesses retry configured fallbacks only for retryable quota, rate-limit, or capacity failures. If a tier is unset, it uses the nearest configured tier and then Pi's default model.
+Every invocation has a host-owned monotonic 15-minute hard cap, including the two GitHub identity/lifecycle preflights, synthesis, termination grace, and reserved cleanup. The dependent preflight calls share the one invocation budget, so they cannot each add an independent command timeout before review timing begins. Defaults bound light/medium/heavy attempts to 3/6/8 minutes, a fallback attempt to 3 minutes, and the concurrent batch to 12 minutes. The complete `deadlines` object may be replaced at user scope or by a trusted project; partial, malformed, non-integer, out-of-range, or internally inconsistent objects are rejected as a unit and the last valid/default finite budget remains active. Supported inclusive ranges are: attempts 30–720 seconds, fallback 30–360 seconds, batch 60–840 seconds, synthesis 10–120 seconds, total 120–1200 seconds, TERM grace 0.1–15 seconds, cleanup reserve 1–30 seconds, and minimum useful fallback 10–120 seconds. Minimum fallback must not exceed its attempt cap, and batch + synthesis + termination grace + cleanup must fit inside total.
+
+A timed-out or retryable quota/rate-limit/capacity lane may start at most one configured fallback attempt. It starts only when at least `minimumFallbackMs` plus cleanup reserve remains; the host never changes the configured model, thinking level, or tool policy to save time. If a tier is unset, its existing nearest-configured-tier/Pi-default behavior is unchanged.
+
+On an attempt deadline the host records timeout separately from user cancellation, sends TERM to the original child, waits only `terminationGraceMs`, then sends KILL if no exit was observed and stops draining after the cleanup reserve. Partial assistant text and telemetry survive this lifecycle. Batch/total expiry stops queued work and waiting lanes; completed and partial artifacts proceed to Markdown synthesis or deterministic lane assembly, identify every incomplete lens/shard, and remain eligible for the safe body-only `COMMENT` publication path. A timed-out lane is never reported as `NO FINDINGS` or full coverage.
+
+Initial operating targets are ordinary-review p50 ≤ 6 minutes and p95 ≤ 12 minutes, and large-review p50 ≤ 10 minutes and p95 ≤ 14 minutes, with the 15-minute hard cap authoritative. Invocation telemetry starts before GitHub preflight and records configured deadline source/caps, termination grace, cleanup reserve, and active wall time; batch details record first event/output timing, lifecycle counts, configured and effective batch-truncated attempt deadlines, fallback starts/budget rejections, and termination grace/escalation data. These are initial production targets, not a promise that every provider completes before its host deadline.
+
+Ordinary reviewer output is reconstructed from every text part of the authoritative final assistant message in order. A zero process exit is not enough to mark a lane complete: completion also requires a terminal `stop` and the expected lane sections (or an explicitly emitted `NO FINDINGS.` where that response is allowed). Empty success is never synthesized into `NO FINDINGS.`; length-limited, malformed, timed-out, and failed attempts retain their raw text with an explicit lifecycle. Batch details include raw text, attempt artifacts, lifecycle counts and elapsed totals, while the displayed batch remains in deterministic input order.
 
 ## One-shot self-review for top-level tasks
 
@@ -186,15 +206,15 @@ Publishing is off by default.
 /pr-review-config auto_post_reviews=true
 ```
 
-The extension owns normal publishing. After a successful review, it caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
+The extension owns normal publishing. Before review execution it captures repository, hostname, PR number/title, reviewed head, lifecycle state, posting/stale authority, and invocation identity independently of assistant text. After synthesis, it caches one validated completed review (the host-owned canonical artifact) per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
 
-If the agent's final review is not valid exact-contract JSON, the extension logs the reason and runs the configured `light` subagent once to reformat the completed output, with tools disabled and the original posting authority unchanged. If that correction is also invalid, the frozen invocation authorized publication, and the malformed content still contains a trustworthy requested-PR/reviewed-head binding, the extension asks the light model for one no-tools `COMMENT` payload. Host code validates that payload and performs the sole `gh` write while enforcing stale, draft, lifecycle, repository, authenticated-identity duplicate, and final-head gates. Without frozen publication authority or a trustworthy reviewed head, or after overlapping input, no fallback write is attempted.
+Review semantics are Markdown-first. A deterministic tolerant parser normalizes line endings, extracts complete findings when possible, and ignores heading-like text inside CommonMark fenced-code and HTML-block contexts. Ambiguous or partially parsed output preserves the complete original synthesis in one sanitized body-only `COMMENT`; completely malformed synthesis does the same, and absent synthesis becomes a deterministic body-only review assembled from retained complete/partial/failed lane artifacts. Reserved markers are sanitized, size limits are enforced, and the canonical marker is appended only by host code. Optional formatting repair is never required and can never suppress the raw fallback.
 
 You can publish the cache later with `/pr-review-publish 123`, or directly ask the agent to “post the inline review,” “post it as an inline review,” or “publish the review for PR #123.” The extension handles that request directly before an agent turn. `/pr-review-publish` and a matching direct request publish only the cache; they never start or rerun review agents. Unnumbered direct requests select the latest cached review for the current repository. Only fresh interactive/RPC input can use the direct path.
 
-Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; it never submits `REQUEST_CHANGES` or retries a rejected write with a fallback POST. It emits `COMMENT` by default, or a gated `APPROVE` when configured below. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only. A stale review additionally requires `allowStaleApprovals: true` before it may record `APPROVE`.
+Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; it never submits `REQUEST_CHANGES` or retries a rejected write with a fallback POST. Fully parsed Markdown with one complete retained artifact for every host-registered dispatch and the exact visible `All requested lanes completed.` disclosure may emit a gated `APPROVE` through the same host binding, priority, lifecycle, self-author, and stale checks as strict JSON. Verdict fields outside the document preamble, hidden in CommonMark code/HTML blocks, or inside lazy container continuations, severity-tagged headings outside `Findings`, partial or contradictory lane disclosures, malformed or unsafe output, and lane-fallback artifacts remain body-only `COMMENT` reviews. Cache restore reclassifies persisted lane output and requires the exact host-recorded artifact key set, with every complete artifact matching the frozen invocation generation, tier, and minor-hygiene contract, and re-synthesizes the retained raw text under that frozen binding before retaining approval eligibility. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. The concise top-level body starts with the verdict, points readers to inline findings, and places nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow under `Other Notes`; overview, verification, strengths, and transport diagnostics stay out of the public summary. The complete original Markdown remains retained internally; if the concise body plus its canonical marker exceeds GitHub's limit, the host uses its sanitized, size-bounded Markdown projection instead of dropping the review. Stale or authorized non-open reviews are body-only. A stale approval additionally requires `allowStaleApprovals: true`.
 
-All publication paths apply host-enforced safety gates: captured posting authority, repository and requested-PR binding, reviewed/current-head and stale policy, bounded bodies and payloads, draft and lifecycle checks, non-open authorization, authenticated-identity same-head duplicate detection, and a final head check. Validated review paths additionally enforce the full review contract and safe inline locations. The malformed-output fallback is body-only and COMMENT-only because it cannot provide full structured-review validation. Unknown or invalid states fail closed before a write.
+All publication paths apply host-enforced safety gates: captured posting authority, repository and requested-PR binding, reviewed/current-head and stale policy, bounded bodies and payloads, draft and lifecycle checks, non-open authorization, authenticated-identity same-head duplicate detection, and a final head check. Fully or partially parsed review paths additionally enforce safe inline locations. Raw and lane-assembled fallbacks are body-only and `COMMENT`-only; assistant text cannot select event, commit, repository, hostname, API path, or inline anchors. Unknown or invalid host states fail closed before a write.
 
 Stale publication is enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` use the setting captured when the review starts unless the command supplies the explicit override:
 
@@ -202,7 +222,7 @@ Stale publication is enabled by default through `allowStalePublish: true`; disab
 /pr-review-publish 123 --allow-stale
 ```
 
-A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. A stale publication remains `COMMENT` by default even when `approveMaxPriorityLevel` qualifies it; set trusted `allowStaleApprovals: true` before starting the review to permit its eligible `APPROVE`. Authorized non-open publications may record `APPROVE` when the priority gate qualifies the review. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
+A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. For a qualified fully parsed review, set trusted `allowStaleApprovals: true` before starting the review to permit an eligible stale `APPROVE`; authorized non-open publications may also approve when every host gate qualifies them. Degraded Markdown remains `COMMENT` in every lifecycle state. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
 
 ## Optional verification
 
@@ -251,14 +271,14 @@ Each finding includes:
 | `P3` | Low-priority improvement. |
 | `nit` | Trivial or optional. |
 
-The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to `P2`, `P3`, or `nit`, a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead. GitHub does not permit authors to approve their own PRs, so a self-authored PR is published as `COMMENT` even when it otherwise qualifies. A stale publication additionally requires `allowStaleApprovals: true`; authorized non-open publications do not.
+The semantic verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. `approveMaxPriorityLevel` applies equally to fully parsed, complete Markdown and retained strict host-bound JSON: when set to `P2`, `P3`, or `nit`, an otherwise-qualified review whose verdict is `approve` and whose findings are all at or below that level may publish as `APPROVE`. GitHub does not permit authors to approve their own PRs, degraded artifacts cannot approve, and a stale approval additionally requires `allowStaleApprovals: true`.
 
 | Setting | Behavior |
 |---|---|
 | `off` (default) | Always `COMMENT`; never auto-approve. |
-| `P2` | `APPROVE` if verdict is `approve` and all findings are P2/P3/nit. |
-| `P3` | `APPROVE` if verdict is `approve` and all findings are P3/nit. |
-| `nit` | `APPROVE` only if verdict is `approve` and all findings are nits. |
+| `P2` | `APPROVE` if a fully parsed, complete verdict is `approve` and all findings are P2/P3/nit. |
+| `P3` | `APPROVE` if a fully parsed, complete verdict is `approve` and all findings are P3/nit. |
+| `nit` | `APPROVE` if a fully parsed, complete verdict is `approve` and all findings are nits. |
 
 Configure it with `/pr-review-config approve_max_priority_level=P2`. To permit an eligible stale review to approve, also set `/pr-review-config allow_stale_approvals=true` before starting the review. Both settings follow the same user/project overlay pattern as `autoPostReviews`.
 

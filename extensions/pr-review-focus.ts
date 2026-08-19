@@ -24,6 +24,8 @@ function statusIcon(status: ReviewFocusPassSnapshot["status"]): string {
 		case "running": return "◉";
 		case "retrying": return "↻";
 		case "completed": return "✓";
+		case "partial": return "◐";
+		case "timed_out": return "◷";
 		case "failed": return "✗";
 		case "aborted": return "■";
 	}
@@ -35,6 +37,8 @@ function statusColor(status: ReviewFocusPassSnapshot["status"]): "muted" | "warn
 		case "running":
 		case "retrying": return "warning";
 		case "completed": return "success";
+		case "partial":
+		case "timed_out": return "warning";
 		case "failed":
 		case "aborted": return "error";
 	}

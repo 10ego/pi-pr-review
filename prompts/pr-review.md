@@ -1,16 +1,16 @@
 ---
-description: Review a GitHub Pull Request and return a structured JSON review (nit → P0)
+description: Review a GitHub Pull Request and return a Markdown review (nit → P0)
 argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced]"
 ---
 You are acting as a senior code reviewer for pull request **#$1** in the GitHub repository of the current working directory.
 
-Your job: fetch the PR, review the diff between its base branch and its head (merging) branch, and return **only** the structured JSON review defined under "OUTPUT FORMAT" at the end of this prompt.
+Your job: fetch the PR, review the diff between its base branch and its head (merging) branch, and return the predictable Markdown review defined under "OUTPUT FORMAT" at the end of this prompt.
 
 **Review philosophy — preserve major coverage, bound minor work.** By default, run four independent heavy lenses for substantiated P0–P2 defects and a light direct-diff hygiene scan that may report at most three P3/nit candidates. The **verdict** depends only on blocking P0/P1 findings. Use `--full` when a comprehensive convention/maintainability and all-severity review is worth the additional model and token cost. In every mode, leave out non-issues: something actually correct, unsubstantiated speculation, or a subjective preference with no concrete benefit.
 
 **Stay strictly in scope — review the PR, not the repository.** Every finding must be *caused by* or *directly relevant to* this PR's diff: the added/removed/modified lines and the code they **provably** affect. Do **not** flag pre-existing issues in code the PR does not touch, and do not turn this into a whole-codebase audit — if the same problem existed before this PR, leave it out. You may (and should) read surrounding files, callers, tests, and convention files for context or to confirm a finding, but reading them is not license to report unrelated problems you happen to see there. A cross-file finding is valid only when you can point to the specific code the change **provably** breaks or requires updating (e.g. a caller that must change because of this diff) — never on speculation that the change "might" affect something.
 
-> **OUTPUT CONTRACT — read this twice.** Your *entire* final message is the single JSON object defined under **OUTPUT FORMAT**, and nothing else: no prose, no Markdown, no headings, no code fences, and **not** the human-readable review. The overview, strengths, verification, notes, and verdict are **fields inside that JSON**, not text you write out. A separate renderer turns the JSON into the formatted table/report for humans — if you write the report yourself instead of the JSON, it will **not** render and the review will be considered failed. Do all your analysis with tools, then emit only the JSON object.
+> **OUTPUT CONTRACT — read this twice.** Your final message is a human-readable Markdown review, not a GitHub request payload. The extension captures the raw Markdown and deterministically extracts safe findings when possible; repository, PR, commit, event, hostname, and write authority always come from host state.
 
 Do **not** assume, name, or switch to any specific model. Model selection is configured by the user, never hardcoded here.
 
@@ -24,7 +24,7 @@ When `$@` includes `--full`, run the comprehensive six-pass topology: add the me
 
 ### Reviewer topology (parallel tiered subagents, with inline fallback)
 
-You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery when `--full` needs it, selecting at most one discovered trusted baseline name, final validation/classification, and JSON emission. The extension owns verification profile resolution, argv, deadlines, worktree, original-POSIX-group supervision, cleanup, and every GitHub write. You never perform direct GitHub writes. The extension captures invocation publishing intent and, after valid final JSON, owns any configured review publication. On a later turn, the extension intercepts a direct interactive/RPC request to post the completed cached review and publishes it without an agent turn. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
+You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery when `--full` needs it, selecting at most one discovered trusted baseline name, final validation/classification, and Markdown synthesis. The extension owns verification profile resolution, argv, deadlines, worktree, original-POSIX-group supervision, cleanup, and every GitHub write. You never perform direct GitHub writes. The extension captures invocation publishing intent and host target binding before execution, then owns any configured review publication after terminal synthesis. On a later turn, the extension intercepts a direct interactive/RPC request to post the completed cached review and publishes it without an agent turn. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
 
 If the `review_subagents` batch tool is available, prefer it over multiple single-pass calls. Fetch PR metadata and the unified diff once, gather any relevant convention-file excerpts, and use `pr_review_verify` with `action: "list"` to discover optional trusted user-level baseline names as described in Steps 2 and 6. Then call `review_subagents` with shared `context`, `max_parallel`, and ordered `passes`. When an applicable name exists, emit the `review_subagents` call and one `pr_review_verify` `action: "run"` call in the **same assistant turn** so Pi can run them concurrently; otherwise dispatch the batch without waiting and record why verification was skipped. Never supply or invent command/timeout overrides, and never replace an unavailable `pr_review_verify` with a prompt-owned `bash` worktree lifecycle. This guarantees bounded parallel fan-out without reducing review coverage. Use these available pass assignments:
 
@@ -45,7 +45,7 @@ When `--full` is present, add `conventions-maintainability`, omit `major_only`/`
 
 Set every pass's `tool_policy` exactly as shown. In the `review_subagents` tool call, `passes` must be a top-level JSON array of pass objects—not serialized JSON, XML-like markup, or content embedded in `context`. Shared `context` contains compact PR title/description, metadata, the full diff path, shard/file manifest, and strictly cross-cutting requirements; `context_file` is the captured complete unified diff. Put convention-file paths and excerpts only in the `conventions-maintainability` pass's own `context`. Do not collapse or serialize base or shard passes.
 
-If deterministic context assembly reports that required input is missing or truncated before dispatch (for example, an incomplete diff or unreadable applicable convention file), set `tool_policy: configured` for that affected pass instead of `none`. Do not ask the model to self-diagnose and rerun. If any pass returns `status: failed`, treat the review evidence as incomplete: rerun the failed pass with `review_subagent` using the same tool policy, or perform that pass inline before finalizing.
+If deterministic context assembly reports that required input is missing or truncated before dispatch (for example, an incomplete diff or unreadable applicable convention file), set `tool_policy: configured` for that affected pass instead of `none`. Do not ask the model to self-diagnose and rerun. Only `status: complete` is semantically complete. If any pass returns `partial`, `timed_out`, or `failed`, preserve and use its raw evidence, then rerun that pass with `review_subagent` using the same tool policy or cover it inline before finalizing.
 
 If `review_subagents` is unavailable but `review_subagent` is available, run the same pass assignments as individual `review_subagent` calls; emit independent calls in the same turn when the interface supports parallel tool calls. If neither subagent tool is available, perform every pass yourself inline on the current session model.
 
@@ -53,7 +53,7 @@ Tier→model mapping is set with `/pr-review-config`; if a tier is unset the sub
 
 Arguments for this run: `$@`
 - `$1` is the PR number (required).
-- `--comment` explicitly requests one GitHub review for this run, even when automatic posting is disabled. It is `COMMENT` by default and may be a gated `APPROVE` when approval configuration qualifies the final review.
+- `--comment` explicitly requests one GitHub review for this run, even when automatic posting is disabled. A fully parsed, complete Markdown review may qualify for host-gated `APPROVE`; degraded Markdown remains `COMMENT`, and assistant text never directly selects the GitHub event.
 - `--no-comment` suppresses posting for this run, even when automatic posting is enabled.
 - With no review-mode flag, use the balanced five-pass default.
 - `--balanced` explicitly selects the same balanced default for backward compatibility.
@@ -88,18 +88,18 @@ repo_host=$(gh repo view --json url --jq .url | sed -E 's#https?://([^/]+)/.*#\1
 gh api --hostname "$repo_host" user --jq .login
 ```
 
-`baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA. The mode-0600 temporary file is the exact base↔head `context_file` for all five default/major-only passes (six in `--full` mode) and any failed-pass rerun. Treat this file as an invocation-scoped lease: remove it before every early return, skipped JSON, confirmation pause, declined confirmation, context-assembly failure, or other path that will not reach Step 7. Do not leave the confirmation question pending while the file exists; if the user later confirms, recapture the diff. Do not dump or embed the complete diff into the parent conversation: the subagents perform every full-diff lens, while you independently read candidate-specific hunks/surrounding code during final validation. If metadata alone cannot prove a trivial skip, review rather than skipping. Never use a truncated tool-output file as a substitute.
+`baseRefName` is the base branch, `headRefName` is the merging (head) branch, and `headRefOid` is the head commit SHA. The mode-0600 temporary file is the exact base↔head `context_file` for all five default/major-only passes (six in `--full` mode) and any failed-pass rerun. Treat this file as an invocation-scoped lease: remove it before every early return, skipped review, confirmation pause, declined confirmation, context-assembly failure, or other path that will not reach Step 7. Do not leave the confirmation question pending while the file exists; if the user later confirms, recapture the diff. Do not dump or embed the complete diff into the parent conversation: the subagents perform every full-diff lens, while you independently read candidate-specific hunks/surrounding code during final validation. If metadata alone cannot prove a trivial skip, review rather than skipping. Never use a truncated tool-output file as a substitute.
 
-**Non-open PR confirmation.** If `state` is not `OPEN` and neither `--include-closed` nor `--review-closed` was supplied, first remove the captured temporary diff, then do **not** hard-skip and do **not** emit the review JSON yet. Pause and ask exactly one confirmation question: `PR #$1 is <state> (head <headRefOid>). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.` This pre-review confirmation prompt is the only allowed non-JSON response. If the user confirms, continue from Step 2; if needed, rerun Step 1 first to refresh metadata/diff.
+**Non-open PR confirmation.** If `state` is not `OPEN` and neither `--include-closed` nor `--review-closed` was supplied, first remove the captured temporary diff, then do **not** hard-skip and do **not** emit the review yet. Pause and ask exactly one confirmation question: `PR #$1 is <state> (head <headRefOid>). Review it anyway? Reply yes, or rerun with --include-closed to proceed non-interactively.` This pre-review confirmation prompt is the only allowed response outside the final Markdown contract. If the user confirms, continue from Step 2; if needed, rerun Step 1 first to refresh metadata/diff.
 
-**Skip conditions.** Remove the captured temporary diff before stopping. Then stop immediately (emit the empty-findings JSON with `disposition: "skipped"`, `verdict: "approve"`, `overall_correctness: "patch is correct"`, and an explanation noting the skip) if any is true:
+**Skip conditions.** Remove the captured temporary diff before stopping. Then stop immediately with the Markdown contract, no findings, an `approve` verdict, and an overview explaining the skip if any is true:
 - The PR is a draft (`isDraft` == true).
 - The change obviously does not need review (automated/bot PR, or a trivial change that is clearly correct).
 - A prior `pi-pr-review` issue comment or formal review authored by the current `gh` identity exists with a hidden marker whose `headRefOid` exactly matches the current `headRefOid` (same PR head already reviewed by this identity). Do **not** skip for markers from another author, older markers with a different SHA, unmarked prior comments/reviews, or because the PR was AI-authored — review those normally.
 
 **Duplicate-review reconciliation.** Prior issue comments and formal review bodies are authoritative only when authored by the current `gh` identity and containing the exact marker form `<!-- pi-pr-review: {"schema":1,"headRefOid":"<full-head-SHA>"} -->`. If the marker SHA differs from the current `headRefOid`, the PR has new commits since the previous review, so continue and review the current diff. If prior content is unmarked, treat it as unknown/stale and continue; it cannot prove the current head was reviewed. The publishing extension performs an additional identity-scoped, paginated duplicate check immediately before any write.
 
-Otherwise continue and set final `disposition: "reviewed"`. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally. If publication is enabled, the extension folds inline findings into one body-only formal review; it is `COMMENT` by default and may be a gated `APPROVE`. The orchestrator still emits only JSON.
+Otherwise continue and set final `disposition: "reviewed"`. For closed/merged PRs that were explicitly confirmed or allowed with `--include-closed`/`--review-closed`, review the fetched base↔head diff normally. If publication is enabled, the extension folds findings into one body-only formal review. The orchestrator still emits only the Markdown review; it never constructs GitHub JSON or directly selects `APPROVE`.
 
 ## Step 2 — Gather project convention files
 
@@ -188,58 +188,49 @@ Only after the batch results (and any concurrently scheduled baseline result) ar
 
 ## GitHub review publication (extension-owned)
 
-The orchestrator must never call `gh` to post comments or reviews. Always finish by emitting the JSON contract below, regardless of posting configuration or flags. After valid final JSON, the extension decides whether to publish using trusted invocation state:
+The orchestrator must never call `gh` to post comments or reviews. Always finish by emitting the Markdown contract below, regardless of posting configuration or flags. After terminal synthesis, the extension decides whether to publish using trusted invocation state:
 
 - no posting flag → follow `autoPostReviews` (default `false`)
 - `--comment` → force publication for this run, but never bypass validation, stale-head checks, or duplicate checks
 - `--no-comment` → suppress publication for this run
 
-After exact-contract validation, the extension caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run. `/pr-review-publish` and a matching direct request publish only the cache and never start or rerun review agents. On a later turn, the extension intercepts that direct input before an agent turn and permits stale publication without asking the orchestrator to recreate the review.
+After host synthesis, the extension caches one validated completed review as a canonical host-owned artifact per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run. `/pr-review-publish` and a matching direct request publish only the cache and never start or rerun review agents. On a later turn, the extension intercepts that direct input before an agent turn and permits stale publication without asking the orchestrator to recreate the review.
 
-Every authorized publish path builds one GitHub review payload and sends at most one review `POST`. It is `COMMENT` by default, or `APPROVE` only when the trusted approval configuration qualifies an `approve` verdict; it never submits `REQUEST_CHANGES`. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale reviews and authorized closed or merged reviews are body-only. A stale review may record a qualified `APPROVE` only with the separate trusted `allowStaleApprovals: true` opt-in captured before review execution. A failed write never triggers a fallback POST.
+Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; the extension never submits `REQUEST_CHANGES`. Fully parsed Markdown with one complete retained artifact for every host-registered dispatch, the exact visible `All requested lanes completed.` disclosure, and retained strict host-bound JSON share the same gated `APPROVE` path. Verdict fields outside the document preamble, hidden in CommonMark code/HTML blocks, or inside lazy container continuations, severity-tagged headings outside `Findings`, contradictory lane disclosures, and partial, malformed, unsafe, or lane-fallback Markdown remain body-only `COMMENT`. Restored cache entries must reclassify retained lane output, reproduce the exact host-recorded artifact key set, and bind every complete artifact to the frozen invocation generation, tier, and minor-hygiene contract and re-synthesize the retained raw text under that frozen binding before preserving approval eligibility. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. The public body contains the verdict, an inline-review cue when applicable, and `Other Notes` for nits and every finding that cannot be inline; overview, verification, strengths, and transport diagnostics remain only in the retained internal artifact. If that concise body plus its canonical marker exceeds GitHub's limit, the host publishes the sanitized, size-bounded original Markdown projection instead of dropping the review. Stale reviews and authorized closed or merged reviews are body-only. A stale review may record a qualified `APPROVE` only with the separate trusted `allowStaleApprovals: true` opt-in captured before review execution. A failed write never triggers a fallback POST.
 
 Every path retains the same safety gates: captured posting authority, exact repository/PR/review binding, safe locations, no reserved review markers, bounded bodies and payloads, current-head and stale policy, draft and lifecycle checks, non-open authorization, same-head duplicate detection, and a final head check. Unknown lifecycle states and unconfirmed non-open writes fail closed. The session-backed cache survives extension reloads and session resumes but remains bound to the originating session instance and repository. If the captured stale setting disabled publication, the user may explicitly run `/pr-review-publish <PR-NUM> --allow-stale`. Never rerun the review merely to change posting intent, and never attempt a direct GitHub write yourself.
 
 ---
 
-## OUTPUT FORMAT — your entire response MUST be exactly this JSON
+## OUTPUT FORMAT — Markdown-first semantic review
 
-Your final message must be **exactly one JSON object** matching the shape below and nothing else — no leading sentence like "Here is the review", no Markdown, no headings, no ``` fences, no trailing commentary. The first character you emit is `{` and the last is `}`. Put the narrative into the `overview`, `strengths`, `verification`, `notes`, and `verdict` fields; do not also write it as prose. (In an interactive terminal the JSON is rendered as a formatted review table; in print/json/rpc modes it stays raw JSON for automation.)
+Return Markdown using these stable headings. Do not emit a GitHub API payload and do not include `commit_id`, repository identity, hostname, PR number, event selection, or a `pi-pr-review` marker; the host owns all of those fields.
 
-```json
-{
-  "pr": { "number": 0, "title": "<PR title>", "head_sha": "<full headRefOid reviewed>" },
-  "disposition": "reviewed",
-  "verification": "<what you built/ran and the result, or why verification was limited>",
-  "overview": "<1-3 short Markdown paragraphs describing what the PR does>",
-  "strengths": ["<Markdown bullet>", "<Markdown bullet>"],
-  "findings": [
-    {
-      "title": "<= 80 chars, imperative, prefixed with [P0]|[P1]|[P2]|[P3]|[nit]",
-      "severity": "P0",
-      "blocking": true,
-      "body": "<valid Markdown: why it matters, with file/line citations and the conditions to trigger it>",
-      "confidence_score": 0.0,
-      "code_location": {
-        "absolute_file_path": "<repo-relative path exactly as in the diff, or null>",
-        "line_range": { "start": 0, "end": 0 },
-        "side": "RIGHT",
-        "commentable": true
-      }
-    }
-  ],
-  "notes": { "correctness": "", "security": "", "performance": "" },
-  "verdict": "approve",
-  "overall_correctness": "patch is correct",
-  "overall_explanation": "<1-3 sentence justification for the verdict>",
-  "overall_confidence_score": 0.0
-}
+```markdown
+# PR Review
+
+**Verdict:** approve | request_changes | comment
+
+## Overview
+<1–3 short paragraphs describing the change and the conclusion>
+
+## Verification
+<what ran and the result, or why verification was limited>
+
+## Findings
+
+### [P1] Imperative finding title
+**Severity:** P1
+**Rationale:** Concise Markdown explaining the trigger, impact, and source-grounded evidence.
+**Location:** `path/to/file.ts:10-12 RIGHT`
+
+## Lane completeness
+<name any failed, timed-out, or partial lane and how its retained evidence was handled; otherwise say all requested lanes completed>
+
+## Strengths and notes
+<useful strengths plus concise correctness, security, or performance notes>
 ```
 
-- `pr.head_sha` is the exact full `headRefOid` reviewed; the publisher rejects missing SHAs. Stale publication requires either a direct publish request intercepted by the extension, an invocation-captured `allowStalePublish: true` setting (the default), or the publish-only `--allow-stale` override; stale reviews are always body-only with both commit hashes disclosed.
-- `disposition` is exactly `"reviewed"` or `"skipped"`. The extension never publishes `skipped` results.
-- `verdict` is exactly `"approve"`, `"request_changes"`, or `"comment"`.
-- `overall_correctness` is exactly `"patch is correct"` or `"patch is incorrect"`.
-- Each finding's `severity` is one of `P0|P1|P2|P3|nit` and must match its `[..]` title tag; `blocking` is `true` only for `P0`/`P1`.
-- `code_location` is diff-anchored so commentable findings can be posted inline: repo-relative `absolute_file_path`, `line_range` on `side` (new-file lines for `RIGHT`, old-file for `LEFT`), `side` = `RIGHT|LEFT`, and `commentable` = whether the lines are inside a diff hunk. Use `null` (or `commentable: false`) for repo-wide/out-of-diff observations.
-- By default and in `--balanced`, emit all surviving P0–P2 findings plus at most three surviving direct-diff P3/nit findings from the overview hygiene scan. In `--major-only`, emit only P0–P2 findings and return an empty `findings` array when no major candidate survives validation. In `--full`, capture every qualifying severity, nits included. In every mode, fill in `overview`, `strengths`, `notes`, and the verdict.
+Repeat the `###` finding block for every confirmed finding. Omit `Location` when no safe diff location exists. Use `No findings.` under `## Findings` when empty. The extension retains the complete raw synthesis even when some or all finding blocks cannot be parsed. Canonical heading discovery ignores heading-like content in CommonMark fenced-code and HTML-block contexts. It validates safe P0–P3 anchors for inline placement, preserves ambiguous or unparsed substantive content in exactly one sanitized body-only `COMMENT`, and degrades malformed synthesis the same way; if synthesis is absent, it assembles a deterministic body-only review from retained lane artifacts. Optional formatting repair can never block this fallback.
+
+Host code captures repository, PR, reviewed head, lifecycle, posting authority, stale policy, and invocation identity before review execution, serializes the single GitHub request with `JSON.stringify`, sanitizes reserved markers, enforces payload limits, appends the canonical marker, and performs duplicate/stale/draft/lifecycle/final-head checks. The assistant's semantic `approve` is only one input to the host gates; assistant text cannot directly choose `APPROVE`, `REQUEST_CHANGES`, commit ID, API path, repository, or hostname. Parent candidate validation must gather all independent evidence in one wave and use at most one dependency-driven follow-up, as specified in Step 7.

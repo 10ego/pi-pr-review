@@ -7,6 +7,7 @@ import {
 	type PublishModeParseResult,
 	type ReviewInvocation,
 	type ReviewInvocationPhase,
+	type ReviewHostBinding,
 } from "./pr-review-publish.ts";
 import {
 	ReviewFocusRegistry,
@@ -15,6 +16,13 @@ import {
 	type ReviewFocusSnapshot,
 	type ReviewFocusSubscriber,
 } from "./pr-review-focus.ts";
+import {
+	ReviewLaneArtifactRegistry,
+	type ExpectedReviewLane,
+	type ReviewLaneArtifact,
+} from "./pr-review-artifacts.ts";
+import { createReviewBudget, type DeadlineResolution, type ReviewBudget } from "./pr-review-deadlines.ts";
+import { monotonicNow } from "./pr-review-telemetry.ts";
 
 export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagent",
@@ -32,15 +40,26 @@ interface ReviewLoopBinding {
 	readonly sessionId: string;
 	readonly sessionStartedAt?: string;
 	readonly controller: AbortController;
+	readonly budget?: ReviewBudget;
+	readonly onDeadline?: () => void;
+	totalTimer?: ReturnType<typeof setTimeout>;
+	synthesisTimer?: ReturnType<typeof setTimeout>;
+	synthesisStarted: boolean;
+	deadlineKind?: "total" | "synthesis";
 }
 
 export interface ReviewLoopLease {
 	readonly generation: number;
 	readonly signal: AbortSignal;
+	readonly budget?: ReviewBudget;
 }
 
 export interface ReviewFocusPublisher {
 	publish(event: ReviewFocusPassEvent): boolean;
+}
+
+export interface ReviewArtifactPublisher {
+	retain(artifact: ReviewLaneArtifact): boolean;
 }
 
 function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
@@ -76,6 +95,7 @@ function sameBinding(
 export class ReviewLoopCoordinator {
 	private readonly invocationGate = new ReviewInvocationGate();
 	private readonly focusRegistry = new ReviewFocusRegistry();
+	private readonly artifactRegistry = new ReviewLaneArtifactRegistry();
 	private binding?: ReviewLoopBinding;
 	private suspendedTools?: string[];
 	private nextGeneration = 1;
@@ -106,25 +126,58 @@ export class ReviewLoopCoordinator {
 		allowStalePublish = true,
 		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
+		reviewBinding?: ReviewHostBinding,
+		deadlineResolution?: DeadlineResolution,
+		onTotalDeadline?: () => void,
+		budgetOverride?: ReviewBudget,
 	): { accepted: boolean; error?: string } {
 		if (source !== "interactive" && source !== "rpc") {
 			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
 		}
+		const current = sessionBinding(ctx);
+		const generation = this.nextGeneration;
+		const invocationBinding = reviewBinding ? {
+			...reviewBinding,
+			invocationGeneration: generation,
+			sessionId: current.sessionId,
+			...(current.sessionStartedAt ? { sessionStartedAt: current.sessionStartedAt } : {}),
+		} : undefined;
 		const started = this.invocationGate.begin(
 			parsed,
 			autoPost,
 			allowStalePublish,
 			allowStaleApprovals,
 			approveMaxPriorityLevel,
+			invocationBinding,
 		);
 		if (!started.accepted) return started;
-		const current = sessionBinding(ctx);
+		this.nextGeneration++;
+		const budget = budgetOverride ?? (deadlineResolution ? createReviewBudget(deadlineResolution) : undefined);
 		this.binding = {
-			generation: this.nextGeneration++,
+			generation,
 			...current,
 			controller: new AbortController(),
+			budget,
+			onDeadline: onTotalDeadline,
+			synthesisStarted: false,
 		};
+		if (budget) {
+			const binding = this.binding;
+			const activeAllowanceMs = Math.max(
+				1,
+				budget.totalDeadlineMs - budget.config.terminationGraceMs - budget.config.cleanupReserveMs - monotonicNow(),
+			);
+			binding.totalTimer = setTimeout(() => {
+				if (this.binding !== binding || binding.deadlineKind) return;
+				binding.deadlineKind = "total";
+				if (binding.synthesisTimer) clearTimeout(binding.synthesisTimer);
+				binding.controller.abort(new Error("review total deadline expired"));
+				this.setToolsEnabled(false);
+				try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
+			}, activeAllowanceMs);
+		}
 		this.focusRegistry.open(this.binding.generation);
+		this.artifactRegistry.open(this.binding.generation);
 		this.setToolsEnabled(true);
 		return { accepted: true };
 	}
@@ -171,7 +224,39 @@ export class ReviewLoopCoordinator {
 		return Object.freeze({
 			generation: this.binding.generation,
 			signal: this.binding.controller.signal,
+			budget: this.binding.budget,
 		});
+	}
+
+	beginSynthesis(
+		generation: number,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		const binding = this.binding;
+		if (!binding || binding.generation !== generation || !sameBinding(binding, ctx) || binding.controller.signal.aborted) {
+			return false;
+		}
+		if (binding.synthesisStarted) return true;
+		binding.synthesisStarted = true;
+		if (!binding.budget) return true;
+		const activeTotalDeadline = binding.budget.totalDeadlineMs -
+			binding.budget.config.terminationGraceMs - binding.budget.config.cleanupReserveMs;
+		const synthesisDeadline = Math.min(
+			monotonicNow() + binding.budget.config.synthesisMs,
+			activeTotalDeadline,
+		);
+		const expire = () => {
+			if (this.binding !== binding || binding.deadlineKind) return;
+			binding.deadlineKind = "synthesis";
+			if (binding.totalTimer) clearTimeout(binding.totalTimer);
+			binding.controller.abort(new Error("review synthesis deadline expired"));
+			this.setToolsEnabled(false);
+			try { binding.onDeadline?.(); } catch { /* lifecycle callback is best-effort */ }
+		};
+		const remaining = synthesisDeadline - monotonicNow();
+		if (remaining <= 0) queueMicrotask(expire);
+		else binding.synthesisTimer = setTimeout(expire, remaining);
+		return true;
 	}
 
 	isLeaseActive(
@@ -184,7 +269,7 @@ export class ReviewLoopCoordinator {
 			!lease.signal.aborted &&
 			(this.phase() === "reviewing" || this.phase() === "confirmed") &&
 			sameBinding(this.binding, ctx);
-		if (!active && this.binding?.generation === lease.generation) this.clear();
+		if (!active && this.binding?.generation === lease.generation && !this.binding.deadlineKind) this.clear();
 		return active;
 	}
 
@@ -201,6 +286,74 @@ export class ReviewLoopCoordinator {
 				return this.focusRegistry.publish(lease.generation, descriptor.key, event);
 			},
 		});
+	}
+
+	registerExpectedArtifacts(
+		lease: ReviewLoopLease,
+		lanes: readonly ExpectedReviewLane[],
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, lanes);
+	}
+
+	createArtifactPublisher(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): ReviewArtifactPublisher | undefined {
+		if (!this.isLeaseActive(lease, ctx)) return undefined;
+		return Object.freeze({
+			retain: (artifact: ReviewLaneArtifact) => {
+				const active = this.isLeaseActive(lease, ctx);
+				const binding = this.binding;
+				const withinTerminationWindow = !active && !!binding?.deadlineKind &&
+					binding.generation === lease.generation && !!binding.budget &&
+					sameBinding(binding, ctx) && monotonicNow() <= binding.budget.totalDeadlineMs;
+				if (!active && !withinTerminationWindow) return false;
+				return this.artifactRegistry.retain(lease.generation, artifact);
+			},
+		});
+	}
+
+	expectedArtifactDescriptors(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): readonly ExpectedReviewLane[] | undefined {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
+			return this.artifactRegistry.expected(this.binding.generation);
+		}
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.expected(lease.generation) : undefined;
+	}
+
+	expectedArtifactCount(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): number | undefined {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
+			return this.artifactRegistry.expectedCount(this.binding.generation);
+		}
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.expectedCount(lease.generation) : undefined;
+	}
+
+	artifactSnapshot(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): readonly ReviewLaneArtifact[] | undefined {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
+			return this.artifactRegistry.snapshot(this.binding.generation);
+		}
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.snapshot(lease.generation) : undefined;
+	}
+
+	deadlineExpired(): boolean {
+		return this.binding?.deadlineKind !== undefined;
+	}
+
+	totalDeadlineExpired(): boolean {
+		return this.binding?.deadlineKind === "total";
+	}
+
+	synthesisDeadlineExpired(): boolean {
+		return this.binding?.deadlineKind === "synthesis";
 	}
 
 	focusSnapshot(
@@ -279,8 +432,13 @@ export class ReviewLoopCoordinator {
 	}
 
 	private revokeBinding(): void {
+		if (this.binding?.totalTimer) clearTimeout(this.binding.totalTimer);
+		if (this.binding?.synthesisTimer) clearTimeout(this.binding.synthesisTimer);
 		const generation = this.binding?.generation;
-		if (generation !== undefined) this.focusRegistry.close(generation);
+		if (generation !== undefined) {
+			this.focusRegistry.close(generation);
+			this.artifactRegistry.close(generation);
+		}
 		this.binding?.controller.abort();
 		this.binding = undefined;
 		const suspendedTools = this.suspendedTools;

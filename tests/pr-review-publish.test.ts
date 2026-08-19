@@ -31,6 +31,8 @@ import {
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
+	resolveRepositoryBinding,
+	resolveReviewHostBinding,
 	APPROVE_EVENT,
 	findingsWithinApproveMaxPriority,
 	shouldApproveReview,
@@ -41,6 +43,126 @@ import {
 	validateReviewInvocation,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
+
+describe("review host binding preflight", () => {
+	test("shares one deadline across dependent GitHub reads and never starts the second after timeout", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-deadline-"));
+		const gh = join(dir, "gh");
+		const calls = join(dir, "calls.log");
+		writeFileSync(gh, `#!/usr/bin/env bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+if [[ "$*" == "repo view --json nameWithOwner,url" ]]; then
+  sleep 1
+  echo '{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}'
+else
+  echo 'second preflight must not start' >&2
+  exit 1
+fi
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveReviewHostBinding(dir, 7, { deadlineMs: startedAt + 500 })).rejects.toThrow(
+				"gh command timed out",
+			);
+			expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+				"repo view --json nameWithOwner,url",
+			]);
+		} finally {
+			process.env.PATH = previousPath;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("settles a timed-out read only after bounded minimum TERM/KILL cleanup with no child left running", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-cleanup-"));
+		const gh = join(dir, "gh");
+		const floated = join(dir, "floated");
+		writeFileSync(gh, `#!/usr/bin/env bash
+trap '' TERM
+( sleep 2; printf floated > ${JSON.stringify(floated)} ) &
+wait
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveReviewHostBinding(dir, 7, {
+				deadlineMs: startedAt + 50,
+				terminationGraceMs: 100,
+				cleanupReserveMs: 1_000,
+			})).rejects.toThrow("gh command timed out");
+			const elapsedMs = Number(process.hrtime.bigint()) / 1_000_000 - startedAt;
+			expect(elapsedMs).toBeGreaterThanOrEqual(40);
+			expect(elapsedMs).toBeLessThan(1_150);
+			await new Promise((resolve) => setTimeout(resolve, 2_050));
+			expect(existsSync(floated)).toBe(false);
+		} finally {
+			process.env.PATH = previousPath;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("kills a redirected same-group descendant after the GitHub leader closes first", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-binding-leader-close-"));
+		const gh = join(dir, "gh");
+		const ready = join(dir, "descendant.pid");
+		const floated = join(dir, "floated");
+		const descendant = `
+const { writeFileSync } = require("node:fs");
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+setTimeout(() => writeFileSync(${JSON.stringify(floated)}, "floated"), 350);
+`;
+		writeFileSync(gh, `#!${process.execPath}
+const { existsSync } = require("node:fs");
+const { spawn } = require("node:child_process");
+if (process.argv.slice(2).join(" ") !== "repo view --json nameWithOwner,url") process.exit(2);
+spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: "ignore" });
+const deadline = Date.now() + 1_000;
+const readyPoll = setInterval(() => {
+  if (existsSync(${JSON.stringify(ready)})) {
+    clearInterval(readyPoll);
+    process.stdout.write('{"nameWithOwner":"owner/repo","url":"https://github.com/owner/repo"}\\n', () => process.exit(0));
+  } else if (Date.now() >= deadline) {
+    clearInterval(readyPoll);
+    process.exit(3);
+  }
+}, 5);
+`);
+		chmodSync(gh, 0o755);
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}:${previousPath ?? ""}`;
+		try {
+			const startedAt = Number(process.hrtime.bigint()) / 1_000_000;
+			await expect(resolveRepositoryBinding(dir, {
+				deadlineMs: startedAt + 1_500,
+				terminationGraceMs: 100,
+				cleanupReserveMs: 300,
+			})).resolves.toEqual({ hostname: "github.com", repository: "owner/repo" });
+			const elapsedMs = Number(process.hrtime.bigint()) / 1_000_000 - startedAt;
+			// Resolution must include the required grace/KILL and still settle before
+			// the shared deadline. Allow scheduler contention; descendant death and
+			// the floated-side-effect assertion below prove bounded cleanup directly.
+			expect(elapsedMs).toBeGreaterThanOrEqual(75);
+			expect(elapsedMs).toBeLessThan(1_400);
+			const descendantPid = Number(readFileSync(ready, "utf8"));
+			await new Promise((resolve) => setTimeout(resolve, 375));
+			expect(existsSync(floated)).toBe(false);
+			expect(() => process.kill(descendantPid, 0)).toThrow();
+		} finally {
+			process.env.PATH = previousPath;
+			if (existsSync(ready)) {
+				const descendantPid = Number(readFileSync(ready, "utf8"));
+				try { process.kill(descendantPid, "SIGKILL"); } catch { /* best effort */ }
+			}
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 const review: ReviewLike = {
 	pr: { number: 7, title: "Test review", head_sha: "a".repeat(40) },
@@ -111,6 +233,7 @@ async function diagnosePullPublication(
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 		prAuthor?: string;
 		bodyOnly?: string;
+		fallbackPublicationBody?: string;
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -211,6 +334,7 @@ fi
 					allowStaleApprovals: options.allowStaleApprovals ?? false,
 					approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 					review: candidateReview,
+					fallbackPublicationBody: options.fallbackPublicationBody,
 				})
 			: await publishPullReviewBody({ ...common, body: options.bodyOnly });
 		return {
@@ -825,6 +949,32 @@ describe("publish-only completed review command", () => {
 		).toBeFalse();
 	});
 
+	test("persists and restores canonical synthesis diagnostics independently of the assistant reference", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const lane = {
+			generation: 1, key: "call:0", passId: "correctness", requestedPassOrdinal: 0, tier: "heavy" as const,
+			rawText: "partial lane evidence", exitCode: 1, lifecycle: "partial" as const, attempts: [], fallbackUsed: false,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		};
+		const record = cache.replace(review, invocation, repository, {
+			rawText: "raw synthesis", laneArtifacts: [lane], completeness: "incomplete", diagnostics: ["one lane was partial"],
+			synthesisQuality: "partially_parsed", publicationBody: "safe body",
+		}).record;
+		const persisted = cache.persist(record, sessionA, "review-message", review);
+		expect(persisted).toMatchObject({
+			reviewEntryId: "review-message", rawText: "raw synthesis", completeness: "incomplete",
+			diagnostics: ["one lane was partial"], laneArtifacts: [{ passId: "correctness", rawText: "partial lane evidence" }],
+		});
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted, sessionA, review)).toBeTrue();
+		expect(restored.get(7, repository)).toMatchObject({
+			rawText: "raw synthesis", completeness: "incomplete", diagnostics: ["one lane was partial"],
+			laneArtifacts: [{ passId: "correctness", rawText: "partial lane evidence" }],
+		});
+	});
+
 	test("restores referenced reviews without duplicating raw JSON", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
@@ -881,8 +1031,8 @@ describe("publish-only completed review command", () => {
 		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
 		expect(turnEnd).toContain("publishCompletedReview(pending.record");
 		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
-		// The live response and a light-subagent repair output are both strictly parsed.
-		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(2);
+		// Legacy exact JSON is parsed once; Markdown/raw synthesis follows the host-owned artifact path.
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
 		expect(extension).toContain("no publish-only cache is available");
 	});
 
@@ -1058,7 +1208,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
-		expect(readme).toContain("runs the configured `light` subagent once to reformat the completed output");
+		expect(readme).toContain("Optional formatting repair is never required and can never suppress the raw fallback");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
@@ -1075,7 +1225,8 @@ fi
 			expect(document).toContain("`autoPostReviews` and `--comment` publish that cached review after completion");
 			expect(document).toContain("builds one GitHub review payload and sends at most one review `POST`");
 			expect(document).toContain("first 50 eligible P0–P3 findings with valid, unique diff anchors are inline");
-			expect(document).toContain("All other findings that pass content validation stay in the top-level review body");
+			expect(document).toContain("`Other Notes`");
+			expect(document).toContain("overview, verification");
 		}
 	});
 });
@@ -1192,8 +1343,10 @@ describe("assistant completion safety", () => {
 });
 
 describe("strict publication parsing", () => {
-	test("accepts the complete exact JSON contract", () => {
-		expect(parsePublishableReview(JSON.stringify(review)).review?.pr?.number).toBe(7);
+	test("accepts the complete exact JSON contract with non-Markdown provenance", () => {
+		const parsed = parsePublishableReview(JSON.stringify(review));
+		expect(parsed.review?.pr?.number).toBe(7);
+		expect(parsed.source).toBe("json");
 	});
 
 	test("rejects prose and partial objects", () => {
@@ -1201,15 +1354,17 @@ describe("strict publication parsing", () => {
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
 	});
 
-	test("auto-heals a Markdown-fenced review object", () => {
-		// A model that wraps the review in a ```json fence must still parse without
-		// triggering an output-repair round-trip.
+	test("auto-heals a Markdown-fenced review object while retaining Markdown provenance", () => {
+		// A model that wraps the review in a ```json fence can still be parsed for
+		// compatibility, but must not become approval-capable strict JSON.
 		const fenced = (lang: string) => `\`\`\`${lang}\n${JSON.stringify(review)}\n\`\`\``;
-		expect(parsePublishableReview(fenced("json")).review?.pr?.number).toBe(7);
-		expect(parsePublishableReview(fenced("")).review?.pr?.number).toBe(7);
-		expect(parsePublishableReview(fenced("JSON")).review?.pr?.number).toBe(7);
-		// Surrounding whitespace around the fence is tolerated.
-		expect(parsePublishableReview(`\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n`).review?.pr?.number).toBe(7);
+		for (const text of [fenced("json"), fenced(""), fenced("JSON")]) {
+			const parsed = parsePublishableReview(text);
+			expect(parsed.review?.pr?.number).toBe(7);
+			expect(parsed.source).toBe("markdown_fence");
+		}
+		// Surrounding whitespace around the fence is tolerated without erasing provenance.
+		expect(parsePublishableReview(`\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n`).source).toBe("markdown_fence");
 		// Prose before/after the fence, or an inner body that is not JSON, is still rejected.
 		expect(parsePublishableReview(`here it is\n${fenced("json")}`).review).toBeUndefined();
 		expect(parsePublishableReview(`\`\`\`json\nnot an object\n\`\`\``).review).toBeUndefined();
@@ -1289,10 +1444,12 @@ describe("single lossless publication payload", () => {
 		const body = String(diagnostic.payload?.body);
 		let previous = -1;
 		for (const item of expectedDiagnostics) {
-			const at = body.indexOf(item);
+			const at = diagnostic.result.message.indexOf(item);
 			expect(at).toBeGreaterThan(previous);
+			expect(body).not.toContain(item);
 			previous = at;
 		}
+		expect(body).toContain("### Other Notes");
 		const payloadText = JSON.stringify(diagnostic.payload);
 		for (const findingBody of [
 			"First body.",
@@ -1360,6 +1517,52 @@ describe("single lossless publication payload", () => {
 		expect(degraded.postCount).toBe(0);
 	});
 
+	test("falls back to retained synthesis when the concise approval body is oversized", async () => {
+		const findings = Array.from({ length: 70 }, (_, index) => ({
+			title: `[P3] Large note ${index + 1}`,
+			severity: "P3",
+			blocking: false,
+			body: `${index + 1}: ${"z".repeat(1_000)}`,
+			confidence_score: 0.9,
+			code_location: null,
+		}));
+		const large: ReviewLike = { ...review, findings, verdict: "approve" };
+		const retained = `# PR Review\n\n**Verdict:** approve\n\n${"Retained original review notes.\n".repeat(1_500)}`;
+		const diagnostic = await diagnosePullPublication(large, [], {
+			approveMaxPriorityLevel: "P3",
+			fallbackPublicationBody: retained,
+		});
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.payload?.event).toBe("APPROVE");
+		expect(String(diagnostic.payload?.body)).toContain("Retained original review notes.");
+		expect(String(diagnostic.payload?.body)).not.toContain("### Other Notes");
+	});
+
+	test("uses retained synthesis when only the canonical marker exceeds the body limit", async () => {
+		const markerSuffixBytes = Buffer.byteLength(`\n\n${canonicalReviewMarker("a".repeat(40))}`, "utf8");
+		const makeReview = (body: string): ReviewLike => ({
+			...review,
+			findings: [{
+				title: "[P3] Boundary note", severity: "P3", blocking: false, body,
+				confidence_score: 0.9, code_location: null,
+			}],
+		});
+		const initial = buildReviewSummary(makeReview("x"));
+		const desiredContentBytes = 65_536 - markerSuffixBytes + 1;
+		const rationaleBytes = desiredContentBytes - Buffer.byteLength(initial, "utf8") + 1;
+		const boundary = makeReview("x".repeat(rationaleBytes));
+		expect(Buffer.byteLength(buildReviewSummary(boundary), "utf8")).toBe(desiredContentBytes);
+
+		const diagnostic = await diagnosePullPublication(boundary, [], {
+			fallbackPublicationBody: "Retained compact synthesis.",
+		});
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(String(diagnostic.payload?.body)).toContain("Retained compact synthesis.");
+		expect(String(diagnostic.payload?.body)).not.toContain("Boundary note");
+	});
+
 	test("fails an oversized selected payload before POST", async () => {
 		const findingCount = 15;
 		const oversized: ReviewLike = {
@@ -1423,7 +1626,8 @@ describe("lossless publication diagnostics", () => {
 		expect(body).toContain("[P2] Handle empty input");
 		expect(body).toContain("Empty input currently returns the wrong value.");
 		expect(body).toContain("src/parser.ts:20 RIGHT");
-		expect(body).toContain(warning);
+		expect(body).toContain("### Other Notes");
+		expect(body).not.toContain(warning);
 	});
 
 	test("degrades changed-file command and JSON failures with one diagnostic and one POST", async () => {
@@ -1440,7 +1644,9 @@ describe("lossless publication diagnostics", () => {
 			expect(diagnostic.payload?.event).toBe("COMMENT");
 			expect(diagnostic.payload?.comments).toBeUndefined();
 			const body = String(diagnostic.payload?.body);
-			expect(body.match(new RegExp(warning, "g"))).toHaveLength(1);
+			expect(body).not.toContain(warning);
+			expect(diagnostic.result.message.match(new RegExp(warning, "g"))).toHaveLength(1);
+			expect(body).toContain("### Other Notes");
 			expect(body).not.toContain("path is not a changed file");
 			expect(body.split("Empty input currently returns the wrong value.")).toHaveLength(2);
 			expect(body.split("Optional naming cleanup.")).toHaveLength(2);
@@ -1507,7 +1713,8 @@ describe("lossless publication diagnostics", () => {
 		const body = String(diagnostic.payload?.body);
 		expect(body).toContain(`src/parser.ts:${inlineCount} RIGHT`);
 		expect(body).toContain(`Unique diagnostic body ${inlineCount}.`);
-		expect(body).toContain(warning);
+		expect(body).toContain("### Other Notes");
+		expect(body).not.toContain(warning);
 	});
 
 	test("does not build or send a fallback payload after a server rejection", async () => {
@@ -1568,10 +1775,11 @@ describe("atomic COMMENT review payload", () => {
 			],
 		};
 		const summary = buildReviewSummary(tolerant);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toStartWith("**Verdict:** Request changes");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).toContain("**[P2] Pipe | title continued** — `src/parser.ts:0 SIDEWAYS`");
 		expect(summary).toContain("The tolerant formatter still includes this body.");
-		expect(summary).toContain("**Verdict:** Request changes — The empty-input case is incorrect.");
+		expect(summary).not.toContain("The empty-input case is incorrect.");
 		for (const omitted of ["Code Review", "Verification", "Overview", "Strengths", "Correctness / Security / Performance", "Confidence"]) {
 			expect(summary).not.toContain(omitted);
 		}
@@ -1591,7 +1799,8 @@ describe("atomic COMMENT review payload", () => {
 		expect(validated.errors).toEqual([]);
 		expect(validated.comments).toHaveLength(1); // nits remain in the top-level summary
 		const summary = buildReviewSummary(review, validated.comments);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toContain("See the inline review comments for the primary findings.");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).not.toContain("[P2] Handle empty input");
 		expect(summary).toContain("[nit] Rename tmp");
 		const payload = buildPullReviewPayload("a".repeat(40), summary, validated.comments);
@@ -1717,7 +1926,7 @@ describe("atomic COMMENT review payload", () => {
 			"finding 1: diff patch is unavailable; kept in the review summary",
 		]);
 		const summary = buildReviewSummary(review, result.comments);
-		expect(summary).toContain("### Feedback");
+		expect(summary).toContain("### Other Notes");
 		expect(summary).toContain("[P2] Handle empty input");
 	});
 

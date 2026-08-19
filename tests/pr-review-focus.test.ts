@@ -30,6 +30,13 @@ describe("review focus JSONL decoding", () => {
 describe("review focus event normalization", () => {
 	test("accepts only assistant text and synthesized tool lifecycle metadata", () => {
 		expect(normalizeReviewFocusJsonEvent({
+			type: "message_start",
+			message: { role: "assistant", model: "provider/current", content: [] },
+		})).toEqual([
+			{ type: "model_observed", model: "provider/current" },
+			{ type: "assistant_snapshot", text: "" },
+		]);
+		expect(normalizeReviewFocusJsonEvent({
 			type: "message_update",
 			message: { role: "assistant", content: [{ type: "text", text: "partial" }] },
 			assistantMessageEvent: { type: "text_delta", delta: "ial" },

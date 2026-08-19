@@ -1,6 +1,9 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { classifyReviewLane, type ExpectedReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import { synthesizeReviewArtifact, type ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
+import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -231,10 +234,23 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	};
 }
 
+export interface ReviewHostBinding extends RepositoryBinding {
+	readonly prNumber: number;
+	readonly prTitle: string;
+	readonly reviewedHeadSha: string;
+	readonly state: string;
+	readonly draft: boolean;
+	readonly invocationGeneration?: number;
+	readonly sessionId?: string;
+	readonly sessionStartedAt?: string;
+}
+
 export interface ReviewInvocation {
 	readonly mode: PublishMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Host-resolved target captured before review execution; assistant output cannot override it. */
+	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
 	readonly allowStalePublish: boolean;
 	/** Trusted stale-approval setting captured before review execution begins. */
@@ -340,6 +356,7 @@ export class ReviewInvocationGate {
 		allowStalePublish = true,
 		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
+		reviewBinding?: ReviewHostBinding,
 	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
@@ -354,10 +371,14 @@ export class ReviewInvocationGate {
 			source: autoPost.source,
 			...(autoPost.error === undefined ? {} : { error: autoPost.error }),
 		});
+		if (reviewBinding && reviewBinding.prNumber !== parsed.prNumber) {
+			return { accepted: false, error: "host review binding does not match requested PR" };
+		}
 		this.active = Object.freeze({
 			mode: parsed.mode,
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,
 			autoPost: snapshot,
@@ -494,6 +515,18 @@ export interface CompletedReviewRecord {
 	review: ReviewLike;
 	invocation: ReviewInvocation;
 	repository: RepositoryBinding;
+	/** Preserved host-sanitized synthesis for partial/raw body publication. */
+	publicationBody?: string;
+	/** Raw/parsed degradation quality retained for diagnostics and cache replay. */
+	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
+	/** Canonical synthesis diagnostics retained independently of the assistant message. */
+	rawText?: string;
+	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
+	expectedLaneCount?: number;
+	completeness?: ReviewSynthesisCompleteness;
+	mergeApprovalEligible?: boolean;
+	diagnostics?: readonly string[];
 }
 
 export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
@@ -512,6 +545,15 @@ export interface PersistedCompletedReview {
 	reviewHash: string;
 	reviewEntryId?: string;
 	review?: ReviewLike;
+	publicationBody?: string;
+	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
+	rawText?: string;
+	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
+	expectedLaneCount?: number;
+	completeness?: ReviewSynthesisCompleteness;
+	mergeApprovalEligible?: boolean;
+	diagnostics?: readonly string[];
 }
 
 export interface CompletedReviewSessionEntryLike {
@@ -576,10 +618,30 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 	) {
 		return undefined;
 	}
+	const reviewBinding = value.reviewBinding;
+	const parsedBinding = isObject(reviewBinding) && validRepositoryBinding(reviewBinding) &&
+		Number.isInteger(reviewBinding.prNumber) && Number(reviewBinding.prNumber) === Number(value.prNumber) &&
+		typeof reviewBinding.prTitle === "string" &&
+		typeof reviewBinding.reviewedHeadSha === "string" && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(reviewBinding.reviewedHeadSha) &&
+		typeof reviewBinding.state === "string" && typeof reviewBinding.draft === "boolean"
+		? {
+			repository: String(reviewBinding.repository),
+			hostname: String(reviewBinding.hostname),
+			prNumber: Number(reviewBinding.prNumber),
+			prTitle: String(reviewBinding.prTitle),
+			reviewedHeadSha: String(reviewBinding.reviewedHeadSha).toLowerCase(),
+			state: String(reviewBinding.state),
+			draft: reviewBinding.draft,
+			...(Number.isInteger(reviewBinding.invocationGeneration) ? { invocationGeneration: Number(reviewBinding.invocationGeneration) } : {}),
+			...(typeof reviewBinding.sessionId === "string" ? { sessionId: reviewBinding.sessionId } : {}),
+			...(typeof reviewBinding.sessionStartedAt === "string" ? { sessionStartedAt: reviewBinding.sessionStartedAt } : {}),
+		} satisfies ReviewHostBinding
+		: undefined;
 	return {
 		mode: value.mode as PublishMode,
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		...(parsedBinding ? { reviewBinding: parsedBinding } : {}),
 		// Schema v2 records created before this setting existed inherit the new
 		// safe default: stale publication is body-only with both SHAs disclosed.
 		allowStalePublish: typeof value.allowStalePublish === "boolean" ? value.allowStalePublish : true,
@@ -598,6 +660,21 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 	};
 }
 
+function parsePersistedLaneArtifacts(value: unknown): readonly ReviewLaneArtifact[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const lifecycles = new Set(["complete", "partial", "timed_out", "failed"]);
+	const lanes = value.filter((lane): lane is Record<string, unknown> => isObject(lane));
+	if (lanes.length !== value.length || lanes.some((lane) =>
+		!Number.isInteger(lane.generation) || typeof lane.key !== "string" || typeof lane.passId !== "string" ||
+		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) ||
+		(lane.minorHygiene !== undefined && typeof lane.minorHygiene !== "boolean") || typeof lane.rawText !== "string" ||
+		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) || !Array.isArray(lane.attempts) ||
+		lane.attempts.some((attempt) => !isObject(attempt) || !Number.isInteger(attempt.ordinal) ||
+			typeof attempt.rawText !== "string" || !Number.isInteger(attempt.exitCode) || !lifecycles.has(String(attempt.lifecycle)))
+	)) return undefined;
+	return lanes as unknown as readonly ReviewLaneArtifact[];
+}
+
 /** Session-scoped latest completed review per repository and PR. */
 export class CompletedReviewCache {
 	private readonly reviews = new Map<string, CompletedReviewRecord>();
@@ -607,7 +684,12 @@ export class CompletedReviewCache {
 	}
 
 	/** Replace one PR record while retaining its predecessor for cancellation rollback. */
-	replace(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): {
+	replace(
+		review: ReviewLike,
+		invocation: ReviewInvocation,
+		repository: RepositoryBinding,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
 	} {
@@ -615,6 +697,19 @@ export class CompletedReviewCache {
 			review,
 			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
+			...(artifact?.publicationBody ? { publicationBody: artifact.publicationBody } : {}),
+			...(artifact?.synthesisQuality ? { synthesisQuality: artifact.synthesisQuality } : {}),
+			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
+			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
+			...(artifact?.expectedLaneDescriptors
+				? { expectedLaneDescriptors: artifact.expectedLaneDescriptors }
+				: {}),
+			...(Number.isInteger(artifact?.expectedLaneCount) ? { expectedLaneCount: artifact!.expectedLaneCount } : {}),
+			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
+			...(typeof artifact?.mergeApprovalEligible === "boolean"
+				? { mergeApprovalEligible: artifact.mergeApprovalEligible }
+				: {}),
+			...(artifact?.diagnostics ? { diagnostics: artifact.diagnostics } : {}),
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
 		const previous = this.reviews.get(key);
@@ -640,6 +735,19 @@ export class CompletedReviewCache {
 			repository: { ...record.repository },
 			reviewHash: digest,
 			...(useReference ? { reviewEntryId } : { review: record.review }),
+			...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
+			...(record.synthesisQuality ? { synthesisQuality: record.synthesisQuality } : {}),
+			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
+			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
+			...(record.expectedLaneDescriptors
+				? { expectedLaneDescriptors: record.expectedLaneDescriptors }
+				: {}),
+			...(Number.isInteger(record.expectedLaneCount) ? { expectedLaneCount: record.expectedLaneCount } : {}),
+			...(record.completeness ? { completeness: record.completeness } : {}),
+			...(typeof record.mergeApprovalEligible === "boolean"
+				? { mergeApprovalEligible: record.mergeApprovalEligible }
+				: {}),
+			...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
 		};
 	}
 
@@ -680,7 +788,93 @@ export class CompletedReviewCache {
 		) {
 			return false;
 		}
-		this.remember(parsed.review, invocation, value.repository);
+		const quality = new Set(["fully_parsed", "partially_parsed", "raw", "lane_fallback"]).has(String(value.synthesisQuality))
+			? value.synthesisQuality as CompletedReviewRecord["synthesisQuality"]
+			: undefined;
+		const publicationBody = typeof value.publicationBody === "string" && !validateReviewBody(value.publicationBody)
+			? value.publicationBody
+			: undefined;
+		const rawText = typeof value.rawText === "string" ? value.rawText : undefined;
+		const laneArtifacts = parsePersistedLaneArtifacts(value.laneArtifacts);
+		const expectedLaneDescriptors = Array.isArray(value.expectedLaneDescriptors) &&
+			value.expectedLaneDescriptors.length <= 200 && value.expectedLaneDescriptors.every((lane) =>
+				isObject(lane) && typeof lane.key === "string" && !!lane.key &&
+				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean") &&
+			new Set(value.expectedLaneDescriptors.map((lane) => (lane as Record<string, unknown>).key)).size ===
+				value.expectedLaneDescriptors.length
+			? value.expectedLaneDescriptors as unknown as ExpectedReviewLane[]
+			: undefined;
+		const expectedLaneCount = Number.isInteger(value.expectedLaneCount) && Number(value.expectedLaneCount) >= 0
+			? Number(value.expectedLaneCount)
+			: undefined;
+		const completeness = value.completeness === "complete" || value.completeness === "incomplete"
+			? value.completeness
+			: undefined;
+		const persistedMergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
+			? value.mergeApprovalEligible
+			: undefined;
+		// Never trust a persisted true independently of the evidence it claims to
+		// summarize. Current-schema restored approvals require a fully parsed,
+		// complete artifact and at least one validated complete host lane. Legacy
+		// records without this field retain their pre-field compatibility behavior.
+		const expectedGeneration = invocation.reviewBinding?.invocationGeneration;
+		let rawApprovalEvidenceValid = false;
+		if (persistedMergeApprovalEligible === true && rawText && invocation.reviewBinding) {
+			const rawStrict = parsePublishableReview(rawText);
+			const strictJsonReview = rawStrict.source === "json" && rawStrict.review &&
+				!validateReviewInvocation(rawStrict.review, invocation)
+				? rawStrict.review
+				: undefined;
+			const rebound = synthesizeReviewArtifact({
+				rawText,
+				prNumber: invocation.reviewBinding.prNumber,
+				prTitle: invocation.reviewBinding.prTitle,
+				headSha: invocation.reviewBinding.reviewedHeadSha,
+				laneArtifacts: laneArtifacts ?? [],
+				expectedLaneDescriptors: expectedLaneDescriptors ?? [],
+				...(strictJsonReview ? { strictJsonReview } : {}),
+			});
+			rawApprovalEvidenceValid = rebound.mergeApprovalEligible && rebound.review.verdict === "approve" &&
+				reviewHash(rebound.review) === reviewHash(parsed.review);
+		}
+		const mergeApprovalEligible = persistedMergeApprovalEligible === true
+			? rawApprovalEvidenceValid && quality === "fully_parsed" && completeness === "complete" &&
+				Number.isInteger(expectedGeneration) &&
+				Number.isInteger(expectedLaneCount) && Number(expectedLaneCount) > 0 &&
+				expectedLaneDescriptors?.length === expectedLaneCount && laneArtifacts?.length === expectedLaneCount &&
+				new Set(laneArtifacts.map((lane) => lane.key)).size === expectedLaneCount &&
+				laneArtifacts.every((lane) => {
+					const expected = expectedLaneDescriptors.find((candidate) => candidate.key === lane.key);
+					return !!expected && lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
+						lane.tier === expected.tier && !!lane.minorHygiene === expected.minorHygiene &&
+						classifyReviewLane({
+							tier: expected.tier,
+							minorHygiene: expected.minorHygiene,
+							rawText: lane.rawText,
+							exitCode: lane.exitCode,
+							stopReason: lane.stopReason,
+							errorMessage: lane.errorMessage,
+						}) === "complete";
+				})
+			: persistedMergeApprovalEligible;
+		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
+			? value.diagnostics as string[]
+			: undefined;
+		const restoredReview = persistedMergeApprovalEligible === true && mergeApprovalEligible === false &&
+			parsed.review.verdict === "approve"
+			? { ...parsed.review, verdict: "comment" }
+			: parsed.review;
+		this.replace(restoredReview, invocation, value.repository, {
+			...(publicationBody ? { publicationBody } : {}),
+			...(quality ? { synthesisQuality: quality } : {}),
+			...(rawText !== undefined ? { rawText } : {}),
+			...(laneArtifacts ? { laneArtifacts } : {}),
+			...(expectedLaneDescriptors ? { expectedLaneDescriptors } : {}),
+			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
+			...(completeness ? { completeness } : {}),
+			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
+			...(diagnostics ? { diagnostics } : {}),
+		});
 		return true;
 	}
 
@@ -762,6 +956,8 @@ export function restoreCompletedReviewBranch(
 export interface PublishableReviewParseResult {
 	review?: ReviewLike;
 	error?: string;
+	/** The assistant envelope that supplied a successfully validated review. */
+	source?: "json" | "markdown_fence";
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -773,25 +969,26 @@ function isConfidence(value: unknown): value is number {
 }
 
 /**
- * Strip a single surrounding Markdown fenced code block (```lang … ```) so a model
- * response that wraps the review object in a code fence — despite the instruction
- * to emit exactly one JSON object — can still be parsed without a repair round-trip.
+ * Identify a single surrounding Markdown fenced code block (```lang … ```) so a
+ * wrapped object can still be validated without losing its Markdown provenance.
  * Prose-wrapped or mixed drafts are intentionally left untouched (still rejected).
- * Returns the original text when there is no recognizable outer fence.
  */
-function stripMarkdownCodeFence(text: string): string {
+function publishableReviewEnvelope(text: string): { text: string; source: "json" | "markdown_fence" } {
 	const match = text.trim().match(/^```[^\n]*\n([\s\S]*)\n```[ \t]*$/);
-	return match ? match[1] : text;
+	return match
+		? { text: match[1]!, source: "markdown_fence" }
+		: { text, source: "json" };
 }
 
 /**
  * Publication accepts one complete JSON object. A single surrounding Markdown code
- * fence is tolerated and stripped; prose-wrapped or partial drafts are rejected.
+ * fence is tolerated for compatibility but remains distinguishable from exact JSON.
  */
 export function parsePublishableReview(text: string): PublishableReviewParseResult {
+	const envelope = publishableReviewEnvelope(text);
 	let value: unknown;
 	try {
-		value = JSON.parse(stripMarkdownCodeFence(text).trim());
+		value = JSON.parse(envelope.text.trim());
 	} catch {
 		return { error: "final response is not exactly one JSON object" };
 	}
@@ -847,7 +1044,7 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 	if (!isConfidence(value.overall_confidence_score)) {
 		return { error: "overall_confidence_score is invalid" };
 	}
-	return { review: value as unknown as ReviewLike };
+	return { review: value as unknown as ReviewLike, source: envelope.source };
 }
 
 export function shouldPublishReview(review: ReviewLike): boolean {
@@ -962,7 +1159,6 @@ function findingAnchor(finding: ReviewFindingLike): string | undefined {
 }
 
 export function buildReviewSummary(review: ReviewLike, inlineComments: PublishComment[] = []): string {
-	const lines: string[] = [];
 	const findings = Array.isArray(review.findings) ? review.findings : [];
 	const inlineAnchors = new Map<string, number>();
 	for (const comment of inlineComments) {
@@ -980,26 +1176,25 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 		return false;
 	});
 
-	if (findings.length === 0) {
-		lines.push("No issues found.", "");
-	} else if (summaryFindings.length === 0) {
-		lines.push("See inline feedback.", "");
-	} else {
-		lines.push("### Feedback", "");
-		for (const finding of summaryFindings) {
-			lines.push(`**${inlineText(String(finding.title ?? "Finding"))}** — \`${inlineText(findingLocation(finding))}\``);
-			if (finding.body?.trim()) lines.push(finding.body.trim());
-			lines.push("");
-		}
-	}
-
 	const verdict = review.verdict === "request_changes"
 		? "Request changes"
 		: review.verdict === "approve"
 			? "Approve"
 			: "Comment";
-	const explanation = review.overall_explanation?.trim();
-	lines.push(`**Verdict:** ${verdict}${explanation ? ` — ${explanation}` : ""}`);
+	const lines = [`**Verdict:** ${verdict}`];
+	if (inlineComments.length > 0) {
+		lines.push("", "See the inline review comments for the primary findings.");
+	}
+	if (summaryFindings.length > 0) {
+		lines.push("", "### Other Notes", "");
+		for (const finding of summaryFindings) {
+			const title = `**${inlineText(String(finding.title ?? "Finding"))}**`;
+			const location = findingLocation(finding);
+			lines.push(location === "summary-only" ? title : `${title} — \`${inlineText(location)}\``);
+			if (finding.body?.trim()) lines.push("", finding.body.trim());
+			lines.push("");
+		}
+	}
 	return lines.join("\n").trim();
 }
 
@@ -1208,6 +1403,8 @@ function buildLosslessReviewPayload(input: {
 	allowInlineComments: boolean;
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
+	bodyOverride?: string;
+	fallbackBodyOverride?: string;
 	diagnostics?: readonly string[];
 	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
@@ -1231,14 +1428,29 @@ function buildLosslessReviewPayload(input: {
 	diagnostics.push(...selected.diagnostics);
 	if (selected.errors.length > 0) return { diagnostics, errors: selected.errors };
 
-	let content = buildReviewSummary(input.review, selected.comments);
-	if (diagnostics.length > 0) {
-		content = `${content}\n\n### Publication diagnostics\n\n${diagnostics.map((item) => `- ${item}`).join("\n")}`;
-	}
+	// Inline-placement diagnostics remain available to the host notification,
+	// while every affected finding is retained under Other Notes. Do not expose
+	// transport diagnostics as if they were review findings.
+	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
-	const bodyError = validateReviewBody(content);
+	const marker = canonicalReviewMarker(markerHeadSha);
+	let bodyError = validateReviewBody(content);
+	const finalBodyTooLarge = Buffer.byteLength(`${content}\n\n${marker}`, "utf8") > MAX_BODY_BYTES;
+	if (
+		(bodyError === "review body exceeds 65536 UTF-8 bytes" || (!bodyError && finalBodyTooLarge)) &&
+		input.fallbackBodyOverride?.trim()
+	) {
+		const fallback = input.bodyPreamble?.trim()
+			? `${input.bodyPreamble.trim()}\n\n${input.fallbackBodyOverride.trim()}`
+			: input.fallbackBodyOverride.trim();
+		const fallbackError = validateReviewBody(fallback);
+		if (!fallbackError) {
+			content = fallback;
+			bodyError = undefined;
+		}
+	}
 	if (bodyError) return { diagnostics, errors: [bodyError] };
-	const body = `${content}\n\n${canonicalReviewMarker(markerHeadSha)}`;
+	const body = `${content}\n\n${marker}`;
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
 		return { diagnostics, errors: ["final review body exceeds 65536 UTF-8 bytes"] };
 	}
@@ -1262,19 +1474,142 @@ interface GhResult {
 	errorMessage?: string;
 }
 
-function runGh(args: string[], cwd: string, input?: string, timeoutMs = 60_000): Promise<GhResult> {
+const GH_COMMAND_TIMEOUT_MS = 60_000;
+
+interface GhCommandLifecycle {
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
+	readonly cleanupReserveMs?: number;
+}
+
+function runGh(
+	args: string[],
+	cwd: string,
+	input?: string,
+	timeoutMs = GH_COMMAND_TIMEOUT_MS,
+	lifecycle: GhCommandLifecycle = {},
+): Promise<GhResult> {
 	return new Promise((resolve) => {
 		let settled = false;
+		let closed = false;
+		let groupCleanupStarted = false;
 		let stdout = "";
 		let stderr = "";
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+		let groupKillDeadline: number | undefined;
+		let termination: "timeout" | "abort" | undefined;
+		const detached = process.platform !== "win32";
+		const proc = spawn("gh", args, { cwd, shell: false, detached, stdio: ["pipe", "pipe", "pipe"] });
+		// A detached POSIX child's pid is also its process-group id. Preserve it:
+		// proc.pid continues to describe only the leader after that leader exits.
+		const processGroupId = detached ? proc.pid : undefined;
+		let pendingResult: GhResult | undefined;
+		const groupExists = () => {
+			if (processGroupId === undefined) return false;
+			try {
+				process.kill(-processGroupId, 0);
+				return true;
+			} catch (error) {
+				return (error as NodeJS.ErrnoException).code !== "ESRCH";
+			}
+		};
+		const signalProcess = (signal: NodeJS.Signals) => {
+			try {
+				if (processGroupId !== undefined) process.kill(-processGroupId, signal);
+				else if (!closed) proc.kill(signal);
+			} catch {
+				// ESRCH and concurrent exits are observed by the bounded group probe.
+			}
+		};
+		const onAbort = () => terminate("abort");
+		const cleanup = () => {
+			if (timer) clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
+			if (cleanupTimer) clearTimeout(cleanupTimer);
+			lifecycle.signal?.removeEventListener("abort", onAbort);
+		};
 		const finish = (result: GhResult) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			cleanup();
 			resolve(result);
 		};
-		const proc = spawn("gh", args, { cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+		const finishPending = () => {
+			if (pendingResult) finish(pendingResult);
+		};
+		const forceKillAndDrain = () => {
+			signalProcess("SIGKILL");
+			const reserveMs = lifecycle.cleanupReserveMs ?? 1_000;
+			const cleanupDeadline = monotonicNow() + reserveMs;
+			const drain = () => {
+				if (closed && !groupExists()) {
+					finishPending();
+					return;
+				}
+				const remainingMs = cleanupDeadline - monotonicNow();
+				if (remainingMs <= 0) {
+					// Reassert KILL at the absolute cleanup boundary before bounded
+					// settlement, including when close/output delivery lagged.
+					signalProcess("SIGKILL");
+					finishPending();
+					return;
+				}
+				cleanupTimer = setTimeout(drain, Math.min(10, Math.max(1, remainingMs)));
+			};
+			drain();
+		};
+		const checkGroupCleanupGrace = () => {
+			if (!groupCleanupStarted || settled || groupKillDeadline === undefined) return;
+			if (killTimer) clearTimeout(killTimer);
+			if (closed && !groupExists()) {
+				finishPending();
+				return;
+			}
+			const remainingMs = groupKillDeadline - monotonicNow();
+			if (remainingMs <= 0) {
+				forceKillAndDrain();
+				return;
+			}
+			// A closed leader is not proof of group settlement. Poll during the
+			// remainder of grace so TERM-compliant groups can settle promptly.
+			killTimer = setTimeout(checkGroupCleanupGrace, closed ? Math.min(10, remainingMs) : remainingMs);
+		};
+		const beginGroupCleanup = () => {
+			if (groupCleanupStarted || settled || processGroupId === undefined) return;
+			groupCleanupStarted = true;
+			if (timer) clearTimeout(timer);
+			const graceMs = lifecycle.terminationGraceMs ?? 3_000;
+			signalProcess("SIGTERM");
+			groupKillDeadline = monotonicNow() + graceMs;
+			checkGroupCleanupGrace();
+		};
+		const terminate = (reason: "timeout" | "abort") => {
+			if (settled || termination) return;
+			termination = reason;
+			if (timer) clearTimeout(timer);
+			pendingResult = {
+				stdout,
+				stderr,
+				exitCode: 1,
+				timedOut: reason === "timeout",
+				errorMessage: reason === "timeout" ? "gh command timed out" : "gh command aborted",
+			};
+			if (processGroupId !== undefined) {
+				beginGroupCleanup();
+				return;
+			}
+			// Preserve the direct-child fallback on non-POSIX platforms.
+			signalProcess("SIGTERM");
+			const graceMs = lifecycle.terminationGraceMs ?? 3_000;
+			const reserveMs = lifecycle.cleanupReserveMs ?? 1_000;
+			killTimer = setTimeout(() => signalProcess("SIGKILL"), graceMs);
+			cleanupTimer = setTimeout(() => {
+				signalProcess("SIGKILL");
+				finishPending();
+			}, graceMs + reserveMs);
+		};
 		proc.stdout.on("data", (data) => (stdout += data.toString()));
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
@@ -1284,32 +1619,77 @@ function runGh(args: string[], cwd: string, input?: string, timeoutMs = 60_000):
 		proc.on("error", (error) =>
 			finish({ stdout, stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
 		);
-		proc.on("close", (code) => finish({ stdout, stderr, exitCode: code ?? 1, timedOut: false }));
+		proc.on("close", (code) => {
+			closed = true;
+			pendingResult = {
+				stdout,
+				stderr,
+				exitCode: termination ? 1 : code ?? 1,
+				timedOut: termination === "timeout",
+				...(termination ? { errorMessage: termination === "timeout" ? "gh command timed out" : "gh command aborted" } : {}),
+			};
+			if (processGroupId !== undefined) {
+				if (!groupCleanupStarted && groupExists()) beginGroupCleanup();
+				if (groupCleanupStarted) {
+					checkGroupCleanupGrace();
+					return;
+				}
+			}
+			finishPending();
+		});
 		if (input !== undefined) proc.stdin.end(input);
 		else proc.stdin.end();
-		timer = setTimeout(() => {
-			proc.kill("SIGTERM");
-			setTimeout(() => proc.kill("SIGKILL"), 3000);
-			finish({ stdout, stderr, exitCode: 1, timedOut: true, errorMessage: "gh command timed out" });
-		}, timeoutMs);
+		timer = setTimeout(() => terminate("timeout"), timeoutMs);
+		if (lifecycle.signal) {
+			if (lifecycle.signal.aborted) queueMicrotask(onAbort);
+			else lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+		}
 	});
 }
 
-async function ghText(args: string[], cwd: string): Promise<string> {
-	const result = await runGh(args, cwd);
+async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
+	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
 	return result.stdout.trim();
 }
 
-async function ghJson<T>(args: string[], cwd: string): Promise<T> {
-	const text = await ghText(args, cwd);
+async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
+	const text = await ghText(args, cwd, timeoutMs, lifecycle);
 	return JSON.parse(text) as T;
 }
 
-export async function resolveRepositoryBinding(cwd: string): Promise<RepositoryBinding> {
+export interface GhPreflightDeadline {
+	readonly deadlineMs: number;
+	readonly now?: MonotonicNow;
+	readonly signal?: AbortSignal;
+	readonly terminationGraceMs?: number;
+	readonly cleanupReserveMs?: number;
+}
+
+function preflightLifecycle(options?: GhPreflightDeadline): GhCommandLifecycle | undefined {
+	if (!options) return undefined;
+	return {
+		signal: options.signal,
+		terminationGraceMs: options.terminationGraceMs,
+		cleanupReserveMs: options.cleanupReserveMs,
+	};
+}
+
+function preflightTimeout(options?: GhPreflightDeadline): number | undefined {
+	if (!options) return undefined;
+	const remainingMs = Math.floor(options.deadlineMs - (options.now ?? monotonicNow)());
+	if (remainingMs <= 0) throw new Error("GitHub preflight exceeded the review invocation deadline");
+	// Preserve the established per-command ceiling while making both dependent
+	// reads consume the same invocation-wide allowance.
+	return Math.min(GH_COMMAND_TIMEOUT_MS, remainingMs);
+}
+
+export async function resolveRepositoryBinding(cwd: string, deadline?: GhPreflightDeadline): Promise<RepositoryBinding> {
 	const repoInfo = await ghJson<{ nameWithOwner?: string; url?: string }>(
 		["repo", "view", "--json", "nameWithOwner,url"],
 		cwd,
+		preflightTimeout(deadline),
+		preflightLifecycle(deadline),
 	);
 	const repository = String(repoInfo.nameWithOwner ?? "");
 	const hostname = new URL(String(repoInfo.url ?? "")).hostname;
@@ -1403,8 +1783,40 @@ interface PullState {
 	state?: string;
 	draft?: boolean;
 	merged_at?: string | null;
+	title?: string;
 	head?: { sha?: string };
 	user?: { login?: string };
+}
+
+/** Capture immutable publication identity and lifecycle before the review model runs. */
+export async function resolveReviewHostBinding(
+	cwd: string,
+	prNumber: number,
+	deadline?: GhPreflightDeadline,
+): Promise<ReviewHostBinding> {
+	if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error("invalid PR number");
+	const repository = await resolveRepositoryBinding(cwd, deadline);
+	const pull = await ghJson<PullState>(
+		githubApiArgs(repository.hostname, `repos/${repository.repository}/pulls/${prNumber}`),
+		cwd,
+		preflightTimeout(deadline),
+		preflightLifecycle(deadline),
+	);
+	const reviewedHeadSha = pull.head?.sha?.toLowerCase();
+	if (!reviewedHeadSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(reviewedHeadSha)) {
+		throw new Error("GitHub returned an invalid PR head SHA");
+	}
+	if (typeof pull.title !== "string" || typeof pull.state !== "string" || typeof pull.draft !== "boolean") {
+		throw new Error("GitHub returned incomplete PR identity or lifecycle metadata");
+	}
+	return Object.freeze({
+		...repository,
+		prNumber,
+		prTitle: pull.title,
+		reviewedHeadSha,
+		state: pull.state.toUpperCase(),
+		draft: pull.draft,
+	});
 }
 
 export interface HeadPublicationPlan {
@@ -1650,6 +2062,14 @@ export async function publishPullReview(input: {
 	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
+	/** Host-sanitized original synthesis retained when structured extraction is partial or absent. */
+	publicationBody?: string;
+	/** Host-sanitized original synthesis used only if the concise body exceeds GitHub's limit. */
+	fallbackPublicationBody?: string;
+	/** Prevent uncertain/raw synthesis from selecting APPROVE or inline anchors. */
+	forceBodyOnly?: boolean;
+	/** Prevent partially trusted synthesis from selecting a merge-relevant event. */
+	forceComment?: boolean;
 }): Promise<PublishResult> {
 	const {
 		cwd,
@@ -1661,6 +2081,10 @@ export async function publishPullReview(input: {
 		approveMaxPriorityLevel = "off",
 		expectedRepository,
 		review,
+		publicationBody,
+		fallbackPublicationBody,
+		forceBodyOnly = false,
+		forceComment = false,
 	} = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
@@ -1724,7 +2148,7 @@ export async function publishPullReview(input: {
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
-		let allowInlineComments = isOpen && headPlan.allowInlineComments;
+		let allowInlineComments = !forceBodyOnly && isOpen && headPlan.allowInlineComments;
 		let changedFiles: readonly ChangedFileLike[] = [];
 		let changedFileLookupFailed = false;
 		if (allowInlineComments && hasInlineCandidates(validatedReview)) {
@@ -1747,6 +2171,8 @@ export async function publishPullReview(input: {
 		// single write rather than retrying a rejected review as COMMENT.
 		const isSelfAuthored = pull.user?.login?.toLowerCase() === identity.toLowerCase();
 		const isApprove =
+			!forceBodyOnly &&
+			!forceComment &&
 			!isSelfAuthored &&
 			(!headPlan.stale || allowStaleApprovals) &&
 			shouldApproveReview(validatedReview, approveMaxPriorityLevel);
@@ -1756,6 +2182,8 @@ export async function publishPullReview(input: {
 			markerHeadSha: normalizedHeadSha,
 			allowInlineComments,
 			changedFiles,
+			...(publicationBody ? { bodyOverride: publicationBody } : {}),
+			...(fallbackPublicationBody ? { fallbackBodyOverride: fallbackPublicationBody } : {}),
 			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale

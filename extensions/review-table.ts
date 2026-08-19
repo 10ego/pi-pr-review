@@ -36,6 +36,7 @@ import {
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
 	resolveRepositoryBinding,
+	resolveReviewHostBinding,
 	restoreCompletedReviewBranch,
 	shouldPublishReview,
 	validateReviewInvocation,
@@ -45,7 +46,11 @@ import {
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
 } from "../lib/pr-review-publish.ts";
+import { safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
+import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
+	REVIEW_LOOP_TOOL_NAMES,
 	ReviewLoopCoordinator,
 	type ReviewLoopInputSource,
 } from "../lib/pr-review-loop.ts";
@@ -87,35 +92,10 @@ interface Review {
 }
 
 type MessagePart = { type: string; text?: string };
-type ReviewOutputRepair = (
-	text: string,
-	outputContract: string,
-	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	signal?: AbortSignal,
-) => Promise<string | undefined>;
-
-type ReviewOutputFallbackPayload = (
-	text: string,
-	reviewedHeadSha: string,
-	ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
-	signal?: AbortSignal,
-) => Promise<{ commit_id: string; event: "COMMENT"; body: string } | undefined>;
-
-const defaultReviewOutputRepair: ReviewOutputRepair = async (...args) => {
-	const { repairReviewOutput } = await import("./pr-review-subagent.ts");
-	return repairReviewOutput(...args);
-};
-
-const defaultReviewOutputFallbackPayload: ReviewOutputFallbackPayload = async (...args) => {
-	const { prepareReviewOutputGhPayload } = await import("./pr-review-subagent.ts");
-	return prepareReviewOutputGhPayload(...args);
-};
 
 const OWN_REVIEW_PROMPT = fs.realpathSync(
 	fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url)),
 );
-const REVIEW_PROMPT_TEXT = fs.readFileSync(OWN_REVIEW_PROMPT, "utf8");
-const REVIEW_OUTPUT_CONTRACT = REVIEW_PROMPT_TEXT.slice(REVIEW_PROMPT_TEXT.indexOf("## OUTPUT FORMAT"));
 
 function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
 	try {
@@ -204,21 +184,6 @@ function parseReview(text: string): Review | null {
 	return best;
 }
 
-function fallbackReviewedHead(prNumber: number, ...sources: Array<string | undefined>): string | undefined {
-	for (const source of sources) {
-		if (!source) continue;
-		const candidate = parseReview(source);
-		const headSha = candidate?.pr?.head_sha;
-		if (
-			candidate?.pr?.number === prNumber &&
-			typeof headSha === "string" &&
-			/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)
-		) {
-			return headSha.toLowerCase();
-		}
-	}
-	return undefined;
-}
 
 const SEVERITY_RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 };
 
@@ -470,6 +435,18 @@ async function publishCompletedReview(
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
+		...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
+		...(record.synthesisQuality === "fully_parsed" && typeof record.rawText === "string" && record.rawText.trim()
+			? { fallbackPublicationBody: safeReviewBody(record.rawText) }
+			: {}),
+		forceBodyOnly: record.synthesisQuality !== undefined &&
+			(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete"),
+		// A publication body identifies Markdown-derived or degraded synthesis.
+		// Enforce COMMENT again at the final publication boundary so restored
+		// canonical artifacts created by an older parser cannot inherit APPROVE.
+		forceComment: record.mergeApprovalEligible === false || record.publicationBody !== undefined ||
+			(record.synthesisQuality !== undefined &&
+				(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete")),
 	});
 	notifyPublishResult(result, source, ctx);
 }
@@ -478,8 +455,6 @@ export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
-	repairOutput: ReviewOutputRepair = defaultReviewOutputRepair,
-	prepareFallbackPayload: ReviewOutputFallbackPayload = defaultReviewOutputFallbackPayload,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -510,44 +485,66 @@ export default function registerReviewTable(
 		const error = decision.error ?? (decision.publish ? failure : undefined);
 		return error ? { error } : undefined;
 	};
-	const resolveCompletion = async (
+	const resolveCompletion = (
 		parsed: ReturnType<typeof parsePublishableReview>,
 		invocation: ReviewInvocation,
 		ctx: ExtensionContext,
-	): Promise<PendingCompletion | undefined> => {
-		if (!parsed.review) return completionError(invocation, parsed.error ?? "final review JSON is invalid");
+		artifact?: ReviewSynthesisArtifact,
+	): PendingCompletion | undefined => {
+		if (!parsed.review) return completionError(invocation, parsed.error ?? "final review is invalid");
 		const bindingError = validateReviewInvocation(parsed.review, invocation);
 		if (bindingError) return completionError(invocation, bindingError);
 		if (!shouldPublishReview(parsed.review)) return completionError(invocation);
-		try {
-			const repository = await resolveRepositoryBinding(ctx.cwd);
-			// Cache before publication preflight; persist after Pi stores the assistant message.
-			const replacement = completedReviews.replace(parsed.review, invocation, repository);
-			const { record } = replacement;
-			const session = sessionIdentity(ctx);
-			if (!session) {
-				ctx.ui.notify("Completed review cache will not survive reload: session identity is unavailable", "warning");
-			}
-			return session
-				? { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}), session }
-				: { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}) };
-		} catch (error) {
-			ctx.ui.notify(`Completed review is not available to publish-only: ${String(error)}`, "warning");
-			return completionError(
-				invocation,
-				"its repository identity could not be established before caching; no publish-only cache is available. Rerun /pr-review when GitHub repository lookup is working.",
-			);
+		if (!invocation.reviewBinding) {
+			return completionError(invocation, "the completed review has no frozen host repository binding; no publish-only cache is available");
 		}
+		const repository = {
+			repository: invocation.reviewBinding.repository,
+			hostname: invocation.reviewBinding.hostname,
+		};
+		// Cache the complete canonical artifact while the lane registry is still
+		// live; Pi persists this record after it stores the assistant message.
+		const replacement = completedReviews.replace(parsed.review, invocation, repository, artifact ? {
+			synthesisQuality: artifact.quality,
+			// Keep the complete original Markdown in rawText. Only degraded output
+			// needs a body override; fully parsed output uses the concise renderer
+			// and can pass the host-owned approval gates at publication time.
+			...(artifact.body && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
+				? { publicationBody: artifact.body }
+				: {}),
+			rawText: artifact.rawText,
+			laneArtifacts: artifact.laneArtifacts,
+			expectedLaneDescriptors: artifact.expectedLaneDescriptors,
+			expectedLaneCount: artifact.expectedLaneCount,
+			completeness: artifact.completeness,
+			mergeApprovalEligible: artifact.mergeApprovalEligible,
+			diagnostics: artifact.diagnostics,
+		} : undefined);
+		const { record } = replacement;
+		const session = sessionIdentity(ctx);
+		if (!session) {
+			ctx.ui.notify("Completed review cache will not survive reload: session identity is unavailable", "warning");
+		}
+		return session
+			? { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}), session }
+			: { record, ...(replacement.previous ? { replacedRecord: replacement.previous } : {}) };
 	};
-	let outputRepairAttempted = false;
-	let outputRepairCancelled = false;
-	let outputRepairGeneration = 0;
-	const clearOutputRepair = () => {
-		outputRepairGeneration++;
-		outputRepairAttempted = false;
-		outputRepairCancelled = false;
-	};
+
 	const telemetryTracker = new ReviewTelemetryTracker();
+	const reviewToolNames = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
+	const activeToolGenerations = new Map<string, number>();
+	const generationsWithReviewTools = new Set<number>();
+	const generationsReadyForSynthesis = new Set<number>();
+	let nextPreflightGeneration = 1;
+	let activePreflight: { generation: number; controller: AbortController } | undefined;
+	const revokePreflight = () => {
+		if (!activePreflight) return;
+		activePreflight?.controller.abort(new Error("review GitHub preflight revoked"));
+		activePreflight = undefined;
+		telemetryTracker.clear();
+	};
+	const ownsPreflight = (preflight: { generation: number; controller: AbortController }) =>
+		activePreflight?.generation === preflight.generation && activePreflight.controller === preflight.controller;
 	const persistTelemetry = (completion: ReviewPerformanceTelemetry["completion"]) => {
 		const telemetry = telemetryTracker.finish(completion);
 		if (!telemetry) return;
@@ -584,6 +581,7 @@ export default function registerReviewTable(
 			// Extension commands execute before input hooks, so every invocation —
 			// including malformed arguments — must revoke active review authority.
 			selfReviewCoordinator.clear();
+			revokePreflight();
 			const active = loopCoordinator.peek();
 			if (active) {
 				loopCoordinator.clear();
@@ -617,10 +615,10 @@ export default function registerReviewTable(
 	});
 
 	const revokeActiveLoop = () => {
+		revokePreflight();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		clearOutputRepair();
 		telemetryTracker.clear();
 	};
 
@@ -640,17 +638,13 @@ export default function registerReviewTable(
 
 	pi.on("agent_settled", () => {
 		selfReviewCoordinator.clear();
-		if (!outputRepairCancelled) return;
-		loopCoordinator.clear();
-		clearOutputRepair();
-		persistTelemetry("cleared");
 	});
 
 	pi.on("session_tree", (event, ctx) => {
+		revokePreflight();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		clearOutputRepair();
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 		const session = sessionIdentity(ctx);
@@ -666,17 +660,9 @@ export default function registerReviewTable(
 	pi.on("input", async (event, ctx) => {
 		// Any new input revokes the prior top-level task generation before it can
 		// authorize a replay or a queued/steering continuation.
+		revokePreflight();
 		selfReviewCoordinator.clear();
-		if (outputRepairAttempted) {
-			outputRepairCancelled = true;
-			loopCoordinator.clear();
-			clearOutputRepair();
-			persistTelemetry("cleared");
-			ctx.abort();
-			ctx.ui.notify("PR review output correction was cancelled; overlapping input was not queued, so retry it", "warning");
-			return { action: "handled" as const };
-		}
-		clearOutputRepair();
+
 		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
@@ -734,8 +720,46 @@ export default function registerReviewTable(
 			return { action: "handled" as const };
 		}
 
-		// Freeze trusted publication config before review tools or optional PR code can run.
+		// Freeze trusted publication config and target binding before review tools or optional PR code can run.
 		const publishingConfig = resolvePublishingConfig(ctx);
+		const deadlineResolution = resolveReviewDeadlinesForContext(ctx);
+		const budget = createReviewBudget(deadlineResolution);
+		const preflight = {
+			generation: nextPreflightGeneration++,
+			controller: new AbortController(),
+		};
+		activePreflight = preflight;
+		telemetryTracker.begin(parsed.prNumber!, {
+			source: deadlineResolution.source,
+			totalMs: deadlineResolution.config.totalMs,
+			batchMs: deadlineResolution.config.batchMs,
+			synthesisMs: deadlineResolution.config.synthesisMs,
+			terminationGraceMs: deadlineResolution.config.terminationGraceMs,
+			cleanupReserveMs: deadlineResolution.config.cleanupReserveMs,
+		});
+		let reviewBinding;
+		try {
+			reviewBinding = await resolveReviewHostBinding(ctx.cwd, parsed.prNumber!, {
+				deadlineMs: budget.totalDeadlineMs - budget.config.terminationGraceMs - budget.config.cleanupReserveMs,
+				signal: preflight.controller.signal,
+				terminationGraceMs: budget.config.terminationGraceMs,
+				cleanupReserveMs: budget.config.cleanupReserveMs,
+			});
+		} catch (error) {
+			// A newer input owns telemetry and authority. The revoked generation must
+			// neither notify nor clear the successor after its child has settled.
+			if (!ownsPreflight(preflight) || preflight.controller.signal.aborted) {
+				return { action: "handled" as const };
+			}
+			activePreflight = undefined;
+			ctx.ui.notify(`Invalid /pr-review invocation: host review binding failed: ${String(error)}`, "error");
+			persistTelemetry("cleared");
+			return { action: "handled" as const };
+		}
+		if (!ownsPreflight(preflight) || preflight.controller.signal.aborted) {
+			return { action: "handled" as const };
+		}
+		activePreflight = undefined;
 		const gate = loopCoordinator.begin(
 			parsed,
 			publishingConfig.autoPost,
@@ -744,24 +768,45 @@ export default function registerReviewTable(
 			publishingConfig.allowStale.valid && publishingConfig.allowStale.value,
 			publishingConfig.allowStaleApprovals.valid && publishingConfig.allowStaleApprovals.value,
 			publishingConfig.approveMaxPriority.valid ? publishingConfig.approveMaxPriority.value : "off",
+			reviewBinding,
+			deadlineResolution,
+			() => ctx.abort(),
+			budget,
 		);
 		if (!gate.accepted) {
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
+			persistTelemetry("cleared");
 			return { action: "handled" as const };
 		}
-		telemetryTracker.begin(parsed.prNumber!);
 	});
 
-	pi.on("tool_execution_start", (event) => {
+	pi.on("tool_execution_start", (event, ctx) => {
 		if (!loopCoordinator.peek()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
+		const lease = loopCoordinator.acquire(ctx);
+		if (!lease) return;
+		activeToolGenerations.set(event.toolCallId, lease.generation);
+		if (reviewToolNames.has(event.toolName)) generationsWithReviewTools.add(lease.generation);
 	});
 
 	pi.on("tool_execution_end", (event) => {
 		telemetryTracker.toolEnded(event.toolCallId);
+		const generation = activeToolGenerations.get(event.toolCallId);
+		activeToolGenerations.delete(event.toolCallId);
+		if (generation === undefined || !generationsWithReviewTools.has(generation)) return;
+		if ([...activeToolGenerations.values()].includes(generation)) return;
+		generationsWithReviewTools.delete(generation);
+		generationsReadyForSynthesis.add(generation);
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
+		// turn_end includes the complete tool-result set for the assistant turn.
+		// Start the synthesis cap here rather than at the first tool end so
+		// sequential or concurrently settling tool calls cannot consume it early.
+		for (const generation of generationsReadyForSynthesis) {
+			generationsReadyForSynthesis.delete(generation);
+			loopCoordinator.beginSynthesis(generation, ctx);
+		}
 		const pending = pendingCompletion;
 		pendingCompletion = undefined;
 		if (!pending) return;
@@ -796,19 +841,7 @@ export default function registerReviewTable(
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
-		if (outputRepairCancelled) {
-			if (completion === "continue_tools") ctx.abort();
-			return;
-		}
 		if (completion === "continue_tools") {
-			if (outputRepairAttempted && loopCoordinator.peek()) {
-				ctx.ui.notify("PR review was not posted: automatic output correction attempted to call tools", "error");
-				ctx.abort();
-				loopCoordinator.clear();
-				clearOutputRepair();
-				persistTelemetry("cleared");
-				return;
-			}
 			const toolCalls = Array.isArray(event.message.content)
 				? event.message.content.filter((part) => part.type === "toolCall")
 				: [];
@@ -820,9 +853,8 @@ export default function registerReviewTable(
 			}
 			return;
 		}
-		if (completion === "clear_invocation") {
+		if (completion === "clear_invocation" && !loopCoordinator.deadlineExpired()) {
 			loopCoordinator.clear();
-			clearOutputRepair();
 			persistTelemetry("cleared");
 			return;
 		}
@@ -838,138 +870,41 @@ export default function registerReviewTable(
 			return;
 		}
 
-		const publishable = active ? parsePublishableReview(text) : undefined;
-		if (active && !publishable?.review && !outputRepairAttempted) {
-			const error = publishable?.error ?? "final review JSON is invalid";
-			if (loopCoordinator.suspendToolsForRepair()) {
-				const lease = loopCoordinator.repairLease(ctx);
-				if (!lease) {
-					ctx.ui.notify("Automatic PR review output correction was skipped because its review lease was lost", "warning");
-					return;
-				}
-				outputRepairAttempted = true;
-				outputRepairCancelled = false;
-				const repairGeneration = ++outputRepairGeneration;
-				const isActiveRepair = () => !outputRepairCancelled && repairGeneration === outputRepairGeneration &&
-					loopCoordinator.isRepairLeaseActive(lease, ctx);
-				ctx.ui.notify(`PR review output is invalid (${error}); asking the light repair subagent once`, "warning");
-				void repairOutput(text, REVIEW_OUTPUT_CONTRACT, ctx, lease.signal).then(async (repairedText) => {
-					if (!isActiveRepair()) return;
-					const repaired = repairedText ? parsePublishableReview(repairedText) : undefined;
-					if (!repaired?.review) {
-						const activeInvocation = loopCoordinator.peek();
-						const invocation = activeInvocation
-							? {
-								...activeInvocation,
-								allowNonOpen: activeInvocation.allowNonOpen || loopCoordinator.phase() === "confirmed",
-							}
-							: undefined;
-						const publication = invocation ? decideReviewPublication(invocation) : undefined;
-						const reviewedHeadSha = invocation
-							? fallbackReviewedHead(invocation.prNumber, text)
-							: undefined;
-						if (invocation && publication?.publish && reviewedHeadSha && isActiveRepair()) {
-							ctx.ui.notify(
-								"Light output correction did not produce valid final JSON; asking the light model for one COMMENT payload for host-owned gh publication",
-								"warning",
-							);
-							let expectedRepository;
-							try {
-								expectedRepository = await resolveRepositoryBinding(ctx.cwd);
-							} catch (error) {
-								if (isActiveRepair()) {
-									ctx.ui.notify(`PR review was not posted: fallback repository lookup failed: ${String(error)}`, "error");
-									loopCoordinator.consume();
-									clearOutputRepair();
-									persistTelemetry("terminal_response");
-								}
-								return;
-							}
-							if (!isActiveRepair()) return;
-							const payload = await prepareFallbackPayload(text, reviewedHeadSha, ctx, lease.signal);
-							if (!isActiveRepair()) return;
-							if (
-								!payload ||
-								payload.commit_id !== reviewedHeadSha ||
-								payload.event !== "COMMENT" ||
-								typeof payload.body !== "string"
-							) {
-								ctx.ui.notify("PR review was not posted: light gh fallback did not produce a valid COMMENT payload", "error");
-							} else {
-								const result = await publishPullReviewBody({
-									cwd: ctx.cwd,
-									prNumber: invocation.prNumber,
-									headSha: reviewedHeadSha,
-									allowNonOpen: invocation.allowNonOpen,
-									allowStale: invocation.allowStalePublish,
-									expectedRepository,
-									body: payload.body,
-								});
-								if (!isActiveRepair()) return;
-								notifyPublishResult(result, "light gh fallback", ctx);
-							}
-						} else if (isActiveRepair()) {
-							ctx.ui.notify(
-								publication?.error
-									? `PR review was not posted: ${publication.error}`
-									: publication?.publish && !reviewedHeadSha
-										? "PR review was not posted: malformed output did not contain a trustworthy reviewed head"
-										: "PR review was not posted: light output correction did not produce valid final JSON",
-								"error",
-							);
-						}
-						if (isActiveRepair()) {
-							loopCoordinator.consume();
-							clearOutputRepair();
-							persistTelemetry("terminal_response");
-						}
-						return;
-					}
-					const invocation = loopCoordinator.peek();
-					if (!invocation || !isActiveRepair()) return;
-					const completion = await resolveCompletion(repaired, invocation, ctx);
-					if (!isActiveRepair()) {
-						if (completion && "record" in completion) {
-							completedReviews.restoreReplacement(completion.record, completion.replacedRecord);
-						}
-						return;
-					}
-					if (completion && "record" in completion) {
-						if (completion.session) {
-							try {
-								pi.appendEntry(COMPLETED_REVIEW_ENTRY_TYPE, completedReviews.persist(completion.record, completion.session));
-							} catch (persistError) {
-								ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(persistError)}`, "warning");
-							}
-						}
-						if (!isActiveRepair()) return;
-						await publishCompletedReview(completion.record, { kind: "frozen-invocation" }, ctx);
-					} else if (completion && "error" in completion) {
-						ctx.ui.notify(`PR review was not posted: ${completion.error}`, "error");
-					}
-					if (isActiveRepair()) {
-						loopCoordinator.consume();
-						clearOutputRepair();
-						persistTelemetry("terminal_response");
-					}
-				}).catch(() => {
-					if (!isActiveRepair()) return;
-					loopCoordinator.consume();
-					clearOutputRepair();
-					persistTelemetry("terminal_response");
-					ctx.ui.notify("PR review was not posted: light output correction failed", "error");
-				});
-				return;
-			}
-			ctx.ui.notify("Automatic PR review output correction was skipped because tools could not be disabled", "warning");
-		}
+		const strict = active ? parsePublishableReview(text) : undefined;
+		const laneArtifacts = active ? loopCoordinator.artifactSnapshot(ctx) ?? [] : [];
+		const expectedLaneDescriptors = active ? loopCoordinator.expectedArtifactDescriptors(ctx) ?? [] : [];
+		// Only a non-Markdown JSON envelope may enter the approval-capable strict
+		// compatibility path. Fenced JSON remains Markdown with its raw body intact.
+		const trustedStrictReview = active && strict?.source === "json" && strict.review &&
+			!validateReviewInvocation(strict.review, active)
+			? strict.review
+			: undefined;
+		const artifact = active?.reviewBinding
+			? synthesizeReviewArtifact({
+				rawText: text,
+				prNumber: active.reviewBinding.prNumber,
+				prTitle: active.reviewBinding.prTitle,
+				headSha: active.reviewBinding.reviewedHeadSha,
+				laneArtifacts,
+				expectedLaneDescriptors,
+				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
+			})
+			: undefined;
+		const publishable = artifact ? { review: artifact.review } : strict;
 
-		// A valid response, or a failed single correction, consumes authority.
+		// Cache the canonical artifact before consume() purges invocation-scoped
+		// lanes, then revoke authority before rendering or publication begins.
+		const completionInvocation = active && loopCoordinator.phase() === "confirmed"
+			? { ...active, allowNonOpen: true }
+			: active;
+		const resolvedCompletion = completionInvocation
+			? resolveCompletion(publishable!, completionInvocation, ctx, artifact)
+			: undefined;
 		// Persist timing before publication so network/write latency is never coupled to review wall time.
 		const invocation = active ? loopCoordinator.consume() : undefined;
 		if (invocation) {
-			clearOutputRepair();
 			persistTelemetry("terminal_response");
+			pendingCompletion = resolvedCompletion;
 		}
 		const review = publishable?.review
 			? publishable.review as Review
@@ -978,7 +913,6 @@ export default function registerReviewTable(
 				: text.trim()
 					? parseReview(text)
 					: null;
-		if (invocation) pendingCompletion = await resolveCompletion(publishable!, invocation, ctx);
 		if (!review) return; // not a renderable /pr-review JSON payload — leave untouched
 
 		// Keep raw JSON for automation; only prettify for interactive terminals.

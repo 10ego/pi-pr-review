@@ -5,6 +5,8 @@ export type ReviewFocusPassStatus =
 	| "running"
 	| "retrying"
 	| "completed"
+	| "partial"
+	| "timed_out"
 	| "failed"
 	| "aborted";
 
@@ -45,6 +47,8 @@ export type ReviewFocusPassEvent =
 	| { type: "tool_ended"; toolCallId: string; toolName: string; isError: boolean }
 	| { type: "retrying" }
 	| { type: "completed" }
+	| { type: "partial" }
+	| { type: "timed_out" }
 	| { type: "failed" }
 	| { type: "aborted" };
 
@@ -176,6 +180,16 @@ function assistantText(message: unknown): string | undefined {
 export function normalizeReviewFocusJsonEvent(raw: unknown): ReviewFocusPassEvent[] {
 	if (!raw || typeof raw !== "object") return [];
 	const event = raw as Record<string, unknown>;
+	if (event.type === "message_start") {
+		const normalized: ReviewFocusPassEvent[] = [];
+		const model = assistantModel(event.message);
+		if (!model && assistantText(event.message) === undefined) return normalized;
+		if (model) normalized.push({ type: "model_observed", model });
+		// Starting an assistant turn is also the reconciliation boundary that
+		// prevents its canonical delta-only updates from appending to a prior turn.
+		normalized.push({ type: "assistant_snapshot", text: assistantText(event.message) ?? "" });
+		return normalized;
+	}
 	if (event.type === "message_update") {
 		const normalized: ReviewFocusPassEvent[] = [];
 		const model = assistantModel(event.message);
@@ -234,7 +248,8 @@ export class ReviewFocusRegistry {
 		if (!state || state.generation !== generation || state.passes.has(descriptor.key)) return false;
 		if (state.passes.size >= MAX_PASSES) {
 			const removable = [...state.passes.values()].find((pass) =>
-				pass.status === "completed" || pass.status === "failed" || pass.status === "aborted"
+				pass.status === "completed" || pass.status === "partial" || pass.status === "timed_out" ||
+				pass.status === "failed" || pass.status === "aborted"
 			);
 			if (!removable) {
 				state.droppedPasses++;
@@ -264,7 +279,10 @@ export class ReviewFocusRegistry {
 		const state = this.state;
 		const pass = state?.generation === generation ? state.passes.get(key) : undefined;
 		if (!state || !pass) return false;
-		if (pass.status === "completed" || pass.status === "failed" || pass.status === "aborted") return false;
+		if (
+			pass.status === "completed" || pass.status === "partial" || pass.status === "timed_out" ||
+			pass.status === "failed" || pass.status === "aborted"
+		) return false;
 
 		switch (event.type) {
 			case "attempt_started":
@@ -313,6 +331,12 @@ export class ReviewFocusRegistry {
 				break;
 			case "completed":
 				pass.status = "completed";
+				break;
+			case "partial":
+				pass.status = "partial";
+				break;
+			case "timed_out":
+				pass.status = "timed_out";
 				break;
 			case "failed":
 				pass.status = "failed";
