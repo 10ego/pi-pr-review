@@ -527,6 +527,34 @@ describe("completed review extension lifecycle", () => {
 		expect(String(staleProbe.payload()?.body)).not.toContain("Looks safe.");
 	});
 
+	test.each([
+		["an HTML-hidden approval verdict", [
+			"# PR Review", "", "<pre>", "**Verdict:** approve", "</pre>", "", "## Overview", "Inspect controls.", "",
+			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
+			"## Lane completeness", "All requested lanes completed.",
+		].join("\n"), "**Verdict:** approve"],
+		["a blocker outside Findings", [
+			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Inspect controls.", "",
+			"### [P1] Hidden outside Findings", "**Severity:** P1", "**Rationale:** This must remain public.", "",
+			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
+			"## Lane completeness", "All requested lanes completed.",
+		].join("\n"), "Hidden outside Findings"],
+	] as const)("keeps %s body-only and COMMENT-only", async (_label, raw, retainedText) => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
+		});
+		const probe = installPublishingProbe();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, `markdown-ambiguous-${_label}`);
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(probe.payload()?.comments).toBeUndefined();
+		expect(String(probe.payload()?.body)).toContain(retainedText);
+	});
+
 	test("ignores fake canonical headings in a pre block and retains the later visible P1", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },

@@ -19,9 +19,9 @@ export interface ReviewSynthesisArtifact {
 function synthesisCompleteness(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
-	requiredDisclosurePresent = true,
+	completeDisclosurePresent = true,
 ): ReviewSynthesisCompleteness {
-	return rawText.trim() && requiredDisclosurePresent && lanes.every((lane) => lane.lifecycle === "complete")
+	return rawText.trim() && completeDisclosurePresent && lanes.every((lane) => lane.lifecycle === "complete")
 		? "complete"
 		: "incomplete";
 }
@@ -85,9 +85,13 @@ function htmlBlockStart(line: string): HtmlBlock | undefined {
 	return undefined;
 }
 
-function markdownHeadings(text: string): MarkdownHeading[] {
+function markdownStructure(text: string): { headings: MarkdownHeading[]; visibleText: string } {
 	const headings: MarkdownHeading[] = [];
 	const lines = text.split("\n");
+	const visibleLines = [...lines];
+	const hide = (lineIndex: number): void => {
+		visibleLines[lineIndex] = " ".repeat(lines[lineIndex]!.length);
+	};
 	let fence: { marker: "`" | "~"; length: number } | undefined;
 	let htmlBlock: HtmlBlock | undefined;
 	let paragraph: { index: number; lines: string[] } | undefined;
@@ -96,6 +100,7 @@ function markdownHeadings(text: string): MarkdownHeading[] {
 		const line = lines[lineIndex]!;
 		const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
 		if (fence) {
+			hide(lineIndex);
 			if (
 				fenceMatch?.[1]?.[0] === fence.marker && fenceMatch[1].length >= fence.length &&
 				!fenceMatch[2]!.trim()
@@ -104,18 +109,21 @@ function markdownHeadings(text: string): MarkdownHeading[] {
 			continue;
 		}
 		if (htmlBlock) {
+			hide(lineIndex);
 			if ("untilBlank" in htmlBlock ? !line.trim() : htmlBlock.until.test(line)) htmlBlock = undefined;
 			offset += line.length + 1;
 			continue;
 		}
 		const htmlStart = htmlBlockStart(line);
 		if (htmlStart && !("cannotInterruptParagraph" in htmlStart && htmlStart.cannotInterruptParagraph && paragraph)) {
+			hide(lineIndex);
 			paragraph = undefined;
 			if ("untilBlank" in htmlStart || !htmlStart.until.test(line)) htmlBlock = htmlStart;
 			offset += line.length + 1;
 			continue;
 		}
 		if (fenceMatch && (fenceMatch[1]![0] === "~" || !fenceMatch[2]!.includes("`"))) {
+			hide(lineIndex);
 			fence = { marker: fenceMatch[1]![0] as "`" | "~", length: fenceMatch[1]!.length };
 			paragraph = undefined;
 			offset += line.length + 1;
@@ -163,7 +171,15 @@ function markdownHeadings(text: string): MarkdownHeading[] {
 		}
 		offset += line.length + 1;
 	}
-	return headings;
+	return { headings, visibleText: visibleLines.join("\n") };
+}
+
+function markdownHeadings(text: string): MarkdownHeading[] {
+	return markdownStructure(text).headings;
+}
+
+function markdownVisibleText(text: string): string {
+	return markdownStructure(text).visibleText;
 }
 
 function hasUnambiguousCanonicalSections(text: string): boolean {
@@ -184,6 +200,8 @@ function hasUnambiguousCanonicalSections(text: string): boolean {
 interface MarkdownSection {
 	readonly level: number;
 	readonly body: string;
+	readonly bodyStart: number;
+	readonly end: number;
 }
 
 function markdownSection(text: string, name: string): MarkdownSection | undefined {
@@ -201,7 +219,7 @@ function markdownSection(text: string, name: string): MarkdownSection | undefine
 			break;
 		}
 	}
-	return { level: match.level, body: text.slice(start, end).trim() };
+	return { level: match.level, body: text.slice(start, end).trim(), bodyStart: start, end };
 }
 
 function section(text: string, name: string): string | undefined {
@@ -209,12 +227,12 @@ function section(text: string, name: string): string | undefined {
 }
 
 function field(text: string, name: string): string | undefined {
-	const match = new RegExp(`^\\*\\*${name}:\\*\\*\\s*(.+?)\\s*$`, "im").exec(text);
+	const match = new RegExp(`^\\*\\*${name}:\\*\\*\\s*(.+?)\\s*$`, "im").exec(markdownVisibleText(text));
 	return match?.[1]?.trim();
 }
 
 function fieldCount(text: string, name: string): number {
-	return [...text.matchAll(new RegExp(`^\\*\\*${name}:\\*\\*`, "gim"))].length;
+	return [...markdownVisibleText(text).matchAll(new RegExp(`^\\*\\*${name}:\\*\\*`, "gim"))].length;
 }
 
 function publicationSafeText(value: string | undefined, maxBytes = MAX_SYNTHESIS_BODY_BYTES): boolean {
@@ -289,7 +307,8 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 	const findingsSection = markdownSection(text, "Findings");
 	if (!findingsSection) return { findings: [], count: 0, complete: false, unsafe: containsReservedMarker(text) };
 	const content = findingsSection.body;
-	const matches = [...content.matchAll(FINDING_HEADING)].filter(
+	const visibleContent = markdownVisibleText(content);
+	const matches = [...visibleContent.matchAll(FINDING_HEADING)].filter(
 		(match) => match[1]!.length > findingsSection.level,
 	);
 	const findings: ReviewFindingLike[] = [];
@@ -297,15 +316,22 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 	let complete = noFindings || matches.length > 0;
 	let unsafe = containsReservedMarker(text) || UNSAFE_TEXT_CONTROL.test(text) ||
 		!hasUnambiguousCanonicalSections(text);
+	// A severity-tagged heading outside the canonical Findings section is
+	// ambiguous review content. Never omit it from a concise approval-capable
+	// artifact merely because it appeared under Overview or another section.
+	if (markdownHeadings(text).some((heading) =>
+		heading.level >= 3 && /^\[(?:P[0-3]|nit)\]\s+/i.test(heading.name) &&
+		(heading.index < findingsSection.bodyStart || heading.index >= findingsSection.end)
+	)) complete = false;
 
 	// Every nested heading in the Findings section must be one of the canonical
 	// severity-tagged headings. Otherwise deterministic extraction did not
 	// consume the complete finding structure.
-	const nestedHeadings = [...content.matchAll(/^(#{3,6})\s+.+$/gm)].filter(
+	const nestedHeadings = [...visibleContent.matchAll(/^(#{3,6})\s+.+$/gm)].filter(
 		(match) => match[1]!.length > findingsSection.level,
 	);
 	if (nestedHeadings.length !== matches.length) complete = false;
-	const prefix = content.slice(0, matches[0]?.index ?? content.length).trim();
+	const prefix = visibleContent.slice(0, matches[0]?.index ?? visibleContent.length).trim();
 	if (matches.length > 0 && prefix) complete = false;
 	if (matches.length === 0 && !noFindings && content.trim()) complete = false;
 
@@ -573,13 +599,14 @@ export function synthesizeReviewArtifact(input: {
 	const overview = section(raw, "Overview");
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
+	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
 	const verdict = field(raw, "Verdict")?.toLowerCase().replace(/[ -]+/g, "_");
 	const extractedControlsSafe = publicationSafeText(overview) && publicationSafeText(verification) &&
 		publicationSafeText(laneDisclosure) && publicationSafeText(field(raw, "Verdict")) &&
 		new Set(["approve", "request_changes", "comment"]).has(verdict ?? "") && fieldCount(raw, "Verdict") === 1;
 	const canonicalParsed = parsed.unsafe ? parsed : { ...parsed, unsafe: !extractedControlsSafe };
-	const completeness = synthesisCompleteness(raw, lanes, !!laneDisclosure?.trim());
-	const hasStructure = !!overview && !!verification && !!laneDisclosure?.trim() && extractedControlsSafe;
+	const completeness = synthesisCompleteness(raw, lanes, laneDisclosureClaimsComplete);
+	const hasStructure = !!overview && !!verification && laneDisclosureClaimsComplete && extractedControlsSafe;
 	const quality: ReviewSynthesisQuality = canonicalParsed.unsafe
 		? "raw"
 		: hasStructure && canonicalParsed.complete && completeness === "complete"

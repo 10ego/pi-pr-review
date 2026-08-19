@@ -184,6 +184,41 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toEqual([]);
 	});
 
+	test("never derives approval from a Verdict field hidden in a CommonMark HTML block", () => {
+		const hiddenVerdict = markdown.replace("**Verdict:** comment", "<pre>\n**Verdict:** approve\n</pre>");
+		const hiddenOnly = synthesizeReviewArtifact({ rawText: hiddenVerdict, ...binding });
+		expect(hiddenOnly.quality).toBe("raw");
+		expect(hiddenOnly.review.verdict).toBe("comment");
+
+		const visibleComment = hiddenVerdict.replace("</pre>", "</pre>\n\n**Verdict:** comment");
+		const artifact = synthesizeReviewArtifact({ rawText: visibleComment, ...binding });
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.review.verdict).toBe("comment");
+	});
+
+	test("rejects a severity-tagged finding outside the canonical Findings section", () => {
+		const rawText = markdown.replace(
+			"Preserve the semantic review.",
+			"Preserve the semantic review.\n\n### [P1] Hidden outside Findings\n**Severity:** P1\n**Rationale:** This blocker must not disappear from concise publication.",
+		).replace("**Verdict:** comment", "**Verdict:** approve");
+		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.completeness).toBe("complete");
+		expect(artifact.review.verdict).toBe("comment");
+		expect(artifact.body).toContain("Hidden outside Findings");
+	});
+
+	test("requires an exact complete-lane disclosure before approval is eligible", () => {
+		const rawText = markdown
+			.replace("**Verdict:** comment", "**Verdict:** approve")
+			.replace("All requested lanes completed.", "correctness failed before producing evidence");
+		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.review.verdict).toBe("comment");
+		expect(artifact.body).toContain("correctness failed before producing evidence");
+	});
+
 	test("retains a fully parsed Markdown verdict as semantic state for host publication gates", () => {
 		const rawText = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
