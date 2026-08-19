@@ -8,7 +8,7 @@ Give it a PR number and it will:
 - run focused review passes in parallel using models you choose;
 - validate candidate findings before reporting them;
 - render a structured review with severity, location, confidence, and verdict;
-- optionally publish one safe GitHub review with inline comments (`COMMENT` by default; gated `APPROVE` when configured).
+- optionally publish one safe GitHub review with inline comments (Markdown reviews are always `COMMENT`; gated `APPROVE` remains available only for qualified strict host-bound JSON reviews).
 
 The default review prioritizes P0–P2 defects and allows up to three minor findings. Use `--full` for exhaustive convention, maintainability, and minor coverage.
 
@@ -45,7 +45,7 @@ Then review a PR in the current repository:
 /pr-review 123
 ```
 
-In the TUI, the result is rendered as a readable review. In `print`, `json`, and `rpc` modes, Pi returns the raw JSON payload.
+The semantic result is predictable human-readable Markdown in every mode. GitHub request JSON is generated only by host code and is never a model output contract.
 
 ## Review modes
 
@@ -190,15 +190,15 @@ Publishing is off by default.
 /pr-review-config auto_post_reviews=true
 ```
 
-The extension owns normal publishing. After a successful review, it caches one validated completed review per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
+The extension owns normal publishing. Before review execution it captures repository, hostname, PR number/title, reviewed head, lifecycle state, posting/stale authority, and invocation identity independently of assistant text. After synthesis, it caches one validated completed review (the host-owned canonical artifact) per repository and PR in the current Pi session. `autoPostReviews` and `--comment` publish that cached review after completion; `--no-comment` suppresses publication for the run.
 
-If the agent's final review is not valid exact-contract JSON, the extension logs the reason and runs the configured `light` subagent once to reformat the completed output, with tools disabled and the original posting authority unchanged. If that correction is also invalid, the frozen invocation authorized publication, and the malformed content still contains a trustworthy requested-PR/reviewed-head binding, the extension asks the light model for one no-tools `COMMENT` payload. Host code validates that payload and performs the sole `gh` write while enforcing stale, draft, lifecycle, repository, authenticated-identity duplicate, and final-head gates. Without frozen publication authority or a trustworthy reviewed head, or after overlapping input, no fallback write is attempted.
+Review semantics are Markdown-first. A deterministic tolerant parser extracts complete findings when possible and ignores heading-like text inside CommonMark fenced-code and HTML-block contexts. Ambiguous or partially parsed output preserves the complete original synthesis in one sanitized body-only `COMMENT`; completely malformed synthesis does the same, and absent synthesis becomes a deterministic body-only review assembled from retained complete/partial/failed lane artifacts. Reserved markers are sanitized, size limits are enforced, and the canonical marker is appended only by host code. Optional formatting repair is never required and can never suppress the raw fallback.
 
 You can publish the cache later with `/pr-review-publish 123`, or directly ask the agent to “post the inline review,” “post it as an inline review,” or “publish the review for PR #123.” The extension handles that request directly before an agent turn. `/pr-review-publish` and a matching direct request publish only the cache; they never start or rerun review agents. Unnumbered direct requests select the latest cached review for the current repository. Only fresh interactive/RPC input can use the direct path.
 
-Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; it never submits `REQUEST_CHANGES` or retries a rejected write with a fallback POST. It emits `COMMENT` by default, or a gated `APPROVE` when configured below. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only. A stale review additionally requires `allowStaleApprovals: true` before it may record `APPROVE`.
+Every authorized publish path builds one GitHub review payload and sends at most one review `POST`; it never submits `REQUEST_CHANGES` or retries a rejected write with a fallback POST. All Markdown-derived canonical reviews use `COMMENT`, regardless of their apparent verdict, completeness, or finding priority, so a tolerant Markdown parser never controls merge-relevant approval. The legacy strict JSON path may still emit a gated `APPROVE` when host binding and every existing approval qualification succeed. For a current, open PR, the first 50 eligible P0–P3 findings with valid, unique diff anchors are inline. All other findings that pass content validation stay in the top-level review body, including nits, off-diff findings, unavailable diff metadata, duplicate anchors, and overflow. Stale or authorized non-open reviews are body-only. A stale strict JSON review additionally requires `allowStaleApprovals: true` before it may record `APPROVE`.
 
-All publication paths apply host-enforced safety gates: captured posting authority, repository and requested-PR binding, reviewed/current-head and stale policy, bounded bodies and payloads, draft and lifecycle checks, non-open authorization, authenticated-identity same-head duplicate detection, and a final head check. Validated review paths additionally enforce the full review contract and safe inline locations. The malformed-output fallback is body-only and COMMENT-only because it cannot provide full structured-review validation. Unknown or invalid states fail closed before a write.
+All publication paths apply host-enforced safety gates: captured posting authority, repository and requested-PR binding, reviewed/current-head and stale policy, bounded bodies and payloads, draft and lifecycle checks, non-open authorization, authenticated-identity same-head duplicate detection, and a final head check. Fully or partially parsed review paths additionally enforce safe inline locations. Raw and lane-assembled fallbacks are body-only and `COMMENT`-only; assistant text cannot select event, commit, repository, hostname, API path, or inline anchors. Unknown or invalid host states fail closed before a write.
 
 Stale publication is enabled by default through `allowStalePublish: true`; disable it with `/pr-review-config allow_stale_publish=false`. Automatic posting and `/pr-review-publish` use the setting captured when the review starts unless the command supplies the explicit override:
 
@@ -206,7 +206,7 @@ Stale publication is enabled by default through `allowStalePublish: true`; disab
 /pr-review-publish 123 --allow-stale
 ```
 
-A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. A stale publication remains `COMMENT` by default even when `approveMaxPriorityLevel` qualifies it; set trusted `allowStaleApprovals: true` before starting the review to permit its eligible `APPROVE`. Authorized non-open publications may record `APPROVE` when the priority gate qualifies the review. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
+A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. Markdown publication remains `COMMENT` in every lifecycle state. For a qualified strict JSON review, set trusted `allowStaleApprovals: true` before starting the review to permit an eligible stale `APPROVE`; authorized non-open strict JSON publications may also approve when the priority gate qualifies them. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
 
 ## Optional verification
 
@@ -255,14 +255,14 @@ Each finding includes:
 | `P3` | Low-priority improvement. |
 | `nit` | Trivial or optional. |
 
-The verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`. By default, publication uses the GitHub `COMMENT` event. When `approveMaxPriorityLevel` is set to `P2`, `P3`, or `nit`, a review whose verdict is `approve` and whose findings are all at or below that level is published as a GitHub `APPROVE` event instead. GitHub does not permit authors to approve their own PRs, so a self-authored PR is published as `COMMENT` even when it otherwise qualifies. A stale publication additionally requires `allowStaleApprovals: true`; authorized non-open publications do not.
+The semantic verdict is `request_changes` only when a validated P0 or P1 finding exists. Otherwise it is `approve` or `comment`, but every Markdown-derived review is published with the GitHub `COMMENT` event. `approveMaxPriorityLevel` applies only to the retained strict host-bound JSON compatibility path: when set to `P2`, `P3`, or `nit`, an otherwise-qualified strict JSON review whose verdict is `approve` and whose findings are all at or below that level may publish as `APPROVE`. GitHub does not permit authors to approve their own PRs, and a stale strict JSON approval additionally requires `allowStaleApprovals: true`.
 
 | Setting | Behavior |
 |---|---|
 | `off` (default) | Always `COMMENT`; never auto-approve. |
-| `P2` | `APPROVE` if verdict is `approve` and all findings are P2/P3/nit. |
-| `P3` | `APPROVE` if verdict is `approve` and all findings are P3/nit. |
-| `nit` | `APPROVE` only if verdict is `approve` and all findings are nits. |
+| `P2` | Strict JSON only: `APPROVE` if verdict is `approve` and all findings are P2/P3/nit. |
+| `P3` | Strict JSON only: `APPROVE` if verdict is `approve` and all findings are P3/nit. |
+| `nit` | Strict JSON only: `APPROVE` if verdict is `approve` and all findings are nits. |
 
 Configure it with `/pr-review-config approve_max_priority_level=P2`. To permit an eligible stale review to approve, also set `/pr-review-config allow_stale_approvals=true` before starting the review. Both settings follow the same user/project overlay pattern as `autoPostReviews`.
 

@@ -1,6 +1,8 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import type { ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import type { ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type AutoPostSource = "default" | "user" | "project";
@@ -231,10 +233,23 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	};
 }
 
+export interface ReviewHostBinding extends RepositoryBinding {
+	readonly prNumber: number;
+	readonly prTitle: string;
+	readonly reviewedHeadSha: string;
+	readonly state: string;
+	readonly draft: boolean;
+	readonly invocationGeneration?: number;
+	readonly sessionId?: string;
+	readonly sessionStartedAt?: string;
+}
+
 export interface ReviewInvocation {
 	readonly mode: PublishMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Host-resolved target captured before review execution; assistant output cannot override it. */
+	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
 	readonly allowStalePublish: boolean;
 	/** Trusted stale-approval setting captured before review execution begins. */
@@ -340,6 +355,7 @@ export class ReviewInvocationGate {
 		allowStalePublish = true,
 		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
+		reviewBinding?: ReviewHostBinding,
 	): { accepted: boolean; error?: string } {
 		if (!parsed.matched) return { accepted: false, error: "not a pr-review invocation" };
 		if (this.active) {
@@ -354,10 +370,14 @@ export class ReviewInvocationGate {
 			source: autoPost.source,
 			...(autoPost.error === undefined ? {} : { error: autoPost.error }),
 		});
+		if (reviewBinding && reviewBinding.prNumber !== parsed.prNumber) {
+			return { accepted: false, error: "host review binding does not match requested PR" };
+		}
 		this.active = Object.freeze({
 			mode: parsed.mode,
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,
 			autoPost: snapshot,
@@ -494,6 +514,15 @@ export interface CompletedReviewRecord {
 	review: ReviewLike;
 	invocation: ReviewInvocation;
 	repository: RepositoryBinding;
+	/** Preserved host-sanitized synthesis for partial/raw body publication. */
+	publicationBody?: string;
+	/** Raw/parsed degradation quality retained for diagnostics and cache replay. */
+	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
+	/** Canonical synthesis diagnostics retained independently of the assistant message. */
+	rawText?: string;
+	laneArtifacts?: readonly ReviewLaneArtifact[];
+	completeness?: ReviewSynthesisCompleteness;
+	diagnostics?: readonly string[];
 }
 
 export const COMPLETED_REVIEW_ENTRY_TYPE = "pr-review-completed";
@@ -512,6 +541,12 @@ export interface PersistedCompletedReview {
 	reviewHash: string;
 	reviewEntryId?: string;
 	review?: ReviewLike;
+	publicationBody?: string;
+	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
+	rawText?: string;
+	laneArtifacts?: readonly ReviewLaneArtifact[];
+	completeness?: ReviewSynthesisCompleteness;
+	diagnostics?: readonly string[];
 }
 
 export interface CompletedReviewSessionEntryLike {
@@ -576,10 +611,30 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 	) {
 		return undefined;
 	}
+	const reviewBinding = value.reviewBinding;
+	const parsedBinding = isObject(reviewBinding) && validRepositoryBinding(reviewBinding) &&
+		Number.isInteger(reviewBinding.prNumber) && Number(reviewBinding.prNumber) === Number(value.prNumber) &&
+		typeof reviewBinding.prTitle === "string" &&
+		typeof reviewBinding.reviewedHeadSha === "string" && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(reviewBinding.reviewedHeadSha) &&
+		typeof reviewBinding.state === "string" && typeof reviewBinding.draft === "boolean"
+		? {
+			repository: String(reviewBinding.repository),
+			hostname: String(reviewBinding.hostname),
+			prNumber: Number(reviewBinding.prNumber),
+			prTitle: String(reviewBinding.prTitle),
+			reviewedHeadSha: String(reviewBinding.reviewedHeadSha).toLowerCase(),
+			state: String(reviewBinding.state),
+			draft: reviewBinding.draft,
+			...(Number.isInteger(reviewBinding.invocationGeneration) ? { invocationGeneration: Number(reviewBinding.invocationGeneration) } : {}),
+			...(typeof reviewBinding.sessionId === "string" ? { sessionId: reviewBinding.sessionId } : {}),
+			...(typeof reviewBinding.sessionStartedAt === "string" ? { sessionStartedAt: reviewBinding.sessionStartedAt } : {}),
+		} satisfies ReviewHostBinding
+		: undefined;
 	return {
 		mode: value.mode as PublishMode,
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		...(parsedBinding ? { reviewBinding: parsedBinding } : {}),
 		// Schema v2 records created before this setting existed inherit the new
 		// safe default: stale publication is body-only with both SHAs disclosed.
 		allowStalePublish: typeof value.allowStalePublish === "boolean" ? value.allowStalePublish : true,
@@ -598,6 +653,20 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 	};
 }
 
+function parsePersistedLaneArtifacts(value: unknown): readonly ReviewLaneArtifact[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const lifecycles = new Set(["complete", "partial", "timed_out", "failed"]);
+	const lanes = value.filter((lane): lane is Record<string, unknown> => isObject(lane));
+	if (lanes.length !== value.length || lanes.some((lane) =>
+		!Number.isInteger(lane.generation) || typeof lane.key !== "string" || typeof lane.passId !== "string" ||
+		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) || typeof lane.rawText !== "string" ||
+		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) || !Array.isArray(lane.attempts) ||
+		lane.attempts.some((attempt) => !isObject(attempt) || !Number.isInteger(attempt.ordinal) ||
+			typeof attempt.rawText !== "string" || !Number.isInteger(attempt.exitCode) || !lifecycles.has(String(attempt.lifecycle)))
+	)) return undefined;
+	return lanes as unknown as readonly ReviewLaneArtifact[];
+}
+
 /** Session-scoped latest completed review per repository and PR. */
 export class CompletedReviewCache {
 	private readonly reviews = new Map<string, CompletedReviewRecord>();
@@ -607,7 +676,12 @@ export class CompletedReviewCache {
 	}
 
 	/** Replace one PR record while retaining its predecessor for cancellation rollback. */
-	replace(review: ReviewLike, invocation: ReviewInvocation, repository: RepositoryBinding): {
+	replace(
+		review: ReviewLike,
+		invocation: ReviewInvocation,
+		repository: RepositoryBinding,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "completeness" | "diagnostics">,
+	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
 	} {
@@ -615,6 +689,12 @@ export class CompletedReviewCache {
 			review,
 			invocation: { ...invocation, autoPost: { ...invocation.autoPost } },
 			repository: { ...repository },
+			...(artifact?.publicationBody ? { publicationBody: artifact.publicationBody } : {}),
+			...(artifact?.synthesisQuality ? { synthesisQuality: artifact.synthesisQuality } : {}),
+			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
+			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
+			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
+			...(artifact?.diagnostics ? { diagnostics: artifact.diagnostics } : {}),
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
 		const previous = this.reviews.get(key);
@@ -640,6 +720,12 @@ export class CompletedReviewCache {
 			repository: { ...record.repository },
 			reviewHash: digest,
 			...(useReference ? { reviewEntryId } : { review: record.review }),
+			...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
+			...(record.synthesisQuality ? { synthesisQuality: record.synthesisQuality } : {}),
+			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
+			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
+			...(record.completeness ? { completeness: record.completeness } : {}),
+			...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
 		};
 	}
 
@@ -680,7 +766,28 @@ export class CompletedReviewCache {
 		) {
 			return false;
 		}
-		this.remember(parsed.review, invocation, value.repository);
+		const quality = new Set(["fully_parsed", "partially_parsed", "raw", "lane_fallback"]).has(String(value.synthesisQuality))
+			? value.synthesisQuality as CompletedReviewRecord["synthesisQuality"]
+			: undefined;
+		const publicationBody = typeof value.publicationBody === "string" && !validateReviewBody(value.publicationBody)
+			? value.publicationBody
+			: undefined;
+		const rawText = typeof value.rawText === "string" ? value.rawText : undefined;
+		const laneArtifacts = parsePersistedLaneArtifacts(value.laneArtifacts);
+		const completeness = value.completeness === "complete" || value.completeness === "incomplete"
+			? value.completeness
+			: undefined;
+		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
+			? value.diagnostics as string[]
+			: undefined;
+		this.replace(parsed.review, invocation, value.repository, {
+			...(publicationBody ? { publicationBody } : {}),
+			...(quality ? { synthesisQuality: quality } : {}),
+			...(rawText !== undefined ? { rawText } : {}),
+			...(laneArtifacts ? { laneArtifacts } : {}),
+			...(completeness ? { completeness } : {}),
+			...(diagnostics ? { diagnostics } : {}),
+		});
 		return true;
 	}
 
@@ -762,6 +869,8 @@ export function restoreCompletedReviewBranch(
 export interface PublishableReviewParseResult {
 	review?: ReviewLike;
 	error?: string;
+	/** The assistant envelope that supplied a successfully validated review. */
+	source?: "json" | "markdown_fence";
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -773,25 +882,26 @@ function isConfidence(value: unknown): value is number {
 }
 
 /**
- * Strip a single surrounding Markdown fenced code block (```lang … ```) so a model
- * response that wraps the review object in a code fence — despite the instruction
- * to emit exactly one JSON object — can still be parsed without a repair round-trip.
+ * Identify a single surrounding Markdown fenced code block (```lang … ```) so a
+ * wrapped object can still be validated without losing its Markdown provenance.
  * Prose-wrapped or mixed drafts are intentionally left untouched (still rejected).
- * Returns the original text when there is no recognizable outer fence.
  */
-function stripMarkdownCodeFence(text: string): string {
+function publishableReviewEnvelope(text: string): { text: string; source: "json" | "markdown_fence" } {
 	const match = text.trim().match(/^```[^\n]*\n([\s\S]*)\n```[ \t]*$/);
-	return match ? match[1] : text;
+	return match
+		? { text: match[1]!, source: "markdown_fence" }
+		: { text, source: "json" };
 }
 
 /**
  * Publication accepts one complete JSON object. A single surrounding Markdown code
- * fence is tolerated and stripped; prose-wrapped or partial drafts are rejected.
+ * fence is tolerated for compatibility but remains distinguishable from exact JSON.
  */
 export function parsePublishableReview(text: string): PublishableReviewParseResult {
+	const envelope = publishableReviewEnvelope(text);
 	let value: unknown;
 	try {
-		value = JSON.parse(stripMarkdownCodeFence(text).trim());
+		value = JSON.parse(envelope.text.trim());
 	} catch {
 		return { error: "final response is not exactly one JSON object" };
 	}
@@ -847,7 +957,7 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 	if (!isConfidence(value.overall_confidence_score)) {
 		return { error: "overall_confidence_score is invalid" };
 	}
-	return { review: value as unknown as ReviewLike };
+	return { review: value as unknown as ReviewLike, source: envelope.source };
 }
 
 export function shouldPublishReview(review: ReviewLike): boolean {
@@ -1208,6 +1318,7 @@ function buildLosslessReviewPayload(input: {
 	allowInlineComments: boolean;
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
+	bodyOverride?: string;
 	diagnostics?: readonly string[];
 	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
@@ -1231,7 +1342,7 @@ function buildLosslessReviewPayload(input: {
 	diagnostics.push(...selected.diagnostics);
 	if (selected.errors.length > 0) return { diagnostics, errors: selected.errors };
 
-	let content = buildReviewSummary(input.review, selected.comments);
+	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
 	if (diagnostics.length > 0) {
 		content = `${content}\n\n### Publication diagnostics\n\n${diagnostics.map((item) => `- ${item}`).join("\n")}`;
 	}
@@ -1403,8 +1514,34 @@ interface PullState {
 	state?: string;
 	draft?: boolean;
 	merged_at?: string | null;
+	title?: string;
 	head?: { sha?: string };
 	user?: { login?: string };
+}
+
+/** Capture immutable publication identity and lifecycle before the review model runs. */
+export async function resolveReviewHostBinding(cwd: string, prNumber: number): Promise<ReviewHostBinding> {
+	if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error("invalid PR number");
+	const repository = await resolveRepositoryBinding(cwd);
+	const pull = await ghJson<PullState>(
+		githubApiArgs(repository.hostname, `repos/${repository.repository}/pulls/${prNumber}`),
+		cwd,
+	);
+	const reviewedHeadSha = pull.head?.sha?.toLowerCase();
+	if (!reviewedHeadSha || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(reviewedHeadSha)) {
+		throw new Error("GitHub returned an invalid PR head SHA");
+	}
+	if (typeof pull.title !== "string" || typeof pull.state !== "string" || typeof pull.draft !== "boolean") {
+		throw new Error("GitHub returned incomplete PR identity or lifecycle metadata");
+	}
+	return Object.freeze({
+		...repository,
+		prNumber,
+		prTitle: pull.title,
+		reviewedHeadSha,
+		state: pull.state.toUpperCase(),
+		draft: pull.draft,
+	});
 }
 
 export interface HeadPublicationPlan {
@@ -1650,6 +1787,12 @@ export async function publishPullReview(input: {
 	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
+	/** Host-sanitized original synthesis retained when structured extraction is partial or absent. */
+	publicationBody?: string;
+	/** Prevent uncertain/raw synthesis from selecting APPROVE or inline anchors. */
+	forceBodyOnly?: boolean;
+	/** Prevent partially trusted synthesis from selecting a merge-relevant event. */
+	forceComment?: boolean;
 }): Promise<PublishResult> {
 	const {
 		cwd,
@@ -1661,6 +1804,9 @@ export async function publishPullReview(input: {
 		approveMaxPriorityLevel = "off",
 		expectedRepository,
 		review,
+		publicationBody,
+		forceBodyOnly = false,
+		forceComment = false,
 	} = input;
 	if (!Number.isInteger(prNumber) || prNumber <= 0) return { status: "failed", message: "invalid PR number" };
 	if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(headSha)) return { status: "failed", message: "invalid head SHA" };
@@ -1724,7 +1870,7 @@ export async function publishPullReview(input: {
 		const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 		if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 		const isOpen = lifecycle.lifecycle === "open";
-		let allowInlineComments = isOpen && headPlan.allowInlineComments;
+		let allowInlineComments = !forceBodyOnly && isOpen && headPlan.allowInlineComments;
 		let changedFiles: readonly ChangedFileLike[] = [];
 		let changedFileLookupFailed = false;
 		if (allowInlineComments && hasInlineCandidates(validatedReview)) {
@@ -1747,6 +1893,8 @@ export async function publishPullReview(input: {
 		// single write rather than retrying a rejected review as COMMENT.
 		const isSelfAuthored = pull.user?.login?.toLowerCase() === identity.toLowerCase();
 		const isApprove =
+			!forceBodyOnly &&
+			!forceComment &&
 			!isSelfAuthored &&
 			(!headPlan.stale || allowStaleApprovals) &&
 			shouldApproveReview(validatedReview, approveMaxPriorityLevel);
@@ -1756,6 +1904,7 @@ export async function publishPullReview(input: {
 			markerHeadSha: normalizedHeadSha,
 			allowInlineComments,
 			changedFiles,
+			...(publicationBody ? { bodyOverride: publicationBody } : {}),
 			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale

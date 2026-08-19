@@ -825,6 +825,32 @@ describe("publish-only completed review command", () => {
 		).toBeFalse();
 	});
 
+	test("persists and restores canonical synthesis diagnostics independently of the assistant reference", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const lane = {
+			generation: 1, key: "call:0", passId: "correctness", requestedPassOrdinal: 0, tier: "heavy" as const,
+			rawText: "partial lane evidence", exitCode: 1, lifecycle: "partial" as const, attempts: [], fallbackUsed: false,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		};
+		const record = cache.replace(review, invocation, repository, {
+			rawText: "raw synthesis", laneArtifacts: [lane], completeness: "incomplete", diagnostics: ["one lane was partial"],
+			synthesisQuality: "partially_parsed", publicationBody: "safe body",
+		}).record;
+		const persisted = cache.persist(record, sessionA, "review-message", review);
+		expect(persisted).toMatchObject({
+			reviewEntryId: "review-message", rawText: "raw synthesis", completeness: "incomplete",
+			diagnostics: ["one lane was partial"], laneArtifacts: [{ passId: "correctness", rawText: "partial lane evidence" }],
+		});
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted, sessionA, review)).toBeTrue();
+		expect(restored.get(7, repository)).toMatchObject({
+			rawText: "raw synthesis", completeness: "incomplete", diagnostics: ["one lane was partial"],
+			laneArtifacts: [{ passId: "correctness", rawText: "partial lane evidence" }],
+		});
+	});
+
 	test("restores referenced reviews without duplicating raw JSON", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
@@ -881,8 +907,8 @@ describe("publish-only completed review command", () => {
 		expect(turnEnd).toContain("completedReviews.persist(pending.record, pending.session, reviewEntryId, leafReview)");
 		expect(turnEnd).toContain("publishCompletedReview(pending.record");
 		expect(turnEnd).not.toContain("publishCompletedReview(leafReview");
-		// The live response and a light-subagent repair output are both strictly parsed.
-		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(2);
+		// Legacy exact JSON is parsed once; Markdown/raw synthesis follows the host-owned artifact path.
+		expect(messageEnd.match(/parsePublishableReview\(/g)).toHaveLength(1);
 		expect(extension).toContain("no publish-only cache is available");
 	});
 
@@ -1058,7 +1084,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
-		expect(readme).toContain("runs the configured `light` subagent once to reformat the completed output");
+		expect(readme).toContain("Optional formatting repair is never required and can never suppress the raw fallback");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");
@@ -1192,8 +1218,10 @@ describe("assistant completion safety", () => {
 });
 
 describe("strict publication parsing", () => {
-	test("accepts the complete exact JSON contract", () => {
-		expect(parsePublishableReview(JSON.stringify(review)).review?.pr?.number).toBe(7);
+	test("accepts the complete exact JSON contract with non-Markdown provenance", () => {
+		const parsed = parsePublishableReview(JSON.stringify(review));
+		expect(parsed.review?.pr?.number).toBe(7);
+		expect(parsed.source).toBe("json");
 	});
 
 	test("rejects prose and partial objects", () => {
@@ -1201,15 +1229,17 @@ describe("strict publication parsing", () => {
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
 	});
 
-	test("auto-heals a Markdown-fenced review object", () => {
-		// A model that wraps the review in a ```json fence must still parse without
-		// triggering an output-repair round-trip.
+	test("auto-heals a Markdown-fenced review object while retaining Markdown provenance", () => {
+		// A model that wraps the review in a ```json fence can still be parsed for
+		// compatibility, but must not become approval-capable strict JSON.
 		const fenced = (lang: string) => `\`\`\`${lang}\n${JSON.stringify(review)}\n\`\`\``;
-		expect(parsePublishableReview(fenced("json")).review?.pr?.number).toBe(7);
-		expect(parsePublishableReview(fenced("")).review?.pr?.number).toBe(7);
-		expect(parsePublishableReview(fenced("JSON")).review?.pr?.number).toBe(7);
-		// Surrounding whitespace around the fence is tolerated.
-		expect(parsePublishableReview(`\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n`).review?.pr?.number).toBe(7);
+		for (const text of [fenced("json"), fenced(""), fenced("JSON")]) {
+			const parsed = parsePublishableReview(text);
+			expect(parsed.review?.pr?.number).toBe(7);
+			expect(parsed.source).toBe("markdown_fence");
+		}
+		// Surrounding whitespace around the fence is tolerated without erasing provenance.
+		expect(parsePublishableReview(`\n\n\`\`\`json\n${JSON.stringify(review)}\n\`\`\`\n`).source).toBe("markdown_fence");
 		// Prose before/after the fence, or an inner body that is not JSON, is still rejected.
 		expect(parsePublishableReview(`here it is\n${fenced("json")}`).review).toBeUndefined();
 		expect(parsePublishableReview(`\`\`\`json\nnot an object\n\`\`\``).review).toBeUndefined();

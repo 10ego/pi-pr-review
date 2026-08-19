@@ -7,6 +7,7 @@ import {
 	type PublishModeParseResult,
 	type ReviewInvocation,
 	type ReviewInvocationPhase,
+	type ReviewHostBinding,
 } from "./pr-review-publish.ts";
 import {
 	ReviewFocusRegistry,
@@ -115,21 +116,31 @@ export class ReviewLoopCoordinator {
 		allowStalePublish = true,
 		allowStaleApprovals = false,
 		approveMaxPriorityLevel: ApproveMaxPriorityLevel = "off",
+		reviewBinding?: ReviewHostBinding,
 	): { accepted: boolean; error?: string } {
 		if (source !== "interactive" && source !== "rpc") {
 			return { accepted: false, error: "/pr-review must be initiated directly by an interactive or RPC user" };
 		}
+		const current = sessionBinding(ctx);
+		const generation = this.nextGeneration;
+		const invocationBinding = reviewBinding ? {
+			...reviewBinding,
+			invocationGeneration: generation,
+			sessionId: current.sessionId,
+			...(current.sessionStartedAt ? { sessionStartedAt: current.sessionStartedAt } : {}),
+		} : undefined;
 		const started = this.invocationGate.begin(
 			parsed,
 			autoPost,
 			allowStalePublish,
 			allowStaleApprovals,
 			approveMaxPriorityLevel,
+			invocationBinding,
 		);
 		if (!started.accepted) return started;
-		const current = sessionBinding(ctx);
+		this.nextGeneration++;
 		this.binding = {
-			generation: this.nextGeneration++,
+			generation,
 			...current,
 			controller: new AbortController(),
 		};

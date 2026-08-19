@@ -24,6 +24,8 @@ export interface ReviewLaneArtifact {
 	readonly generation: number;
 	readonly key: string;
 	readonly passId: string;
+	/** Zero-based order assigned from the host's requested pass list. */
+	readonly requestedPassOrdinal?: number;
 	readonly tier: "light" | "medium" | "heavy";
 	readonly requestedModel?: string;
 	readonly observedModel?: string;
@@ -135,7 +137,11 @@ export class ReviewLaneArtifactRegistry {
 
 	snapshot(generation: number): readonly ReviewLaneArtifact[] | undefined {
 		if (this.generation !== generation) return undefined;
-		return Object.freeze([...this.artifacts.values()]);
+		return Object.freeze([...this.artifacts.values()].sort((left, right) => {
+			const leftOrdinal = left.requestedPassOrdinal ?? Number.MAX_SAFE_INTEGER;
+			const rightOrdinal = right.requestedPassOrdinal ?? Number.MAX_SAFE_INTEGER;
+			return leftOrdinal - rightOrdinal || left.key.localeCompare(right.key, "en", { numeric: true });
+		}));
 	}
 
 	close(generation?: number): void {
