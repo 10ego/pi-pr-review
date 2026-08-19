@@ -138,7 +138,7 @@ interface PrReviewConfig {
 	thinkingLevels: Partial<Record<Tier, ThinkingLevel>>;
 	/** Optional tier-level policy used when a tool call does not override it. */
 	toolPolicies: Partial<Record<Tier, ToolPolicy>>;
-	/** Automatically publish final review JSON as a GitHub COMMENT review. Disabled by default. */
+	/** Automatically publish the completed review as a host-gated GitHub COMMENT or APPROVE review. Disabled by default. */
 	autoPostReviews: boolean;
 	/** Permit stale publication as body-only with reviewed/current SHAs disclosed. Enabled by default. */
 	allowStalePublish: boolean;
@@ -1612,7 +1612,7 @@ export default function registerPrReviewSubagents(
 			"Delegate one PR-review pass to an isolated subagent running on a configured model tier.",
 			"Pass tier (light|medium|heavy) plus an objective and the diff as context.",
 			"Model per tier is configured via /pr-review-config (stored in pr-review.json).",
-			"Returns the subagent's candidate findings; the orchestrator validates, filters, and emits the final JSON.",
+			"Returns the subagent's candidate findings; the orchestrator validates, filters, and emits the final Markdown review.",
 		].join(" "),
 		promptSnippet:
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
@@ -2033,7 +2033,7 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 		value: `${t}_tool_policy=`,
 		label: `${t}_tool_policy=<none|configured|unset> — default tool access when a pass does not override it`,
 	})),
-	{ value: "auto_post_reviews=", label: "auto_post_reviews=<true|false> — automatically post COMMENT reviews (default false)" },
+	{ value: "auto_post_reviews=", label: "auto_post_reviews=<true|false> — automatically post host-gated reviews (default false)" },
 	{ value: "allow_stale_publish=", label: "allow_stale_publish=<true|false> — permit disclosed body-only stale publication (default true)" },
 	{ value: "tools=", label: "tools=read,bash,grep,find,ls — allowlist used by configured policy" },
 	{ value: "show", label: "show — print the current review config" },
@@ -2325,7 +2325,7 @@ function summarizeConfig(
 		"- Enable stale publication (default): `/pr-review-config allow_stale_publish=true`",
 		"- Permit qualified stale fully parsed reviews to record APPROVE: `/pr-review-config allow_stale_approvals=true`",
 		"- Keep stale reviews as COMMENT (default): `/pr-review-config allow_stale_approvals=false`",
-		"- Enable strict JSON approval for low-severity reviews: `/pr-review-config approve_max_priority_level=P2`",
+		"- Enable approval for qualified fully parsed reviews: `/pr-review-config approve_max_priority_level=P2`",
 		"- Disable auto-approve (default): `/pr-review-config approve_max_priority_level=off`",
 		"- Set tier tool policy: `/pr-review-config light_tool_policy=none`",
 		"- Clear a tier: `/pr-review-config medium=unset`",
@@ -2452,7 +2452,7 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 		{
 			id: "auto_post_reviews",
 			label: "user automatic posting setting",
-			description: "Post one GitHub COMMENT review after final JSON. Disabled by default.",
+			description: "Post one host-gated GitHub review after terminal synthesis. Disabled by default.",
 			currentValue: String(cfg.autoPostReviews),
 			values: ["false", "true"],
 		},
