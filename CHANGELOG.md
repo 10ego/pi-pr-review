@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.3](https://github.com/10ego/pi-pr-review/compare/v1.12.2...v1.12.3) (2026-08-19)
+
+
+### Bug Fixes
+
+* **review:** make host lane truth authoritative for completeness ([#67](https://github.com/10ego/pi-pr-review/issues/67)) ([ad70fc3](https://github.com/10ego/pi-pr-review/commit/ad70fc3b6376f215bf045b980fef06bd87036bd1))
+
 ## [1.12.2](https://github.com/10ego/pi-pr-review/compare/v1.12.1...v1.12.2) (2026-08-19)
 
 
