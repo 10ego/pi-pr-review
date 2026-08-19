@@ -520,65 +520,113 @@ function incompleteLaneDisclosure(lanes: readonly ReviewLaneArtifact[]): string 
 	].join("\n");
 }
 
-function bindIncompleteLaneDisclosure(raw: string, lanes: readonly ReviewLaneArtifact[]): string {
-	const disclosure = incompleteLaneDisclosure(lanes);
-	if (!disclosure) return raw;
-	const text = raw.replace(/All requested lanes completed\.?/gi, "Host verification found incomplete requested lanes.");
-	const headings = markdownHeadings(text);
-	const matches = headings.filter((heading) => heading.level === 2 && heading.name.toLowerCase() === "lane completeness");
-	if (matches.length !== 1) {
-		return `${text.trim()}\n\n## Host-verified lane completeness\n${disclosure}`.trim();
+/** Shift ATX headings down so retained Markdown nests under host-owned sections. */
+export function demoteHeadings(text: string, levels = 1): string {
+	const headings = markdownHeadings(text).filter((heading) => heading.level + levels <= 6);
+	if (headings.length === 0) return text;
+	let out = "";
+	let cursor = 0;
+	for (const heading of headings) {
+		out += `${text.slice(cursor, heading.index)}${"#".repeat(levels)}${text.slice(heading.index, heading.index + heading.length)}`;
+		cursor = heading.index + heading.length;
 	}
-	const match = matches[0]!;
-	const bodyStart = match.index + match.length;
-	const next = headings.find((heading) => heading.index > match.index && heading.level <= match.level);
-	const bodyEnd = next?.index ?? text.length;
-	const assistantDisclosure = text.slice(bodyStart, bodyEnd).trim();
-	return `${text.slice(0, bodyStart)}\n${assistantDisclosure}${assistantDisclosure ? "\n\n" : ""}${disclosure}\n\n${text.slice(bodyEnd)}`.trim();
+	return out + text.slice(cursor);
 }
 
-function safeReviewBodyWithLaneDisclosure(raw: string, lanes: readonly ReviewLaneArtifact[]): string {
-	const bound = bindIncompleteLaneDisclosure(raw, lanes);
-	const body = safeReviewBody(bound);
-	const disclosure = incompleteLaneDisclosure(lanes);
-	if (!disclosure || body.includes(disclosure)) return body;
-	const suffix = sanitize(`\n\n## Host-verified lane completeness\n${disclosure}`);
-	const prefixBudget = MAX_SYNTHESIS_BODY_BYTES - Buffer.byteLength(suffix, "utf8") - 2;
-	if (prefixBudget <= 0) return safeReviewBody(suffix);
-	return `${truncateUtf8(sanitize(bound), prefixBudget)}\n\n${suffix}`;
+function degradedFindingLocation(finding: ReviewFindingLike): string {
+	const location = finding.code_location;
+	const path = location?.absolute_file_path;
+	if (!path) return "summary-only";
+	const range = location?.line_range;
+	const start = range?.start;
+	const end = range?.end ?? start;
+	const side = location?.side === "LEFT" ? "LEFT" : location?.side === "RIGHT" ? "RIGHT" : undefined;
+	const linesPart = start !== undefined ? `:${start}${end !== undefined && end !== start ? `-${end}` : ""}` : "";
+	return `${String(path)}${linesPart}${side ? ` ${side}` : ""}`;
 }
 
-function retainedLaneEvidence(lanes: readonly ReviewLaneArtifact[]): string {
-	if (lanes.length === 0) return "";
-	const lines = ["## Host-retained lane evidence", ""];
-	for (const lane of lanes.slice(0, MAX_DISCLOSED_LANES)) {
-		lines.push(`### ${disclosedPassId(lane.passId)} — ${lane.lifecycle}`, "");
-		if (lane.deadlineExpired) {
-			lines.push(`Host ${lane.deadlineExpired} deadline expired while this lane was still running.`, "");
-		}
-		const text = retainedLaneText(lane);
-		if (text) lines.push(text, "");
-		else lines.push(`No substantive output was retained${lane.errorMessage ? `: ${lane.errorMessage}` : "."}`, "");
-	}
-	if (lanes.length > MAX_DISCLOSED_LANES) {
-		lines.push(`### ${lanes.length - MAX_DISCLOSED_LANES} additional lane artifact(s) omitted`, "");
-	}
-	return lines.join("\n").trim();
-}
-
-function laneFallback(lanes: readonly ReviewLaneArtifact[]): string {
-	const lines = ["# PR Review", "", "**Verdict:** comment", "", "## Lane completeness", ""];
-	if (lanes.length === 0) {
-		lines.push("- No synthesis or retained lane output was available.");
+/** Host-rendered finding blocks that match the canonical synthesis labels. */
+function degradedFindingBlocks(findings: readonly ReviewFindingLike[]): string[] {
+	if (findings.length === 0) return [];
+	return findings.map((finding) => {
+		const severity = String(finding.severity ?? "P2");
+		const rawTitle = String(finding.title ?? "Finding").trim() || "Finding";
+		// Parsed titles may already carry their severity tag; never double it.
+		const title = rawTitle.replace(/^\[?(P0|P1|P2|P3|nit)\]\s*/i, "$1 ").replace(/^(P0|P1|P2|P3|nit)\s+/, "").trim() || rawTitle;
+		const lines = [
+			`### [${severity}] ${title}`,
+			`**Severity:** ${severity}`,
+		];
+		if (finding.body?.trim()) lines.push(finding.body.trim());
+		lines.push(`**Location:** \`${degradedFindingLocation(finding)}\``);
 		return lines.join("\n");
-	}
-	lines.push(retainedLaneEvidence(lanes));
-	return lines.join("\n").trim();
+	});
 }
 
-function synthesisWithRetainedLaneEvidence(raw: string, lanes: readonly ReviewLaneArtifact[]): string {
-	const evidence = retainedLaneEvidence(lanes);
-	return evidence ? `${raw.trim()}\n\n${evidence}`.trim() : raw;
+/**
+ * Deterministic, readable body for degraded syntheses. The model's raw Markdown
+ * and every retained lane artifact are preserved verbatim (only heading levels
+ * shift) under explicit host-owned labels, parsed findings are rendered in the
+ * canonical format, and coverage is disclosed instead of implied.
+ */
+function buildDegradedReviewBody(input: {
+	rawText: string;
+	lanes: readonly ReviewLaneArtifact[];
+	findings: readonly ReviewFindingLike[];
+	reason?: string;
+}): string {
+	const blocking = input.findings.some((finding) => finding.severity === "P0" || finding.severity === "P1");
+	const verdict = blocking ? "Request changes" : "Comment";
+	const reason = input.reason?.trim();
+	const lines: string[] = [
+		"# PR Review",
+		"",
+		`**Verdict:** ${verdict}${reason ? ` — ${reason}` : ""}`,
+		"",
+		"## Coverage",
+		"",
+	];
+	const coverage = incompleteLaneDisclosure(input.lanes);
+	lines.push(
+		coverage ||
+			(input.lanes.length > 0 ? "All requested lanes completed." : "No host lane evidence was retained for this review."),
+		"",
+	);
+	lines.push("## Findings", "");
+	if (input.findings.length === 0) {
+		lines.push(
+			"No structurally parsed findings were extracted from this degraded synthesis.",
+			"The retained reviewer output below is the authoritative record; it is not evidence of a clean review.",
+			"",
+		);
+	} else {
+		for (const block of degradedFindingBlocks(input.findings)) lines.push(block, "");
+	}
+	const synthesis = input.rawText.trim();
+	if (synthesis) {
+		// A retained synthesis may still carry a completion claim the host has
+		// disproven; replace it so the published body never states both.
+		const reconciled = coverage
+			? synthesis.replace(/All requested lanes completed\.?/gi, "Host verification found incomplete requested lanes.")
+			: synthesis;
+		lines.push("## Retained synthesis", "", demoteHeadings(reconciled).trim(), "");
+	}
+	if (input.lanes.length > 0) {
+		lines.push("## Retained lane output", "");
+		for (const lane of input.lanes.slice(0, MAX_DISCLOSED_LANES)) {
+			lines.push(`### ${disclosedPassId(lane.passId)} — ${lane.lifecycle}`, "");
+			if (lane.deadlineExpired) {
+				lines.push(`Host ${lane.deadlineExpired} deadline expired while this lane was still running.`, "");
+			}
+			const text = retainedLaneText(lane);
+			if (text) lines.push(demoteHeadings(text, 2).trim(), "");
+			else lines.push(`No substantive output was retained${lane.errorMessage ? `: ${lane.errorMessage}` : "."}`, "");
+		}
+		if (input.lanes.length > MAX_DISCLOSED_LANES) {
+			lines.push(`### ${input.lanes.length - MAX_DISCLOSED_LANES} additional lane artifact(s) omitted`, "");
+		}
+	}
+	return safeReviewBody(lines.join("\n").trim());
 }
 
 /** Build the canonical semantic artifact while taking every authority field from the host binding. */
@@ -602,7 +650,14 @@ export function synthesizeReviewArtifact(input: {
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
 		const bodyFallback = !safe || completeness === "incomplete";
 		const body = bodyFallback
-			? safeReviewBodyWithLaneDisclosure(synthesisWithRetainedLaneEvidence(input.rawText, lanes), lanes)
+			? buildDegradedReviewBody({
+				rawText: input.rawText,
+				lanes,
+				findings: [],
+				reason: safe
+					? "incomplete lane evidence degraded this synthesis"
+					: "publication-invalid extracted content degraded this synthesis",
+			})
 			: "";
 		return Object.freeze({
 			quality: bodyFallback ? "raw" as const : "fully_parsed" as const,
@@ -632,10 +687,14 @@ export function synthesizeReviewArtifact(input: {
 	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
-		// The retained evidence itself can exceed the publication cap. Apply the
-		// same host-owned disclosure reservation used for raw synthesis so an
-		// early large lane cannot truncate away exact later incomplete shards.
-		const body = safeReviewBodyWithLaneDisclosure(laneFallback(lanes), lanes);
+		// Retained lane output is bounded by the host-owned body cap so an early
+		// large lane cannot truncate away the coverage disclosure above it.
+		const body = buildDegradedReviewBody({
+			rawText: "",
+			lanes,
+			findings: [],
+			reason: "terminal synthesis was absent",
+		});
 		return Object.freeze({
 			quality: "lane_fallback" as const,
 			rawText: input.rawText,
@@ -690,12 +749,41 @@ export function synthesizeReviewArtifact(input: {
 		: hasStructure && canonicalParsed.complete && completeness === "complete"
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
-	// Markdown is the durable semantic product. Keep it in the body even when
-	// deterministic extraction also makes safe inline placement available. Host
-	// lane artifacts override contradictory assistant completion claims.
-	const bodySource = quality === "fully_parsed" ? raw : synthesisWithRetainedLaneEvidence(raw, lanes);
-	const body = safeReviewBodyWithLaneDisclosure(bodySource, lanes);
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
+	const degradationReasons = (() => {
+		if (canonicalParsed.unsafe) {
+			return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
+		}
+		if (quality === "fully_parsed") return [];
+		const reasons: string[] = [];
+		if (!overview) reasons.push("Overview section missing or empty");
+		if (!verification) reasons.push("Verification section missing or empty");
+		if (!laneTruthClaimsComplete) {
+			if (lanes.length > 0 && !lanes.every((lane) => lane.lifecycle === "complete")) {
+				reasons.push("host lane evidence contains incomplete lanes");
+			} else if (expectedLaneCount > 0 && !exactLaneCoverage) {
+				reasons.push("retained lane evidence does not cover every expected lane dispatch");
+			} else {
+				reasons.push("Lane completeness section absent or did not state the canonical completion line");
+			}
+		}
+		if (verdictField !== undefined && !new Set(["approve", "request_changes", "comment"]).has(verdict ?? "")) {
+			reasons.push("Verdict field outside the canonical set");
+		}
+		if (fieldCount(preamble, "Verdict") !== 1 || fieldCount(raw, "Verdict") !== 1) {
+			reasons.push("Verdict field count is not exactly one");
+		}
+		if (parsed.count > parsed.findings.length) {
+			reasons.push(`${parsed.count - parsed.findings.length} finding section(s) could not be parsed and remain in the body`);
+		}
+		return reasons.length > 0 ? reasons : ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"];
+	})();
+	// Markdown is the durable semantic product. A fully parsed complete synthesis
+	// publishes verbatim; every degraded synthesis publishes the deterministic
+	// host-rendered body so labels stay readable while all content is retained.
+	const body = quality === "fully_parsed"
+		? safeReviewBody(raw)
+		: buildDegradedReviewBody({ rawText: raw, lanes, findings: safeFindings, reason: degradationReasons[0] });
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,
@@ -716,33 +804,6 @@ export function synthesizeReviewArtifact(input: {
 		// Markdown approval requires exact host evidence for every registered
 		// dispatch; a nonempty subset cannot establish requested coverage.
 		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
-		diagnostics: Object.freeze((() => {
-			if (canonicalParsed.unsafe) {
-				return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
-			}
-			if (quality === "fully_parsed") return [];
-			const reasons: string[] = [];
-			if (!overview) reasons.push("Overview section missing or empty");
-			if (!verification) reasons.push("Verification section missing or empty");
-			if (!laneTruthClaimsComplete) {
-				if (lanes.length > 0 && !lanes.every((lane) => lane.lifecycle === "complete")) {
-					reasons.push("host lane evidence contains incomplete lanes");
-				} else if (expectedLaneCount > 0 && !exactLaneCoverage) {
-					reasons.push("retained lane evidence does not cover every expected lane dispatch");
-				} else {
-					reasons.push("Lane completeness section absent or did not state the canonical completion line");
-				}
-			}
-			if (verdictField !== undefined && !new Set(["approve", "request_changes", "comment"]).has(verdict ?? "")) {
-				reasons.push("Verdict field outside the canonical set");
-			}
-			if (fieldCount(preamble, "Verdict") !== 1 || fieldCount(raw, "Verdict") !== 1) {
-				reasons.push("Verdict field count is not exactly one");
-			}
-			if (parsed.count > parsed.findings.length) {
-				reasons.push(`${parsed.count - parsed.findings.length} finding section(s) could not be parsed and remain in the body`);
-			}
-			return reasons.length > 0 ? reasons : ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"];
-		})()),
+		diagnostics: Object.freeze(degradationReasons),
 	});
 }

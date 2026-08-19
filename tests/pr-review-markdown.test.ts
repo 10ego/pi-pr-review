@@ -93,7 +93,8 @@ describe("Markdown-first canonical review artifacts", () => {
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 		expect(artifact.quality).toBe("raw");
 		expect(artifact.review.findings).toEqual([]);
-		expect(artifact.body).toContain(duplicateBody);
+		// Retained synthesis headings shift one level under the host-owned wrapper.
+		expect(artifact.body).toContain(duplicateBody.replaceAll(/^##/gm, "###"));
 	});
 
 	test.each([
@@ -194,7 +195,13 @@ describe("Markdown-first canonical review artifacts", () => {
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 		expect(artifact.quality).toBe("raw");
 		expect(artifact.review.findings).toEqual([]);
-		expect(artifact.body).toBe(rawText);
+		// The degraded wrapper preserves the synthesis verbatim except that
+		// top-level headings demote one level; the HTML block itself is untouched.
+		expect(artifact.body).toContain("## Retained synthesis");
+		expect(artifact.body).toContain("### Overview\nInspect rendered headings.");
+		expect(artifact.body).toContain("<x-review>\n## Findings");
+		expect(artifact.body).toContain("### [P2] HTML-contained finding");
+		expect(artifact.body).toContain("</x-review>");
 		expect(artifact.review.verdict).toBe("comment");
 	});
 
@@ -344,6 +351,65 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("partially_parsed");
 		expect(artifact.diagnostics).toContain("Overview section missing or empty");
 		expect(artifact.diagnostics).toContain("Lane completeness section absent or did not state the canonical completion line");
+	});
+
+	test("renders a readable deterministic degraded body with host labels and demoted retained markdown", () => {
+		const timedOutLane = {
+			generation: 1, key: "correctness:1", passId: "correctness", tier: "heavy",
+			rawText: "### [P2] Stale URL sync\nThe replaceState call can loop.",
+			exitCode: 143, processSignal: "SIGTERM", stopReason: "timeout",
+			errorMessage: "Review synthesis deadline expired while this lane was still running.",
+			deadlineExpired: "synthesis" as const, lifecycle: "timed_out" as const,
+			attempts: [], fallbackUsed: false, elapsedMs: 44_000, toolElapsedMs: 200, toolCallCount: 9,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown, ...binding,
+			laneArtifacts: [completeLane, timedOutLane],
+			expectedLaneDescriptors: [
+				completeExpectedLane,
+				{ key: "correctness:1", tier: "heavy", minorHygiene: false },
+			],
+		});
+		expect(artifact.quality).toBe("partially_parsed");
+		expect(artifact.completeness).toBe("incomplete");
+		const body = artifact.body;
+		expect(body).toContain("**Verdict:** Comment — host lane evidence contains incomplete lanes");
+		expect(body).toContain("## Coverage");
+		expect(body).toContain("Host-verified incomplete requested lenses/shards:");
+		expect(body).toContain("timed_out=1");
+		expect(body).toContain("## Findings");
+		// One severity tag only, canonical labels, parsed rationale and location.
+		expect(body).toContain("### [P2] Keep the raw synthesis");
+		expect(body.match(/^### \[P2\] Keep the raw synthesis$/gm)).toHaveLength(1);
+		expect(body).toContain("**Severity:** P2");
+		expect(body).toContain("**Location:** `src/review.ts:10-11 RIGHT`");
+		// Retained synthesis nests under the host label with demoted headings and
+		// a reconciled completion claim; lane output nests one level deeper.
+		expect(body).toContain("## Retained synthesis");
+		expect(body).toContain("### Overview\nPreserve the semantic review.");
+		expect(body).not.toContain("All requested lanes completed.");
+		expect(body).toContain("## Retained lane output");
+		expect(body).toContain("### correctness — timed_out");
+		expect(body).toContain("Host synthesis deadline expired while this lane was still running.");
+		expect(body).toContain("#### [P2] Stale URL sync");
+		// A degraded synthesis is never presented as a clean review.
+		expect(body).not.toContain("No issues found");
+	});
+
+	test("assembles a lane-fallback degraded body without implying clean coverage", () => {
+		const artifact = synthesizeReviewArtifact({
+			rawText: "", ...binding,
+			laneArtifacts: [{ ...completeLane, lifecycle: "timed_out", stopReason: "timeout" }],
+		});
+		expect(artifact.quality).toBe("lane_fallback");
+		expect(artifact.body).toContain("## Coverage");
+		expect(artifact.body).toContain("timed_out=1");
+		expect(artifact.body).toContain("No structurally parsed findings were extracted from this degraded synthesis.");
+		expect(artifact.body).toContain("## Retained lane output");
+		expect(artifact.body).not.toContain("No issues found");
+
+		const laneless = synthesizeReviewArtifact({ rawText: "", ...binding });
+		expect(laneless.body).toContain("No host lane evidence was retained for this review.");
 	});
 
 	test("retains a fully parsed Markdown verdict only with host lane evidence", () => {
@@ -509,7 +575,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(artifact.quality).toBe("raw");
 		expect(artifact.body).toContain("Synthesis stopped before findings");
-		expect(artifact.body).toContain("## Host-retained lane evidence");
+		expect(artifact.body).toContain("## Retained lane output");
 		expect(artifact.body).toContain("Substantive retained security finding.");
 	});
 
