@@ -313,6 +313,29 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("timed_out=1");
 	});
 
+	test("an expected-but-unretained lane keeps an incomplete batch out of concise publication", () => {
+		const paraphrased = markdown.replace("All requested lanes completed.", "Both specialist lanes finished their review.");
+		const artifact = synthesizeReviewArtifact({
+			rawText: paraphrased, ...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [
+				completeExpectedLane,
+				{ key: "missing:1", tier: "heavy", minorHygiene: false },
+			],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		expect(artifact.diagnostics).toContain("retained lane evidence does not cover every expected lane dispatch");
+
+		const unretained = synthesizeReviewArtifact({
+			rawText: paraphrased, ...binding,
+			laneArtifacts: [],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(unretained.completeness).toBe("incomplete");
+		expect(unretained.quality).not.toBe("fully_parsed");
+	});
+
 	test("names the exact structural reason a synthesis degraded", () => {
 		const stripped = markdown
 			.replace("## Overview\nPreserve the semantic review.", "")
@@ -337,6 +360,8 @@ describe("Markdown-first canonical review artifacts", () => {
 			],
 		});
 		expect(missingLane.review.verdict).toBe("comment");
+		expect(missingLane.completeness).toBe("incomplete");
+		expect(missingLane.quality).not.toBe("fully_parsed");
 		expect(missingLane.mergeApprovalEligible).toBe(false);
 
 		const unexpectedLane = synthesizeReviewArtifact({

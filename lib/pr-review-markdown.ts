@@ -654,12 +654,23 @@ export function synthesizeReviewArtifact(input: {
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
+	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
+		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
+		new Set(expectedLaneDescriptors.map((lane) => lane.key)).size === expectedLaneCount &&
+		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
+			expected.key === lane.key && expected.tier === lane.tier &&
+			expected.minorHygiene === !!lane.minorHygiene));
 	// Host lane artifacts are authoritative whenever a batch ran: they already
 	// stop a false complete claim from upgrading incomplete lanes, and they must
 	// equally stop a paraphrased or omitted disclosure line from downgrading a
-	// host-complete batch to body-only publication.
-	const laneTruthClaimsComplete = lanes.length > 0
-		? lanes.every((lane) => lane.lifecycle === "complete")
+	// host-complete batch to body-only publication. Completeness additionally
+	// requires the retained lanes to cover every expected dispatch, so an
+	// expected-but-unretained artifact cannot make an incomplete batch look
+	// complete through vacuous satisfaction.
+	const batchEvidencePresent = lanes.length > 0 || expectedLaneCount > 0;
+	const laneTruthClaimsComplete = batchEvidencePresent
+		? lanes.every((lane) => lane.lifecycle === "complete") &&
+			(expectedLaneCount === 0 || exactLaneCoverage)
 		: laneDisclosureClaimsComplete;
 	const preamble = documentPreamble(raw);
 	const verdictField = field(preamble, "Verdict");
@@ -685,12 +696,6 @@ export function synthesizeReviewArtifact(input: {
 	const bodySource = quality === "fully_parsed" ? raw : synthesisWithRetainedLaneEvidence(raw, lanes);
 	const body = safeReviewBodyWithLaneDisclosure(bodySource, lanes);
 	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&
-		new Set(lanes.map((lane) => lane.key)).size === expectedLaneCount &&
-		new Set(expectedLaneDescriptors.map((lane) => lane.key)).size === expectedLaneCount &&
-		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
-			expected.key === lane.key && expected.tier === lane.tier &&
-			expected.minorHygiene === !!lane.minorHygiene));
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,
@@ -720,9 +725,13 @@ export function synthesizeReviewArtifact(input: {
 			if (!overview) reasons.push("Overview section missing or empty");
 			if (!verification) reasons.push("Verification section missing or empty");
 			if (!laneTruthClaimsComplete) {
-				reasons.push(lanes.length > 0
-					? "host lane evidence contains incomplete lanes"
-					: "Lane completeness section absent or did not state the canonical completion line");
+				if (lanes.length > 0 && !lanes.every((lane) => lane.lifecycle === "complete")) {
+					reasons.push("host lane evidence contains incomplete lanes");
+				} else if (expectedLaneCount > 0 && !exactLaneCoverage) {
+					reasons.push("retained lane evidence does not cover every expected lane dispatch");
+				} else {
+					reasons.push("Lane completeness section absent or did not state the canonical completion line");
+				}
 			}
 			if (verdictField !== undefined && !new Set(["approve", "request_changes", "comment"]).has(verdict ?? "")) {
 				reasons.push("Verdict field outside the canonical set");
