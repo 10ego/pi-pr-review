@@ -786,12 +786,11 @@ export default function registerReviewTable(
 		// flight, e.g. while the orchestrator composes the batch call) means the
 		// synthesis phase is not active. Postpone the armed cap and re-arm it at
 		// this turn's end so early review-tool turns cannot starve later lanes.
+		// This read must never clear an expired binding: its retained artifacts
+		// are reserved for degraded synthesis, so no lease acquisition happens.
 		if (!loopCoordinator.peek()) return;
-		const lease = loopCoordinator.acquire(ctx);
-		if (!lease) return;
-		if (loopCoordinator.deferSynthesis(lease.generation, ctx)) {
-			generationsReadyForSynthesis.add(lease.generation);
-		}
+		const generation = loopCoordinator.deferActiveSynthesis(ctx);
+		if (generation !== undefined) generationsReadyForSynthesis.add(generation);
 	});
 
 	pi.on("tool_execution_start", (event, ctx) => {

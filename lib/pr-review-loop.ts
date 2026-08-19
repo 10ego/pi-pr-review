@@ -21,7 +21,7 @@ import {
 	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
-import { createReviewBudget, type DeadlineResolution, type ReviewBudget } from "./pr-review-deadlines.ts";
+import { createReviewBudget, type DeadlineResolution, type ReviewBudget, type ReviewDeadlineKind } from "./pr-review-deadlines.ts";
 import { monotonicNow } from "./pr-review-telemetry.ts";
 
 export const REVIEW_LOOP_TOOL_NAMES = [
@@ -48,7 +48,7 @@ interface ReviewLoopBinding {
 	deadlineKind?: "total" | "synthesis";
 }
 
-export type ReviewDeadlineKind = "total" | "synthesis";
+export type { ReviewDeadlineKind };
 
 export interface ReviewDeadlineError extends Error {
 	readonly reviewDeadlineKind: ReviewDeadlineKind;
@@ -295,8 +295,29 @@ export class ReviewLoopCoordinator {
 	): boolean {
 		const binding = this.binding;
 		if (!binding || binding.generation !== generation || !sameBinding(binding, ctx)) return false;
-		if (binding.deadlineKind || binding.controller.signal.aborted) return false;
-		if (!binding.synthesisStarted) return false;
+		return this.disarmSynthesis(binding);
+	}
+
+	/**
+	 * Defer the armed synthesis cap for the current binding without acquiring a
+	 * lease. Unlike acquire(), this never clears an aborted or expired binding,
+	 * so a turn that starts after a deadline expiry cannot destroy the retained
+	 * artifacts reserved for degraded synthesis. Returns the deferred generation.
+	 */
+	deferActiveSynthesis(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): number | undefined {
+		const binding = this.binding;
+		const phase = this.invocationGate.phase();
+		if (!binding || this.suspendedTools !== undefined || (phase !== "reviewing" && phase !== "confirmed")) {
+			return undefined;
+		}
+		if (!sameBinding(binding, ctx) || binding.controller.signal.aborted) return undefined;
+		return this.disarmSynthesis(binding) ? binding.generation : undefined;
+	}
+
+	private disarmSynthesis(binding: ReviewLoopBinding): boolean {
+		if (binding.deadlineKind || binding.controller.signal.aborted || !binding.synthesisStarted) return false;
 		if (binding.synthesisTimer) clearTimeout(binding.synthesisTimer);
 		binding.synthesisTimer = undefined;
 		binding.synthesisStarted = false;

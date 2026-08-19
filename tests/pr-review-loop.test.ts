@@ -375,6 +375,41 @@ describe("review-loop authority", () => {
 		h.coordinator.clear();
 	});
 
+	test("deferActiveSynthesis never clears an expired binding so retained artifacts survive", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any,
+			true, false, "off", undefined,
+			{
+				source: "default", warnings: [],
+				config: {
+					attemptMs: { light: 500, medium: 500, heavy: 500 }, fallbackAttemptMs: 500,
+					batchMs: 500, synthesisMs: 10, totalMs: 2_000, terminationGraceMs: 10,
+					cleanupReserveMs: 10, minimumFallbackMs: 10,
+				},
+			},
+		);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+				{ key: "call:0", tier: "heavy", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
+		publisher.retain({
+			generation: lease.generation, key: "call:0", passId: "correctness", tier: "heavy",
+			rawText: "partial correctness evidence", exitCode: 1, stopReason: "timeout",
+			lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 40,
+			toolElapsedMs: 0, toolCallCount: 0, deadlineExpired: "synthesis",
+		});
+		expect(h.coordinator.beginSynthesis(lease.generation, h.ctx as any)).toBeTrue();
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(h.coordinator.synthesisDeadlineExpired()).toBeTrue();
+		// A turn starting after expiry must not destroy the reserved artifacts.
+		expect(h.coordinator.deferActiveSynthesis(h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.deadlineExpired()).toBeTrue();
+		expect(h.coordinator.artifactSnapshot(h.ctx as any)?.[0]?.rawText).toBe("partial correctness evidence");
+		h.coordinator.clear();
+	});
+
 	test("typed deadline aborts disclose their kind without relying on message text", () => {
 		expect(reviewDeadlineKindOf(reviewDeadlineError("total"))).toBe("total");
 		expect(reviewDeadlineKindOf(reviewDeadlineError("synthesis"))).toBe("synthesis");
