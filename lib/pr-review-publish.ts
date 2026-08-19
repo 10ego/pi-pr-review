@@ -522,6 +522,7 @@ export interface CompletedReviewRecord {
 	/** Canonical synthesis diagnostics retained independently of the assistant message. */
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
 	diagnostics?: readonly string[];
@@ -547,6 +548,7 @@ export interface PersistedCompletedReview {
 	synthesisQuality?: "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
 	diagnostics?: readonly string[];
@@ -683,7 +685,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -696,6 +698,7 @@ export class CompletedReviewCache {
 			...(artifact?.synthesisQuality ? { synthesisQuality: artifact.synthesisQuality } : {}),
 			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
 			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
+			...(Number.isInteger(artifact?.expectedLaneCount) ? { expectedLaneCount: artifact!.expectedLaneCount } : {}),
 			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
 			...(typeof artifact?.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: artifact.mergeApprovalEligible }
@@ -730,6 +733,7 @@ export class CompletedReviewCache {
 			...(record.synthesisQuality ? { synthesisQuality: record.synthesisQuality } : {}),
 			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
 			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
+			...(Number.isInteger(record.expectedLaneCount) ? { expectedLaneCount: record.expectedLaneCount } : {}),
 			...(record.completeness ? { completeness: record.completeness } : {}),
 			...(typeof record.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: record.mergeApprovalEligible }
@@ -783,6 +787,9 @@ export class CompletedReviewCache {
 			: undefined;
 		const rawText = typeof value.rawText === "string" ? value.rawText : undefined;
 		const laneArtifacts = parsePersistedLaneArtifacts(value.laneArtifacts);
+		const expectedLaneCount = Number.isInteger(value.expectedLaneCount) && Number(value.expectedLaneCount) >= 0
+			? Number(value.expectedLaneCount)
+			: undefined;
 		const completeness = value.completeness === "complete" || value.completeness === "incomplete"
 			? value.completeness
 			: undefined;
@@ -796,7 +803,8 @@ export class CompletedReviewCache {
 		const expectedGeneration = invocation.reviewBinding?.invocationGeneration;
 		const mergeApprovalEligible = persistedMergeApprovalEligible === true
 			? quality === "fully_parsed" && completeness === "complete" && Number.isInteger(expectedGeneration) &&
-				!!laneArtifacts?.length && laneArtifacts.every((lane) =>
+				Number.isInteger(expectedLaneCount) && Number(expectedLaneCount) > 0 &&
+				laneArtifacts?.length === expectedLaneCount && laneArtifacts.every((lane) =>
 					lane.generation === expectedGeneration && lane.lifecycle === "complete" &&
 					classifyReviewLane({
 						tier: lane.tier,
@@ -818,6 +826,7 @@ export class CompletedReviewCache {
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),
+			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
 			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
 			...(diagnostics ? { diagnostics } : {}),

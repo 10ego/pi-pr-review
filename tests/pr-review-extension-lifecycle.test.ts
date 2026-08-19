@@ -487,6 +487,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
@@ -509,7 +510,7 @@ describe("completed review extension lifecycle", () => {
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({
-			synthesisQuality: "fully_parsed", rawText: raw, mergeApprovalEligible: true,
+			synthesisQuality: "fully_parsed", rawText: raw, expectedLaneCount: 1, mergeApprovalEligible: true,
 		});
 		expect(persisted?.data).not.toHaveProperty("publicationBody");
 		const restored = createHarness([
@@ -584,6 +585,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
@@ -800,6 +802,7 @@ describe("completed review extension lifecycle", () => {
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, ["correctness:0"], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
 			tier: "heavy", rawText: "Partial evidence retained.", exitCode: 1, lifecycle: "partial", attempts: [],

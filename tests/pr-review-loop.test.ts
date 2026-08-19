@@ -152,6 +152,8 @@ describe("review-loop authority", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
 		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, ["call-1:0", "call-1:1"], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBe(2);
 		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
 		expect(publisher.retain({
 			generation: lease.generation,
@@ -173,6 +175,7 @@ describe("review-loop authority", () => {
 		h.coordinator.clear();
 		expect(publisher.retain({} as any)).toBeFalse();
 		expect(h.coordinator.artifactSnapshot(h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBeUndefined();
 	});
 
 	test("expires the total budget, aborts work, and preserves artifacts until partial synthesis consumes them", async () => {

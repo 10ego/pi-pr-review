@@ -12,6 +12,7 @@ export interface ReviewSynthesisArtifact {
 	readonly body: string;
 	readonly review: ReviewLike;
 	readonly laneArtifacts: readonly ReviewLaneArtifact[];
+	readonly expectedLaneCount: number;
 	readonly completeness: ReviewSynthesisCompleteness;
 	/** Whether this artifact may proceed to the host's remaining APPROVE gates. */
 	readonly mergeApprovalEligible: boolean;
@@ -578,9 +579,13 @@ export function synthesizeReviewArtifact(input: {
 	prTitle: string;
 	headSha: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
+	expectedLaneCount?: number;
 	strictJsonReview?: ReviewLike;
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
+	const expectedLaneCount = Number.isInteger(input.expectedLaneCount) && Number(input.expectedLaneCount) >= 0
+		? Number(input.expectedLaneCount)
+		: 0;
 	if (input.strictJsonReview) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
@@ -602,6 +607,7 @@ export function synthesizeReviewArtifact(input: {
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
 					},
 			laneArtifacts: lanes,
+			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: !bodyFallback,
 			diagnostics: Object.freeze(bodyFallback
@@ -624,6 +630,7 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body),
 			laneArtifacts: lanes,
+			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: false,
 			diagnostics: Object.freeze(["terminal synthesis was absent; body assembled deterministically from retained lanes"]),
@@ -663,13 +670,15 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			safeFindings,
 			quality === "fully_parsed" && completeness === "complete",
-			lanes.length > 0,
+			expectedLaneCount > 0 && lanes.length === expectedLaneCount,
 		),
 		laneArtifacts: lanes,
+		expectedLaneCount,
 		completeness,
-		// Markdown approval requires positive host evidence that review lanes ran;
-		// an empty Array.every() result cannot establish requested coverage.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && lanes.length > 0,
+		// Markdown approval requires exact host evidence for every registered
+		// dispatch; a nonempty subset cannot establish requested coverage.
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" &&
+			expectedLaneCount > 0 && lanes.length === expectedLaneCount,
 		diagnostics: Object.freeze(canonicalParsed.unsafe
 			? ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"]
 			: quality === "partially_parsed"

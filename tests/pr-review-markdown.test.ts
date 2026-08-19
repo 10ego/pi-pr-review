@@ -207,13 +207,17 @@ describe("Markdown-first canonical review artifacts", () => {
 		["list item", "- Listed paragraph"],
 	] as const)("never derives approval from a lazy %s continuation", (_kind, container) => {
 		const lazy = markdown.replace("**Verdict:** comment", `${container}\n**Verdict:** approve`);
-		const hidden = synthesizeReviewArtifact({ rawText: lazy, ...binding, laneArtifacts: [completeLane] });
+		const hidden = synthesizeReviewArtifact({
+			rawText: lazy, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+		});
 		expect(hidden.quality).toBe("raw");
 		expect(hidden.review.verdict).toBe("comment");
 		expect(hidden.mergeApprovalEligible).toBe(false);
 
 		const topLevel = lazy.replace(`${container}\n`, `${container}\n\n`);
-		const visible = synthesizeReviewArtifact({ rawText: topLevel, ...binding, laneArtifacts: [completeLane] });
+		const visible = synthesizeReviewArtifact({
+			rawText: topLevel, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+		});
 		expect(visible.quality).toBe("fully_parsed");
 		expect(visible.review.verdict).toBe("approve");
 		expect(visible.mergeApprovalEligible).toBe(true);
@@ -252,7 +256,15 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(withoutLanes.review.verdict).toBe("comment");
 		expect(withoutLanes.mergeApprovalEligible).toBe(false);
 
-		const artifact = synthesizeReviewArtifact({ rawText, ...binding, laneArtifacts: [completeLane] });
+		const missingLane = synthesizeReviewArtifact({
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 2,
+		});
+		expect(missingLane.review.verdict).toBe("comment");
+		expect(missingLane.mergeApprovalEligible).toBe(false);
+
+		const artifact = synthesizeReviewArtifact({
+			rawText, ...binding, laneArtifacts: [completeLane], expectedLaneCount: 1,
+		});
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.completeness).toBe("complete");
 		expect(artifact.review.verdict).toBe("approve");

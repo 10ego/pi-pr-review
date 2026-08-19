@@ -1638,6 +1638,9 @@ export default function registerPrReviewSubagents(
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			const artifactKey = `${toolCallId}:single`;
+			if (!loopCoordinator.registerExpectedArtifacts(lease, [artifactKey], ctx)) {
+				return reviewLoopDeniedResult("review_subagent");
+			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: artifactKey,
 				label: `${tier} review`,
@@ -1823,6 +1826,9 @@ export default function registerPrReviewSubagents(
 					requestedPassOrdinal: index,
 				};
 			});
+			if (!loopCoordinator.registerExpectedArtifacts(lease, passes.map((pass) => pass.artifactKey), ctx)) {
+				return reviewLoopDeniedResult("review_subagents");
+			}
 			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();

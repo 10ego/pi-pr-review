@@ -287,6 +287,14 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
+	registerExpectedArtifacts(
+		lease: ReviewLoopLease,
+		keys: readonly string[],
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, keys);
+	}
+
 	createArtifactPublisher(
 		lease: ReviewLoopLease,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
@@ -303,6 +311,16 @@ export class ReviewLoopCoordinator {
 				return this.artifactRegistry.retain(lease.generation, artifact);
 			},
 		});
+	}
+
+	expectedArtifactCount(
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): number | undefined {
+		if (this.binding?.deadlineKind && sameBinding(this.binding, ctx)) {
+			return this.artifactRegistry.expectedCount(this.binding.generation);
+		}
+		const lease = this.acquire(ctx);
+		return lease ? this.artifactRegistry.expectedCount(lease.generation) : undefined;
 	}
 
 	artifactSnapshot(

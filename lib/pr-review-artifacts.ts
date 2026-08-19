@@ -131,10 +131,21 @@ export function classifyReviewLane(input: ReviewLaneCompletionInput): ReviewLane
 export class ReviewLaneArtifactRegistry {
 	private generation?: number;
 	private readonly artifacts = new Map<string, ReviewLaneArtifact>();
+	private readonly expectedKeys = new Set<string>();
 
 	open(generation: number): void {
 		this.close();
 		this.generation = generation;
+	}
+
+	expect(generation: number, keys: readonly string[]): boolean {
+		if (this.generation !== generation || keys.length === 0 || keys.some((key) => !key)) return false;
+		for (const key of keys) this.expectedKeys.add(key);
+		return true;
+	}
+
+	expectedCount(generation: number): number | undefined {
+		return this.generation === generation ? this.expectedKeys.size : undefined;
 	}
 
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
@@ -158,6 +169,7 @@ export class ReviewLaneArtifactRegistry {
 	close(generation?: number): void {
 		if (generation !== undefined && this.generation !== generation) return;
 		this.artifacts.clear();
+		this.expectedKeys.clear();
 		this.generation = undefined;
 	}
 }
