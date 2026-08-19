@@ -527,6 +527,34 @@ describe("completed review extension lifecycle", () => {
 		expect(String(staleProbe.payload()?.body)).not.toContain("Looks safe.");
 	});
 
+	test("uses retained Markdown when the concise approval summary exceeds GitHub's body limit", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
+		});
+		const probe = installPublishingProbe();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const findingLines = Array.from({ length: 70 }, (_, index) => [
+			`### [P3] Large note ${index + 1}`,
+			"**Severity:** P3",
+			`**Rationale:** ${index + 1}: ${"z".repeat(1_000)}`,
+			"",
+		]).flat();
+		const raw = [
+			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Large complete review.", "",
+			"## Verification", "Focused tests passed.", "", "## Findings", "", ...findingLines,
+			"## Lane completeness", "All requested lanes completed.",
+		].join("\n");
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "markdown-large-approval");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("APPROVE");
+		expect(String(probe.payload()?.body)).toContain("# PR Review");
+		expect(String(probe.payload()?.body)).toContain("Review content was truncated by the host");
+		expect(String(probe.payload()?.body)).not.toContain("### Other Notes");
+	});
+
 	test.each([
 		["an HTML-hidden approval verdict", [
 			"# PR Review", "", "<pre>", "**Verdict:** approve", "</pre>", "", "## Overview", "Inspect controls.", "",

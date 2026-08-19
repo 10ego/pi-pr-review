@@ -233,6 +233,7 @@ async function diagnosePullPublication(
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 		prAuthor?: string;
 		bodyOnly?: string;
+		fallbackPublicationBody?: string;
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -333,6 +334,7 @@ fi
 					allowStaleApprovals: options.allowStaleApprovals ?? false,
 					approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 					review: candidateReview,
+					fallbackPublicationBody: options.fallbackPublicationBody,
 				})
 			: await publishPullReviewBody({ ...common, body: options.bodyOnly });
 		return {
@@ -1513,6 +1515,28 @@ describe("single lossless publication payload", () => {
 		expect(degraded.result.status).toBe("failed");
 		expect(degraded.result.message).toContain("review body exceeds 65536 UTF-8 bytes");
 		expect(degraded.postCount).toBe(0);
+	});
+
+	test("falls back to retained synthesis when the concise approval body is oversized", async () => {
+		const findings = Array.from({ length: 70 }, (_, index) => ({
+			title: `[P3] Large note ${index + 1}`,
+			severity: "P3",
+			blocking: false,
+			body: `${index + 1}: ${"z".repeat(1_000)}`,
+			confidence_score: 0.9,
+			code_location: null,
+		}));
+		const large: ReviewLike = { ...review, findings, verdict: "approve" };
+		const retained = `# PR Review\n\n**Verdict:** approve\n\n${"Retained original review notes.\n".repeat(1_500)}`;
+		const diagnostic = await diagnosePullPublication(large, [], {
+			approveMaxPriorityLevel: "P3",
+			fallbackPublicationBody: retained,
+		});
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.payload?.event).toBe("APPROVE");
+		expect(String(diagnostic.payload?.body)).toContain("Retained original review notes.");
+		expect(String(diagnostic.payload?.body)).not.toContain("### Other Notes");
 	});
 
 	test("fails an oversized selected payload before POST", async () => {

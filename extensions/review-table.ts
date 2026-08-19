@@ -46,7 +46,7 @@ import {
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
 } from "../lib/pr-review-publish.ts";
-import { synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
@@ -436,6 +436,9 @@ async function publishCompletedReview(
 		expectedRepository: record.repository,
 		review: record.review,
 		...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
+		...(record.synthesisQuality === "fully_parsed" && typeof record.rawText === "string" && record.rawText.trim()
+			? { fallbackPublicationBody: safeReviewBody(record.rawText) }
+			: {}),
 		forceBodyOnly: record.synthesisQuality !== undefined &&
 			(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete"),
 		// A publication body identifies Markdown-derived or degraded synthesis.

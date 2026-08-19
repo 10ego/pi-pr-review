@@ -196,10 +196,13 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.verdict).toBe("comment");
 	});
 
-	test("rejects a severity-tagged finding outside the canonical Findings section", () => {
+	test.each([
+		["top-level", "### [P1] Hidden outside Findings"],
+		["blockquoted", "> ### [P1] Hidden outside Findings"],
+	] as const)("rejects a %s severity-tagged finding outside the canonical Findings section", (_kind, heading) => {
 		const rawText = markdown.replace(
 			"Preserve the semantic review.",
-			"Preserve the semantic review.\n\n### [P1] Hidden outside Findings\n**Severity:** P1\n**Rationale:** This blocker must not disappear from concise publication.",
+			`Preserve the semantic review.\n\n${heading}\n**Severity:** P1\n**Rationale:** This blocker must not disappear from concise publication.`,
 		).replace("**Verdict:** comment", "**Verdict:** approve");
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 		expect(artifact.quality).not.toBe("fully_parsed");

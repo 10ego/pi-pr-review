@@ -319,10 +319,22 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 	// A severity-tagged heading outside the canonical Findings section is
 	// ambiguous review content. Never omit it from a concise approval-capable
 	// artifact merely because it appeared under Overview or another section.
-	if (markdownHeadings(text).some((heading) =>
-		heading.level >= 3 && /^\[(?:P[0-3]|nit)\]\s+/i.test(heading.name) &&
-		(heading.index < findingsSection.bodyStart || heading.index >= findingsSection.end)
+	const visibleText = markdownVisibleText(text);
+	const severityHeadings = markdownHeadings(text).filter(
+		(heading) => heading.level >= 3 && /^\[(?:P[0-3]|nit)\]\s+/i.test(heading.name),
+	);
+	if (severityHeadings.some((heading) =>
+		heading.index < findingsSection.bodyStart || heading.index >= findingsSection.end
 	)) complete = false;
+	// Container-prefixed headings (for example `> ### [P1]`) are visible
+	// CommonMark but are deliberately outside this small parser's extraction
+	// grammar. A raw visible severity heading that the structural scanner did not
+	// recognize therefore makes the artifact body-only rather than silently
+	// dropping a possible blocker.
+	const visibleSeverityHeadingLines = [
+		...visibleText.matchAll(/^.*#{3,6}[ \t]+\[(?:P[0-3]|nit)\][ \t]+.+$/gim),
+	].length;
+	if (visibleSeverityHeadingLines !== severityHeadings.length) complete = false;
 
 	// Every nested heading in the Findings section must be one of the canonical
 	// severity-tagged headings. Otherwise deterministic extraction did not

@@ -1318,6 +1318,7 @@ function buildLosslessReviewPayload(input: {
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
 	bodyOverride?: string;
+	fallbackBodyOverride?: string;
 	diagnostics?: readonly string[];
 	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
@@ -1346,7 +1347,20 @@ function buildLosslessReviewPayload(input: {
 	// transport diagnostics as if they were review findings.
 	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
-	const bodyError = validateReviewBody(content);
+	let bodyError = validateReviewBody(content);
+	if (
+		bodyError === "review body exceeds 65536 UTF-8 bytes" &&
+		input.fallbackBodyOverride?.trim()
+	) {
+		const fallback = input.bodyPreamble?.trim()
+			? `${input.bodyPreamble.trim()}\n\n${input.fallbackBodyOverride.trim()}`
+			: input.fallbackBodyOverride.trim();
+		const fallbackError = validateReviewBody(fallback);
+		if (!fallbackError) {
+			content = fallback;
+			bodyError = undefined;
+		}
+	}
 	if (bodyError) return { diagnostics, errors: [bodyError] };
 	const body = `${content}\n\n${canonicalReviewMarker(markerHeadSha)}`;
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
@@ -1962,6 +1976,8 @@ export async function publishPullReview(input: {
 	review: ReviewLike;
 	/** Host-sanitized original synthesis retained when structured extraction is partial or absent. */
 	publicationBody?: string;
+	/** Host-sanitized original synthesis used only if the concise body exceeds GitHub's limit. */
+	fallbackPublicationBody?: string;
 	/** Prevent uncertain/raw synthesis from selecting APPROVE or inline anchors. */
 	forceBodyOnly?: boolean;
 	/** Prevent partially trusted synthesis from selecting a merge-relevant event. */
@@ -1978,6 +1994,7 @@ export async function publishPullReview(input: {
 		expectedRepository,
 		review,
 		publicationBody,
+		fallbackPublicationBody,
 		forceBodyOnly = false,
 		forceComment = false,
 	} = input;
@@ -2078,6 +2095,7 @@ export async function publishPullReview(input: {
 			allowInlineComments,
 			changedFiles,
 			...(publicationBody ? { bodyOverride: publicationBody } : {}),
+			...(fallbackPublicationBody ? { fallbackBodyOverride: fallbackPublicationBody } : {}),
 			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale
