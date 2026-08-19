@@ -1208,7 +1208,7 @@ fi
 		expect(extension).toContain("Publishing never starts or reruns a review");
 		expect(extension).toContain("review was cancelled");
 		expect(readme).toContain("handles that request directly");
-		expect(readme).toContain("Optional formatting repair is never required and can never suppress the raw fallback");
+		expect(readme).toContain("Optional formatting repair is never required and can never suppress the degraded fallback");
 		expect(readme).toContain("`allowStalePublish: true`");
 		expect(readme).toContain("/pr-review-publish 123 --allow-stale");
 		expect(readme).toContain("Inline comments are always disabled for stale reviews");

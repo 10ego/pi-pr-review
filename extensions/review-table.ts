@@ -47,7 +47,7 @@ import {
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
 } from "../lib/pr-review-publish.ts";
-import { safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
@@ -269,6 +269,18 @@ function verdictLine(r: Review): string {
 	return parts.join(" ");
 }
 
+export function renderDegradedReviewMarkdown(r: Review, body: string): string {
+	const out: string[] = [];
+	const num = r.pr?.number;
+	const title = (r.pr?.title ?? "").toString().replace(/\r?\n/g, " ").trim();
+	if (num != null) out.push(`## Code Review — PR #${num}${title ? `: ${title}` : ""}`, "");
+	else out.push("## Code Review", "");
+	// The host-built degraded body already carries verdict, coverage, findings,
+	// and every retained artifact; demote it under the render header.
+	out.push(demoteHeadings(body.trim()), "");
+	return out.join("\n").trimEnd();
+}
+
 function renderReviewMarkdown(r: Review): string {
 	const out: string[] = [];
 
@@ -440,8 +452,11 @@ async function publishCompletedReview(
 		...(record.synthesisQuality === "fully_parsed" && typeof record.rawText === "string" && record.rawText.trim()
 			? { fallbackPublicationBody: safeReviewBody(record.rawText) }
 			: {}),
+		// A degraded synthesis stays COMMENT-only, but its safely parsed findings
+		// still earn inline placement; only unparsable output is forced body-only.
 		forceBodyOnly: record.synthesisQuality !== undefined &&
-			(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete"),
+			record.synthesisQuality !== "fully_parsed" &&
+			!(Array.isArray(record.review.findings) && record.review.findings.length > 0),
 		// A publication body identifies Markdown-derived or degraded synthesis.
 		// Enforce COMMENT again at the final publication boundary so restored
 		// canonical artifacts created by an older parser cannot inherit APPROVE.
@@ -935,10 +950,14 @@ export default function registerReviewTable(
 		// Keep the raw assistant response for automation; only prettify interactive TUI output.
 		if (ctx.mode !== "tui") return;
 		const nonText = event.message.content.filter((part) => part.type !== "text");
+		const degradedBody = artifact && artifact.quality !== "fully_parsed" ? artifact.body : undefined;
 		return {
 			message: {
 				...event.message,
-				content: [...nonText, { type: "text", text: renderReviewMarkdown(review) }],
+				content: [...nonText, {
+					type: "text",
+					text: degradedBody ? renderDegradedReviewMarkdown(review, degradedBody) : renderReviewMarkdown(review),
+				}],
 			},
 		};
 	});

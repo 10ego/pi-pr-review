@@ -41,6 +41,7 @@ mock.module("typebox", () => ({
 	},
 }));
 const reviewTable = (await import("../extensions/review-table.ts")).default;
+const { renderDegradedReviewMarkdown } = await import("../extensions/review-table.ts");
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
 const BASE_ACTIVE_TOOLS = ["read", "bash"];
 
@@ -395,6 +396,24 @@ async function exercisePostingPath(
 }
 
 describe("completed review extension lifecycle", () => {
+	test("renders a degraded artifact with the deterministic body instead of an empty findings table", () => {
+		const body = [
+			"# PR Review", "", "**Verdict:** Comment — host lane evidence contains incomplete lanes", "",
+			"## Coverage", "", "Host-verified incomplete requested lenses/shards:",
+			"Exact incomplete lifecycle counts: partial=0; timed_out=1; failed=0.",
+			'- "correctness" — `timed_out`', "",
+			"## Findings", "", "No structurally parsed findings were extracted from this degraded synthesis.", "",
+			"## Retained lane output", "", "### correctness — timed_out", "", "Partial evidence.",
+		].join("\n");
+		const rendered = renderDegradedReviewMarkdown({ ...review, findings: [] } as any, body);
+		expect(rendered).toContain("## Code Review — PR #7: Lifecycle review");
+		// The body nests under the render header instead of colliding with it.
+		expect(rendered).toContain("## PR Review");
+		expect(rendered).toContain("### Coverage");
+		expect(rendered).toContain("#### correctness — timed_out");
+		expect(rendered).not.toContain("_No issues found — nit through P0._");
+	});
+
 	test("includes GitHub binding preflight in invocation timing and deadline telemetry", async () => {
 		const harness = createHarness([], session, { repositoryDelayMs: 150 });
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
@@ -757,9 +776,13 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain(raw);
+		const postedBody = String(probe.payload()?.body);
+		expect(postedBody).toContain("## Retained synthesis");
+		expect(postedBody).toContain("<x-review data-kind=example>\n## Findings");
+		expect(postedBody).toContain("Do not publish an extracted inline copy.");
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
-		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", publicationBody: raw, rawText: raw });
+		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
+		expect(String(persisted?.data.publicationBody)).toContain("<x-review data-kind=example>");
 		expect(persisted?.data.review.findings).toEqual([]);
 	});
 
@@ -800,7 +823,8 @@ describe("completed review extension lifecycle", () => {
 		expect(String(immediate.payload()?.body)).toContain(raw);
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
-		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", publicationBody: raw, rawText: raw });
+		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
+		expect(String(persisted?.data.publicationBody)).toContain(raw);
 		const cacheEntry = { type: "custom", id: "fenced-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data };
 
 		const slashHarness = createHarness([cacheEntry]);
@@ -886,6 +910,42 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
 		expect(String(probe.payload()?.body)).toContain("One lane was partial.");
+	});
+
+	test("keeps parsed findings inline for degraded incomplete-lane reviews", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
+		});
+		const probe = installPublishingProbe({ inlinePatch: true });
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+			tier: "heavy", rawText: "", exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+			attempts: [], fallbackUsed: false, elapsedMs: 44_000, toolElapsedMs: 0, toolCallCount: 0,
+		});
+		const raw = [
+			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Looks mostly safe.", "",
+			"## Verification", "Focused tests passed.", "", "## Findings", "",
+			"### [P2] Guard empty input", "**Severity:** P2", "**Rationale:** Empty input returns the wrong value.",
+			"**Location:** `src/parser.ts:2-3 RIGHT`", "", "## Lane completeness", "All requested lanes completed.",
+		].join("\n");
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "incomplete-inline-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		// Degraded coverage stays COMMENT-only, but the parsed finding keeps its
+		// inline placement instead of being folded into a body-only dump.
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(probe.payload()?.comments).toHaveLength(1);
+		expect(probe.payload()?.comments?.[0]).toMatchObject({ path: "src/parser.ts", line: 3 });
+		const body = String(probe.payload()?.body);
+		expect(body).toContain("## Coverage");
+		expect(body).toContain('"correctness" — `timed_out`');
+		expect(body).toContain("### [P2] Guard empty input");
+		expect(body).not.toContain("No issues found");
 	});
 
 	test("posts duplicate Findings with a hidden later P1 once as body-only COMMENT under P3 approval config", async () => {
@@ -1026,8 +1086,8 @@ describe("completed review extension lifecycle", () => {
 		harness.appendMessage(message, "empty-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(1);
-		expect(String(probe.payload()?.body)).toContain("Lane completeness");
-		expect(String(probe.payload()?.body)).toContain("No synthesis or retained lane output was available");
+		expect(String(probe.payload()?.body)).toContain("## Coverage");
+		expect(String(probe.payload()?.body)).toContain("No host lane evidence was retained for this review.");
 	});
 
 	test("caches lane diagnostics before completion purges the invocation registry", async () => {
