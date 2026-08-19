@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/10ego/pi-pr-review/compare/v1.11.8...v1.12.0) (2026-08-19)
+
+
+### Features
+
+* **review:** make reviews lossless and bounded ([ce72012](https://github.com/10ego/pi-pr-review/commit/ce72012a306304ebc3c99c0a183312a2336af88d)), closes [#56](https://github.com/10ego/pi-pr-review/issues/56) [#57](https://github.com/10ego/pi-pr-review/issues/57) [#58](https://github.com/10ego/pi-pr-review/issues/58)
+
 ## [1.11.8](https://github.com/10ego/pi-pr-review/compare/v1.11.7...v1.11.8) (2026-08-05)
 
 
