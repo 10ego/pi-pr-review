@@ -486,6 +486,12 @@ describe("completed review extension lifecycle", () => {
 		});
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		});
 		const raw = [
 			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Looks safe.", "",
 			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
@@ -502,7 +508,9 @@ describe("completed review extension lifecycle", () => {
 		expect(String(probe.payload()?.body)).not.toContain("Focused tests passed.");
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
-		expect(persisted?.data).toMatchObject({ synthesisQuality: "fully_parsed", rawText: raw });
+		expect(persisted?.data).toMatchObject({
+			synthesisQuality: "fully_parsed", rawText: raw, mergeApprovalEligible: true,
+		});
 		expect(persisted?.data).not.toHaveProperty("publicationBody");
 		const restored = createHarness([
 			{ type: "custom", id: "markdown-approve-cache", customType: COMPLETED_REVIEW_ENTRY_TYPE, data: persisted!.data },
@@ -527,12 +535,40 @@ describe("completed review extension lifecycle", () => {
 		expect(String(staleProbe.payload()?.body)).not.toContain("Looks safe.");
 	});
 
+	test("keeps fully parsed Markdown COMMENT-only when no host lane artifact was retained", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
+		});
+		const probe = installPublishingProbe();
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const raw = [
+			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Looks safe.", "",
+			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
+			"## Lane completeness", "All requested lanes completed.",
+		].join("\n");
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "markdown-no-lane-approval");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(String(probe.payload()?.body)).toContain("**Verdict:** Comment");
+		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
+		expect(persisted?.data).toMatchObject({ mergeApprovalEligible: false, laneArtifacts: [] });
+	});
+
 	test("uses retained Markdown when the concise approval summary exceeds GitHub's body limit", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		});
 		const findingLines = Array.from({ length: 70 }, (_, index) => [
 			`### [P3] Large note ${index + 1}`,
 			"**Severity:** P3",

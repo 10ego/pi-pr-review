@@ -523,6 +523,7 @@ export interface CompletedReviewRecord {
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	completeness?: ReviewSynthesisCompleteness;
+	mergeApprovalEligible?: boolean;
 	diagnostics?: readonly string[];
 }
 
@@ -547,6 +548,7 @@ export interface PersistedCompletedReview {
 	rawText?: string;
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	completeness?: ReviewSynthesisCompleteness;
+	mergeApprovalEligible?: boolean;
 	diagnostics?: readonly string[];
 }
 
@@ -681,7 +683,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "completeness" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -695,6 +697,9 @@ export class CompletedReviewCache {
 			...(artifact && typeof artifact.rawText === "string" ? { rawText: artifact.rawText } : {}),
 			...(artifact?.laneArtifacts ? { laneArtifacts: artifact.laneArtifacts } : {}),
 			...(artifact?.completeness ? { completeness: artifact.completeness } : {}),
+			...(typeof artifact?.mergeApprovalEligible === "boolean"
+				? { mergeApprovalEligible: artifact.mergeApprovalEligible }
+				: {}),
 			...(artifact?.diagnostics ? { diagnostics: artifact.diagnostics } : {}),
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
@@ -726,6 +731,9 @@ export class CompletedReviewCache {
 			...(typeof record.rawText === "string" ? { rawText: record.rawText } : {}),
 			...(record.laneArtifacts ? { laneArtifacts: record.laneArtifacts } : {}),
 			...(record.completeness ? { completeness: record.completeness } : {}),
+			...(typeof record.mergeApprovalEligible === "boolean"
+				? { mergeApprovalEligible: record.mergeApprovalEligible }
+				: {}),
 			...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
 		};
 	}
@@ -778,6 +786,9 @@ export class CompletedReviewCache {
 		const completeness = value.completeness === "complete" || value.completeness === "incomplete"
 			? value.completeness
 			: undefined;
+		const mergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
+			? value.mergeApprovalEligible
+			: undefined;
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
 			: undefined;
@@ -787,6 +798,7 @@ export class CompletedReviewCache {
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),
 			...(completeness ? { completeness } : {}),
+			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
 			...(diagnostics ? { diagnostics } : {}),
 		});
 		return true;

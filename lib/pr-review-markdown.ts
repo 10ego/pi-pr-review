@@ -13,6 +13,8 @@ export interface ReviewSynthesisArtifact {
 	readonly review: ReviewLike;
 	readonly laneArtifacts: readonly ReviewLaneArtifact[];
 	readonly completeness: ReviewSynthesisCompleteness;
+	/** Whether this artifact may proceed to the host's remaining APPROVE gates. */
+	readonly mergeApprovalEligible: boolean;
 	readonly diagnostics: readonly string[];
 }
 
@@ -418,6 +420,7 @@ function syntheticReview(
 	text: string,
 	findings: ReviewFindingLike[] = [],
 	allowApparentVerdict = false,
+	allowApprovalVerdict = false,
 ): ReviewLike {
 	const overview = section(text, "Overview") ?? text;
 	const verification = section(text, "Verification") ?? "Verification status was not structurally available.";
@@ -427,7 +430,7 @@ function syntheticReview(
 	const apparentVerdict = field(text, "Verdict")?.toLowerCase().replace(/[ -]+/g, "_");
 	const apparentSemanticVerdict = allowApparentVerdict &&
 		(apparentVerdict === "approve" || apparentVerdict === "request_changes" || apparentVerdict === "comment")
-		? apparentVerdict
+		? apparentVerdict === "approve" && !allowApprovalVerdict ? "comment" : apparentVerdict
 		: "comment";
 	const verdict = findings.some((finding) => finding.severity === "P0" || finding.severity === "P1")
 		? "request_changes"
@@ -583,6 +586,7 @@ export function synthesizeReviewArtifact(input: {
 					},
 			laneArtifacts: lanes,
 			completeness,
+			mergeApprovalEligible: !bodyFallback,
 			diagnostics: Object.freeze(bodyFallback
 				? [safe
 					? "incomplete lane evidence forced sanitized body-only publication"
@@ -604,6 +608,7 @@ export function synthesizeReviewArtifact(input: {
 			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body),
 			laneArtifacts: lanes,
 			completeness,
+			mergeApprovalEligible: false,
 			diagnostics: Object.freeze(["terminal synthesis was absent; body assembled deterministically from retained lanes"]),
 		});
 	}
@@ -641,9 +646,13 @@ export function synthesizeReviewArtifact(input: {
 			body,
 			safeFindings,
 			quality === "fully_parsed" && completeness === "complete",
+			lanes.length > 0,
 		),
 		laneArtifacts: lanes,
 		completeness,
+		// Markdown approval requires positive host evidence that review lanes ran;
+		// an empty Array.every() result cannot establish requested coverage.
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && lanes.length > 0,
 		diagnostics: Object.freeze(canonicalParsed.unsafe
 			? ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"]
 			: quality === "partially_parsed"

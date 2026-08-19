@@ -24,6 +24,12 @@ Focused tests passed.
 ## Lane completeness
 All requested lanes completed.`;
 
+const completeLane = {
+	generation: 1, key: "correctness:0", passId: "correctness", tier: "heavy", rawText: "NO FINDINGS.",
+	exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [], fallbackUsed: false,
+	elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+} satisfies ReviewLaneArtifact;
+
 describe("Markdown-first canonical review artifacts", () => {
 	test("extracts safe findings while retaining the complete Markdown body", () => {
 		const artifact = synthesizeReviewArtifact({ rawText: markdown, ...binding });
@@ -222,12 +228,18 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("correctness failed before producing evidence");
 	});
 
-	test("retains a fully parsed Markdown verdict as semantic state for host publication gates", () => {
+	test("retains a fully parsed Markdown verdict only with host lane evidence", () => {
 		const rawText = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
-		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
+		const withoutLanes = synthesizeReviewArtifact({ rawText, ...binding });
+		expect(withoutLanes.quality).toBe("fully_parsed");
+		expect(withoutLanes.review.verdict).toBe("comment");
+		expect(withoutLanes.mergeApprovalEligible).toBe(false);
+
+		const artifact = synthesizeReviewArtifact({ rawText, ...binding, laneArtifacts: [completeLane] });
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.completeness).toBe("complete");
 		expect(artifact.review.verdict).toBe("approve");
+		expect(artifact.mergeApprovalEligible).toBe(true);
 		expect(artifact.body).toContain("**Verdict:** approve");
 	});
 

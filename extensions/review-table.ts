@@ -444,7 +444,7 @@ async function publishCompletedReview(
 		// A publication body identifies Markdown-derived or degraded synthesis.
 		// Enforce COMMENT again at the final publication boundary so restored
 		// canonical artifacts created by an older parser cannot inherit APPROVE.
-		forceComment: record.publicationBody !== undefined ||
+		forceComment: record.mergeApprovalEligible === false || record.publicationBody !== undefined ||
 			(record.synthesisQuality !== undefined &&
 				(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete")),
 	});
@@ -515,6 +515,7 @@ export default function registerReviewTable(
 			rawText: artifact.rawText,
 			laneArtifacts: artifact.laneArtifacts,
 			completeness: artifact.completeness,
+			mergeApprovalEligible: artifact.mergeApprovalEligible,
 			diagnostics: artifact.diagnostics,
 		} : undefined);
 		const { record } = replacement;
