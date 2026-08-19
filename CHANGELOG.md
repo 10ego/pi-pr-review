@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.2](https://github.com/10ego/pi-pr-review/compare/v1.12.1...v1.12.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **review:** defer synthesis cap while review work runs ([#65](https://github.com/10ego/pi-pr-review/issues/65)) ([2bcdd93](https://github.com/10ego/pi-pr-review/commit/2bcdd93678755fc9c6b209c2357487a3912d026f))
+
 ## [1.12.1](https://github.com/10ego/pi-pr-review/compare/v1.12.0...v1.12.1) (2026-08-19)
 
 
