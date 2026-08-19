@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/10ego/pi-pr-review/compare/v1.12.0...v1.12.1) (2026-08-19)
+
+
+### Documentation
+
+* **review:** align publication guidance ([#63](https://github.com/10ego/pi-pr-review/issues/63)) ([fe019d3](https://github.com/10ego/pi-pr-review/commit/fe019d3729635d1ed7ba7fd1e72bc5983db87a01))
+
 ## [1.12.0](https://github.com/10ego/pi-pr-review/compare/v1.11.8...v1.12.0) (2026-08-19)
 
 
