@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/10ego/pi-pr-review/compare/v1.12.3...v1.13.0) (2026-08-20)
+
+
+### Features
+
+* **review:** render degraded syntheses as readable generic reviews ([#69](https://github.com/10ego/pi-pr-review/issues/69)) ([ee80cde](https://github.com/10ego/pi-pr-review/commit/ee80cdea6cddfd580a68bd6ab71b9625a1e06127))
+
 ## [1.12.3](https://github.com/10ego/pi-pr-review/compare/v1.12.2...v1.12.3) (2026-08-19)
 
 
