@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
+import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
 
 const binding = { prNumber: 57, prTitle: "Markdown publication", headSha: "a".repeat(40) };
@@ -94,7 +94,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("raw");
 		expect(artifact.review.findings).toEqual([]);
 		// Retained synthesis headings shift one level under the host-owned wrapper.
-		expect(artifact.body).toContain(duplicateBody.replaceAll(/^##/gm, "###"));
+		expect(artifact.body).toContain(duplicateBody.replaceAll(/^##/gm, "####"));
 	});
 
 	test.each([
@@ -198,7 +198,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		// The degraded wrapper preserves the synthesis verbatim except that
 		// top-level headings demote one level; the HTML block itself is untouched.
 		expect(artifact.body).toContain("## Retained synthesis");
-		expect(artifact.body).toContain("### Overview\nInspect rendered headings.");
+		expect(artifact.body).toContain("#### Overview\nInspect rendered headings.");
 		expect(artifact.body).toContain("<x-review>\n## Findings");
 		expect(artifact.body).toContain("### [P2] HTML-contained finding");
 		expect(artifact.body).toContain("</x-review>");
@@ -386,7 +386,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		// Retained synthesis nests under the host label with demoted headings and
 		// a reconciled completion claim; lane output nests one level deeper.
 		expect(body).toContain("## Retained synthesis");
-		expect(body).toContain("### Overview\nPreserve the semantic review.");
+		expect(body).toContain("#### Overview\nPreserve the semantic review.");
 		expect(body).not.toContain("All requested lanes completed.");
 		expect(body).toContain("## Retained lane output");
 		expect(body).toContain("### correctness — timed_out");
@@ -498,6 +498,87 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toEqual([]);
 		expect(Buffer.byteLength(artifact.body, "utf8")).toBeLessThanOrEqual(60_000);
 		expect(artifact.body).not.toContain("\u0000");
+	});
+
+	test("never claims full coverage when an expected dispatch was never retained", () => {
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown, ...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [
+				completeExpectedLane,
+				{ key: "missing:1", tier: "heavy", minorHygiene: false },
+			],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).not.toBe("fully_parsed");
+		const body = artifact.body;
+		expect(body).toContain("retained lane artifacts do not cover every expected dispatch (1 retained / 2 registered)");
+		expect(body).not.toContain("All requested lanes completed.");
+	});
+
+	test("demotes setext and indented ATX headings without corrupting retained text", () => {
+		const setextSynthesis = [
+			"Overview of doom",
+			"================",
+			"",
+			"Lane conclusion",
+			"---------------",
+		].join("\n");
+		const artifact = synthesizeReviewArtifact({ rawText: setextSynthesis, ...binding });
+		expect(artifact.quality).toBe("raw");
+		expect(artifact.body).toContain("### Overview of doom");
+		expect(artifact.body).toContain("#### Lane conclusion");
+		expect(artifact.body).not.toMatch(/={4,}|-{4,}/);
+
+		expect(demoteHeadings("   ## Overview\nbody", 1)).toBe("   ### Overview\nbody");
+		expect(demoteHeadings("###### Deep\nbody", 1)).toBe("###### Deep\nbody");
+		expect(demoteHeadings("plain paragraph\nbody", 2)).toBe("plain paragraph\nbody");
+	});
+
+	test("degrades strict JSON with its own findings and a matching verdict", () => {
+		const strictJsonReview = {
+			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
+			disposition: "reviewed" as const,
+			verification: "Passed.", overview: "Unsafe input.",
+			findings: [{
+				title: "[P0] SQL injection", body: "Unescaped input reaches the query.",
+				severity: "P0", blocking: true, confidence_score: 0.9,
+				code_location: { absolute_file_path: "src/db.ts", line_range: { start: 10, end: 10 }, side: "RIGHT", commentable: true },
+			}],
+			verdict: "request_changes",
+		};
+		const timedOut = {
+			...completeLane, lifecycle: "timed_out" as const, stopReason: "timeout" as const,
+			rawText: "partial", exitCode: 143,
+		};
+		const artifact = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
+			laneArtifacts: [timedOut], expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.quality).toBe("raw");
+		expect(artifact.body).toContain("**Verdict:** Request changes — incomplete lane evidence degraded this synthesis");
+		expect(artifact.body).toContain("### [P0] SQL injection");
+		expect(artifact.body).toContain("Unescaped input reaches the query.");
+		expect(artifact.review.verdict).toBe("request_changes");
+		expect(artifact.review.findings).toHaveLength(1);
+
+		// Missing expected coverage alone also degrades a strict review.
+		const missingExpected = synthesizeReviewArtifact({
+			rawText: JSON.stringify({ ...strictJsonReview, findings: [], verdict: "approve" }), ...binding,
+			strictJsonReview: { ...strictJsonReview, findings: [], verdict: "approve" },
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane, { key: "missing:1", tier: "heavy", minorHygiene: false }],
+		});
+		expect(missingExpected.completeness).toBe("incomplete");
+		expect(missingExpected.mergeApprovalEligible).toBe(false);
+	});
+
+	test("omits the retained-output note when nothing was retained", () => {
+		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding });
+		expect(artifact.body).toContain("No host lane evidence was retained for this review.");
+		expect(artifact.body).toContain("No structurally parsed findings were extracted from this degraded synthesis.");
+		expect(artifact.body).not.toContain("The retained reviewer output below is the authoritative record");
 	});
 
 	test("rebinds legacy strict JSON target fields while preserving an otherwise-qualified approval verdict", () => {
