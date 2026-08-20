@@ -1,7 +1,8 @@
 # Review quality plan: model-assisted finding extraction
 
-Status: proposed (Phase 0). This document is the implementation plan for raising
-review output quality without changing what reviewer lanes emit.
+Status: proposed (Phase 0, revision 2 — incorporates the PR #71 design review:
+schema alignment, lifecycle placement, egress and provenance hardening, merge
+cap, byte limits, telemetry timing, and mode-model rollout concerns).
 
 ## 1. Problem
 
@@ -41,31 +42,28 @@ structure. This plan recovers it.
 - **No change to publish-safety or approval gates in Phase 1.** Extraction is
   additive structure on degraded reviews; the APPROVE path keeps requiring
   `fully_parsed` + complete + exact lane coverage.
-- **No new trust.** Extractor output is model output: validated, anchored, and
-  capped by host code exactly like every other model-derived field.
+- **No new trust.** Extractor output is model output: normalized, anchored,
+  validated, and capped by host code exactly like every other model-derived
+  field. It cannot select event, commit, repository, hostname, marker, or
+  anchor validity.
 - Deep single-pass review mode (one heavy model reviewing the whole PR) is a
   separate future proposal; see §10.
 
 ## 3. Design
 
-Add one **extraction stage** between synthesis and publication:
+Add one **extraction stage** between lane dispatch and publication. It runs
+**concurrently with the final orchestrator turn**, never inside `message_end`:
 
 ```
-lanes (freeform Markdown) ─┐
-orchestrator synthesis ────┤
-                           ▼
-              extractFindings (light tier, no tools, one-shot subprocess)
-                           ▼
-              strict findings JSON
-                           ▼
-              host validation + merge (parse, safety, anchor, dedupe, cap)
-                           ▼
-              merged findings → inline comments, verdict line, degraded body
+final orchestrator turn starts (turn_start: synthesis cap disarmed)
+   ├─ message_end(text arrives)
+   │    └─ start extraction subprocess (NOT awaited here; see 3.4)
+   └─ turn_end(synthesis cap re-arms; synthesis + extraction both settle)
+        └─ merge + rebuild artifact → resolveCompletion → publication
 ```
 
-A lightweight configured model (the `light` tier) reads the review Markdown —
-the synthesis plus retained lane evidence, the same content the degraded body
-already carries — and returns a strict findings array. The host then does
+A lightweight configured model reads the review Markdown — the synthesis plus
+retained lane evidence — and returns a strict findings JSON. The host then does
 everything it already knows how to do with structured findings.
 
 ### 3.1 Why this shape
@@ -73,17 +71,23 @@ everything it already knows how to do with structured findings.
 - The **source of truth stays Markdown**. Nothing upstream changes: lanes,
   prompts, synthesis, fallbacks, and the lossless retained evidence are
   untouched. Extraction runs on a *copy*; failure cannot lose information.
-- The **light tier is already configured, cheap, and fast** (observed 16.5s for
-  a light overview lane). One bounded call per review is a rounding error next
-  to four heavy lanes.
+- The **light tier is cheap and fast** (observed 16.5s for a light overview
+  lane). One bounded call per review is a rounding error next to four heavy
+  lanes.
 - The **host already owns every downstream check** for structured findings
-  (`publicationSafeStrictReview`-style safety, anchor validation against
-  changed-file metadata in `selectInlineComments`, severity/blocking rules,
-  marker and event ownership). The extractor adds candidates; the host decides.
+  (safety validation, anchor commentability re-derived from diff metadata,
+  severity/blocking rules, marker and event ownership). The extractor adds
+  candidates; the host decides.
 
-### 3.2 Schema
+### 3.2 Schema (extraction wire format ≠ publication contract)
 
-The extractor returns strict JSON (no fences, single object):
+The extractor returns strict JSON (no fences, single object). This wire format
+is then **normalized by host code** into the exact `ReviewFindingLike` shape
+the publish path validates (`confidence_score`, `code_location.commentable`,
+`code_location: null` for absent locations) — the plan's normalization step is
+mandatory, not optional, because `parsePublishableReview` and
+`publishPullReview` serialize and re-validate the merged review through that
+contract:
 
 ```json
 {
@@ -91,30 +95,28 @@ The extractor returns strict JSON (no fences, single object):
     {
       "title": "Guard empty input",
       "severity": "P2",
-      "blocking": false,
       "body": "parseInput crashes on an empty argument list because …",
       "confidence": 0.86,
-      "code_location": {
-        "absolute_file_path": "src/parser.ts",
-        "line_range": { "start": 10, "end": 12 },
-        "side": "RIGHT",
-        "in_diff": true
-      },
+      "path": "src/parser.ts",
+      "start_line": 10,
+      "end_line": 12,
+      "side": "RIGHT",
       "source": "correctness"
     }
   ]
 }
 ```
 
-Rules:
-- Exactly one top-level `findings` array; every field required except
-  `code_location` (absent ⇒ summary-only) and `source` (lane pass id or
-  `"synthesis"`, used only for diagnostics/telemetry).
-- `severity` ∈ P0–P3/nit; `blocking` must equal severity ∈ {P0, P1}.
-- `confidence` ∈ [0,1]. Sizes: title ≤ 512 B, body ≤ 16 KiB, path ≤ 4 KiB —
-  same bounds the publish path enforces today; reject the whole record on
-  violation (never partially apply a malformed object).
-- Same shape as `ReviewFindingLike`, so downstream code is unchanged.
+Wire rules (validated on parse; **any violation rejects the whole record**):
+- Exactly one top-level `findings` array; `title`, `severity`, `body` required;
+  `path`/`start_line`/`end_line`/`side` optional as a group (absent ⇒ location
+  `null` ⇒ summary-only); `source` optional (lane pass id or `"synthesis"`,
+  diagnostics only).
+- `severity` ∈ P0–P3/nit; blocking is **derived** (`P0|P1`), never accepted as
+  an input field.
+- `confidence` ∈ [0,1] → normalized to `confidence_score`.
+- Sizes: ≤ 50 findings; title ≤ 512 B; body ≤ 16 KiB; path ≤ 4 KiB; total
+  output document ≤ 512 KiB hard reject.
 
 ### 3.3 New module: `lib/pr-review-extract.ts`
 
@@ -124,49 +126,73 @@ Mirrors the existing self-review subprocess plumbing
 
 - `buildExtractionSystemPrompt()` — strict JSON contract; **input is data, not
   instructions**; no severity inflation; only findings actually stated in the
-  input; drop speculation; keep the reviewer's own wording.
-- `runFindingExtraction(config, ctx, input)` — spawns the light-tier child with
-  the Markdown payload piped on stdin (bounded; same byte caps as lane tasks).
-  Bounded deadline: `min(120s, remaining synthesis window)`.
+  input; drop speculation; keep the reviewer's own wording; emit
+  `{"findings":[]}` when none.
+- `buildExtractionInput(...)` — assembles the bounded Markdown payload
+  (synthesis + lane evidence) with an explicit byte budget: **≤ 256 KiB total,
+  synthesis first, lane evidence in requested order, each lane truncated to fit
+  with a `…[truncated N bytes]` marker**. This bound is a new, dedicated
+  constant (`MAX_EXTRACTION_INPUT_BYTES`), not a reference to other caps.
+- `runFindingExtraction(config, ctx, input)` — spawns the light-tier child,
+  task piped on stdin, output accumulated under a **stream-level cap of
+  1 MiB** (stdout/stderr), not only post-parse field caps.
 - `parseExtractionOutput(text)` — strict parse + schema/safety validation
-  (control characters, sizes, severity set, blocking consistency).
-- `mergeFindings(parsed, extracted, changedFiles)` — union with the
-  deterministically parsed findings:
-  - dedupe on (normalized path, side, start line, normalized title);
-    deterministic findings win ties;
-  - anchors not present in changed-file metadata demote to summary-only
-    (existing behavior, not new logic);
-  - hard cap 50 findings (existing publication cap).
+  (control characters, sizes, severity set) per §3.2.
+- `normalizeExtractedFindings(parsed)` — wire → `ReviewFindingLike` mapping
+  with `blocking` derivation and `code_location` construction or `null`.
 
-### 3.4 Integration point and ordering
+### 3.4 Integration point and ordering (lifecycle-exact)
 
-In `extensions/review-table.ts`, after `synthesizeReviewArtifact` and before
-`resolveCompletion` caches/publishes:
+`message_end` (final assistant text) does **not** await the child. The flow is:
 
-1. If `extractFindings` enabled **and** `artifact.quality !== "fully_parsed"`
-   (Phase 1 scope: degraded reviews only), run extraction over
-   `artifact.rawText` + retained lane `rawText`s (same inputs as the degraded
-   body, capped).
-2. On validated output: merge findings, then **rebuild** the degraded body and
-   `syntheticReview` with the merged set (verdict line reflects P0/P1 blocking
-   per the existing rule). The body still embeds the full retained Markdown;
-   merged findings additionally render as host-formatted blocks and become
-   inline-comment candidates.
-3. On any failure (timeout, non-zero exit, malformed/unsafe JSON, empty
-   output): keep the deterministic artifact unchanged and record a telemetry
-   note. Publication never waits on or fails because of extraction.
+1. `message_end`: host builds the deterministic artifact as today. If
+   extraction is enabled and `quality !== "fully_parsed"`, it **starts** the
+   extraction subprocess and stores the promise; rendering proceeds
+   immediately with the deterministic artifact so the terminal response,
+   telemetry completion, and TUI rendering are never blocked.
+2. `turn_end`: `generationsReadyForSynthesis` re-arms the synthesis cap —
+   this is where extraction is awaited, **bounded by `min(synthesisMs,
+   remaining total budget − termination reserve)`** via the same lease/budget
+   mechanism as review tools. The re-armed synthesis window is exactly the
+   "inside the synthesis window" guarantee: expiry aborts the child through
+   the existing typed-deadline lifecycle.
+3. Merged artifact (if extraction succeeded) is built **before**
+   `resolveCompletion` caches the record and before publication, so the cached
+   artifact, published body, and telemetry all observe the same merged state.
+   On timeout/failure: the deterministic artifact from step 1 is cached and
+   published byte-identically — the merge is skipped, nothing is rebuilt.
+4. `consume()` ordering is unchanged: it runs after `resolveCompletion`, so
+   lanes are still available to `buildExtractionInput` in step 1.
 
-Quality label: keep the existing `quality` value. Add
-`artifact.extraction: { attempted, outcome, findings }` for diagnostics only —
-publish gating keys on `quality`/`completeness` exactly as today (degraded ⇒
-`COMMENT`-only, never APPROVE).
+`turn_start` before the final turn already disarms the synthesis cap (1.12.2
+fix), which is what makes step 2's re-arm the correct deadline owner for the
+awaited stage.
 
-### 3.5 Failure and degradation matrix
+### 3.5 Merging and the cap
+
+`mergeFindings(parsed, extracted)` runs at the artifact level (host memory):
+
+- **Deterministic findings are always retained.** The 50-finding cap applies
+  to *extracted* additions only: extracted findings are appended in source
+  order until the total reaches 50; further extracted findings are counted in
+  telemetry (`findingsDroppedOverflow`) and their content remains in the
+  retained Markdown — deterministic structure is never discarded to make room.
+- Dedupe on (normalized path, side, start line, normalized title); the
+  deterministic finding wins ties.
+- Anchor commentability is **not** decided at merge time. Merged findings
+  carry their claimed location; `selectInlineComments` at publication already
+  re-derives validity from changed-file metadata and demotes invalid anchors
+  to the summary. No new GitHub request is added at merge time.
+- Verdict: `syntheticReview` derives `request_changes` from blocking findings
+  per the existing rule — extracted P0/P1 participate in the **verdict line
+  only**; degraded reviews remain `COMMENT`-only regardless.
+
+### 3.6 Failure and degradation matrix
 
 | Extraction outcome | Result |
 | --- | --- |
-| Valid findings | merged; inline notes on degraded review; verdict line may become `Request changes` if P0/P1 |
-| Empty findings `{"findings":[]}` | deterministic artifact unchanged (no false "found nothing" claim — absence of structure ≠ clean review) |
+| Valid findings | merged; inline notes on degraded review; verdict line may read "Request changes" if extracted P0/P1 |
+| Empty findings `{"findings":[]}` | deterministic artifact unchanged (absence of structure ≠ clean review) |
 | Timeout / child failure | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
 | Malformed / unsafe / over-cap JSON | deterministic artifact unchanged; telemetry `outcome: "rejected"` |
 | Not configured / disabled | current behavior, zero new code paths taken |
@@ -174,69 +200,98 @@ publish gating keys on `quality`/`completeness` exactly as today (degraded ⇒
 ## 4. Security
 
 - The child is the existing isolated reviewer subprocess shape: no tools, no
-  extensions, no session, stdin task, strict JSON out.
-- Prompt-injection surface: lane Markdown and PR-derived text are **data**. The
-  system prompt states this explicitly; host-side caps bound blast radius
-  (finding count ≤ 50, per-field byte caps, control-character rejection).
+  extensions, no session, stdin task, strict JSON out, stream-capped output.
+- **Cross-tier data egress is a real boundary, disclosed and gated.** Tier
+  models are independently configured providers; heavy lanes run with
+  repository tools and their retained evidence may contain repository context
+  the light-tier provider has not previously received. Sending that evidence
+  to the light model is therefore a new transfer, not "already in host
+  memory". Consequences: the config flag is **user-scope only** (project
+  config cannot enable it), the README documents the egress plainly ("enabling
+  `extractFindings` sends the complete review Markdown — including heavy-lane
+  evidence gathered from repository context — to the configured light-tier
+  provider"), and Phase 2 default-on is **withdrawn** (see §7).
+- **Provenance is host-verified, not prompt-hoped.** "Input is data, not
+  instructions" is a prompt instruction and cannot be the control. The host
+  control is a **quote-check**: for every extracted finding, `body` and
+  `title` must each contain a ≥ 24-character normalized substring that occurs
+  in the extraction input (the reviewer's own words), else the finding is
+  rejected and counted (`findingsRejectedProvenance`). A malicious PR author
+  may still cause the *reviewer's own* words to be surfaced inline — that is
+  the feature — but cannot inject fabricated severity, fabricated findings,
+  or fabricated anchors through extraction output. Anchor validity remains
+  host-derived at publication.
 - Extractor output can never select: review event, commit, repository,
-  hostname, API path, the canonical marker, or inline anchor *validity* (the
-  host re-derives commentability from diff metadata). It only proposes
-  severity/location prose for host validation.
+  hostname, API path, the canonical marker, or anchor *validity*. It proposes
+  severity/location prose for host validation only.
 - Degraded + extracted reviews remain `COMMENT`-only and approval-ineligible.
-- No secrets cross the boundary; the payload is PR review text already held in
-  memory by the host.
+- Output blast radius is bounded at the stream level (1 MiB) before parsing;
+  per-field caps bound post-parse size.
 
 ## 5. Configuration
 
-`pr-review.json` (user or trusted project scope), default **off** in Phase 1:
+`~/.pi/agent/pr-review.json` (**user scope only** — the key is ignored in
+project config, mirroring `verificationBaselines` precedent), default off:
 
 ```json
 { "extractFindings": true }
 ```
 
 Malformed values fail closed to `false` with the existing config-warning
-machinery. The model stays the configured `light` tier in Phase 1; a separate
-tier knob is deferred until metrics justify it.
+machinery. Phase 1 uses the configured `light` tier with the documented
+nearest-tier/Pi-default fallback semantics **disclosed** (an unset light tier
+means the ambient default model, not necessarily a cheap one); a dedicated
+`extractModel` key is deferred to Phase 2.
 
 ## 6. Telemetry
 
-Add to the invocation telemetry `notes`/batch details (already persisted via
-`pi.appendEntry("pr-review-telemetry", …)`):
+Two records, split because they occur at different lifecycle points:
 
-- `extraction.attempted` / `outcome` ∈
-  `merged | empty | timeout | failed | rejected | disabled`
-- counts: `findingsExtracted`, `findingsMerged`, `findingsDeduped`,
-  `findingsDemoted`, `inlineComments` on the published review
-- wall time of the extraction call
+- **Extraction record** (`pi.appendEntry("pr-review-extraction", …)` at
+  merge time): `outcome`, `findingsExtracted`, `findingsMerged`,
+  `findingsDeduped`, `findingsRejectedProvenance`, `findingsDroppedOverflow`,
+  `inputBytes`, `elapsedMs`.
+- **Publication counts** are extended on the existing completed-review cache
+  record (`inlineComments` selected during `buildLosslessReviewPayload`),
+  because invocation telemetry is finalized in `message_end` before
+  publication and cannot carry post-publication counts.
 
 ## 7. Rollout
 
 - **Phase 0 (this PR):** design document only. No behavior change.
-- **Phase 1:** `lib/pr-review-extract.ts` + config + `review-table.ts`
-  integration + tests (list in §8). Shipped default-off.
-- **Phase 2:** default-on for balanced/`--full` once metrics hold
-  (§9); extraction also over `fully_parsed` syntheses to catch prose findings
-  the regex parser missed; verdict integration review.
+- **Phase 1:** `lib/pr-review-extract.ts` + config + integration + tests
+  (§8). Default off, user scope only.
+- **Phase 2:** re-evaluate default-on **only with an explicit opt-in cohort**
+  and only after §9 metrics hold; the light-tier fallback disclosure and the
+  egress boundary statement must be part of any default-on change. Extraction
+  over `fully_parsed` syntheses (prose findings the regex parser missed) is
+  also Phase 2, with the same provenance and cap rules.
 - **Phase 3 (optional):** per-lane extraction in parallel (bounded by the
-  existing batch scheduler) instead of one merged call, removing the
-  synthesis bottleneck for very large reviews.
+  existing batch scheduler) instead of one merged call.
 
 ## 8. Phase 1 test plan
 
 - Unit (`tests/pr-review-extract.test.ts`): prompt contains data-not-
-  instructions rules; strict parse accepts the canonical object; rejects
-  fences, extra fields, bad severity, blocking mismatch, oversized fields,
-  control characters — whole-record rejection each time; merge dedupe/tie/
-  cap/demote matrix.
-- Lifecycle (`pr-review-extension-lifecycle.test.ts`, fake child): valid
-  extraction ⇒ degraded review publishes inline comments + host-formatted
-  finding blocks + verdict line change for P0/P1; timeout/malformed ⇒ byte-
-  identical current behavior; disabled ⇒ no subprocess spawned; config
-  malformed value fails closed.
-- Publish (`pr-review-publish.test.ts`): merged findings flow through
-  `buildLosslessReviewPayload` → inline placement respects diff metadata;
-  marker/event ownership untouched.
-- Docs-contract test updated for the new config key.
+  instructions rules; strict parse accepts the canonical wire object; rejects
+  fences, extra fields, bad severity, oversized fields, control characters —
+  whole-record rejection each time; normalization maps wire →
+  `ReviewFindingLike` (confidence_score, derived blocking, null location);
+  quote-check provenance accept/reject matrix (substring present/absent,
+  normalization, minimum length); input assembly truncation ordering and
+  markers; merge dedupe/tie/cap with deterministic retention and overflow
+  counting.
+- Lifecycle (`pr-review-extension-lifecycle.test.ts`, fake child):
+  message_end is not blocked (extraction promise stored, render proceeds);
+  turn_end awaits within a bounded window (synthesis re-arm honored);
+  valid extraction ⇒ degraded review publishes inline comments + host-formatted
+  blocks + verdict line change for extracted P0/P1; timeout/malformed ⇒
+  byte-identical deterministic artifact; disabled ⇒ no subprocess spawned;
+  user-scope-only config (project value ignored); malformed value fails closed.
+- Publish (`pr-review-publish.test.ts`): merged findings normalize through
+  `parsePublishableReview`/`publishPullReview` round-trip (schema alignment
+  regression); inline placement respects diff metadata; marker/event ownership
+  untouched.
+- Docs-contract test updated for the new config key and egress statement.
 
 ## 9. Success criteria (Phase 2 gate)
 
@@ -244,9 +299,11 @@ Add to the invocation telemetry `notes`/batch details (already persisted via
 - On degraded reviews with substantive lane evidence, ≥ 1 inline note in a
   target majority of runs where a human spot-check confirms a real finding
   existed in the Markdown.
+- Provenance rejection rate < 5% (a high rate means the prompt/schema fights
+  the models and must be fixed before any default-on).
 - No regression: full suite green; publish-safety invariants unchanged
   (degraded never APPROVEs, no false completion claims).
-- Wall-clock overhead ≤ ~20s p50, inside the synthesis window.
+- Wall-clock overhead ≤ ~20s p50 inside the synthesis window.
 
 ## 10. Alternatives considered
 
