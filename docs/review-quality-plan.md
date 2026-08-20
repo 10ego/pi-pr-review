@@ -18,10 +18,12 @@ lanes (freeform Markdown)
              └─ findings[] → inline comments, verdict, concise body
 ```
 
-`parseFindings` only extracts `### [severity] Title` blocks carrying
-`**Severity:**` / `**Rationale:**` / `**Location:**` in the canonical layout.
-Every other way a reviewer can describe a defect — prose paragraphs, plain
-bullet lists, non-canonical headings, partial fields — falls through to
+`parseFindings` extracts only `### [severity] Title` blocks inside the
+canonical `## Findings` section carrying `**Severity:**` plus a rationale
+field (`**Rationale:**` or `**Why:**`) and an **optional** `**Location:**`
+(absent ⇒ `code_location: null` ⇒ summary-only). Every other way a reviewer
+can describe a defect — prose paragraphs, plain bullet lists, non-canonical
+headings, partial fields — falls through to
 `quality: raw` / `partially_parsed`, which means:
 
 - **no inline review notes** — findings live only as body text;
@@ -97,10 +99,12 @@ contract:
       "severity": "P2",
       "body": "parseInput crashes on an empty argument list because …",
       "confidence": 0.86,
+      "quote": "parseInput crashes on an empty argument list",
       "path": "src/parser.ts",
       "start_line": 10,
       "end_line": 12,
       "side": "RIGHT",
+      "location_quote": "src/parser.ts",
       "source": "correctness"
     }
   ]
@@ -108,15 +112,23 @@ contract:
 ```
 
 Wire rules (validated on parse; **any violation rejects the whole record**):
-- Exactly one top-level `findings` array; `title`, `severity`, `body` required;
-  `path`/`start_line`/`end_line`/`side` optional as a group (absent ⇒ location
-  `null` ⇒ summary-only); `source` optional (lane pass id or `"synthesis"`,
-  diagnostics only).
+- Exactly one top-level `findings` array; `title`, `severity`, `body`,
+  `confidence` (number ∈ [0,1] — normalized to `confidence_score`), and
+  `quote` required; `path`/`start_line`/`end_line`/`side` optional as a group
+  (absent ⇒ location `null` ⇒ summary-only; present ⇒ `start_line`/`end_line`
+  are integers ≥ 1, `end_line ≥ start_line` when both given, `side` ∈
+  {`LEFT`,`RIGHT`}, `path` a repo-relative POSIX path with no `..` traversal,
+  control characters, or absolute/`~` prefix, and `location_quote` required);
+  `source` optional (lane pass id or `"synthesis"`, diagnostics only).
 - `severity` ∈ P0–P3/nit; blocking is **derived** (`P0|P1`), never accepted as
-  an input field.
-- `confidence` ∈ [0,1] → normalized to `confidence_score`.
-- Sizes: ≤ 50 findings; title ≤ 512 B; body ≤ 16 KiB; path ≤ 4 KiB; total
-  output document ≤ 512 KiB hard reject.
+  an input field. (Display-only for extracted findings; see §4.)
+- Sizes: ≤ 50 findings; title ≤ 512 B; body ≤ 16 KiB; path ≤ 4 KiB; `quote`
+  ≤ 2 KiB; total output document ≤ 512 KiB hard reject.
+- The complete post-merge review must survive a **round-trip through
+  `parsePublishableReview`** before the deterministic artifact is replaced; a
+  round-trip failure counts as `outcome: "rejected"` and keeps the
+  deterministic artifact. Extraction can never cause a publication-time
+  validation failure that did not already exist.
 
 ### 3.3 New module: `lib/pr-review-extract.ts`
 
@@ -133,11 +145,22 @@ Mirrors the existing self-review subprocess plumbing
   synthesis first, lane evidence in requested order, each lane truncated to fit
   with a `…[truncated N bytes]` marker**. This bound is a new, dedicated
   constant (`MAX_EXTRACTION_INPUT_BYTES`), not a reference to other caps.
-- `runFindingExtraction(config, ctx, input)` — spawns the light-tier child,
-  task piped on stdin, output accumulated under a **stream-level cap of
-  1 MiB** (stdout/stderr), not only post-parse field caps.
+- `runFindingExtraction(config, lease, input)` — spawns the light-tier child
+  bound to the **generation lease**: it receives the loop binding's abort
+  `signal` and a typed `budget` (same arguments as `runSubagentAttempt`), so
+  replacement, cancellation, session switch, and deadline expiry all
+  terminate the child through the existing typed-deadline lifecycle
+  (`revokeBinding()` aborts the same signal). The stored promise is
+  generation-fenced: a settled result is discarded unless its generation
+  still owns the binding at `turn_end`; a generation that never reaches
+  `turn_end` (crash, replacement, session switch) leaves no merged artifact
+  and the pending child is aborted by lease revocation. Deadline:
+  `min(120s, remaining synthesis window)` enforced by the same mechanism as
+  review tools.
 - `parseExtractionOutput(text)` — strict parse + schema/safety validation
-  (control characters, sizes, severity set) per §3.2.
+  (control characters, sizes, severity set, integer/range/path rules) per
+  §3.2, including `quote`/`location_quote` verification against the recorded
+  extraction input.
 - `normalizeExtractedFindings(parsed)` — wire → `ReviewFindingLike` mapping
   with `blocking` derivation and `code_location` construction or `null`.
 
@@ -183,15 +206,17 @@ awaited stage.
   carry their claimed location; `selectInlineComments` at publication already
   re-derives validity from changed-file metadata and demotes invalid anchors
   to the summary. No new GitHub request is added at merge time.
-- Verdict: `syntheticReview` derives `request_changes` from blocking findings
-  per the existing rule — extracted P0/P1 participate in the **verdict line
-  only**; degraded reviews remain `COMMENT`-only regardless.
+- Verdict: the verdict line for a degraded review is **Comment** unless a
+  *deterministically parsed* P0/P1 exists (the existing rule, unchanged).
+  Extracted findings are display + inline candidates only; their claimed
+  severity never flips the verdict. Degraded reviews remain `COMMENT`-only
+  regardless.
 
 ### 3.6 Failure and degradation matrix
 
 | Extraction outcome | Result |
 | --- | --- |
-| Valid findings | merged; inline notes on degraded review; verdict line may read "Request changes" if extracted P0/P1 |
+| Valid findings | merged; inline notes on degraded review; verdict line unchanged unless a deterministically parsed P0/P1 exists |
 | Empty findings `{"findings":[]}` | deterministic artifact unchanged (absence of structure ≠ clean review) |
 | Timeout / child failure | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
 | Malformed / unsafe / over-cap JSON | deterministic artifact unchanged; telemetry `outcome: "rejected"` |
@@ -208,19 +233,38 @@ awaited stage.
   to the light model is therefore a new transfer, not "already in host
   memory". Consequences: the config flag is **user-scope only** (project
   config cannot enable it), the README documents the egress plainly ("enabling
-  `extractFindings` sends the complete review Markdown — including heavy-lane
-  evidence gathered from repository context — to the configured light-tier
-  provider"), and Phase 2 default-on is **withdrawn** (see §7).
+  `extractFindings` sends a bounded extraction payload — the review synthesis
+  plus retained heavy-lane evidence gathered from repository context,
+  byte-capped at 256 KiB with truncation markers — to the configured
+  light-tier provider", naming the configured model), and Phase 2 default-on
+  is **withdrawn** (see §7).
 - **Provenance is host-verified, not prompt-hoped.** "Input is data, not
   instructions" is a prompt instruction and cannot be the control. The host
-  control is a **quote-check**: for every extracted finding, `body` and
-  `title` must each contain a ≥ 24-character normalized substring that occurs
-  in the extraction input (the reviewer's own words), else the finding is
-  rejected and counted (`findingsRejectedProvenance`). A malicious PR author
-  may still cause the *reviewer's own* words to be surfaced inline — that is
-  the feature — but cannot inject fabricated severity, fabricated findings,
-  or fabricated anchors through extraction output. Anchor validity remains
-  host-derived at publication.
+  controls are:
+  1. **Span anchoring.** For every extracted finding, the model must return a
+     verbatim `quote` — an exact substring (≥ 8 characters, whitespace-
+     normalized, case-sensitive) copied from the extraction input — plus, when
+     `path`/`start_line` are claimed, a separate verbatim `location_quote`
+     containing the claimed path string from the input. The host verifies each
+     quote byte-for-byte against the input (single normalization: collapse
+     whitespace runs). A finding without a verifiable quote is rejected and
+     counted (`findingsRejectedProvenance`). This is a splice-guard against
+     *assembled* content, not a semantic proof — see (2).
+  2. **Severity is derived, not trusted, for the verdict line.** Extracted
+     findings never contribute blocking severity on their own say-so. The
+     published verdict line for a degraded review stays **Comment** unless a
+     *deterministically parsed* P0/P1 exists (unchanged rule). Extracted P0/P1
+     are displayed with their claimed severity but tagged `severity: model-
+     claimed (unverified)` in diagnostics, and never flip the verdict. This
+     removes the injection payoff for fabricated severity entirely: the worst
+     a hostile input can achieve through extraction is surfacing the
+     reviewer's own words as inline comments — which is the feature.
+  3. **Location claims are host-checked at publication**, as today:
+     `selectInlineComments` re-derives commentability from changed-file
+     metadata; unverified anchors demote to summary. The `location_quote`
+     check additionally requires the claimed path to have appeared in the
+     input, so an anchor cannot be attached to a file the review never
+     mentioned.
 - Extractor output can never select: review event, commit, repository,
   hostname, API path, the canonical marker, or anchor *validity*. It proposes
   severity/location prose for host validation only.
@@ -237,10 +281,17 @@ project config, mirroring `verificationBaselines` precedent), default off:
 { "extractFindings": true }
 ```
 
-Malformed values fail closed to `false` with the existing config-warning
-machinery. Phase 1 uses the configured `light` tier with the documented
-nearest-tier/Pi-default fallback semantics **disclosed** (an unset light tier
-means the ambient default model, not necessarily a cheap one); a dedicated
+Malformed values fail closed to `false` and surface through the loop's
+existing user-visible config warnings (the same notification channel deadline
+warnings use). **Loader ownership:** the resolver is a new dedicated
+user-scope reader in `lib/pr-review-extract.ts` — it does not reuse the
+subagent overlay loader (which silently maps malformed files to `{}`) nor the
+publication-settings reader in `review-table.ts`; a malformed user file
+yields `extractFindings: false` **plus** an explicit warning, and project-
+scope values are ignored without effect. Phase 1 uses the configured `light`
+tier with the documented nearest-tier/Pi-default fallback semantics
+**disclosed** (an unset light tier means the ambient default model, not
+necessarily a cheap one; the warning names the effective model); a dedicated
 `extractModel` key is deferred to Phase 2.
 
 ## 6. Telemetry
@@ -251,10 +302,12 @@ Two records, split because they occur at different lifecycle points:
   merge time): `outcome`, `findingsExtracted`, `findingsMerged`,
   `findingsDeduped`, `findingsRejectedProvenance`, `findingsDroppedOverflow`,
   `inputBytes`, `elapsedMs`.
-- **Publication counts** are extended on the existing completed-review cache
-  record (`inlineComments` selected during `buildLosslessReviewPayload`),
-  because invocation telemetry is finalized in `message_end` before
-  publication and cannot carry post-publication counts.
+- **Publication counts** are emitted as a **post-publication record** via
+  `pi.appendEntry("pr-review-extraction", …)` at the same point the publish
+  result is notified, carrying the selected inline-comment count and any
+  transport diagnostics from the publish result — not on the already-
+  persisted cache record, and not in invocation telemetry (which finalizes in
+  `message_end` before publication).
 
 ## 7. Rollout
 
@@ -276,16 +329,20 @@ Two records, split because they occur at different lifecycle points:
   fences, extra fields, bad severity, oversized fields, control characters —
   whole-record rejection each time; normalization maps wire →
   `ReviewFindingLike` (confidence_score, derived blocking, null location);
-  quote-check provenance accept/reject matrix (substring present/absent,
-  normalization, minimum length); input assembly truncation ordering and
-  markers; merge dedupe/tie/cap with deterministic retention and overflow
+  quote/span verification matrix (verbatim quote present, too short,
+  whitespace-normalized match, missing location_quote, path absent from
+  input); severity display-only rule (extracted P0/P1 cannot flip the verdict
+  line); round-trip rejection path; merge dedupe/tie/cap with deterministic
+  retention and overflow
   counting.
 - Lifecycle (`pr-review-extension-lifecycle.test.ts`, fake child):
   message_end is not blocked (extraction promise stored, render proceeds);
   turn_end awaits within a bounded window (synthesis re-arm honored);
+  **lease revocation aborts the pending child** (replacement, cancellation,
+  session switch) and a stale-generation result is discarded at turn_end;
   valid extraction ⇒ degraded review publishes inline comments + host-formatted
-  blocks + verdict line change for extracted P0/P1; timeout/malformed ⇒
-  byte-identical deterministic artifact; disabled ⇒ no subprocess spawned;
+  blocks, with the verdict line unchanged unless a deterministic P0/P1 exists;
+  timeout/malformed ⇒ byte-identical deterministic artifact; disabled ⇒ no subprocess spawned;
   user-scope-only config (project value ignored); malformed value fails closed.
 - Publish (`pr-review-publish.test.ts`): merged findings normalize through
   `parsePublishableReview`/`publishPullReview` round-trip (schema alignment
@@ -324,8 +381,8 @@ The three concrete losses in §1 each map to a direct gain:
 | Loss today | With extraction |
 | --- | --- |
 | Prose findings get no inline notes | Validated extracted findings place inline on degraded reviews |
-| Degraded reviews hide structure | Host-formatted finding blocks + full retained Markdown |
-| Verdict blind to prose P0/P1 | Verdict line reflects blocking findings found in prose |
+| Degraded reviews hide structure | Host-formatted finding blocks + retained Markdown |
+| Prose P0/P1 invisible to the human reader | Extracted blocking candidates are surfaced with `severity: model-claimed (unverified)` in diagnostics and can be re-reviewed manually; the verdict line stays deterministic |
 
 And it compounds with the 1.12.x–1.13.0 reliability work: lanes that die now
 produce honest coverage disclosure *plus* recovered structure from whatever
