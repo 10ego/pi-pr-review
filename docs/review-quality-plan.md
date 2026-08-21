@@ -269,8 +269,11 @@ awaited stage.
   hostname, API path, the canonical marker, or anchor *validity*. It proposes
   severity/location prose for host validation only.
 - Degraded + extracted reviews remain `COMMENT`-only and approval-ineligible.
-- Output blast radius is bounded at the stream level (1 MiB) before parsing;
-  per-field caps bound post-parse size.
+- Output blast radius is bounded by the 512 KiB document cap enforced before
+  parsing plus the child's bounded runtime window (the lease deadline); title,
+  body, quote, and count caps bound post-parse size. A true stream-level cap
+  inside the shared subprocess runner was rejected as out of scope for
+  Phase 1.
 
 ## 5. Configuration
 
