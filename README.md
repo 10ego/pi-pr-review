@@ -224,6 +224,18 @@ Stale publication is enabled by default through `allowStalePublish: true`; disab
 
 A matching direct request permits stale publication. Inline comments are always disabled for stale reviews because the original anchors may no longer be valid; the body identifies both the reviewed and current commit. For a qualified fully parsed review, set trusted `allowStaleApprovals: true` before starting the review to permit an eligible stale `APPROVE`; authorized non-open publications may also approve when every host gate qualifies them. Degraded Markdown remains `COMMENT` in every lifecycle state. The session-backed cache survives extension reloads and session resumes and remains bound to the originating session instance and repository.
 
+## Optional finding extraction (experimental)
+
+Degraded reviews — incomplete lanes, malformed synthesis — publish a deterministic host-rendered body whose findings were only what the deterministic parser could extract. An experimental opt-in adds one bounded light-tier model call that extracts findings from the review Markdown (including prose the parser cannot read) and merges them after host validation:
+
+```json
+{ "extractFindings": true }
+```
+
+Set it in **user scope only** (`~/.pi/agent/pr-review.json`); project configuration cannot enable it. Every extracted finding must carry a verbatim quote from the input verified by the host, its claimed path must appear in the input, anchors are re-validated against diff metadata at publication, and extracted severity is display-only — it can never change the verdict line or make a degraded review approve-eligible. Any failure (timeout, malformed output, unverifiable quotes) keeps the deterministic artifact unchanged. **Enabling it sends a bounded extraction payload — the review synthesis plus retained heavy-lane evidence gathered from repository context, byte-capped at 256 KiB — to the configured light-tier provider**, which may differ from the provider configured for your heavy lanes.
+
+Outcomes are recorded in session `pr-review-extraction` entries for the Phase 2 evaluation described in [docs/review-quality-plan.md](docs/review-quality-plan.md).
+
 ## Optional verification
 
 You can define fixed test commands in `verificationBaselines` in the **user** config. Project config cannot add or override these profiles. The reviewer may select at most one applicable profile and runs it against the exact captured PR head.
