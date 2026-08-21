@@ -869,3 +869,46 @@ export function synthesizeReviewArtifact(input: {
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }
+
+/**
+ * Merge host-validated extracted findings into a degraded artifact. The
+ * deterministic verdict is preserved exactly: extracted severity never flips
+ * the verdict line, eligibility stays false, and the rebuilt body keeps every
+ * host label plus the retained evidence with the merged finding set rendered
+ * through the same deterministic builder.
+ */
+export function mergeExtractedFindings(
+	artifact: ReviewSynthesisArtifact,
+	findings: readonly ReviewFindingLike[],
+): ReviewSynthesisArtifact {
+	if (findings.length === 0) return artifact;
+	const merged = [...findings];
+	const body = buildDegradedReviewBody({
+		rawText: artifact.rawText,
+		lanes: artifact.laneArtifacts,
+		findings: merged,
+		expectedLaneCount: artifact.expectedLaneCount,
+		exactCoverage: artifact.expectedLaneCount === 0 ||
+			(artifact.laneArtifacts.length === artifact.expectedLaneCount &&
+				new Set(artifact.laneArtifacts.map((lane) => lane.key)).size === artifact.expectedLaneCount &&
+				new Set(artifact.expectedLaneDescriptors.map((lane) => lane.key)).size === artifact.expectedLaneCount &&
+				artifact.laneArtifacts.every((lane) => artifact.expectedLaneDescriptors.some((expected) =>
+					expected.key === lane.key && expected.tier === lane.tier &&
+					expected.minorHygiene === !!lane.minorHygiene))),
+		reason: artifact.diagnostics[0],
+	});
+	return Object.freeze({
+		...artifact,
+		body,
+		// The deterministic verdict (already derived only from deterministically
+		// parsed findings) is authoritative; only the findings set grows.
+		review: { ...artifact.review, findings: merged },
+		mergeApprovalEligible: false,
+		diagnostics: Object.freeze([
+			...artifact.diagnostics,
+			...merged.some((finding) => finding.severity === "P0" || finding.severity === "P1")
+				? ["extracted P0/P1 severity is model-claimed (unverified) and did not change the verdict"]
+				: [],
+		]),
+	});
+}

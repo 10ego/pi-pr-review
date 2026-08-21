@@ -1307,7 +1307,7 @@ export interface CommentValidationResult {
 	warnings?: string[];
 }
 
-function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewParseResult {
+export function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewParseResult {
 	let serialized: string | undefined;
 	try {
 		serialized = JSON.stringify(review);
@@ -1894,6 +1894,8 @@ export interface PublishResult {
 	reviewId?: number;
 	url?: string;
 	reconciled?: boolean;
+	/** Number of inline comments in the posted review, when any were selected. */
+	inlineComments?: number;
 }
 
 const publishLocks = new Map<string, Promise<void>>();
@@ -2194,6 +2196,7 @@ export async function publishPullReview(input: {
 			return { status: "failed", message: `publication planning failed: ${built.errors.join("; ")}` };
 		}
 		const payload = built.payload;
+		const inlineCommentCount = payload.comments?.length ?? 0;
 
 		try {
 			const refreshed = await ghJson<PullState>(
@@ -2247,6 +2250,7 @@ export async function publishPullReview(input: {
 				event: payload.event,
 				reviewId: response.id,
 				url: response.html_url,
+				...(inlineCommentCount > 0 ? { inlineComments: inlineCommentCount } : {}),
 			};
 		}
 

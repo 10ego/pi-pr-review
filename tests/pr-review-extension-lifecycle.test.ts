@@ -24,22 +24,44 @@ import {
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
 
+mock.module("@earendil-works/pi-ai", () => ({
+	StringEnum: () => ({}),
+}));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
 	getAgentDir: () => join(tmpdir(), "pi-pr-review-empty-agent-dir"),
 	getSelectListTheme: () => ({}),
 	getSettingsListTheme: () => ({}),
 }));
-mock.module("typebox", () => ({
-	Type: {
-		Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
-		Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
-			type: "object",
-			properties,
-			...options,
-		}),
-	},
+mock.module("@earendil-works/pi-tui", () => ({
+	Container: class {},
+	fuzzyFilter: (items: unknown[]) => items,
+	getKeybindings: () => ({ matches: () => false }),
+	Input: class {},
+	SelectList: class {},
+	SettingsList: class {},
+	Text: class {},
 }));
+mock.module("typebox", () => {
+	const schema = () => ({});
+	return {
+		Type: {
+			Array: schema,
+			Boolean: schema,
+			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
+			Literal: schema,
+			Number: schema,
+			Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+				type: "object",
+				properties,
+				...options,
+			}),
+			Optional: schema,
+			String: schema,
+			Union: schema,
+		},
+	};
+});
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const { renderDegradedReviewMarkdown } = await import("../extensions/review-table.ts");
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
@@ -94,6 +116,8 @@ interface HarnessOptions {
 	operationLogPath?: string;
 	persistenceFailure?: string;
 	repositoryDelayMs?: number;
+	userConfig?: Record<string, unknown>;
+	extractionRunner?: (ctx: any, lease: any, input: string) => Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean }>;
 }
 
 const tempDirs: string[] = [];
@@ -249,6 +273,12 @@ function createHarness(
 		getHeader: () => ({ type: "session", id: identity.id, timestamp: identity.startedAt, cwd: "/tmp" }),
 		getLeafEntry: () => branch.at(-1),
 	};
+	const agentDir = join(tmpdir(), "pi-pr-review-empty-agent-dir");
+	if (options.userConfig !== undefined) {
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(join(agentDir, "pr-review.json"), JSON.stringify(options.userConfig));
+		tempDirs.push(agentDir);
+	}
 	const cwd = installFakeGh(options.repositoryDelayMs);
 	if (options.projectConfig) {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
@@ -299,7 +329,7 @@ function createHarness(
 	};
 	const loopCoordinator = new ReviewLoopCoordinator(pi as any);
 	const selfReviewCoordinator = new SelfReviewPermitCoordinator(pi as any, () => !!loopCoordinator.peek());
-	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator);
+	reviewTable(pi as any, loopCoordinator, selfReviewCoordinator, options.extractionRunner);
 	return {
 		handlers,
 		commands,
@@ -946,6 +976,145 @@ describe("completed review extension lifecycle", () => {
 		expect(body).toContain('"correctness" — `timed_out`');
 		expect(body).toContain("### [P2] Guard empty input");
 		expect(body).not.toContain("No issues found");
+	});
+
+	describe("model-assisted finding extraction", () => {
+		const degradedRaw = (findingsSection: string) => [
+			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Looks mostly safe.", "",
+			"## Verification", "Focused tests passed.", "",
+			"The reviewer states that parseInput crashes on empty input at src/parser.ts:2-3 RIGHT.",
+			"", findingsSection,
+			"## Lane completeness", "All requested lanes completed.",
+		].join("\n");
+
+		const noFindingsRaw = degradedRaw("## Findings\nNo findings.");
+
+		const retainedLane = (lease: any) => harness => {
+			void harness;
+			return lease;
+		};
+		void retainedLane;
+
+		async function degrade(harness: Harness, raw: string, message: any) {
+			await harness.emit("message_end", { message });
+			harness.appendMessage(message, "extraction-review");
+			await harness.emit("turn_end", { message, toolResults: [] });
+		}
+
+		const runExtraction = (findingsText: string, overrides: Record<string, unknown> = {}) =>
+			async () => ({ text: findingsText, exitCode: 0, ...overrides });
+
+		const extractionEntry = (harness: Harness) =>
+			harness.branch.filter((entry) => entry.customType === "pr-review-extraction");
+
+		test("merges validated findings into a degraded review and posts inline notes without touching the verdict", async () => {
+			const raw = noFindingsRaw;
+			const findingsJson = JSON.stringify({ findings: [{
+				title: "Guard empty input", severity: "P2",
+				body: "The reviewer states that parseInput crashes on empty input in the summary path.",
+				confidence: 0.86,
+				quote: "parseInput crashes on empty input",
+				path: "src/parser.ts", start_line: 2, end_line: 3, side: "RIGHT",
+				location_quote: "src/parser.ts:2-3 RIGHT",
+			}] });
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runExtraction(findingsJson),
+			});
+			const probe = installPublishingProbe({ inlinePatch: true });
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+			harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+				generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+				tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 143,
+				stopReason: "timeout", lifecycle: "timed_out", attempts: [], fallbackUsed: false,
+				elapsedMs: 44_000, toolElapsedMs: 0, toolCallCount: 0,
+			});
+			await degrade(harness, raw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] });
+			expect(probe.postCount()).toBe(1);
+			// Extracted finding earns inline placement on the degraded review.
+			expect(probe.payload()?.event).toBe("COMMENT");
+			expect(probe.payload()?.comments).toHaveLength(1);
+			expect(probe.payload()?.comments?.[0]).toMatchObject({ path: "src/parser.ts", line: 3 });
+			const body = String(probe.payload()?.body);
+			expect(body).toContain("### [P2] Guard empty input");
+			expect(body).toContain('"correctness" — `timed_out`');
+			// Model-claimed severity cannot flip the verdict line.
+			expect(body).toContain("**Verdict:** Comment");
+			const entries = extractionEntry(harness);
+			expect(entries.length).toBeGreaterThanOrEqual(1);
+			expect(entries.some((entry) => entry.data.outcome === "published" && entry.data.counts?.findingsMerged === 1)).toBeTrue();
+		});
+
+		test("keeps the deterministic artifact byte-identical on extraction failure paths", async () => {
+			for (const [name, runner] of [
+				["timeout", runExtraction("", { timedOut: true })],
+				["child failure", runExtraction("", { exitCode: 1, errorMessage: "child crashed" })],
+				["empty", runExtraction("")],
+				["malformed", runExtraction("not json at all")],
+				["fenced", runExtraction("```json\n{}\n```")],
+				["forged quote", runExtraction(JSON.stringify({ findings: [{
+					title: "Fabricated", severity: "P0", body: "never said this anywhere in the document body",
+					confidence: 0.9, quote: "this quote does not exist in the input document text",
+				}] }))],
+			] as const) {
+				const harness = createHarness([], session, {
+					projectConfig: { autoPostReviews: true },
+					userConfig: { extractFindings: true },
+					extractionRunner: runner,
+				});
+				const probe = installPublishingProbe({ inlinePatch: true });
+				await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+				const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+				expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+				harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+					generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+					tier: "heavy", rawText: "", exitCode: 143, stopReason: "timeout",
+					lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+				});
+				await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+				expect(probe.postCount()).toBe(1);
+				expect(probe.payload()?.comments).toBeUndefined();
+				expect(String(probe.payload()?.body)).toContain("No structurally parsed findings were extracted");
+				const outcome = extractionEntry(harness).at(-1)?.data.outcome;
+				expect(["timeout", "failed", "empty", "rejected"]).toContain(outcome);
+				void name;
+			}
+		});
+
+		test("spawns nothing and posts normally when extraction is disabled or fully parsed", async () => {
+			let spawned = 0;
+			const runner = async () => { spawned++; return { text: "", exitCode: 0 }; };
+			for (const userConfig of [undefined, { extractFindings: false }, { extractFindings: "yes" }] as const) {
+				const harness = createHarness([], session, {
+					projectConfig: { autoPostReviews: true },
+					...(userConfig !== undefined ? { userConfig: userConfig as Record<string, unknown> } : {}),
+					extractionRunner: runner,
+				});
+				const probe = installPublishingProbe();
+				await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+				const raw = degradedRaw([
+					"## Findings", "", "### [P2] Deterministic", "**Severity:** P2",
+					"**Rationale:** Parsed by the host.", "**Location:** `src/parser.ts:2 RIGHT`", "",
+				].join("\n"));
+				const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+				expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+				harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+					generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+					tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 0,
+					stopReason: "stop", lifecycle: "complete", attempts: [], fallbackUsed: false,
+					elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+				});
+				const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+				await harness.emit("message_end", { message });
+				harness.appendMessage(message, "no-extraction-review");
+				await harness.emit("turn_end", { message, toolResults: [] });
+				expect(probe.postCount()).toBe(1);
+			}
+			expect(spawned).toBe(0);
+		});
 	});
 
 	test("posts duplicate Findings with a hidden later P1 once as body-only COMMENT under P3 approval config", async () => {
