@@ -181,6 +181,53 @@ describe("finding extraction", () => {
 		expect(capped.findings[0]!.title).toContain("Deterministic");
 	});
 
+	test("rejects control characters in extracted title, body, and quote", () => {
+		const esc = JSON.stringify({ findings: [{ ...JSON.parse(wire()).findings[0], title: "Guard \u001b[31mempty input\u0000" }] });
+		expect(parseExtractionOutput(esc, synthesis)).toMatchObject({ ok: false });
+		const osc = JSON.stringify({ findings: [{ ...JSON.parse(wire()).findings[0], body: "text with \u001b]52;c;payload" }] });
+		expect(parseExtractionOutput(osc, synthesis)).toMatchObject({ ok: false });
+		const quoted = JSON.stringify({ findings: [{ ...JSON.parse(wire()).findings[0], quote: "parseInput\u0007crashes on empty input" }] });
+		const quotedResult = parseExtractionOutput(quoted, synthesis);
+		expect(quotedResult.ok).toBeFalse();
+	});
+
+	test("per-lane truncation markers name omitted bytes and remaining lanes", () => {
+		const bigLane = "y".repeat(400);
+		const input = buildExtractionInput("tiny synthesis", [
+			lane("fits", "small"),
+			lane("overflow", bigLane),
+			lane("dropped", "z".repeat(100)),
+		], 300);
+		expect(input.text).toContain("--- Retained lane output: fits (timed_out) ---");
+		expect(input.text).toContain("--- Retained lane output: overflow (timed_out) ---");
+		expect(input.text).toMatch(/…\[truncated \d+ bytes to fit extraction budget\]/);
+		expect(input.text).toContain("1 additional lane artifact(s) omitted");
+		expect(input.text).not.toContain("Retained lane output: dropped");
+		expect(input.truncatedLanes).toBe(1);
+		expect(input.inputBytes).toBe(Buffer.byteLength(input.text, "utf8"));
+	});
+
+	test("keeps the degraded verdict line independent of extracted blocking severity", async () => {
+		const { mergeExtractedFindings, synthesizeReviewArtifact } = await import("../lib/pr-review-markdown.ts");
+		const artifact = synthesizeReviewArtifact({
+			rawText: "## Overview\nLooks mostly safe.\n\n## Verification\nFocused tests passed.\n\n## Findings\nNo findings.\n\n## Lane completeness\nAll requested lanes completed.",
+			prNumber: 7, prTitle: "t", headSha: "a".repeat(40),
+			laneArtifacts: [{ ...lane("correctness", "The reviewer states that parseInput crashes on empty input."), lifecycle: "timed_out" }],
+			expectedLaneDescriptors: [{ key: "correctness:0", tier: "heavy", minorHygiene: false }],
+		});
+		expect(artifact.quality).not.toBe("fully_parsed");
+		const before = artifact.body;
+		const merged = mergeExtractedFindings(artifact, [{
+			title: "Fabricated blocker", body: "model-claimed", severity: "P0",
+			blocking: true, confidence_score: 0.9, code_location: null,
+		}]);
+		// The merged body shows the finding but the verdict line stays Comment.
+		expect(merged.body).toContain("### [P0] Fabricated blocker");
+		expect(merged.body).toContain("**Verdict:** Comment");
+		expect(merged.body).not.toContain("**Verdict:** Request changes");
+		expect(before).toContain("**Verdict:** Comment");
+	});
+
 	test("resolves the user-scope flag with fail-closed warnings", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-pr-review-extract-"));
 		try {

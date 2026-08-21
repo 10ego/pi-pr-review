@@ -18,6 +18,8 @@ export const MAX_EXTRACTION_INPUT_BYTES = 256 * 1024;
 export const MAX_EXTRACTION_OUTPUT_BYTES = 512 * 1024;
 export const MIN_QUOTE_CHARS = 8;
 export const MAX_EXTRACTED_FINDINGS = 50;
+/** Terminal escapes, NUL, and other C0/C1 control characters never publish (mirrors the Markdown-side guard). */
+const UNSAFE_TEXT_CONTROL = /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const MAX_TITLE_BYTES = 512;
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_PATH_BYTES = 4 * 1024;
@@ -97,9 +99,11 @@ export function normalizeForQuote(text: string): string {
 	return text.replace(/\s+/g, " ").trim();
 }
 
-function truncateWithMarker(text: string, maxBytes: number): { text: string; truncated: boolean } {
+function truncateWithMarker(text: string, maxBytes: number, omittedBytes?: number): { text: string; truncated: boolean } {
 	if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, truncated: false };
-	const marker = "\n…[truncated to fit extraction budget]";
+	const marker = omittedBytes === undefined
+		? "\n…[truncated to fit extraction budget]"
+		: `\n…[truncated ${omittedBytes} bytes to fit extraction budget]`;
 	let cut = maxBytes - Buffer.byteLength(marker, "utf8");
 	if (cut < 0) return { text: "", truncated: true };
 	// Walk back to a UTF-8 character boundary.
@@ -107,25 +111,66 @@ function truncateWithMarker(text: string, maxBytes: number): { text: string; tru
 	return { text: `${text.slice(0, cut)}${marker}`, truncated: true };
 }
 
-/** Assemble the bounded extraction payload: synthesis first, then lanes in order. */
+/** Assemble the bounded extraction payload: synthesis first, then lanes in order, each truncated with its own byte-count marker. */
 export function buildExtractionInput(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
 	maxBytes = MAX_EXTRACTION_INPUT_BYTES,
 ): ExtractionInput {
 	const sections: string[] = [];
+	let truncatedLanes = 0;
+	let remaining = maxBytes;
+	const push = (section: string): boolean => {
+		const bytes = Buffer.byteLength(section, "utf8");
+		if (bytes + 2 <= remaining) {
+			sections.push(section);
+			remaining -= bytes + 2;
+			return true;
+		}
+		return false;
+	};
 	const synthesis = rawText.trim();
-	if (synthesis) sections.push("--- Review synthesis ---\n" + synthesis);
-	const usable = lanes.filter((lane) => lane.rawText.trim());
-	for (const lane of usable) {
-		sections.push(`--- Retained lane output: ${lane.passId} (${lane.lifecycle}) ---\n${lane.rawText.trim()}`);
+	if (synthesis) {
+		const header = "--- Review synthesis ---\n";
+		const headerBytes = Buffer.byteLength(header, "utf8");
+		// Reserve the section wrapper so the joined document never exceeds the cap.
+		const fitted = truncateWithMarker(synthesis, Math.max(0, remaining - headerBytes));
+		sections.push(`${header}${fitted.text}`);
+		remaining -= Buffer.byteLength(sections[0]!, "utf8") + 2;
 	}
-	const joined = sections.length > 0 ? sections.join("\n\n") : "";
-	const first = truncateWithMarker(joined, maxBytes);
+	const usable = lanes.filter((lane) => lane.rawText.trim());
+	let lanesAdded = 0;
+	for (const lane of usable) {
+		const header = `--- Retained lane output: ${lane.passId} (${lane.lifecycle}) ---`;
+		const laneText = lane.rawText.trim();
+		if (push(`${header}\n${laneText}`)) {
+			lanesAdded++;
+			continue;
+		}
+		// This lane does not fit whole: truncate it with its omitted byte count.
+		const headerBytes = Buffer.byteLength(`${header}\n`, "utf8") + 2;
+		const budget = remaining - headerBytes;
+		const laneBytes = Buffer.byteLength(laneText, "utf8");
+		if (budget > 0) {
+			const fitted = truncateWithMarker(laneText, budget, laneBytes - budget);
+			sections.push(`${header}\n${fitted.text}`);
+			truncatedLanes++;
+		} else {
+			sections.push(`${header}\n…[omitted ${laneBytes} bytes to fit extraction budget]`);
+			truncatedLanes++;
+		}
+		remaining = 0;
+		const omitted = usable.length - lanesAdded - 1;
+		if (omitted > 0) {
+			sections.push(`…[${omitted} additional lane artifact(s) omitted to fit extraction budget]`);
+		}
+		break;
+	}
+	const joined = sections.join("\n\n");
 	return {
-		text: first.text,
-		inputBytes: Buffer.byteLength(first.text, "utf8"),
-		truncatedLanes: first.truncated ? usable.length : 0,
+		text: joined,
+		inputBytes: Buffer.byteLength(joined, "utf8"),
+		truncatedLanes,
 	};
 }
 
@@ -157,6 +202,8 @@ function normalizeFinding(wire: ExtractedFindingWire): ReviewFindingLike | undef
 	const severity = String(wire.severity ?? "");
 	if (!title || byteLength(title) > MAX_TITLE_BYTES) return undefined;
 	if (!body || byteLength(body) > MAX_BODY_BYTES) return undefined;
+	if (UNSAFE_TEXT_CONTROL.test(title) || UNSAFE_TEXT_CONTROL.test(body)) return undefined;
+	if (UNSAFE_TEXT_CONTROL.test(String(wire.quote ?? ""))) return undefined;
 	if (!new Set(["P0", "P1", "P2", "P3", "nit"]).has(severity)) return undefined;
 	const confidence = wire.confidence;
 	if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
@@ -232,7 +279,10 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 			return { ok: false, rejection: { kind: "rejected", reason: "a finding had unexpected fields" } };
 		}
 		const quote = wire.quote;
-		if (typeof quote !== "string" || !verifyQuote(quote, normalizedInput)) {
+		if (typeof quote !== "string" || UNSAFE_TEXT_CONTROL.test(quote)) {
+			return { ok: false, rejection: { kind: "rejected", reason: "a finding violated the field contract" } };
+		}
+		if (!verifyQuote(quote, normalizedInput)) {
 			rejectedProvenance++;
 			continue;
 		}

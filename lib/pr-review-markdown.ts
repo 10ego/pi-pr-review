@@ -593,13 +593,15 @@ function buildDegradedReviewBody(input: {
 	rawText: string;
 	lanes: readonly ReviewLaneArtifact[];
 	findings: readonly ReviewFindingLike[];
+	/** Findings allowed to influence the verdict line; defaults to `findings`. Extraction passes deterministic-only findings so model-claimed severity can never flip the verdict. */
+	verdictFindings?: readonly ReviewFindingLike[];
 	reason?: string;
 	/** Host-registered dispatch count for exact-coverage disclosure. */
 	expectedLaneCount?: number;
 	/** Whether retained lanes cover every expected dispatch (host-computed). */
 	exactCoverage?: boolean;
 }): string {
-	const blocking = input.findings.some((finding) => finding.severity === "P0" || finding.severity === "P1");
+	const blocking = (input.verdictFindings ?? input.findings).some((finding) => finding.severity === "P0" || finding.severity === "P1");
 	const verdict = blocking ? "Request changes" : "Comment";
 	const reason = input.reason?.trim();
 	const lines: string[] = [
@@ -883,10 +885,14 @@ export function mergeExtractedFindings(
 ): ReviewSynthesisArtifact {
 	if (findings.length === 0) return artifact;
 	const merged = [...findings];
+	// The verdict line is derived from deterministically parsed findings only.
+	// Extracted (model-claimed) severity is display-only and can never flip it.
+	const deterministicFindings = artifact.review.findings ?? [];
 	const body = buildDegradedReviewBody({
 		rawText: artifact.rawText,
 		lanes: artifact.laneArtifacts,
 		findings: merged,
+		verdictFindings: deterministicFindings,
 		expectedLaneCount: artifact.expectedLaneCount,
 		exactCoverage: artifact.expectedLaneCount === 0 ||
 			(artifact.laneArtifacts.length === artifact.expectedLaneCount &&
