@@ -508,13 +508,13 @@ export default function registerReviewTable(
 			readonly replacedRecord?: CompletedReviewRecord;
 			readonly session?: CompletedReviewSessionIdentity;
 			/** Extraction telemetry emitted after the publish result is known. */
-			readonly extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number };
+			readonly extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string };
 		}
 		| { readonly error: string };
 	let pendingCompletion: PendingCompletion | undefined;
 	interface PendingExtraction {
 		readonly lease: { generation: number; signal: AbortSignal };
-		readonly promise: Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean }>;
+		readonly promise: Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean; effectiveModel?: string }>;
 		readonly inputText: string;
 		readonly inputBytes: number;
 		readonly startedAt: number;
@@ -536,15 +536,17 @@ export default function registerReviewTable(
 	 */	const settlePendingExtraction = async (
 		deferred: PendingExtraction,
 		ctx: ExtensionContext,
-	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number } } | undefined> => {
-		const elapsedMs = Date.now() - deferred.startedAt;
-		const recordOutcome = (outcome: string, counts?: ExtractionCounts) => {
+	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string } } | undefined> => {
+		const elapsedFromStart = () => Date.now() - deferred.startedAt;
+		let elapsedMs = elapsedFromStart();
+		const recordOutcome = (outcome: string, counts?: ExtractionCounts, effectiveModel?: string) => {
 			try {
 				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 					outcome,
 					...(counts ? { counts } : {}),
 					inputBytes: deferred.inputBytes,
 					elapsedMs,
+					...(effectiveModel ? { effectiveModel } : {}),
 				});
 			} catch {
 				// Telemetry is best-effort and must never affect the review.
@@ -559,25 +561,34 @@ export default function registerReviewTable(
 		let result: Awaited<PendingExtraction["promise"]>;
 		try {
 			result = await deferred.promise;
-		} catch (error) {
+		} catch {
 			recordOutcome("failed");
 			return { artifact: deferred.artifact };
 		}
+		// Include the awaited child runtime in the recorded overhead.
+		elapsedMs = elapsedFromStart();
+		// Re-check ownership after the suspension: a replacement, cancellation,
+		// or session switch that landed while awaiting must not have this review
+		// consume the successor's invocation, publish, or revoke its binding.
+		if (!loopCoordinator.isLeaseActive(deferred.lease, ctx)) {
+			recordOutcome("aborted");
+			return undefined;
+		}
 		if (result.timedOut) {
-			recordOutcome("timeout");
+			recordOutcome("timeout", undefined, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		if (result.exitCode !== 0 || !result.text.trim()) {
-			recordOutcome(result.errorMessage ? "failed" : "empty");
+			recordOutcome(result.errorMessage ? "failed" : "empty", undefined, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		const parsed = parseExtractionOutput(result.text, deferred.inputText);
 		if (!parsed.ok) {
-			recordOutcome(parsed.rejection.kind === "empty" ? "empty" : "rejected");
+			recordOutcome(parsed.rejection.kind === "empty" ? "empty" : "rejected", undefined, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		if (parsed.value.findings.length === 0) {
-			recordOutcome("empty", parsed.value.counts);
+			recordOutcome("empty", parsed.value.counts, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		const deterministic = deferred.artifact.review.findings ?? [];
@@ -593,10 +604,16 @@ export default function registerReviewTable(
 			...merged.counts,
 			findingsRejectedProvenance: parsed.value.counts.findingsRejectedProvenance,
 		};
-		recordOutcome("merged", counts);
+		recordOutcome("merged", counts, result.effectiveModel);
 		return {
 			artifact: mergedArtifact,
-			extraction: { outcome: "merged", counts, inputBytes: deferred.inputBytes, elapsedMs },
+			extraction: {
+				outcome: "merged",
+				counts,
+				inputBytes: deferred.inputBytes,
+				elapsedMs,
+				...(result.effectiveModel ? { effectiveModel: result.effectiveModel } : {}),
+			},
 		};
 	};
 
@@ -734,6 +751,10 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
+		// A pending extraction belongs to the revoked loop; its child is aborted
+		// through the lease signal. Dropping it here prevents a stale deferral
+		// from suppressing the completion of a later, unrelated review.
+		pendingExtraction = undefined;
 		telemetryTracker.clear();
 	};
 

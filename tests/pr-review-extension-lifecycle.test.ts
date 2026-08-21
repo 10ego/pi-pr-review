@@ -1001,6 +1001,19 @@ describe("completed review extension lifecycle", () => {
 			await harness.emit("turn_end", { message, toolResults: [] });
 		}
 
+		/** Register and retain an incomplete lane so the artifact is degraded and extraction is eligible. */
+		async function retainTimedOutLane(harness: Harness, message?: any) {
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+			harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+				generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+				tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 143,
+				stopReason: "timeout", lifecycle: "timed_out", attempts: [], fallbackUsed: false,
+				elapsedMs: 44_000, toolElapsedMs: 0, toolCallCount: 0,
+			});
+			if (message) await harness.emit("message_end", { message });
+		}
+
 		const runExtraction = (findingsText: string, overrides: Record<string, unknown> = {}) =>
 			async () => ({ text: findingsText, exitCode: 0, ...overrides });
 
@@ -1082,6 +1095,86 @@ describe("completed review extension lifecycle", () => {
 				expect(["timeout", "failed", "empty", "rejected"]).toContain(outcome);
 				void name;
 			}
+		});
+
+		test("a replacement during the awaited extraction publishes nothing and never revokes the successor", async () => {
+			let releaseExtraction!: () => void;
+			const gatedRunner = async () => {
+				await new Promise<void>((resolve) => { releaseExtraction = resolve; });
+				return { text: "", exitCode: 0 };
+			};
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: gatedRunner,
+			});
+			const firstProbe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const raw = noFindingsRaw;
+			const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+			await retainTimedOutLane(harness);
+			const settlement = (async () => {
+				await harness.emit("message_end", { message });
+				await harness.emit("turn_end", { message, toolResults: [] });
+			})();
+			// Replacement lands while the settlement is suspended awaiting the child.
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			releaseExtraction();
+			await settlement;
+			// The replaced review must not publish, and the replacement loop must
+			// keep a usable lease (its binding was not consumed or revoked).
+			expect(firstProbe.postCount()).toBe(0);
+			const successorLease = harness.loopCoordinator.acquire(harness.ctx);
+			expect(successorLease?.signal.aborted).toBeFalse();
+			const outcome = extractionEntry(harness).at(-1)?.data.outcome;
+			expect(outcome).toBe("aborted");
+		});
+
+		test("clears a stale pending extraction on loop revocation so later reviews complete normally", async () => {
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: async () => ({ text: "", exitCode: 0 }),
+			});
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+			// message_end defers completion behind extraction; the session then
+			// switches before any turn_end can settle it.
+			await retainTimedOutLane(harness, message);
+			await harness.emit("session_before_switch", {});
+			// A fresh single-turn review must complete, cache, and publish normally.
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const second = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+			await harness.emit("message_end", { message: second });
+			harness.appendMessage(second, "post-switch-review");
+			await harness.emit("turn_end", { message: second, toolResults: [] });
+			expect(probe.postCount()).toBe(1);
+		});
+
+		test("keeps extracted P0 severity display-only in the published degraded body", async () => {
+			const findingsJson = JSON.stringify({ findings: [{
+				title: "Claimed blocker", severity: "P0",
+				body: "The reviewer states that parseInput crashes on empty input.",
+				confidence: 0.9,
+				quote: "parseInput crashes on empty input",
+			}] });
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: async () => ({ text: findingsJson, exitCode: 0 }),
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+			await retainTimedOutLane(harness);
+			await degrade(harness, noFindingsRaw, message);
+			expect(probe.postCount()).toBe(1);
+			const body = String(probe.payload()?.body);
+			expect(body).toContain("### [P0] Claimed blocker");
+			expect(body).toContain("**Verdict:** Comment");
+			expect(body).not.toContain("**Verdict:** Request changes");
+			expect(probe.payload()?.event).toBe("COMMENT");
 		});
 
 		test("spawns nothing and posts normally when extraction is disabled or fully parsed", async () => {

@@ -2701,9 +2701,13 @@ export async function runFindingExtraction(
 	ctx: Pick<ExtensionContext, "cwd">,
 	lease: { generation: number; signal: AbortSignal; budget?: ReviewBudget },
 	input: string,
-): Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean }> {
+): Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean; effectiveModel?: string }> {
 	const config = loadConfig(ctx);
 	const modelSpec = config.tiers.light;
+	// With no light tier configured, the child runs on the ambient default
+	// model. The effective model is reported so the egress disclosure and
+	// Phase 2 metrics can name the provider that actually received the payload.
+	const effectiveModel = modelSpec ?? "pi default model";
 	let tmp: { dir: string; filePath: string } | undefined;
 	try {
 		const args = buildReviewBaseArgs();
@@ -2742,9 +2746,10 @@ export async function runFindingExtraction(
 			exitCode: result.exitCode,
 			...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
 			...(result.timedOut ? { timedOut: true } : {}),
+			effectiveModel,
 		};
 	} catch (error) {
-		return { text: "", exitCode: 1, errorMessage: errMessage(error) };
+		return { text: "", exitCode: 1, errorMessage: errMessage(error), effectiveModel };
 	} finally {
 		if (tmp) {
 			try {
