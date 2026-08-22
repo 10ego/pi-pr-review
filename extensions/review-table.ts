@@ -552,10 +552,14 @@ export default function registerReviewTable(
 				// Telemetry is best-effort and must never affect the review.
 			}
 		};
-		// A stale generation (replacement, cancellation, session switch) drops
-		// the merge entirely; the deterministic artifact was never completed.
 		if (!loopCoordinator.isLeaseActive(deferred.lease, ctx)) {
+			// Deadline expiry retains the same generation for deterministic
+			// degraded synthesis, so completion proceeds with the deterministic
+			// artifact. Only a genuine replacement (new generation) drops it.
 			recordOutcome("aborted");
+			if (loopCoordinator.retainedGenerationIs(deferred.lease.generation, ctx)) {
+				return { artifact: deferred.artifact };
+			}
 			return undefined;
 		}
 		let result: Awaited<PendingExtraction["promise"]>;
@@ -570,8 +574,12 @@ export default function registerReviewTable(
 		// Re-check ownership after the suspension: a replacement, cancellation,
 		// or session switch that landed while awaiting must not have this review
 		// consume the successor's invocation, publish, or revoke its binding.
+		// Same-generation deadline expiry still completes deterministically.
 		if (!loopCoordinator.isLeaseActive(deferred.lease, ctx)) {
 			recordOutcome("aborted");
+			if (loopCoordinator.retainedGenerationIs(deferred.lease.generation, ctx)) {
+				return { artifact: deferred.artifact };
+			}
 			return undefined;
 		}
 		if (result.timedOut) {
@@ -1091,7 +1099,10 @@ export default function registerReviewTable(
 		if (active && artifact && artifact.quality !== "fully_parsed") {
 			const setting = resolveExtractionSetting(getAgentDir());
 			if (setting.warning) ctx.ui.notify(setting.warning, "warning");
-			if (setting.enabled && !pendingExtraction) {
+			if (setting.enabled && !pendingExtraction && !loopCoordinator.deadlineExpired()) {
+				// acquire() must never see a deadline-expired binding: it would
+				// clear the retained invocation that degraded synthesis still
+				// needs. An expired deadline leaves no window for extraction.
 				const lease = loopCoordinator.acquire(ctx);
 				if (lease) {
 					const input = buildExtractionInput(artifact.rawText, laneArtifacts);

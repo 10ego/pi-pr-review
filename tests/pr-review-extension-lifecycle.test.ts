@@ -989,12 +989,6 @@ describe("completed review extension lifecycle", () => {
 
 		const noFindingsRaw = degradedRaw("## Findings\nNo findings.");
 
-		const retainedLane = (lease: any) => harness => {
-			void harness;
-			return lease;
-		};
-		void retainedLane;
-
 		async function degrade(harness: Harness, raw: string, message: any) {
 			await harness.emit("message_end", { message });
 			harness.appendMessage(message, "extraction-review");
@@ -1104,7 +1098,15 @@ describe("completed review extension lifecycle", () => {
 				return { text: "", exitCode: 0 };
 			};
 			const harness = createHarness([], session, {
-				projectConfig: { autoPostReviews: true },
+				projectConfig: {
+					autoPostReviews: true,
+					deadlines: {
+						attemptMs: { light: 30_000, medium: 30_000, heavy: 30_000 },
+						fallbackAttemptMs: 30_000, batchMs: 90_000, synthesisMs: 10_000,
+						totalMs: 180_000, terminationGraceMs: 100, cleanupReserveMs: 1_000,
+						minimumFallbackMs: 10_000,
+					},
+				},
 				userConfig: { extractFindings: true },
 				extractionRunner: gatedRunner,
 			});
@@ -1119,7 +1121,11 @@ describe("completed review extension lifecycle", () => {
 			})();
 			// Replacement lands while the settlement is suspended awaiting the child.
 			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
-			releaseExtraction();
+			try {
+				await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			} finally {
+				releaseExtraction();
+			}
 			await settlement;
 			// The replaced review must not publish, and the replacement loop must
 			// keep a usable lease (its binding was not consumed or revoked).
@@ -1128,7 +1134,7 @@ describe("completed review extension lifecycle", () => {
 			expect(successorLease?.signal.aborted).toBeFalse();
 			const outcome = extractionEntry(harness).at(-1)?.data.outcome;
 			expect(outcome).toBe("aborted");
-		});
+		}, 30_000);
 
 		test("clears a stale pending extraction on loop revocation so later reviews complete normally", async () => {
 			const harness = createHarness([], session, {
@@ -1151,6 +1157,77 @@ describe("completed review extension lifecycle", () => {
 			await harness.emit("turn_end", { message: second, toolResults: [] });
 			expect(probe.postCount()).toBe(1);
 		});
+
+		test("a deadline-expired binding is never cleared by the extraction start", async () => {
+			const harness = createHarness([], session, {
+				projectConfig: {
+					autoPostReviews: true,
+					deadlines: {
+						attemptMs: { light: 30_000, medium: 30_000, heavy: 30_000 },
+						fallbackAttemptMs: 30_000, batchMs: 90_000, synthesisMs: 10_000,
+						totalMs: 180_000, terminationGraceMs: 100, cleanupReserveMs: 1_000,
+						minimumFallbackMs: 10_000,
+					},
+				},
+				userConfig: { extractFindings: true },
+				extractionRunner: async () => ({ text: "", exitCode: 0 }),
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			await retainTimedOutLane(harness);
+			// Expire the synthesis cap while the binding stays retained.
+			harness.loopCoordinator.beginSynthesis(harness.loopCoordinator.acquire(harness.ctx)!.generation, harness.ctx);
+			await new Promise((resolve) => setTimeout(resolve, 10_600));
+			expect(harness.loopCoordinator.deadlineExpired()).toBeTrue();
+			const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+			await degrade(harness, noFindingsRaw, message);
+			// The retained invocation survived message_end and still published
+			// the deterministic degraded artifact.
+			expect(probe.postCount()).toBe(1);
+			expect(harness.branch.findLast((entry) => entry.customType === "pr-review-completed")).toBeDefined();
+		}, 30_000);
+
+		test("same-generation deadline expiry during the awaited extraction completes deterministically", async () => {
+			let releaseExtraction!: () => void;
+			const gatedRunner = async () => {
+				await new Promise<void>((resolve) => { releaseExtraction = resolve; });
+				return { text: "", exitCode: 0, timedOut: true };
+			};
+			const harness = createHarness([], session, {
+				projectConfig: {
+					autoPostReviews: true,
+					deadlines: {
+						attemptMs: { light: 30_000, medium: 30_000, heavy: 30_000 },
+						fallbackAttemptMs: 30_000, batchMs: 90_000, synthesisMs: 10_000,
+						totalMs: 180_000, terminationGraceMs: 100, cleanupReserveMs: 1_000,
+						minimumFallbackMs: 10_000,
+					},
+				},
+				userConfig: { extractFindings: true },
+				extractionRunner: gatedRunner,
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			await retainTimedOutLane(harness);
+			const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+			const settlement = (async () => {
+				await harness.emit("message_end", { message });
+				await harness.emit("turn_end", { message, toolResults: [] });
+			})();
+			// The total deadline fires while the settlement awaits the child.
+			harness.loopCoordinator.beginSynthesis(harness.loopCoordinator.acquire(harness.ctx)!.generation, harness.ctx);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 10_600));
+				expect(harness.loopCoordinator.deadlineExpired()).toBeTrue();
+			} finally {
+				releaseExtraction();
+			}
+			await settlement;
+			// The deterministic degraded artifact still published.
+			expect(probe.postCount()).toBe(1);
+			const outcome = extractionEntry(harness).at(-1)?.data.outcome;
+			expect(outcome).toBe("aborted");
+		}, 30_000);
 
 		test("keeps extracted P0 severity display-only in the published degraded body", async () => {
 			const findingsJson = JSON.stringify({ findings: [{

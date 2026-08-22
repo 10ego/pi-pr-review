@@ -2738,7 +2738,8 @@ export async function runFindingExtraction(
 			},
 		);
 		// Output blast-radius bound: reject oversized documents before parsing.
-		if (result.text.length > MAX_EXTRACTION_OUTPUT_BYTES) {
+		// Measured in UTF-8 bytes to match the parser's own budget.
+		if (Buffer.byteLength(result.text, "utf8") > MAX_EXTRACTION_OUTPUT_BYTES) {
 			return { text: "", exitCode: result.exitCode || 1, errorMessage: "extraction output exceeded the size cap" };
 		}
 		return {
