@@ -189,7 +189,11 @@ function safeRelativePath(value: string): boolean {
 /** Verify a verbatim quote against the normalized input. */
 export function verifyQuote(quote: string, normalizedInput: string): boolean {
 	if (!quote || quote.length < MIN_QUOTE_CHARS || byteLength(quote) > MAX_QUOTE_BYTES) return false;
-	return normalizedInput.includes(normalizeForQuote(quote));
+	const normalized = normalizeForQuote(quote);
+	// Whitespace-only or control-heavy quotes normalize away; the normalized
+	// form must itself clear the minimum length before it can match.
+	if (normalized.length < MIN_QUOTE_CHARS) return false;
+	return normalizedInput.includes(normalized);
 }
 
 function deriveBlocking(severity: string): boolean {
@@ -197,8 +201,10 @@ function deriveBlocking(severity: string): boolean {
 }
 
 function normalizeFinding(wire: ExtractedFindingWire): ReviewFindingLike | undefined {
-	const title = String(wire.title ?? "").trim();
-	const body = String(wire.body ?? "").trim();
+	// Non-string fields are contract violations, not values to stringify.
+	if (typeof wire.title !== "string" || typeof wire.body !== "string") return undefined;
+	const title = wire.title.trim();
+	const body = wire.body.trim();
 	const severity = String(wire.severity ?? "");
 	if (!title || byteLength(title) > MAX_TITLE_BYTES) return undefined;
 	if (!body || byteLength(body) > MAX_BODY_BYTES) return undefined;
@@ -263,6 +269,10 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 	if (!Array.isArray(record.findings)) {
 		return { ok: false, rejection: { kind: "rejected", reason: "findings was not an array" } };
 	}
+	// Bound the scan before any per-record provenance work.
+	if (record.findings.length > MAX_EXTRACTED_FINDINGS) {
+		return { ok: false, rejection: { kind: "rejected", reason: `more than ${MAX_EXTRACTED_FINDINGS} findings` } };
+	}
 	const normalizedInput = normalizeForQuote(input);
 	const findings: ReviewFindingLike[] = [];
 	let rejectedProvenance = 0;
@@ -307,9 +317,6 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 			return { ok: false, rejection: { kind: "rejected", reason: "a finding violated the field contract" } };
 		}
 		findings.push(finding);
-	}
-	if (findings.length > MAX_EXTRACTED_FINDINGS) {
-		return { ok: false, rejection: { kind: "rejected", reason: `more than ${MAX_EXTRACTED_FINDINGS} findings` } };
 	}
 	return {
 		ok: true,
