@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/10ego/pi-pr-review/compare/v1.13.0...v1.14.0) (2026-08-22)
+
+
+### Features
+
+* **extract:** add model-assisted finding extraction for degraded reviews ([#73](https://github.com/10ego/pi-pr-review/issues/73)) ([e76ffab](https://github.com/10ego/pi-pr-review/commit/e76ffab827a97e08af1b80600bc69fc6f49451b1))
+
 ## [1.13.0](https://github.com/10ego/pi-pr-review/compare/v1.12.3...v1.13.0) (2026-08-20)
 
 
