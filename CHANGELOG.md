@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.1](https://github.com/10ego/pi-pr-review/compare/v1.14.0...v1.14.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **extract:** harden provenance and retained-binding handling from sample review ([#75](https://github.com/10ego/pi-pr-review/issues/75)) ([ff5206a](https://github.com/10ego/pi-pr-review/commit/ff5206ad94ec0a901c1a8398149d31445d49874b))
+
 ## [1.14.0](https://github.com/10ego/pi-pr-review/compare/v1.13.0...v1.14.0) (2026-08-22)
 
 
