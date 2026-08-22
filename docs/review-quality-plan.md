@@ -1,6 +1,7 @@
 # Review quality plan: model-assisted finding extraction
 
-Status: proposed (Phase 0, revision 2 — incorporates the PR #71 design review:
+Status: Phase 1 implemented and shipped (1.14.0); this document now tracks the
+remaining phases. Revision 2 incorporates the PR #71 design review:
 schema alignment, lifecycle placement, egress and provenance hardening, merge
 cap, byte limits, telemetry timing, and mode-model rollout concerns).
 
