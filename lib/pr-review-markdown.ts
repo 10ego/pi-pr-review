@@ -593,13 +593,15 @@ function buildDegradedReviewBody(input: {
 	rawText: string;
 	lanes: readonly ReviewLaneArtifact[];
 	findings: readonly ReviewFindingLike[];
+	/** Findings allowed to influence the verdict line; defaults to `findings`. Extraction passes deterministic-only findings so model-claimed severity can never flip the verdict. */
+	verdictFindings?: readonly ReviewFindingLike[];
 	reason?: string;
 	/** Host-registered dispatch count for exact-coverage disclosure. */
 	expectedLaneCount?: number;
 	/** Whether retained lanes cover every expected dispatch (host-computed). */
 	exactCoverage?: boolean;
 }): string {
-	const blocking = input.findings.some((finding) => finding.severity === "P0" || finding.severity === "P1");
+	const blocking = (input.verdictFindings ?? input.findings).some((finding) => finding.severity === "P0" || finding.severity === "P1");
 	const verdict = blocking ? "Request changes" : "Comment";
 	const reason = input.reason?.trim();
 	const lines: string[] = [
@@ -867,5 +869,52 @@ export function synthesizeReviewArtifact(input: {
 		// dispatch; a nonempty subset cannot establish requested coverage.
 		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
 		diagnostics: Object.freeze(degradationReasons),
+	});
+}
+
+/**
+ * Merge host-validated extracted findings into a degraded artifact. The
+ * deterministic verdict is preserved exactly: extracted severity never flips
+ * the verdict line, eligibility stays false, and the rebuilt body keeps every
+ * host label plus the retained evidence with the merged finding set rendered
+ * through the same deterministic builder.
+ */
+export function mergeExtractedFindings(
+	artifact: ReviewSynthesisArtifact,
+	findings: readonly ReviewFindingLike[],
+): ReviewSynthesisArtifact {
+	if (findings.length === 0) return artifact;
+	const merged = [...findings];
+	// The verdict line is derived from deterministically parsed findings only.
+	// Extracted (model-claimed) severity is display-only and can never flip it.
+	const deterministicFindings = artifact.review.findings ?? [];
+	const body = buildDegradedReviewBody({
+		rawText: artifact.rawText,
+		lanes: artifact.laneArtifacts,
+		findings: merged,
+		verdictFindings: deterministicFindings,
+		expectedLaneCount: artifact.expectedLaneCount,
+		exactCoverage: artifact.expectedLaneCount === 0 ||
+			(artifact.laneArtifacts.length === artifact.expectedLaneCount &&
+				new Set(artifact.laneArtifacts.map((lane) => lane.key)).size === artifact.expectedLaneCount &&
+				new Set(artifact.expectedLaneDescriptors.map((lane) => lane.key)).size === artifact.expectedLaneCount &&
+				artifact.laneArtifacts.every((lane) => artifact.expectedLaneDescriptors.some((expected) =>
+					expected.key === lane.key && expected.tier === lane.tier &&
+					expected.minorHygiene === !!lane.minorHygiene))),
+		reason: artifact.diagnostics[0],
+	});
+	return Object.freeze({
+		...artifact,
+		body,
+		// The deterministic verdict (already derived only from deterministically
+		// parsed findings) is authoritative; only the findings set grows.
+		review: { ...artifact.review, findings: merged },
+		mergeApprovalEligible: false,
+		diagnostics: Object.freeze([
+			...artifact.diagnostics,
+			...merged.some((finding) => finding.severity === "P0" || finding.severity === "P1")
+				? ["extracted P0/P1 severity is model-claimed (unverified) and did not change the verdict"]
+				: [],
+		]),
 	});
 }

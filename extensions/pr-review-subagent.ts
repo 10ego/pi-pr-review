@@ -56,6 +56,7 @@ import {
 } from "../lib/pr-review-artifacts.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
+import { buildExtractionSystemPrompt, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
 	combineAbortSignals,
@@ -2688,4 +2689,74 @@ async function showConfigMenu(
 		return "fallback";
 	}
 	return "closed";
+}
+
+/**
+ * Run the Phase 1 finding-extraction child: one bounded light-tier no-tools
+ * subprocess bound to the review lease. The lease abort signal terminates the
+ * child on replacement, cancellation, session switch, or deadline expiry, and
+ * the typed deadline bounds the await inside the re-armed synthesis window.
+ */
+export async function runFindingExtraction(
+	ctx: Pick<ExtensionContext, "cwd">,
+	lease: { generation: number; signal: AbortSignal; budget?: ReviewBudget },
+	input: string,
+): Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean; effectiveModel?: string }> {
+	const config = loadConfig(ctx);
+	const modelSpec = config.tiers.light;
+	// With no light tier configured, the child runs on the ambient default
+	// model. The effective model is reported so the egress disclosure and
+	// Phase 2 metrics can name the provider that actually received the payload.
+	const effectiveModel = modelSpec ?? "pi default model";
+	let tmp: { dir: string; filePath: string } | undefined;
+	try {
+		const args = buildReviewBaseArgs();
+		if (modelSpec) args.push("--model", modelSpec);
+		appendTierThinkingArgs(args, modelSpec, config.thinkingLevels.light);
+		args.push("--no-tools", "--no-approve");
+		tmp = await writeTempPrompt("light", buildExtractionSystemPrompt());
+		args.push("--append-system-prompt", tmp.filePath);
+		const startedAt = monotonicNow();
+		const budget = lease.budget;
+		const reserve = budget ? budget.config.terminationGraceMs + budget.config.cleanupReserveMs : 0;
+		const windowMs = budget
+			? Math.min(120_000, budget.config.synthesisMs, Math.max(1, budget.totalDeadlineMs - reserve - startedAt))
+			: 120_000;
+		const invocation = getPiInvocation(args);
+		const result = await runReviewSubprocess(
+			invocation.command,
+			invocation.args,
+			ctx.cwd,
+			input,
+			lease.signal,
+			undefined,
+			undefined,
+			{
+				deadlineMs: startedAt + Math.max(1, windowMs),
+				terminationGraceMs: budget?.config.terminationGraceMs ?? 5_000,
+				cleanupReserveMs: budget?.config.cleanupReserveMs ?? 5_000,
+			},
+		);
+		// Output blast-radius bound: reject oversized documents before parsing.
+		if (result.text.length > MAX_EXTRACTION_OUTPUT_BYTES) {
+			return { text: "", exitCode: result.exitCode || 1, errorMessage: "extraction output exceeded the size cap" };
+		}
+		return {
+			text: result.text,
+			exitCode: result.exitCode,
+			...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+			...(result.timedOut ? { timedOut: true } : {}),
+			effectiveModel,
+		};
+	} catch (error) {
+		return { text: "", exitCode: 1, errorMessage: errMessage(error), effectiveModel };
+	} finally {
+		if (tmp) {
+			try {
+				fs.rmSync(tmp.dir, { recursive: true, force: true });
+			} catch {
+				/* ignore */
+			}
+		}
+	}
 }

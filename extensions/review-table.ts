@@ -35,7 +35,9 @@ import {
 	resolveAllowStaleApprovalsSetting,
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
+	canonicalReviewSnapshot,
 	resolveApproveMaxPriorityLevelSetting,
+	type PublishResult,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
 	restoreCompletedReviewBranch,
@@ -47,9 +49,19 @@ import {
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
 } from "../lib/pr-review-publish.ts";
-import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
+import {
+	buildExtractionInput,
+	EXTRACTION_ENTRY_TYPE,
+	mergeFindings,
+	parseExtractionOutput,
+	resolveExtractionSetting,
+	type FindingExtractionRunner,
+	type ExtractionCounts,
+} from "../lib/pr-review-extract.ts";
+import { runFindingExtraction } from "./pr-review-subagent.ts";
 import {
 	REVIEW_LOOP_TOOL_NAMES,
 	ReviewLoopCoordinator,
@@ -415,15 +427,15 @@ async function publishCompletedReview(
 	record: CompletedReviewRecord,
 	origin: ReviewPublicationOrigin,
 	ctx: ExtensionContext,
-): Promise<void> {
+): Promise<PublishResult | undefined> {
 	const decision = origin.kind === "frozen-invocation"
 		? decideReviewPublication(record.invocation)
 		: undefined;
 	if (decision?.error) {
 		ctx.ui.notify(`PR review was not posted: ${decision.error}`, "error");
-		return;
+		return undefined;
 	}
-	if (decision && !decision.publish) return;
+	if (decision && !decision.publish) return undefined;
 	const explicitStale = origin.kind === "direct-request" ||
 		(origin.kind === "publish-command" && origin.stalePolicy === "allow-stale");
 	const allowStale = explicitStale || record.invocation.allowStalePublish;
@@ -436,7 +448,7 @@ async function publishCompletedReview(
 	const headSha = record.review.pr?.head_sha;
 	if (typeof headSha !== "string") {
 		ctx.ui.notify("PR review was not posted: cached review artifact is missing pr.head_sha", "error");
-		return;
+		return undefined;
 	}
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
@@ -465,12 +477,14 @@ async function publishCompletedReview(
 				(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete")),
 	});
 	notifyPublishResult(result, source, ctx);
+	return result;
 }
 
 export default function registerReviewTable(
 	pi: ExtensionAPI,
 	loopCoordinator = new ReviewLoopCoordinator(pi),
 	selfReviewCoordinator = new SelfReviewPermitCoordinator(pi, () => !!loopCoordinator.peek()),
+	extractionRunner: FindingExtractionRunner = runFindingExtraction,
 ) {
 	const completedReviews = new CompletedReviewCache();
 	const sessionIdentity = (ctx: ExtensionContext): CompletedReviewSessionIdentity | undefined => {
@@ -493,14 +507,116 @@ export default function registerReviewTable(
 			readonly record: CompletedReviewRecord;
 			readonly replacedRecord?: CompletedReviewRecord;
 			readonly session?: CompletedReviewSessionIdentity;
+			/** Extraction telemetry emitted after the publish result is known. */
+			readonly extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string };
 		}
 		| { readonly error: string };
 	let pendingCompletion: PendingCompletion | undefined;
+	interface PendingExtraction {
+		readonly lease: { generation: number; signal: AbortSignal };
+		readonly promise: Promise<{ text: string; exitCode: number; errorMessage?: string; timedOut?: boolean; effectiveModel?: string }>;
+		readonly inputText: string;
+		readonly inputBytes: number;
+		readonly startedAt: number;
+		readonly parsed: ReturnType<typeof parsePublishableReview>;
+		readonly artifact: ReviewSynthesisArtifact;
+		readonly invocation: ReviewInvocation | undefined;
+	}
+	let pendingExtraction: PendingExtraction | undefined;
 	const completionError = (invocation: ReviewInvocation, failure?: string): PendingCompletion | undefined => {
 		const decision = decideReviewPublication(invocation);
 		const error = decision.error ?? (decision.publish ? failure : undefined);
 		return error ? { error } : undefined;
 	};
+	/**
+	 * Await a deferred extraction inside the re-armed synthesis window and
+	 * produce the artifact to complete with. Lease revocation, child failure,
+	 * malformed output, or a failed publication round-trip all keep the
+	 * deterministic artifact; extraction can never block or fail publication.
+	 */	const settlePendingExtraction = async (
+		deferred: PendingExtraction,
+		ctx: ExtensionContext,
+	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string } } | undefined> => {
+		const elapsedFromStart = () => Date.now() - deferred.startedAt;
+		let elapsedMs = elapsedFromStart();
+		const recordOutcome = (outcome: string, counts?: ExtractionCounts, effectiveModel?: string) => {
+			try {
+				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
+					outcome,
+					...(counts ? { counts } : {}),
+					inputBytes: deferred.inputBytes,
+					elapsedMs,
+					...(effectiveModel ? { effectiveModel } : {}),
+				});
+			} catch {
+				// Telemetry is best-effort and must never affect the review.
+			}
+		};
+		// A stale generation (replacement, cancellation, session switch) drops
+		// the merge entirely; the deterministic artifact was never completed.
+		if (!loopCoordinator.isLeaseActive(deferred.lease, ctx)) {
+			recordOutcome("aborted");
+			return undefined;
+		}
+		let result: Awaited<PendingExtraction["promise"]>;
+		try {
+			result = await deferred.promise;
+		} catch {
+			recordOutcome("failed");
+			return { artifact: deferred.artifact };
+		}
+		// Include the awaited child runtime in the recorded overhead.
+		elapsedMs = elapsedFromStart();
+		// Re-check ownership after the suspension: a replacement, cancellation,
+		// or session switch that landed while awaiting must not have this review
+		// consume the successor's invocation, publish, or revoke its binding.
+		if (!loopCoordinator.isLeaseActive(deferred.lease, ctx)) {
+			recordOutcome("aborted");
+			return undefined;
+		}
+		if (result.timedOut) {
+			recordOutcome("timeout", undefined, result.effectiveModel);
+			return { artifact: deferred.artifact };
+		}
+		if (result.exitCode !== 0 || !result.text.trim()) {
+			recordOutcome(result.errorMessage ? "failed" : "empty", undefined, result.effectiveModel);
+			return { artifact: deferred.artifact };
+		}
+		const parsed = parseExtractionOutput(result.text, deferred.inputText);
+		if (!parsed.ok) {
+			recordOutcome(parsed.rejection.kind === "empty" ? "empty" : "rejected", undefined, result.effectiveModel);
+			return { artifact: deferred.artifact };
+		}
+		if (parsed.value.findings.length === 0) {
+			recordOutcome("empty", parsed.value.counts, result.effectiveModel);
+			return { artifact: deferred.artifact };
+		}
+		const deterministic = deferred.artifact.review.findings ?? [];
+		const merged = mergeFindings(deterministic, parsed.value.findings);
+		const mergedArtifact = mergeExtractedFindings(deferred.artifact, merged.findings);
+		// The merged review must survive the same publication validation as any
+		// other review before the deterministic artifact is replaced.
+		if (!canonicalReviewSnapshot(mergedArtifact.review).review) {
+			recordOutcome("rejected", merged.counts);
+			return { artifact: deferred.artifact };
+		}
+		const counts = {
+			...merged.counts,
+			findingsRejectedProvenance: parsed.value.counts.findingsRejectedProvenance,
+		};
+		recordOutcome("merged", counts, result.effectiveModel);
+		return {
+			artifact: mergedArtifact,
+			extraction: {
+				outcome: "merged",
+				counts,
+				inputBytes: deferred.inputBytes,
+				elapsedMs,
+				...(result.effectiveModel ? { effectiveModel: result.effectiveModel } : {}),
+			},
+		};
+	};
+
 	const resolveCompletion = (
 		parsed: ReturnType<typeof parsePublishableReview>,
 		invocation: ReviewInvocation,
@@ -635,6 +751,10 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
+		// A pending extraction belongs to the revoked loop; its child is aborted
+		// through the lease signal. Dropping it here prevents a stale deferral
+		// from suppressing the completion of a later, unrelated review.
+		pendingExtraction = undefined;
 		telemetryTracker.clear();
 	};
 
@@ -839,6 +959,25 @@ export default function registerReviewTable(
 			generationsReadyForSynthesis.delete(generation);
 			loopCoordinator.beginSynthesis(generation, ctx);
 		}
+		if (pendingExtraction) {
+			const deferred = pendingExtraction;
+			pendingExtraction = undefined;
+			const settled = await settlePendingExtraction(deferred, ctx);
+			if (settled) {
+				const resolvedCompletion = deferred.invocation
+					? resolveCompletion({ review: settled.artifact.review } as ReturnType<typeof parsePublishableReview>, deferred.invocation, ctx, settled.artifact)
+					: undefined;
+				const invocation = loopCoordinator.consume();
+				if (invocation) {
+					persistTelemetry("terminal_response");
+					if (resolvedCompletion) {
+						pendingCompletion = settled.extraction
+							? { ...resolvedCompletion, extraction: settled.extraction }
+							: resolvedCompletion;
+					}
+				}
+			}
+		}
 		const pending = pendingCompletion;
 		pendingCompletion = undefined;
 		if (!pending) return;
@@ -867,7 +1006,21 @@ export default function registerReviewTable(
 				ctx.ui.notify(`Completed review cache will not survive an extension reload: ${String(error)}`, "warning");
 			}
 		}
-		await publishCompletedReview(pending.record, { kind: "frozen-invocation" }, ctx);
+		const publishResult = await publishCompletedReview(pending.record, { kind: "frozen-invocation" }, ctx);
+		if (pending.extraction) {
+			try {
+				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
+					...pending.extraction,
+					outcome: "published",
+					...(publishResult.inlineComments !== undefined ? { inlineComments: publishResult.inlineComments } : {}),
+					...(publishResult.status !== "posted" && publishResult.status !== "posted_degraded"
+						? { publishStatus: publishResult.status }
+						: {}),
+				});
+			} catch {
+				// Post-publication telemetry is best-effort.
+			}
+		}
 	});
 
 	pi.on("message_end", async (event, ctx) => {
@@ -929,14 +1082,44 @@ export default function registerReviewTable(
 		const completionInvocation = active && loopCoordinator.phase() === "confirmed"
 			? { ...active, allowNonOpen: true }
 			: active;
-		const resolvedCompletion = completionInvocation
-			? resolveCompletion(publishable!, completionInvocation, ctx, artifact)
-			: undefined;
-		// Persist timing before publication so network/write latency is never coupled to review wall time.
-		const invocation = active ? loopCoordinator.consume() : undefined;
-		if (invocation) {
-			persistTelemetry("terminal_response");
-			pendingCompletion = resolvedCompletion;
+
+		// Phase 1 finding extraction: for degraded artifacts with the user-scope
+		// opt-in, start the bounded light-tier child without awaiting it so the
+		// terminal response, rendering, and telemetry are never blocked. The
+		// merge decision is deferred to turn_end inside the re-armed synthesis
+		// window; every failure path keeps the deterministic artifact.
+		if (active && artifact && artifact.quality !== "fully_parsed") {
+			const setting = resolveExtractionSetting(getAgentDir());
+			if (setting.warning) ctx.ui.notify(setting.warning, "warning");
+			if (setting.enabled && !pendingExtraction) {
+				const lease = loopCoordinator.acquire(ctx);
+				if (lease) {
+					const input = buildExtractionInput(artifact.rawText, laneArtifacts);
+				pendingExtraction = {
+						lease,
+						promise: extractionRunner(ctx, lease, input.text),
+						inputText: input.text,
+						inputBytes: input.inputBytes,
+						startedAt: Date.now(),
+						parsed: publishable!,
+						artifact,
+						invocation: completionInvocation,
+					};
+				}
+			}
+		}
+		let resolvedCompletion: PendingCompletion | undefined;
+		let invocation: ReturnType<typeof loopCoordinator.consume> | undefined;
+		if (!pendingExtraction) {
+			resolvedCompletion = completionInvocation
+				? resolveCompletion(publishable!, completionInvocation, ctx, artifact)
+				: undefined;
+			// Persist timing before publication so network/write latency is never coupled to review wall time.
+			invocation = active ? loopCoordinator.consume() : undefined;
+			if (invocation) {
+				persistTelemetry("terminal_response");
+				pendingCompletion = resolvedCompletion;
+			}
 		}
 		const review = publishable?.review
 			? publishable.review as Review
