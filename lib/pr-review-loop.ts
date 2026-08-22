@@ -413,6 +413,21 @@ export class ReviewLoopCoordinator {
 		return this.binding?.deadlineKind !== undefined;
 	}
 
+	/**
+	 * Whether `generation` still names the deadline-expired binding that is
+	 * deliberately retained for deterministic degraded synthesis. True only for
+	 * the same session/cwd binding with an active deadline kind — never for a
+	 * replacement generation, a cleared loop, or a live lease.
+	 */
+	retainedGenerationIs(
+		generation: number,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		const binding = this.binding;
+		return !!binding && binding.generation === generation &&
+			binding.deadlineKind !== undefined && sameBinding(binding, ctx);
+	}
+
 	totalDeadlineExpired(): boolean {
 		return this.binding?.deadlineKind === "total";
 	}
