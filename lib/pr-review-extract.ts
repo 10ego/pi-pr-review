@@ -241,12 +241,22 @@ function normalizeFinding(wire: ExtractedFindingWire): ReviewFindingLike | undef
 		return { title, body, severity, blocking: deriveBlocking(severity), confidence_score: confidence, code_location: null };
 	}
 	if (typeof path !== "string" || !safeRelativePath(path)) return undefined;
+	// An explicitly claimed side must be valid regardless of the degrade path.
+	if (wire.side !== undefined && wire.side !== "LEFT" && wire.side !== "RIGHT") return undefined;
 	// A path claimed without line numbers cannot anchor a publication location
 	// (the publish contract requires side + a positive range for path-bearing
 	// locations). Degrade this one finding to summary-only rather than reject
-	// the whole record: the path stays visible in the finding text.
+	// the whole record, and keep the claimed path visible by appending it to
+	// the body so it is not silently discarded.
 	if (wire.start_line === undefined && wire.end_line === undefined) {
-		return { title, body, severity, blocking: deriveBlocking(severity), confidence_score: confidence, code_location: null };
+		return {
+			title,
+			body: `${body}\n\nLocation: ${path} (file named; no line numbers stated)`,
+			severity,
+			blocking: deriveBlocking(severity),
+			confidence_score: confidence,
+			code_location: null,
+		};
 	}
 	const start = wire.start_line;
 	const end = wire.end_line ?? start;
@@ -365,6 +375,12 @@ function dedupeKey(finding: ReviewFindingLike): string {
 	const start = location?.line_range?.start ?? 0;
 	const side = location?.side ?? "";
 	const title = normalizeForQuote(String(finding.title ?? "").replace(/^\[?(?:P0|P1|P2|P3|nit)\]?\s*/i, "")).toLowerCase();
+	// Summary-only findings carry no anchor; two distinct defects can share a
+	// title. Include a body signature so they are not wrongly collapsed.
+	if (!file && !start) {
+		const bodySignature = normalizeForQuote(String(finding.body ?? "")).toLowerCase().slice(0, 120);
+		return `${title}|${bodySignature}`;
+	}
 	return `${file}|${side}|${start}|${title}`;
 }
 

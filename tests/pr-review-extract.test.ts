@@ -74,6 +74,31 @@ describe("finding extraction", () => {
 		if (parsed.ok) expect(parsed.value.counts.findingsRejectedProvenance).toBe(1);
 	});
 
+	test("keeps the degraded path visible and rejects invalid sides before degrading", () => {
+		const degraded = parseExtractionOutput(wire({ start_line: undefined, end_line: undefined }), synthesis);
+		expect(degraded.ok).toBeTrue();
+		if (!degraded.ok) return;
+		expect(degraded.value.findings[0]!.code_location).toBeNull();
+		expect(degraded.value.findings[0]!.body).toContain("Location: src/parser.ts (file named; no line numbers stated)");
+
+		const badSide = parseExtractionOutput(wire({ side: "CENTER" }), synthesis);
+		expect(badSide.ok).toBeFalse();
+	});
+
+	test("distinct same-title summary-only findings are not collapsed by dedupe", () => {
+		const deterministic = [{
+			title: "Add coverage", body: "first distinct defect", severity: "P2", blocking: false,
+			confidence_score: 0.9, code_location: null,
+		}];
+		const extracted = [
+			{ title: "Add coverage", body: "first distinct defect", severity: "P2", blocking: false, confidence_score: 0.5, code_location: null },
+			{ title: "Add coverage", body: "second distinct defect with different body", severity: "P2", blocking: false, confidence_score: 0.5, code_location: null },
+		];
+		const merged = mergeFindings(deterministic, extracted);
+		expect(merged.findings).toHaveLength(2);
+		expect(merged.counts.findingsDeduped).toBe(1);
+	});
+
 	test("degrades a path-only location to summary-only instead of rejecting the record", () => {
 		// Observed in production run 2 (session 2026-08-23T20:56): the model
 		// emitted path + side + location_quote without line numbers for one of
@@ -239,7 +264,7 @@ describe("finding extraction", () => {
 			confidence_score: 0.9, code_location: null,
 		}];
 		const duplicate = [{
-			title: "deterministic finding", body: "extracted duplicate", severity: "P2", blocking: false,
+			title: "deterministic finding", body: "host parsed", severity: "P2", blocking: false,
 			confidence_score: 0.5, code_location: null,
 		}];
 		const merged = mergeFindings(deterministic, duplicate);
