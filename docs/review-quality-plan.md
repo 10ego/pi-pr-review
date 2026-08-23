@@ -116,8 +116,10 @@ Wire rules (validated on parse; **any violation rejects the whole record**):
 - Exactly one top-level `findings` array; `title`, `severity`, `body`,
   `confidence` (number ∈ [0,1] — normalized to `confidence_score`), and
   `quote` required; `path`/`start_line`/`end_line`/`side` optional as a group
-  (absent ⇒ location `null` ⇒ summary-only; present ⇒ `start_line`/`end_line`
-  are integers ≥ 1, `end_line ≥ start_line` when both given, `side` ∈
+  (absent ⇒ location `null` ⇒ summary-only; a path claimed without line numbers
+  degrades that one finding to summary-only rather than rejecting the record;
+  present ⇒ `start_line`/`end_line` are integers ≥ 1, `end_line ≥ start_line`
+  when both given, `side` ∈
   {`LEFT`,`RIGHT`}, `path` a repo-relative POSIX path with no `..` traversal,
   control characters, or absolute/`~` prefix, and `location_quote` required);
   `source` optional (lane pass id or `"synthesis"`, diagnostics only).

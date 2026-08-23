@@ -74,6 +74,23 @@ describe("finding extraction", () => {
 		if (parsed.ok) expect(parsed.value.counts.findingsRejectedProvenance).toBe(1);
 	});
 
+	test("degrades a path-only location to summary-only instead of rejecting the record", () => {
+		// Observed in production run 2 (session 2026-08-23T20:56): the model
+		// emitted path + side + location_quote without line numbers for one of
+		// four findings; the all-or-nothing group check rejected everything.
+		const out = JSON.stringify({ findings: [
+			JSON.parse(wire()).findings[0],
+			{ ...JSON.parse(wire()).findings[0], start_line: undefined, end_line: undefined },
+		] });
+		const parsed = parseExtractionOutput(out, synthesis);
+		expect(parsed.ok).toBeTrue();
+		if (!parsed.ok) return;
+		expect(parsed.value.findings).toHaveLength(2);
+		expect(parsed.value.findings[0]!.code_location).not.toBeNull();
+		expect(parsed.value.findings[1]!.code_location).toBeNull();
+		expect(parsed.value.counts.findingsRejectedProvenance).toBe(0);
+	});
+
 	test("recovers a bulleted lane finding the synthesis summarized away", () => {
 		// Regression fixture from the first production extraction run (PR #75,
 		// session 2026-08-23): the synthesis said "No findings." while the
