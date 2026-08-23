@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.4](https://github.com/10ego/pi-pr-review/compare/v1.14.3...v1.14.4) (2026-08-23)
+
+
+### Bug Fixes
+
+* **extract:** refine summary-only dedupe and degraded path retention ([#81](https://github.com/10ego/pi-pr-review/issues/81)) ([ced7b38](https://github.com/10ego/pi-pr-review/commit/ced7b384d70796af73b9760582a1deb439baa413))
+
 ## [1.14.3](https://github.com/10ego/pi-pr-review/compare/v1.14.2...v1.14.3) (2026-08-23)
 
 
