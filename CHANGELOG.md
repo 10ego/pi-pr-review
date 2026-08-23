@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.2](https://github.com/10ego/pi-pr-review/compare/v1.14.1...v1.14.2) (2026-08-23)
+
+
+### Bug Fixes
+
+* **extract:** scan lane evidence past the synthesis findings framing ([#77](https://github.com/10ego/pi-pr-review/issues/77)) ([dfebc36](https://github.com/10ego/pi-pr-review/commit/dfebc3632910fdde46581d4a48d236d72c7046df))
+
 ## [1.14.1](https://github.com/10ego/pi-pr-review/compare/v1.14.0...v1.14.1) (2026-08-22)
 
 
