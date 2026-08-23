@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildExtractionInput,
+	buildExtractionTask,
 	buildExtractionSystemPrompt,
 	mergeFindings,
 	MAX_EXTRACTED_FINDINGS,
@@ -52,6 +53,64 @@ describe("finding extraction", () => {
 		expect(prompt).toContain("quote");
 		expect(prompt).toContain('{"findings":[]}');
 		expect(prompt).not.toContain("tools are allowed");
+		// The synthesis's own findings section is not authoritative about what
+		// the document states (first production run missed a lane finding).
+		expect(prompt).toContain("NOT authoritative");
+		expect(prompt).toContain("any format");
+	});
+
+	test("frames the document with a host objective that lane findings must be scanned", () => {
+		const task = buildExtractionTask("DOCUMENT BODY");
+		expect(task).toContain("Objective: Extract every concrete defect finding stated anywhere in this review document, including inside the retained lane output sections.");
+		expect(task).toContain("--- Review document ---\nDOCUMENT BODY\n--- End of review document ---");
+		expect(task).toContain("does not mean the document states no findings");
+		// The framing is host-authored and never part of the quote-verification
+		// surface: quoting it must fail against the document.
+		const framed = buildExtractionTask("real document text here that is long enough");
+		const parsed = parseExtractionOutput(JSON.stringify({
+			findings: [{ title: "t", severity: "P2", body: "b", confidence: 0.5, quote: "Extract every concrete defect finding stated anywhere" }],
+		}), framed.replace("Objective: Extract every concrete defect finding stated anywhere in this review document, including inside the retained lane output sections.\n", ""));
+		expect(parsed.ok).toBeTrue();
+		if (parsed.ok) expect(parsed.value.counts.findingsRejectedProvenance).toBe(1);
+	});
+
+	test("recovers a bulleted lane finding the synthesis summarized away", () => {
+		// Regression fixture from the first production extraction run (PR #75,
+		// session 2026-08-23): the synthesis said "No findings." while the
+		// performance-resources lane stated a P2 in bulleted field format.
+		const laneRaw = [
+			"- **title:** [P2] Replace real 10-second deadline waits with controlled timers",
+			"  **severity:** P2  ",
+			"  **why:** Both added tests sleep for 10.6 seconds and execute serially under Bun. A targeted run took 21.87 seconds, adding roughly 21 seconds to every full test run.",
+			"  **location:** tests/pr-review-extension-lifecycle.test.ts:1180-1221  ",
+			"  **side:** RIGHT  ",
+			"  **confidence:** 0.99",
+		].join("\n");
+		const synthesis = "# PR Review\n\n**Verdict:** approve\n\n## Findings\nNo findings.\n\n## Lane completeness\nAll requested lanes completed.";
+		const input = buildExtractionInput(synthesis, [lane("performance-resources", laneRaw, "partial")]);
+		const extracted = JSON.stringify({ findings: [{
+			title: "[P2] Replace real 10-second deadline waits with controlled timers",
+			severity: "P2",
+			body: "Both added tests sleep for 10.6 seconds and execute serially under Bun. A targeted run took 21.87 seconds, adding roughly 21 seconds to every full test run.",
+			confidence: 0.99,
+			quote: "Both added tests sleep for 10.6 seconds and execute serially under Bun.",
+			path: "tests/pr-review-extension-lifecycle.test.ts",
+			start_line: 1180,
+			end_line: 1221,
+			side: "RIGHT",
+			location_quote: "**location:** tests/pr-review-extension-lifecycle.test.ts:1180-1221",
+			source: "performance-resources",
+		}] });
+		const parsed = parseExtractionOutput(extracted, input.text);
+		expect(parsed.ok).toBeTrue();
+		if (!parsed.ok) return;
+		expect(parsed.value.findings).toHaveLength(1);
+		expect(parsed.value.findings[0]!.code_location).toMatchObject({
+			absolute_file_path: "tests/pr-review-extension-lifecycle.test.ts",
+			line_range: { start: 1180, end: 1221 },
+			side: "RIGHT",
+		});
+		expect(parsed.value.counts.findingsRejectedProvenance).toBe(0);
 	});
 
 	test("builds the bounded input synthesis-first with lane markers and truncation", () => {
