@@ -56,7 +56,7 @@ import {
 } from "../lib/pr-review-artifacts.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
-import { buildExtractionSystemPrompt, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
+import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
 import {
 	combineAbortSignals,
@@ -2727,7 +2727,7 @@ export async function runFindingExtraction(
 			invocation.command,
 			invocation.args,
 			ctx.cwd,
-			input,
+			buildExtractionTask(input),
 			lease.signal,
 			undefined,
 			undefined,

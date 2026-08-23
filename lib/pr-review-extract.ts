@@ -89,6 +89,8 @@ export function buildExtractionSystemPrompt(): string {
 		"When the document names a file for the finding, also include: path (repo-relative file path exactly as written), start_line and end_line (integers from the document when stated), side (\"RIGHT\" for added lines, \"LEFT\" for removed lines), and location_quote (a verbatim substring of the document containing that path).",
 		"Optionally include source (the lane or section the finding came from).",
 		"Rules: report only findings actually stated in the document; never invent, merge, or upgrade severity; keep the reviewer's own wording in title and body; omit path fields when no location is stated; do not report strengths, summaries, or coverage notes as findings.",
+		"The synthesis's own Findings section is NOT authoritative about what the document states: a review summary saying \"No findings\" while a retained lane section states a concrete defect means that defect IS stated in the document and must be extracted.",
+		"Findings appear in any format: ### severity blocks, bulleted field lists (title/severity/why/location), or prose. Scan every section, including retained lane output, before deciding the document states no findings.",
 		"If the document states no findings, return {\"findings\":[]}.",
 		"Do not use tools, read files, or modify anything.",
 	].join("\n");
@@ -112,6 +114,23 @@ function truncateWithMarker(text: string, maxBytes: number, omittedBytes?: numbe
 }
 
 /** Assemble the bounded extraction payload: synthesis first, then lanes in order, each truncated with its own byte-count marker. */
+/**
+ * Host-authored framing wrapped around the data document. Without it the
+ * child treats the synthesis's own "Findings: No findings." framing as
+ * authoritative and misses defects stated in retained lane output (observed
+ * in the first production extraction run).
+ */
+export function buildExtractionTask(input: string): string {
+	return [
+		"Objective: Extract every concrete defect finding stated anywhere in this review document, including inside the retained lane output sections.",
+		"A \"No findings\" line written by the summary does not mean the document states no findings: check the lane sections too.",
+		"",
+		"--- Review document ---",
+		input,
+		"--- End of review document ---",
+	].join("\n");
+}
+
 export function buildExtractionInput(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
