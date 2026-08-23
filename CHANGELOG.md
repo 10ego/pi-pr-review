@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.3](https://github.com/10ego/pi-pr-review/compare/v1.14.2...v1.14.3) (2026-08-23)
+
+
+### Bug Fixes
+
+* **extract:** degrade path-only locations to summary-only ([#79](https://github.com/10ego/pi-pr-review/issues/79)) ([7587eff](https://github.com/10ego/pi-pr-review/commit/7587effc1e6d12f77579fcbfa2281487c0458d5e))
+
 ## [1.14.2](https://github.com/10ego/pi-pr-review/compare/v1.14.1...v1.14.2) (2026-08-23)
 
 
