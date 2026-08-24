@@ -404,7 +404,20 @@ function thinkingWarnings(config: PrReviewConfig, tiers: readonly Tier[] = TIERS
 // Subprocess plumbing (mirrors the official subagent example)
 // ---------------------------------------------------------------------------
 
+/** Test seam: overrides subprocess discovery so tests can supply a fake pi. */
+let piInvocationOverrideCommand: string | undefined;
+
+/** Replace subprocess discovery (tests only); returns the previous command. */
+export function overridePiInvocation(nextCommand: string | undefined) {
+	const previous = piInvocationOverrideCommand;
+	piInvocationOverrideCommand = nextCommand;
+	return previous;
+}
+
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	// An override fixes only the command; flags always pass through so the
+	// child still receives the exact production argv.
+	if (piInvocationOverrideCommand) return { command: piInvocationOverrideCommand, args };
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
