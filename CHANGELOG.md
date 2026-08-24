@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.1](https://github.com/10ego/pi-pr-review/compare/v1.15.0...v1.15.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **review:** give deep lanes a nonempty completion contract ([#88](https://github.com/10ego/pi-pr-review/issues/88)) ([3e2753c](https://github.com/10ego/pi-pr-review/commit/3e2753c707c6e69919fc682695c3d545a5f0739b))
+
 ## [1.15.0](https://github.com/10ego/pi-pr-review/compare/v1.14.5...v1.15.0) (2026-08-24)
 
 
