@@ -71,8 +71,27 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("Inspect the complete diff so cross-file contracts remain visible");
 	});
 
+	test("defines a deep single-pass topology behind deep mode", () => {
+		expect(prompt).toContain("When `$@` includes `--deep`, replace the fan-out topology with **one integrated review pass**");
+		expect(prompt).toContain("id `deep-review`, `tier: heavy`, `tool_policy: configured`, `major_only: false`, `minor_hygiene: false`, and `max_parallel: 1`");
+		// The pass returns candidate evidence in the host-validated field format;
+		// the orchestrator keeps the terminal Markdown contract.
+		expect(prompt).toContain("reviewer's standard candidate-evidence field format");
+		expect(prompt).toContain("You still own the terminal Markdown synthesis, verification handling, and final validation");
+		// Every topology mandate carries a deep exception.
+		expect(prompt).toContain("the single `deep-review` pass is the whole batch");
+		expect(prompt).toContain("except in `--deep` mode, which dispatches only the single `deep-review` pass with `max_parallel: 1` and no sharding");
+		expect(prompt).toContain("In `--deep` mode this pass does not run");
+		expect(prompt).toContain("the single `--deep` pass, and any failed-pass rerun");
+		// The argument reference knows the mode.
+		expect(prompt).toContain("- `--deep` replaces the fan-out with one integrated heavy reviewer");
+		expect(prompt).toContain("`--full`, `--major-only`, `--balanced`, and `--deep` are mutually exclusive");
+		// No impossible host-side registration instruction remains.
+		expect(prompt).not.toContain("Register exactly one expected lane artifact");
+	});
+
 	test("supports an opt-in major-only mode without dropping heavy-lens coverage", () => {
-		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced]"');
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced|--deep]"');
 		expect(prompt).toContain("When `$@` includes `--major-only`");
 		expect(prompt).toContain("exactly these five passes: `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
 		expect(prompt).toContain("Do **not** dispatch `conventions-maintainability`");

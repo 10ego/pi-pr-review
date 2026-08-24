@@ -797,6 +797,11 @@ describe("trusted invocation mode", () => {
 		expect(parsePublishMode("/pr-review 7 --major-only --balanced").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --full --balanced").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --full --major-only").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --deep --full").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --deep --balanced").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --deep --major-only").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --deep").matched).toBeTrue();
+		expect(parsePublishMode("/pr-review 7 --deep").error).toBeUndefined();
 	});
 
 	test("queued invocation cannot override active publishing intent", () => {

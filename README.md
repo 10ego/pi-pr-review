@@ -55,9 +55,12 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 | `/pr-review 123 --major-only` | P0–P2 only. |
 | `/pr-review 123 --full` | Adds convention/maintainability review and reports all qualifying severities. |
 | `/pr-review 123 --balanced` | Explicit alias for the default mode. |
+| `/pr-review 123 --deep` | One integrated heavy reviewer for the whole PR instead of five parallel lenses. |
 | `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
 
-`--full`, `--major-only`, and `--balanced` are mutually exclusive. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
+`--full`, `--major-only`, `--balanced`, and `--deep` are mutually exclusive.
+
+`--deep` trades parallel lens coverage for holistic judgment: a single heavy-tier pass receives the complete diff plus the repository tools and reviews the change as one story — intent, approach, cross-file behavior, and test fit — reporting nit-through-P0 findings with source-grounded validation. The orchestrator still synthesizes the terminal Markdown and owns verification handling. It runs under the same per-attempt heavy deadline as any heavy lane, plus the same lane-artifact, degradation, extraction, and publication machinery, so a deep review that degrades publishes with the same honest coverage disclosure. Note the budget trade: one pass doing the combined work has the same attempt window each concurrent lens had, so on large diffs raise `attemptMs.heavy` if deep runs time out. For ordinary diffs this is usually the higher-quality path; the default five-lane fan-out remains better for very large or sharded diffs where bounded parallel context beats a single long pass. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
 
 A review uses five focused passes by default:
 
