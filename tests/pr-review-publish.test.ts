@@ -629,7 +629,7 @@ describe("auto-approve priority gate", () => {
 			passId: "deep-review",
 			tier: "heavy" as const,
 			minorHygiene: false,
-			rawText: "Overview: the integrated review found no actionable issues.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNo findings at any severity.",
+			rawText: "Overview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.",
 			exitCode: 0,
 			stopReason: "stop",
 			lifecycle: "complete" as const,

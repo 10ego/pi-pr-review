@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { tmpdir } from "node:os";
 
 mock.module("@earendil-works/pi-ai", () => ({
 	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
-	getAgentDir: () => tmpdir(),
+	getAgentDir: () => process.env.PI_PR_REVIEW_TEST_AGENT_DIR ?? "/tmp/pi-pr-review-tool-gate-agent",
 	getSelectListTheme: () => ({}),
 	getSettingsListTheme: () => ({}),
 }));
@@ -156,7 +155,11 @@ describe("extension registration without self-review prerequisites", () => {
 		const expectedOutput = passSchema.properties.expected_output;
 		expect(expectedOutput).toMatchObject({ enum: ["review_lane", "nonempty"] });
 		expect(expectedOutput.description).toContain("successful terminal stop");
-		expect(expectedOutput.description).toContain("arbitrary bytes");
+		expect(expectedOutput.description).toContain("Overview:");
+		expect(expectedOutput.description).toContain("Strengths:");
+		expect(expectedOutput.description).toContain("Risk areas:");
+		expect(expectedOutput.description).toContain("NO FINDINGS.");
+		expect(expectedOutput.description).toContain("arbitrary prose");
 		expect(expectedOutput.description).not.toContain("any nonempty terminal output");
 	});
 

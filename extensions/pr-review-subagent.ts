@@ -429,6 +429,8 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+const NONEMPTY_CONTRACT_DESCRIPTION = "After a successful terminal stop, the nonempty contract is exact Markdown: begin with Overview:, Strengths:, and Risk areas: framing sections in that order; each must have meaningful non-placeholder text. Framing labels may be plain (Overview: ...), bold (**Overview:** ...), or ATX headings (## Overview followed by text). After framing, either emit the exact standalone line NO FINDINGS. or one or more complete candidate blocks. Candidate fields must be in order: title prefixed [P0], [P1], [P2], [P3], or [nit]; severity P0/P1/P2/P3/nit; meaningful why; repo-relative location:path:line-range or repo-wide; side RIGHT/LEFT; in_diff yes/no; pr_related yes/no; confidence 0.0-1.0. Candidate fields may be plain/bold and list-prefixed. Do not emit code fences, blockquotes, JSON, headings around candidates, arbitrary prose, placeholder values (none, n/a, unavailable, unknown, skipped, error, review complete), or failure/refusal framing. Failure text outside candidate spans makes the lane incomplete; inability discussed inside a valid candidate field is allowed."
+
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
 		"You are a fast overview reviewer. Produce a concise overview of what the change does and how, list genuine strengths, and note high-level risk areas worth closer specialist review. Do not deep-dive into defects.",
@@ -467,26 +469,27 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 		lines.push(
 			"Start from the supplied complete diff. Use repository tools only to substantiate a concrete candidate caused by that diff; never browse for unrelated issues or run broad repository audits/tests.",
 			"Before your first tool call, identify the evidence needed for all current candidates. Issue independent reads/searches/checks together when the interface supports concurrent calls, grouped to avoid rereading the same file. Use at most one follow-up tool turn, only for a dependency revealed by the first evidence wave. This schedules validation efficiently but never permits skipping evidence needed to substantiate a finding.",
-			"Return your findings as a concise Markdown list. For each finding include, on its own lines:",
-			majorOnly
-				? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
-				: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
-			majorOnly
-				? "- severity: one of P0, P1, P2 (P0/P1 are blocking)"
-				: "- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
-			"- why: the impact and the exact input/environment needed for it to bite",
-			"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
-			"- side: RIGHT for added/context lines, LEFT for removed lines",
-			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
-			"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
-			"- confidence: a float 0.0-1.0",
-			// A nonempty completion contract lets the pass carry framing prose
-			// (overview, strengths, risk) around its findings; the exact-match
-			// sentinel would forbid that and strand the lane as partial.
 			expectedOutput === "nonempty"
-				? majorOnly
-					? "If there are no substantiated P0-P2 findings, state that plainly in prose after your overview; do not emit the candidate fields."
-					: "If there are genuinely no findings at any severity, state that plainly in prose after your overview; do not emit the candidate fields."
+				? NONEMPTY_CONTRACT_DESCRIPTION
+				: "Return your findings as a concise Markdown list. For each finding include, on its own lines:",
+			expectedOutput === "nonempty"
+				? "For nonempty output, write the three framing sections first, then either the exact clean sentinel or complete candidate blocks; do not add any other prose."
+				: majorOnly
+					? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
+					: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
+			...(expectedOutput === "nonempty" ? [] : [
+				majorOnly
+					? "- severity: one of P0, P1, P2 (P0/P1 are blocking)"
+					: "- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
+				"- why: the impact and the exact input/environment needed for it to bite",
+				"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
+				"- side: RIGHT for added/context lines, LEFT for removed lines",
+				"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
+				"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
+				"- confidence: a float 0.0-1.0",
+			]),
+			expectedOutput === "nonempty"
+				? "The exact clean sentinel is one standalone uppercase line `NO FINDINGS.` immediately after the three framing sections; never use `No findings.` or append a sentence."
 				: majorOnly
 					? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
 					: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
@@ -1424,7 +1427,7 @@ const ReviewSubagentsParams = Type.Object({
 		Type.Object({
 			expected_output: Type.Optional(
 				StringEnum(["review_lane", "nonempty"] as const, {
-					description: "Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: after a successful terminal stop, completes for substantive framing prose or candidate evidence that is not a review refusal; empty, arbitrary bytes, and refusal output remain incomplete. Use for an integrated pass that returns overview framing around its findings.",
+					description: `Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: ${NONEMPTY_CONTRACT_DESCRIPTION}`,
 				}),
 			),
 			id: Type.Optional(
