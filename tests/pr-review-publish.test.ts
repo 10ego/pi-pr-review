@@ -629,7 +629,7 @@ describe("auto-approve priority gate", () => {
 			passId: "deep-review",
 			tier: "heavy" as const,
 			minorHygiene: false,
-			rawText: "Overview: the integrated review found no actionable issues. Strengths: focused scope and matching tests. No findings at any severity.",
+			rawText: "Overview: the integrated review found no actionable issues.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNo findings at any severity.",
 			exitCode: 0,
 			stopReason: "stop",
 			lifecycle: "complete" as const,
@@ -670,7 +670,6 @@ describe("auto-approve priority gate", () => {
 		expect(synthesis.mergeApprovalEligible).toBeTrue();
 		const cache = new CompletedReviewCache();
 		const record = cache.replace(synthesis.review, invocation, repository, {
-			publicationBody: synthesis.body,
 			synthesisQuality: synthesis.quality,
 			rawText,
 			laneArtifacts: synthesis.laneArtifacts,
@@ -681,6 +680,7 @@ describe("auto-approve priority gate", () => {
 			diagnostics: synthesis.diagnostics,
 		}).record;
 		const persisted = cache.persist(record, session);
+		expect(persisted).not.toHaveProperty("publicationBody");
 		expect(persisted.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
 		expect(persisted.invocation.reviewBinding).toMatchObject({ invocationGeneration: 1, sessionId: session.id });
 
@@ -691,6 +691,13 @@ describe("auto-approve priority gate", () => {
 		expect(recovered.mergeApprovalEligible).toBeTrue();
 		expect(recovered.review.verdict).toBe("approve");
 		expect(shouldApproveReview(recovered.review, recovered.invocation.approveMaxPriorityLevel)).toBeTrue();
+
+		const malformedError = structuredClone(persisted) as any;
+		malformedError.laneArtifacts[0].errorMessage = 7;
+		const malformedRestored = new CompletedReviewCache();
+		expect(() => malformedRestored.restore(malformedError, session)).not.toThrow();
+		expect(malformedRestored.get(7, repository)?.mergeApprovalEligible).toBeFalse();
+		expect(malformedRestored.get(7, repository)?.review.verdict).toBe("comment");
 
 		// A legacy/default contract revalidates this same framing-only heavy lane
 		// under review_lane, so restore must retain it only as body-only COMMENT.

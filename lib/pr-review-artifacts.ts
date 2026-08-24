@@ -121,62 +121,124 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
  * not downgrade an otherwise complete lane.
  */
 const REVIEW_REFUSAL_SIGNALS = [
-	/\b(?:i|we|the reviewer|the review agent|the review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
-	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to|am unable to|are unable to|wasn'?t able to|weren'?t able to)\s+(?:review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
-	/\b(?:i|we|the reviewer|the review agent|the review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load)\s+(?:the\s+)?(?:diff|patch|changes?|pull request|pr\b|repository|repo(?:sitory)?|changed files?|review context)\b/i,
-	/\b(?:the|this)\s+(?:review|reviewer|review agent|review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load|complete)\b/i,
-	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to|am unable to|are unable to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load)\s+(?:the\s+)?(?:diff|patch|changes?|pull request|pr\b|repository|repo(?:sitory)?|changed files?|review context)\b/i,
+	/\b(?:i|we)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:perform|provide|review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
+	/\b(?:i|we)\s+(?:do not|don't)\s+have\s+access\s+to\s+(?:the\s+)?(?:diff|patch|repository|repo(?:sitory)?|review context|changed files?)\b/i,
+	/\b(?:the|this)\s+(?:review|reviewer|review agent|review model)\s+(?:could not|couldn'?t|cannot|can'?t|was unable to|were unable to|failed to)\s+(?:access|read|inspect|examine|retrieve|obtain|load|complete)\b/i,
+	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to)\s+(?:review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
+	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to)\s+(?:access|read|inspect|examine|retrieve|obtain|load)\s+(?:the\s+)?(?:diff|patch|changes?|pull request|pr\b|repository|repo(?:sitory)?|changed files?|review context)\b/i,
 	/\b(?:no\s+(?:diff|patch|review context)\s+(?:(?:was|were)\s+)?(?:provided|available|accessible)|nothing\s+to\s+review)\b/i,
 	/\b(?:diff|patch|review context)\s+(?:was|were)\s+(?:not\s+)?(?:provided|available|accessible)\b/i,
 	/\bchanges?\s+(?:was|were)\s+not\s+provided\b/i,
-	/\b(?:review|analysis|assessment)\s+(?:failed|was not possible|is unavailable|could not be completed)\b/i,
+	/\b(?:review|analysis|assessment)\s+(?:failed|was not possible|is unavailable|could not be completed|(?:was\s+)?skipped|(?:was\s+)?unavailable)\b/i,
+	/(?:^|[\n])\s*(?:[A-Za-z][^:\n]{0,40}:\s*)?(?:internal|fatal)\s+(?:server|model|tool|review)?\s*error\b/im,
+	/(?:^|[\n])\s*(?:error|failure)\s+(?:returned|from)\b/im,
+	/\b(?:error returned by|failure returned by)\s+(?:the\s+)?(?:review|model|tool)\b/i,
 ] as const;
+
+const CANDIDATE_FIELDS = ["title", "severity", "why", "location", "side", "in_diff", "pr_related", "confidence"] as const;
+const FRAMING_LABELS = ["overview", "strengths?", "(?:high(?:est)?[- ]risk|risk)(?:[- ]areas?)?"] as const;
+
+function normalizeReviewText(text: string): string {
+	return text
+		.replace(/[\u2018\u2019\u201B\u2032\u02BC]/g, "'")
+		.replace(/[\u201C\u201D]/g, '"')
+		.replace(/\r\n?/g, "\n");
+}
 
 function hasSubstantiveProse(text: string): boolean {
 	const words = text.match(/[A-Za-z]{2,}/g) ?? [];
 	return words.length >= 2 || words.some((word) => new Set(word.toLowerCase()).size > 1);
 }
 
-function hasReviewRefusalSignal(text: string): boolean {
-	return REVIEW_REFUSAL_SIGNALS.some((signal) => signal.test(text));
+function escapePattern(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function fieldPattern(field: string): RegExp {
+	return new RegExp(`^[ \\t]*(?:[-*+][ \\t]*)?(?:#{1,6}[ \\t]*)?(?:\\*\\*|__)?${escapePattern(field)}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im");
+}
+
+function fieldValue(text: string, field: string): string | undefined {
+	return fieldPattern(field).exec(text)?.[1]?.trim() || undefined;
 }
 
 function hasMeaningfulField(text: string, field: string): boolean {
-	const match = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im").exec(text);
-	return !!match?.[1]?.trim();
+	return !!fieldValue(text, field);
 }
 
-function hasMeaningfulNonemptyField(text: string, field: string): boolean {
-	const match = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im").exec(text);
-	return !!match?.[1]?.trim() && hasSubstantiveProse(match[1]!);
+function candidateEvidenceBlocks(text: string): readonly string[] {
+	const starts = [...text.matchAll(new RegExp(fieldPattern("title").source, "gim"))]
+		.map((match) => match.index)
+		.filter((index): index is number => index !== undefined);
+	return starts.map((start, index) => {
+		const nextStart = starts[index + 1] ?? text.length;
+		const nextSection = new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${FRAMING_LABELS.join("|")}|findings?|no findings)[ \\t]*:?`, "im").exec(text.slice(start + 1));
+		const end = nextSection?.index !== undefined ? start + 1 + nextSection.index : nextStart;
+		return text.slice(start, Math.min(end, nextStart));
+	});
+}
+
+function hasCompleteCandidateEvidence(text: string): boolean {
+	return candidateEvidenceBlocks(text).some((block) =>
+		CANDIDATE_FIELDS.every((field) => hasMeaningfulField(block, field)));
+}
+
+function framingSection(text: string, labels: readonly string[]): string | undefined {
+	const labelPattern = new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${labels.join("|")})[ \\t]*:?[ \\t]*(.*)\\r?$`, "im");
+	const match = labelPattern.exec(text);
+	if (!match || match.index === undefined) return undefined;
+	const bodyStart = match.index + match[0].length;
+	const next = new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${FRAMING_LABELS.join("|")}|findings?|no findings)[ \\t]*:?`, "im").exec(text.slice(bodyStart));
+	const body = next?.index !== undefined ? text.slice(bodyStart, bodyStart + next.index) : text.slice(bodyStart);
+	return `${match[1] ?? ""}\n${body}`;
+}
+
+function hasMeaningfulIntegratedFraming(text: string): boolean {
+	return FRAMING_LABELS.every((label) => {
+		const section = framingSection(text, [label]);
+		return !!section && (hasSubstantiveProse(section) || /^\s*(?:none|n\/a)\s*[.!]?\s*$/i.test(section));
+	});
+}
+
+const NO_FINDINGS_SIGNALS = [
+	/(?:^|[\n.!?:;,])\s*no (?:substantiated )?findings(?: at any severity| in (?:this|the) (?:review|PR))?\b/im,
+	/(?:^|[\n.!?:;,])\s*no actionable (?:findings|issues|defects)(?:\s+(?:were|are|remain)\s+(?:identified|found|present))?\b/im,
+	/(?:^|[\n.!?:;,])\s*(?:the integrated )?(?:review|assessment|analysis) found no (?:actionable )?(?:findings|issues|defects)\b/im,
+	/(?:^|[\n.!?:;,])\s*(?:i|we) found no (?:actionable )?(?:findings|issues|defects)\b/im,
+] as const;
+
+function hasNoFindingsConclusion(text: string): boolean {
+	return NO_FINDINGS_SIGNALS.some((signal) => signal.test(text));
+}
+
+function hasReviewRefusalSignal(text: string): boolean {
+	return REVIEW_REFUSAL_SIGNALS.some((signal) => signal.test(normalizeReviewText(text)));
 }
 
 function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
-	const text = input.rawText.trim();
+	const text = normalizeReviewText(input.rawText.trim());
 	if (!text) return false;
-	// The nonempty contract accepts framing prose around findings, but not
-	// degenerate refusals: check refusal language anywhere first, then accept
-	// candidate evidence or a substantive statement.
+	// Candidate evidence is parsed first. Refusal language in a finding's why
+	// field describes the defect and is not a refusal by the reviewer.
 	if (input.expectedOutput === "nonempty") {
-		if (hasReviewRefusalSignal(text)) return false;
-		if (["title", "why", "overview"].some((field) => hasMeaningfulNonemptyField(text, field))) return true;
-		// Do not let arbitrary bytes satisfy the contract: prose must contain
-		// at least two words (or one varied word) in addition to minimum length.
-		return text.length >= 16 && hasSubstantiveProse(text) && /\s/.test(text);
+		if (hasCompleteCandidateEvidence(text)) return true;
+		if (!hasMeaningfulIntegratedFraming(text) || !hasNoFindingsConclusion(text)) return false;
+		// Refusal/error envelopes can imitate framing labels, so inspect only the
+		// top-level integrated output after the positive grammar matched.
+		return !hasReviewRefusalSignal(text);
 	}
 	if (input.tier === "light") {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];
 		return fields.every((field) => hasMeaningfulLightSection(text, field, fields));
 	}
 	if (text === "NO FINDINGS.") return true;
-	return ["title", "severity", "why", "location", "side", "in_diff", "pr_related", "confidence"]
-		.every((field) => hasMeaningfulField(text, field));
+	return CANDIDATE_FIELDS.every((field) => hasMeaningfulField(text, field));
 }
 
 /** Process exit is necessary but insufficient: only a terminal stop with valid lane output is complete. */
 export function classifyReviewLane(input: ReviewLaneCompletionInput): ReviewLaneLifecycle {
-	const reason = input.stopReason?.toLowerCase();
-	const error = input.errorMessage?.toLowerCase();
+	const reason = typeof input.stopReason === "string" ? input.stopReason.toLowerCase() : undefined;
+	const error = typeof input.errorMessage === "string" ? input.errorMessage.toLowerCase() : undefined;
 	if (reason?.includes("timeout") || error?.includes("timed out") || error?.includes("timeout")) return "timed_out";
 	const hasText = input.rawText.length > 0;
 	if (input.exitCode === 0 && reason === "stop" && expectedLaneSections(input)) return "complete";

@@ -88,10 +88,10 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop" })).toBe("failed");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "looks okay", exitCode: 0, stopReason: "stop" })).toBe("partial");
 		// A nonempty completion contract (deep-review integrated pass) accepts
-		// framing prose around findings — including a plain no-findings statement.
+		// prompt-aligned framing with explicit risk and no-findings language.
 		expect(classifyReviewLane({
 			tier: "heavy",
-			rawText: "## Overview\nThe PR adds deep mode.\n## Strengths\n- focused\nNo findings at any severity.",
+			rawText: "## Overview\nThe PR adds deep mode.\n## Strengths\n- focused coverage\n## Risk areas\n- low integration risk\nNo findings at any severity.",
 			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 		})).toBe("complete");
 		expect(classifyReviewLane({
@@ -102,48 +102,53 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({
 			tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 		})).toBe("failed");
-		// Degenerate refusals do not complete a nonempty lane — bare, prefixed
-		// with an overview label, or embedded mid-text.
+		// Refusal/error/boilerplate envelopes do not complete, including realistic
+		// curly-apostrophe and JSON/Markdown wrappers.
 		for (const refusal of [
+			"Sorry, I cannot perform this review because repository access is unavailable",
+			"I don’t have access to the diff, so I can’t provide a review",
+			"Overview: Review skipped because the necessary source context is missing",
+			"Internal server error while reading repository tools",
+			"Overview: Error returned by the review tool",
+			"Review complete",
+			"{\"error\":\"Internal server error while reading repository tools\"}",
+			"```json\n{\"error\":\"I don’t have access to the diff\"}\n```",
+			"Overview: I don’t have access to the diff.\nStrengths: none.\nRisk areas: unavailable.\nNo findings.",
+			"Overview: Internal server error while reading repository tools.\nStrengths: none.\nRisk areas: unavailable.\nNo findings.",
+			"> Sorry, I cannot perform this review because repository access is unavailable",
 			"I could not access the diff.",
-			"Overview: I could not access the diff.",
-			"Sorry, I could not access the diff.",
 			"Overview: Unable to review this pull request.",
-			"Overview: I am unable to review this pull request.",
-			"I couldn't complete the review.",
-			"I was unable to access the diff.",
-			"Could not access the repository.",
 			"No diff provided.",
-			"The diff was not provided.",
 			"Nothing to review.",
-			"Cannot read the repository files.",
 		]) {
 			expect(classifyReviewLane({
 				tier: "heavy", rawText: refusal, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 			}), refusal).toBe("partial");
 		}
-		// Candidate prose may discuss product behavior that cannot do something;
-		// generic inability wording alone is not a reviewer refusal.
+		// Complete candidate evidence remains valid when its why field describes
+		// reviewer/diff/repository inability in the reviewed implementation.
 		for (const evidence of [
-			"Finding: the refresh path is unable to renew a token after expiry.",
-			"The implementation failed to refresh the token when the session expired.",
-			"The cache could not decode an expired token, so the request is rejected.",
-			"The sync component is unable to access repository metadata during refresh.",
-			"Finding: changes were not available to subscribers after reconnect, so clients remained stale.",
+			"title: Missing propagation\nseverity: P2\nwhy: This change means the diff was not provided to the downstream worker, so reviews silently ignore new code\nlocation: src/a.ts:1\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.9",
+			"title: Access issue\nseverity: P2\nwhy: The review agent cannot access the repository after chdir, so the new feature fails\nlocation: src/a.ts:1\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.9",
 		]) {
 			expect(classifyReviewLane({
 				tier: "heavy", rawText: evidence, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 			}), evidence).toBe("complete");
 		}
-		for (const arbitrary of ["1234567890123456", "................", "xxxxxxxxxxxxxxxx", "........ .......a"]) {
+		for (const arbitrary of ["1234567890123456", "................", "xxxxxxxxxxxxxxxx", "........ .......a", "looks okay", "all good"]) {
 			expect(classifyReviewLane({
 				tier: "heavy", rawText: arbitrary, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 			}), arbitrary).toBe("partial");
 		}
-		// Substantive framing still completes.
+		// Missing any required integrated framing section remains partial.
 		expect(classifyReviewLane({
 			tier: "heavy",
-			rawText: "The PR adds a focused mode. Strengths include tight scoping and matching tests. No findings at any severity.",
+			rawText: "Overview: The PR adds a focused mode.\nStrengths: tight scoping and matching tests.\nNo findings at any severity.",
+			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("partial");
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: "Overview: The PR adds a focused mode.\nStrengths: tight scoping and matching tests.\nRisk areas: low integration risk.\nNo findings at any severity.",
 			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 		})).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview: change\nStrengths: clear", exitCode: 0, stopReason: "stop" })).toBe("complete");
@@ -160,7 +165,7 @@ describe("semantic lane completion", () => {
 			exitCode: 0,
 			stopReason: "stop",
 			expectedOutput: "nonempty",
-		})).toBe("complete");
+		})).toBe("partial");
 	});
 
 	test("does not let an empty light section consume the next populated section", () => {
@@ -210,6 +215,7 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: "partial evidence", exitCode: 0, stopReason: "length" })).toBe("partial");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "partial evidence", exitCode: 1, stopReason: "error" })).toBe("partial");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "partial evidence", exitCode: 1, errorMessage: "request timed out" })).toBe("timed_out");
+		expect(classifyReviewLane({ tier: "heavy", rawText: "partial evidence", exitCode: 1, errorMessage: 7 as never })).toBe("partial");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "", exitCode: 1, stopReason: "error" })).toBe("failed");
 	});
 });

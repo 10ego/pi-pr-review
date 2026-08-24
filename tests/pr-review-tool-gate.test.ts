@@ -215,7 +215,7 @@ describe("review tool execution gate", () => {
 	test("public batch path accepts nonempty framing output under passes[].expected_output", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-public-nonempty-"));
 		const child = path.join(root, "child.mjs");
-		const framing = "Overview: the integrated review found no actionable issues.";
+		const framing = "Overview: the integrated review found no actionable issues.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNo findings at any severity.";
 		writeFileSync(child, `
 			process.stdin.resume();
 			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
