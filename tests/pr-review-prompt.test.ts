@@ -73,7 +73,7 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("defines a deep single-pass topology behind deep mode", () => {
 		expect(prompt).toContain("When `$@` includes `--deep`, replace the fan-out topology with **one integrated review pass**");
-		expect(prompt).toContain("id `deep-review`, `tier: heavy`, `tool_policy: configured`, `major_only: false`, `minor_hygiene: false`, and `max_parallel: 1`");
+		expect(prompt).toContain('id `deep-review`, `tier: heavy`, `tool_policy: configured`, `major_only: false`, `minor_hygiene: false`, `expected_output: "nonempty"`, and `max_parallel: 1`');
 		// The pass returns candidate evidence in the host-validated field format;
 		// the orchestrator keeps the terminal Markdown contract.
 		expect(prompt).toContain("reviewer's standard candidate-evidence field format");

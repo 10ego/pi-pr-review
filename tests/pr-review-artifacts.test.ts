@@ -87,6 +87,21 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop" })).toBe("failed");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "looks okay", exitCode: 0, stopReason: "stop" })).toBe("partial");
+		// A nonempty completion contract (deep-review integrated pass) accepts
+		// framing prose around findings — including a plain no-findings statement.
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: "## Overview\nThe PR adds deep mode.\n## Strengths\n- focused\nNo findings at any severity.",
+			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("complete");
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: "## Overview\nThe PR adds deep mode with one finding below.\ntitle: Deep bug\nseverity: P2\nwhy: breaks\nlocation: a.ts:1\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.9",
+			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("complete");
+		expect(classifyReviewLane({
+			tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("failed");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview: change\nStrengths: clear", exitCode: 0, stopReason: "stop" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview:\nStrengths:", exitCode: 0, stopReason: "stop" })).toBe("partial");
 		expect(classifyReviewLane({
