@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
+import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
 
 const binding = { prNumber: 57, prTitle: "Markdown publication", headSha: "a".repeat(40) };
@@ -58,6 +59,38 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toHaveLength(1);
 		expect(artifact.review.verdict).toBe("approve");
 		expect(artifact.mergeApprovalEligible).toBe(true);
+	});
+
+	test("keeps indented deep-contract bypass probes out of approval eligibility", () => {
+		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.";
+		const candidate = [
+			"title: [P2] Preserve review evidence",
+			"severity: P2",
+			"why: The changed path drops a required result.",
+			"location: src/review.ts:10-11",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.9",
+		].join("\n");
+		const probes = [
+			`    Review status: COMPLETE\n${framing.slice(framing.indexOf("\n") + 1)}\nNO FINDINGS.`,
+			`${framing}\n    NO FINDINGS.`,
+			`${framing}\n${candidate.split("\n").map((line) => `    ${line}`).join("\n")}`,
+		];
+		for (const rawText of probes) {
+			const lifecycle = classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+			expect(lifecycle).toBe("partial");
+			const lane = { ...completeLane, key: "deep-review", passId: "deep-review", rawText, lifecycle };
+			const artifact = synthesizeReviewArtifact({
+				rawText: markdown.replace("**Verdict:** comment", "**Verdict:** approve"),
+				...binding,
+				laneArtifacts: [lane],
+				expectedLaneDescriptors: [{ key: "deep-review", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+			});
+			expect(artifact.completeness).toBe("incomplete");
+			expect(artifact.mergeApprovalEligible).toBe(false);
+		}
 	});
 
 	test("preserves mixed parsed and unparsed findings in the original body", () => {

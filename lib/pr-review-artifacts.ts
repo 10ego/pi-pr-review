@@ -120,15 +120,21 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
  * `INCOMPLETE` and every other status are partial. The remaining productions
  * are documented in the public tool schema and both reviewer prompts: framing
  * labels may be plain (`Overview:`), bold (`**Overview:**`), or ATX headings
- * followed by one value line; candidate fields may be plain/bold and optionally
- * list-prefixed. Blockquotes, code fences, JSON, and other wrappers are not
- * part of the contract.
+ * followed by one top-level value line; candidate fields may be plain/bold or
+ * use the one exact top-level `- ` list marker. Blockquotes, code fences, JSON,
+ * and other wrappers are not part of the contract. Nonblank contract lines do
+ * not carry trailing horizontal whitespace, and a `why` continuation is exactly
+ * two spaces plus a non-list line.
  */
 const CANDIDATE_FIELDS = ["title", "severity", "why", "location", "side", "in_diff", "pr_related", "confidence"] as const;
 const CANDIDATE_SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const FRAMING_LABELS = ["Overview", "Strengths", "Risk areas"] as const;
 const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|review complete|no findings|nothing to review)(?:\s+(?:identified|found|available|present))?[.!]?$/i;
-const CODE_FENCE = /^\s*```/m;
+const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
+const CODE_FENCE = /```/;
+const HTML_CONTAINER = /<\/?[A-Za-z][^>]*>|<!--[\s\S]*?-->/;
+const CONTAINER_PREFIX = /^(?:[-*+>]|#{1,6})[ \t]+/;
+const RESERVED_LABEL_PRODUCTION = /(?:^|[ \t])(?:\*\*|__)?(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)(?:\*\*|__)?[ \t]*:/i;
 
 interface MarkdownLabel {
 	readonly field: string;
@@ -143,10 +149,13 @@ interface CandidateBlock {
 }
 
 function normalizeReviewText(text: string): string {
-	return text
-		.replace(/[\u2018\u2019\u201B\u2032\u02BC]/g, "'")
-		.replace(/[\u201C\u201D]/g, '"')
-		.replace(/\r\n?/g, "\n");
+	// Only CRLF is transport normalization. In particular, do not trim or
+	// rewrite line-leading whitespace before applying the grammar.
+	return text.replace(/\r\n/g, "\n");
+}
+
+function hasTrailingHorizontalWhitespace(text: string): boolean {
+	return text.split("\n").some((line) => /[ \t]+$/.test(line));
 }
 
 function escapePattern(value: string): string {
@@ -167,10 +176,10 @@ function framingLabel(line: string): MarkdownLabel | undefined {
 	return undefined;
 }
 
-/** Candidate fields are one-line values, with optional Markdown list/bold syntax. */
+/** Candidate fields are top-level one-line values with optional bold syntax or one exact `- ` marker. */
 function candidateLabel(line: string): MarkdownLabel | undefined {
 	const names = CANDIDATE_FIELDS.map(escapePattern).join("|");
-	const match = new RegExp(`^[ \t]*(?:[-*+][ \t]+)?(?:(?:\\*\\*)(${names}):(?:\\*\\*)|(?:__)(${names}):(?:__)|(${names}):)[ \t]*(.*)$`).exec(line);
+	const match = new RegExp(`^(?:- )?(?:(?:\\*\\*)(${names}):(?:\\*\\*)|(?:__)(${names}):(?:__)|(${names}):)[ \t]*(.*)$`).exec(line);
 	if (!match) return undefined;
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
@@ -209,8 +218,29 @@ function safeLocation(value: string): boolean {
 	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
 }
 
+function hasReservedStatusProduction(line: string): boolean {
+	return /^(?:[-*+>][ \t]+)?Review status\s*:/i.test(line.trim());
+}
+
+/**
+ * Values are prose, but they may not contain a line-shaped contract
+ * production. This is deliberately limited to the documented grammar (and
+ * containers), rather than an English keyword denylist.
+ */
+function hasReservedContractProduction(value: string): boolean {
+	if (!value) return false;
+	if (value.includes(NO_FINDINGS_SENTINEL) || /Review status\s*:/i.test(value) || RESERVED_LABEL_PRODUCTION.test(value)) return true;
+	if (CODE_FENCE.test(value) || HTML_CONTAINER.test(value)) return true;
+	return value.split("\n").some((line) => {
+		const structural = line.trim();
+		return structural === NO_FINDINGS_SENTINEL || hasReservedStatusProduction(structural) ||
+			!!framingLabel(structural) || !!candidateLabel(structural) || CONTAINER_PREFIX.test(structural);
+	});
+}
+
 function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 	if (CANDIDATE_FIELDS.some((field) => !fields.has(field))) return false;
+	if ([...fields.values()].some((value) => hasReservedContractProduction(value))) return false;
 	const title = fields.get("title")!.trim();
 	const titleMatch = /^\[(P0|P1|P2|P3|nit)\][ \t]+(.+)$/.exec(title);
 	const severity = fields.get("severity")!.trim();
@@ -229,17 +259,11 @@ function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 }
 
 function framingValueHasReservedProduction(value: string): boolean {
-	if (value.includes("NO FINDINGS.") || /Review status\s*:/i.test(value)) return true;
-	if (/```|<\/?[A-Za-z][^>]*>|<!--[\s\S]*?-->/.test(value)) return true;
-	if (/^[ \t]*(?:[-*+]|>)[ \t]+/.test(value)) return true;
-	return /\b(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)\s*:/i.test(value);
+	return hasReservedContractProduction(value);
 }
 
 function isReservedContractLine(line: string): boolean {
-	const value = line.trim();
-	return value === "NO FINDINGS." || /^Review status\s*:/i.test(value) ||
-		!!framingLabel(value) || !!candidateLabel(line) || /^```/.test(value) ||
-		/^<\/?[A-Za-z][^>]*>$/.test(value) || /^<!--/.test(value);
+	return hasReservedContractProduction(line);
 }
 
 /** Only obvious, deterministic placeholders are defense-in-depth; COMPLETE is the primary contract. */
@@ -255,13 +279,13 @@ function topLevelFailure(text: string): boolean {
  * indented continuation lines; reserved productions cannot be continuations.
  */
 function parseIntegratedCompletion(text: string): boolean {
-	if (CODE_FENCE.test(text) || /<\/?[A-Za-z][^>]*>/.test(text)) return false;
+	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || HTML_CONTAINER.test(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 	if (cursor >= lines.length || lines[cursor] !== "Review status: COMPLETE") return false;
 	const statusIndex = cursor;
-	if (lines.some((line, index) => index !== statusIndex && /^Review status\s*:/i.test(line.trim()))) return false;
+	if (lines.some((line, index) => index !== statusIndex && hasReservedStatusProduction(line))) return false;
 	cursor++;
 	const framingValues: string[] = [];
 	for (const expected of FRAMING_LABELS) {
@@ -271,8 +295,9 @@ function parseIntegratedCompletion(text: string): boolean {
 		cursor++;
 		let value = label.value;
 		if (label.kind === "heading") {
-			if (cursor >= lines.length || !lines[cursor]!.trim() || isReservedContractLine(lines[cursor]!)) return false;
-			value = lines[cursor]!;
+			const valueLine = lines[cursor] ?? "";
+			if (!valueLine || !valueLine.trim() || /^[ \t]/.test(valueLine) || CONTAINER_PREFIX.test(valueLine) || isReservedContractLine(valueLine)) return false;
+			value = valueLine;
 			cursor++;
 		}
 		if (!meaningfulValue(value) || framingValueHasReservedProduction(value)) return false;
@@ -281,7 +306,7 @@ function parseIntegratedCompletion(text: string): boolean {
 	if (topLevelFailure(framingValues.join("\n"))) return false;
 
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-	if (cursor < lines.length && lines[cursor]!.trim() === "NO FINDINGS.") {
+	if (cursor < lines.length && lines[cursor] === NO_FINDINGS_SENTINEL) {
 		cursor++;
 		while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 		return cursor === lines.length;
@@ -299,6 +324,7 @@ function parseIntegratedCompletion(text: string): boolean {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 			const field = candidateLabel(lines[cursor] ?? "");
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) return false;
+			if (hasReservedContractProduction(field.value)) return false;
 			fields.set(expected, field.value);
 			cursor++;
 			if (expected !== "why") continue;
@@ -306,9 +332,10 @@ function parseIntegratedCompletion(text: string): boolean {
 			while (cursor < lines.length) {
 				const continuation = lines[cursor]!;
 				if (!continuation.trim()) break;
-				if (candidateLabel(continuation) || isReservedContractLine(continuation)) break;
-				if (!/^[ \t]{2,}\S/.test(continuation) || /^[ \t]+(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) return false;
-				whyLines.push(continuation.trim());
+				if (isReservedContractLine(continuation)) break;
+				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) return false;
+				if (hasReservedContractProduction(continuation.slice(2))) return false;
+				whyLines.push(continuation.slice(2));
 				cursor++;
 			}
 			fields.set("why", whyLines.join("\n"));
@@ -342,14 +369,15 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
 }
 
 function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
-	const text = normalizeReviewText(input.rawText.trim());
-	if (!text) return false;
-	if (input.expectedOutput === "nonempty") return parseIntegratedCompletion(text);
+	const normalized = normalizeReviewText(input.rawText);
+	if (!normalized.trim()) return false;
+	if (input.expectedOutput === "nonempty") return parseIntegratedCompletion(normalized);
+	const text = normalized.trim();
 	if (input.tier === "light") {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];
 		return fields.every((field) => hasMeaningfulLightSection(text, field, fields));
 	}
-	if (text === "NO FINDINGS.") return true;
+	if (text === NO_FINDINGS_SENTINEL) return true;
 	return CANDIDATE_FIELDS.every((field) => hasMeaningfulField(text, field));
 }
 

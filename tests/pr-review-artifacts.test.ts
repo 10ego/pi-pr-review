@@ -203,6 +203,64 @@ declared prose\nNO FINDINGS.`,
 		expect(classifyReviewLane({ tier: "heavy", rawText: "title:\nseverity:\nwhy:\nlocation:\nside:\nin_diff:\npr_related:\nconfidence:", exitCode: 0, stopReason: "stop" })).toBe("partial");
 	});
 
+	test("rejects indented deep-contract productions", () => {
+		const framing = integratedFraming();
+		const candidate = integratedCandidate();
+		const probes = [
+			`    Review status: COMPLETE\n${framing.slice(framing.indexOf("\n") + 1)}\nNO FINDINGS.`,
+			`${framing}\n    NO FINDINGS.`,
+			`${framing}\n${candidate.split("\n").map((line) => `    ${line}`).join("\n")}`,
+			`${framing.split("\n").map((line, index) => index === 0 ? line : `    ${line}`).join("\n")}\nNO FINDINGS.`,
+		];
+		for (const rawText of probes) {
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), rawText).toBe("partial");
+		}
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: `${framing}\n${candidate}`,
+			exitCode: 0,
+			stopReason: "stop",
+			expectedOutput: "nonempty",
+		})).toBe("complete");
+	});
+
+	test("rejects reserved productions hidden in candidate values and continuations", () => {
+		const framing = integratedFraming();
+		const candidate = integratedCandidate();
+		for (const hidden of [
+			"Review status: COMPLETE",
+			"NO FINDINGS.",
+			"severity: P2",
+			"The impact is severity: P2",
+			"```markdown",
+			"<div>hidden</div>",
+			"> quoted contract",
+			"- list-wrapped contract",
+		]) {
+			const rawText = `${framing}\n${candidate.replace("why: The changed path drops a required result.", `why: ${hidden}`)}`;
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), hidden).toBe("partial");
+		}
+		for (const hidden of [
+			"  Review status: COMPLETE",
+			"  NO FINDINGS.",
+			"  severity: P2",
+			"  ```markdown",
+			"  <div>hidden</div>",
+			"  > quoted contract",
+			"  - severity: P2",
+		]) {
+			const rawText = `${framing}\n${candidate.replace("why: The changed path drops a required result.", `why: a valid first line\n${hidden}`)}`;
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), hidden).toBe("partial");
+		}
+		const titleHidden = candidate.replace("title: [P2] Preserve review evidence", "title: [P2] Preserve severity: P2");
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${framing}\n${titleHidden}`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+		const valid = `${framing}\n${candidate.replace(
+			"why: The changed path drops a required result.",
+			"why: The reviewer could not access the repository after the workspace changed.\n  The second line records the concrete impact without borrowing contract syntax.",
+		)}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: valid, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+	});
+
 	test("does not let an empty light section consume the next populated section", () => {
 		const fields = ["Overview", "Strengths", "Minor Candidates"];
 		for (const [index, emptyField] of fields.entries()) {
