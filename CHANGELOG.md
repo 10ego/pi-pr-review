@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.2](https://github.com/10ego/pi-pr-review/compare/v1.15.1...v1.15.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* **review:** declare and persist the deep completion contract ([#90](https://github.com/10ego/pi-pr-review/issues/90)) ([8dbe500](https://github.com/10ego/pi-pr-review/commit/8dbe500b9e86ae2758e42f0731c8692a468ac488))
+
 ## [1.15.1](https://github.com/10ego/pi-pr-review/compare/v1.15.0...v1.15.1) (2026-08-24)
 
 
