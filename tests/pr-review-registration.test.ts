@@ -155,6 +155,8 @@ describe("extension registration without self-review prerequisites", () => {
 		const expectedOutput = passSchema.properties.expected_output;
 		expect(expectedOutput).toMatchObject({ enum: ["review_lane", "nonempty"] });
 		expect(expectedOutput.description).toContain("successful terminal stop");
+		expect(expectedOutput.description).toContain("Review status: COMPLETE");
+		expect(expectedOutput.description).toContain("Review status: INCOMPLETE");
 		expect(expectedOutput.description).toContain("Overview:");
 		expect(expectedOutput.description).toContain("Strengths:");
 		expect(expectedOutput.description).toContain("Risk areas:");

@@ -429,7 +429,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
-const NONEMPTY_CONTRACT_DESCRIPTION = "After a successful terminal stop, the nonempty contract is exact Markdown: begin with Overview:, Strengths:, and Risk areas: framing sections in that order; each must have meaningful non-placeholder text. Framing labels may be plain (Overview: ...), bold (**Overview:** ...), or ATX headings (## Overview followed by text). After framing, either emit the exact standalone line NO FINDINGS. or one or more complete candidate blocks. Candidate fields must be in order: title prefixed [P0], [P1], [P2], [P3], or [nit]; severity P0/P1/P2/P3/nit; meaningful why; repo-relative location:path:line-range or repo-wide; side RIGHT/LEFT; in_diff yes/no; pr_related yes/no; confidence 0.0-1.0. Candidate fields may be plain/bold and list-prefixed. Do not emit code fences, blockquotes, JSON, headings around candidates, arbitrary prose, placeholder values (none, n/a, unavailable, unknown, skipped, error, review complete), or failure/refusal framing. Failure text outside candidate spans makes the lane incomplete; inability discussed inside a valid candidate field is allowed."
+const NONEMPTY_CONTRACT_DESCRIPTION = "After a successful terminal stop, nonempty output is exact Markdown with no wrapper: the first nonblank line must be exactly `Review status: COMPLETE`. If you could not inspect required evidence for any reason, return `Review status: INCOMPLETE` followed by a concise reason; INCOMPLETE and every other status are partial. COMPLETE must be followed in exact order by meaningful one-line `Overview: ...`, `Strengths: ...`, and `Risk areas: ...` sections, then either the exact standalone `NO FINDINGS.` or one or more complete candidate blocks. Framing may use plain labels, bold labels, or an ATX label followed immediately by exactly one value line; do not use list-indented or quoted contract lines. Candidate fields are in exact order and each appears once: title prefixed [P0], [P1], [P2], [P3], or [nit] (the tag must match severity); severity P0/P1/P2/P3/nit; meaningful why; location as repo-relative/path:positive-line or repo-relative/path:positive-start-positive-end (ordered), or repo-wide; side RIGHT/LEFT; in_diff yes/no; pr_related yes/no; confidence 0.0-1.0. Candidate labels may be plain/bold and list-prefixed. A why value may continue on indented non-list lines until the next reserved field. Do not emit code fences, blockquotes, JSON, HTML/container wrappers, duplicate/out-of-order fields, arbitrary prose, or placeholder values (none, n/a, unavailable, unknown, skipped, error, review complete). Status/refusal/access/tool/model/error reasons belong in an INCOMPLETE status; inability discussed inside a valid candidate why is allowed. COMPLETE is the primary completion attestation; only obvious exact failure placeholders are rejected as defense-in-depth."
 
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
@@ -473,7 +473,7 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 				? NONEMPTY_CONTRACT_DESCRIPTION
 				: "Return your findings as a concise Markdown list. For each finding include, on its own lines:",
 			expectedOutput === "nonempty"
-				? "For nonempty output, write the three framing sections first, then either the exact clean sentinel or complete candidate blocks; do not add any other prose."
+				? "For nonempty output, begin with the exact first nonblank line `Review status: COMPLETE`; use `Review status: INCOMPLETE` plus a concise reason whenever required evidence cannot be inspected. COMPLETE then requires Overview, Strengths, and Risk areas in order, followed immediately by NO FINDINGS. or complete candidate blocks; do not add other prose."
 				: majorOnly
 					? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
 					: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
@@ -489,7 +489,7 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 				"- confidence: a float 0.0-1.0",
 			]),
 			expectedOutput === "nonempty"
-				? "The exact clean sentinel is one standalone uppercase line `NO FINDINGS.` immediately after the three framing sections; never use `No findings.` or append a sentence."
+				? "After the exact COMPLETE status and three framing sections, the clean sentinel is one standalone uppercase line `NO FINDINGS.`; never use `No findings.` or append a sentence. Candidate `why` may use indented continuation lines, but never absorb a reserved field, status, sentinel, or wrapper."
 				: majorOnly
 					? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
 					: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",

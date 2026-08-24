@@ -589,7 +589,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
-			tier: "heavy", rawText: "Overview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			tier: "heavy", rawText: "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
 			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
 		});
 		const raw = [

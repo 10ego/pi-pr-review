@@ -11,9 +11,9 @@ function integratedFraming(forms: "plain" | "bold" | "heading" = "plain", values
 	strengths: "Focused tests cover the path.",
 	riskAreas: "Integration boundaries remain the main risk.",
 }): string {
-	if (forms === "bold") return `**Overview:** ${values.overview}\n**Strengths:** ${values.strengths}\n**Risk areas:** ${values.riskAreas}`;
-	if (forms === "heading") return `## Overview\n${values.overview}\n## Strengths\n${values.strengths}\n## Risk areas\n${values.riskAreas}`;
-	return `Overview: ${values.overview}\nStrengths: ${values.strengths}\nRisk areas: ${values.riskAreas}`;
+	if (forms === "bold") return `Review status: COMPLETE\n**Overview:** ${values.overview}\n**Strengths:** ${values.strengths}\n**Risk areas:** ${values.riskAreas}`;
+	if (forms === "heading") return `Review status: COMPLETE\n## Overview\n${values.overview}\n## Strengths\n${values.strengths}\n## Risk areas\n${values.riskAreas}`;
+	return `Review status: COMPLETE\nOverview: ${values.overview}\nStrengths: ${values.strengths}\nRisk areas: ${values.riskAreas}`;
 }
 
 function integratedCandidate(why = "The changed path drops a required result.", labels: "plain" | "bold" = "plain"): string {
@@ -124,34 +124,79 @@ describe("semantic lane completion", () => {
 		for (const arbitrary of ["1234567890123456", "looks okay", "all good", "Overview: a\nStrengths: b\nRisk areas: c\nNo findings at any severity."]) {
 			expect(classifyReviewLane({ tier: "heavy", rawText: arbitrary, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), arbitrary).toBe("partial");
 		}
-		for (const refusal of [
-			integratedFraming("plain", { overview: "I cannot review because repository access is denied.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			integratedFraming("plain", { overview: "Review skipped because source context is missing.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			integratedFraming("plain", { overview: "Internal server error while reading tools.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			integratedFraming("plain", { overview: "Review complete", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			integratedFraming("plain", { overview: "none", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			integratedFraming("plain", { overview: "The change integrates the review.", strengths: "unavailable", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.",
-			`${integratedFraming()}\n${integratedCandidate()}\nI cannot complete the review because the model failed.`,
-			`I cannot complete the review because repository access is denied.\n${integratedFraming()}\n${integratedCandidate()}`,
-			`{"body":${JSON.stringify(`${integratedFraming()}\nNO FINDINGS.`)}}`,
-			`> ${integratedFraming().replace(/\n/g, "\n> ")}\n> NO FINDINGS.`,
-			"```markdown\n" + integratedFraming() + "\nNO FINDINGS.\n```",
-			`${integratedFraming()}\nNo findings.`,
+		for (const reason of [
+			"I cannot review because repository access is denied.",
+			"The source context was not provided to the model.",
+			"The review tool failed while reading the diff.",
+			"An internal model error prevented inspection.",
+			"I was unable to complete the analysis.",
+			"The available evidence was insufficient to assess the change.",
 		]) {
-			expect(classifyReviewLane({ tier: "heavy", rawText: refusal, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), refusal).toBe("partial");
+			const incomplete = `Review status: INCOMPLETE\n${reason}`;
+			expect(classifyReviewLane({ tier: "heavy", rawText: incomplete, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), reason).toBe("partial");
+		}
+		for (const malformed of [
+			`${integratedFraming()}\nReview status: COMPLETE\nNO FINDINGS.`,
+			`review status: COMPLETE\n${integratedFraming().replace("Review status: COMPLETE\n", "")}\nNO FINDINGS.`,
+			`> Review status: COMPLETE\n${integratedFraming().replace("Review status: COMPLETE\n", "")}\nNO FINDINGS.`,
+			`- Review status: COMPLETE\n${integratedFraming().replace("Review status: COMPLETE\n", "")}\nNO FINDINGS.`,
+			`Review status: COMPLETE\n- Overview: first\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nNO FINDINGS.\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nStrengths: focused tests\nRisk areas: integration boundary\nReview status: COMPLETE\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nStrengths: focused tests\nRisk areas: integration boundary\n
+declared prose\nNO FINDINGS.`,
+			`<div>\n${integratedFraming()}\nNO FINDINGS.\n</div>`,
+			"```markdown\n" + integratedFraming() + "\nNO FINDINGS.\n```",
+			`Review status: COMPLETE\nOverview: first\n- title: [P2] absorbed\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: title: embedded\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nRisk areas: out of order\nStrengths: focused tests\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: none\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: Internal server error\nStrengths: focused tests\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nStrengths: unavailable\nRisk areas: integration boundary\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nStrengths: focused tests\nRisk areas: review complete\nNO FINDINGS.`,
+			`Review status: COMPLETE\nOverview: first\nStrengths: focused tests\nRisk areas: integration boundary\nNo findings.`,
+		]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), malformed).toBe("partial");
 		}
 
 		for (const malformed of [
 			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "severity: P9")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "Severity: P2")}`,
+			`${integratedFraming("heading").replace("## Overview\n", "## Overview: inline\n")}\nNO FINDINGS.`,
+			`${integratedFraming()}\n${integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P1] Preserve review evidence").replace("severity: P2", "severity: P2")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("side: RIGHT", "side: MIDDLE")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("in_diff: yes", "in_diff: true")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("pr_related: yes", "pr_related: true")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("confidence: 0.9", "confidence: 1.1")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("why: The changed path drops a required result.", "why: none")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("title: [P2] Preserve review evidence", "title: template")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: ../src/a.ts:10-12")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: /src/a.ts:10-12")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: src/./a.ts:10-12")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: src//a.ts:10-12")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: src\\\\a.ts:10-12")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: src/a.ts:0-2")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("location: src/a.ts:10-12", "location: src/a.ts:12-10")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("confidence: 0.9", "confidence: nope")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "severity: p2")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("side: RIGHT", "side: right")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("confidence: 0.9", "confidence: 2")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("confidence: 0.9", "confidence: 0.9\nconfidence: 0.8")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("pr_related: yes", "confidence: 0.9\npr_related: yes")}`,
+			`${integratedFraming()}\n${integratedCandidate().replace("why: The changed path drops a required result.\nlocation", "location")}`,
+			`${integratedFraming()}\n${integratedCandidate()}\n  borrowed continuation\n${integratedCandidate()}`,
+			`${integratedFraming()}\n${integratedCandidate()}\nNO FINDINGS.`,
+			`${integratedFraming()}\n${integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P2]")}`,
 			`${integratedFraming()}\n## Findings\n${integratedCandidate()}`,
 		]) {
 			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), malformed).toBe("partial");
 		}
+		for (const location of ["src/a.ts:1", "src/a.ts:1-1", "src/nested/file-name.ts:2-20", "repo-wide"]) {
+			const valid = `${integratedFraming()}\n${integratedCandidate().replace("src/a.ts:10-12", location)}`;
+			expect(classifyReviewLane({ tier: "heavy", rawText: valid, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), location).toBe("complete");
+		}
+		const multilineWhy = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.\n  The second line explains the concrete trigger and impact.")}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: multilineWhy, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview: change\nStrengths: clear", exitCode: 0, stopReason: "stop" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview:\nStrengths:", exitCode: 0, stopReason: "stop" })).toBe("partial");
 		expect(classifyReviewLane({ tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop" })).toBe("complete");

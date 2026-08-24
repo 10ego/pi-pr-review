@@ -115,12 +115,14 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
 }
 
 /**
- * The `nonempty` lane is a small Markdown grammar, not a prose detector.  Its
- * accepted forms are deliberately limited and documented in the public tool
- * schema and both reviewer prompts: framing labels may be plain (`Overview:`),
- * bold (`**Overview:**`), or ATX headings (`## Overview`); candidate fields
- * may be plain/bold and optionally list-prefixed.  Blockquotes, code fences,
- * JSON, and other wrappers are not part of the contract.
+ * The `nonempty` lane is a small Markdown grammar, not a prose detector. Its
+ * first nonblank line is the exact `Review status: COMPLETE` attestation;
+ * `INCOMPLETE` and every other status are partial. The remaining productions
+ * are documented in the public tool schema and both reviewer prompts: framing
+ * labels may be plain (`Overview:`), bold (`**Overview:**`), or ATX headings
+ * followed by one value line; candidate fields may be plain/bold and optionally
+ * list-prefixed. Blockquotes, code fences, JSON, and other wrappers are not
+ * part of the contract.
  */
 const CANDIDATE_FIELDS = ["title", "severity", "why", "location", "side", "in_diff", "pr_related", "confidence"] as const;
 const CANDIDATE_SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
@@ -131,6 +133,7 @@ const CODE_FENCE = /^\s*```/m;
 interface MarkdownLabel {
 	readonly field: string;
 	readonly value: string;
+	readonly kind: "inline" | "heading";
 }
 
 interface CandidateBlock {
@@ -152,21 +155,24 @@ function escapePattern(value: string): string {
 
 /** Parse the exact framing forms; headings are accepted only for framing. */
 function framingLabel(line: string): MarkdownLabel | undefined {
-	let match = /^[ \t]*(?:\*\*|__)(Overview|Strengths|Risk areas):(?:\*\*|__)[ \t]*(.*)$/i.exec(line);
-	if (match) return { field: match[1]!, value: match[2] ?? "" };
-	match = /^[ \t]*(Overview|Strengths|Risk areas):[ \t]*(.*)$/i.exec(line);
-	if (match) return { field: match[1]!, value: match[2] ?? "" };
-	match = /^[ \t]*#{1,6}[ \t]+(?:(?:\*\*|__)(Overview|Strengths|Risk areas):(?:\*\*|__)|(Overview|Strengths|Risk areas):?)[ \t]*(.*)$/i.exec(line);
-	if (match) return { field: (match[1] ?? match[2])!, value: match[3] ?? "" };
+	if (/^[ \t]/.test(line)) return undefined;
+	let match = /^\*\*(Overview|Strengths|Risk areas):\*\*[ \t]*(.*)$/.exec(line);
+	if (match) return { field: match[1]!, value: match[2] ?? "", kind: "inline" };
+	match = /^__(Overview|Strengths|Risk areas):__[ \t]*(.*)$/.exec(line);
+	if (match) return { field: match[1]!, value: match[2] ?? "", kind: "inline" };
+	match = /^(Overview|Strengths|Risk areas):[ \t]*(.*)$/.exec(line);
+	if (match) return { field: match[1]!, value: match[2] ?? "", kind: "inline" };
+	match = /^#{1,6}[ \t]+(?:(?:\*\*)(Overview|Strengths|Risk areas):(?:\*\*)|(?:__)(Overview|Strengths|Risk areas):(?:__)|(Overview|Strengths|Risk areas):?)[ \t]*$/.exec(line);
+	if (match) return { field: (match[1] ?? match[2] ?? match[3])!, value: "", kind: "heading" };
 	return undefined;
 }
 
 /** Candidate fields are one-line values, with optional Markdown list/bold syntax. */
 function candidateLabel(line: string): MarkdownLabel | undefined {
 	const names = CANDIDATE_FIELDS.map(escapePattern).join("|");
-	const match = new RegExp(`^[ \\t]*(?:[-*+][ \\t]+)?(?:(?:\\*\\*|__)(${names}):(?:\\*\\*|__)|(${names}):)[ \\t]*(.*)$`, "i").exec(line);
+	const match = new RegExp(`^[ \t]*(?:[-*+][ \t]+)?(?:(?:\\*\\*)(${names}):(?:\\*\\*)|(?:__)(${names}):(?:__)|(${names}):)[ \t]*(.*)$`).exec(line);
 	if (!match) return undefined;
-	return { field: (match[1] ?? match[2])!, value: match[3] ?? "" };
+	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
 
 function canonicalField(field: string): string {
@@ -174,8 +180,10 @@ function canonicalField(field: string): string {
 }
 
 function meaningfulValue(value: string): boolean {
-	const normalized = value.trim().replace(/^[>*+\\-][ \t]+/, "").trim();
-	return normalized.length >= 2 && !PLACEHOLDER_ONLY.test(normalized) && /[\p{L}\p{N}]/u.test(normalized);
+	const normalized = value.trim();
+	const words = normalized.match(/[\p{L}\p{N}]+/gu) ?? [];
+	return words.length >= 2 && !PLACEHOLDER_ONLY.test(normalized) &&
+		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
 
 function confidenceValue(value: string): boolean {
@@ -185,92 +193,98 @@ function confidenceValue(value: string): boolean {
 	return Number.isFinite(number) && number >= 0 && number <= 1;
 }
 
+/** Validate the prompt's repo-relative/path:positive-line-range location syntax. */
+function safeLocation(value: string): boolean {
+	const normalized = value.trim();
+	if (normalized === "repo-wide") return true;
+	const match = /^(.+):(\d+)(?:-(\d+))?$/.exec(normalized);
+	if (!match) return false;
+	const locationPath = match[1]!;
+	const start = Number(match[2]);
+	const end = match[3] === undefined ? start : Number(match[3]);
+	if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(end) || end < start) return false;
+	if (!locationPath || locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
+	if (/[\\\u0000-\u001f\u007f]/.test(locationPath)) return false;
+	const segments = locationPath.split("/");
+	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
+}
+
 function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 	if (CANDIDATE_FIELDS.some((field) => !fields.has(field))) return false;
-	const title = fields.get("title")!;
-	const titleText = title.trim().replace(/^\[(?:P[0-3]|nit)\][ \t]+/, "");
-	const severity = fields.get("severity")!;
+	const title = fields.get("title")!.trim();
+	const titleMatch = /^\[(P0|P1|P2|P3|nit)\][ \t]+(.+)$/.exec(title);
+	const severity = fields.get("severity")!.trim();
 	const why = fields.get("why")!;
 	const location = fields.get("location")!;
-	const side = fields.get("side")!;
-	const inDiff = fields.get("in_diff")!;
-	const prRelated = fields.get("pr_related")!;
-	return /^\[(?:P[0-3]|nit)\][ \t]+\S/.test(title.trim()) &&
-		meaningfulValue(titleText) &&
-		CANDIDATE_SEVERITIES.has(severity.trim()) &&
-		meaningfulValue(why) &&
-		/^(?:repo-wide|(?:[A-Za-z0-9._-]+[\\/])*[A-Za-z0-9._-]+:\d+(?:-\d+)?)$/.test(location.trim()) &&
-		/^(?:RIGHT|LEFT)$/.test(side.trim()) &&
-		/^(?:yes|no)$/.test(inDiff.trim()) &&
-		/^(?:yes|no)$/.test(prRelated.trim()) &&
+	const side = fields.get("side")!.trim();
+	const inDiff = fields.get("in_diff")!.trim();
+	const prRelated = fields.get("pr_related")!.trim();
+	return !!titleMatch && meaningfulValue(titleMatch[2]!) &&
+		CANDIDATE_SEVERITIES.has(severity) && titleMatch[1] === severity &&
+		meaningfulValue(why) && safeLocation(location) &&
+		/^(?:RIGHT|LEFT)$/.test(side) &&
+		/^(?:yes|no)$/.test(inDiff) &&
+		/^(?:yes|no)$/.test(prRelated) &&
 		confidenceValue(fields.get("confidence")!);
 }
 
-function nonemptyLines(lines: readonly string[]): readonly string[] {
-	return lines
-		.map((line) => line.replace(/^[ \t]*(?:[-*+][ \t]+|>[ \t]*)/, "").trim())
-		.filter((line) => line.length > 0);
+function framingValueHasReservedProduction(value: string): boolean {
+	if (value.includes("NO FINDINGS.") || /Review status\s*:/i.test(value)) return true;
+	if (/```|<\/?[A-Za-z][^>]*>|<!--[\s\S]*?-->/.test(value)) return true;
+	if (/^[ \t]*(?:[-*+]|>)[ \t]+/.test(value)) return true;
+	return /\b(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)\s*:/i.test(value);
 }
 
-function framingValueIsMeaningful(valueLines: readonly string[]): boolean {
-	const values = nonemptyLines(valueLines);
-	return values.length > 0 && values.some((value) => meaningfulValue(value)) && !values.every((value) => PLACEHOLDER_ONLY.test(value));
+function isReservedContractLine(line: string): boolean {
+	const value = line.trim();
+	return value === "NO FINDINGS." || /^Review status\s*:/i.test(value) ||
+		!!framingLabel(value) || !!candidateLabel(line) || /^```/.test(value) ||
+		/^<\/?[A-Za-z][^>]*>$/.test(value) || /^<!--/.test(value);
 }
 
-/** Failure-state markers are checked only in top-level framing, never candidate fields. */
+/** Only obvious, deterministic placeholders are defense-in-depth; COMPLETE is the primary contract. */
 function topLevelFailure(text: string): boolean {
-	const value = normalizeReviewText(text);
-	return [
-		/\b(?:internal|fatal|server|model|tool)\s+error\b/i,
-		/\b(?:review|analysis|assessment)\s+(?:complete|completed|failed|skipped|unavailable)\b/i,
-		/\b(?:model|server|tool|review)\s+(?:failed|failure|error|unavailable)\b/i,
-		/\b(?:access|permission)\s+(?:denied|failed|unavailable)\b/i,
-		/\b(?:repository|repo|diff|patch|source context|review context|changed files?)\b.{0,40}\b(?:access\s+)?(?:denied|missing|unavailable|not\s+(?:provided|available|accessible)|failed)\b/i,
-		/\b(?:i|we)\s+(?:do not|don't)\s+have\s+access\s+to\b/i,
-		/\b(?:i|we|the reviewer|the review agent|the review model)\s+(?:could not|couldn't|cannot|can't|am unable to|are unable to|was unable to|were unable to|failed to|refuse|refused to)\s+(?:perform|provide|review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete|access|read)\b/i,
-		/\b(?:unable|cannot|can't|could not|couldn't)\s+(?:to\s+)?(?:review|inspect|analy[sz]e|evaluate|examine|assess|complete)\b/i,
-		/\b(?:no|missing)\s+(?:diff|patch|source context|review context)\b/i,
-		/\breview complete\b/i,
-	].some((signal) => signal.test(value));
+	return text.split("\n").some((line) => /^(?:internal server error|fatal error|access denied|review (?:failed|unavailable|skipped)|no (?:diff|patch|source context|review context)(?: was)? (?:provided|available|accessible))[.!]?$/i.test(line.trim()));
 }
 
 /**
- * Parse and validate the integrated deep-lane grammar. The line indexes make
- * the top-level failure check exclude only complete candidate spans, so a
- * candidate's `why` may accurately discuss repository/diff access failures.
+ * Parse and validate the integrated deep-lane grammar statefully. COMPLETE is
+ * an explicit reviewer attestation: every other status, a missing/later/
+ * wrapped/duplicate status, or a malformed production is partial. Framing has
+ * exactly one nonempty value line per field. Candidate `why` may have
+ * indented continuation lines; reserved productions cannot be continuations.
  */
 function parseIntegratedCompletion(text: string): boolean {
-	if (CODE_FENCE.test(text)) return false;
+	if (CODE_FENCE.test(text) || /<\/?[A-Za-z][^>]*>/.test(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
+	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+	if (cursor >= lines.length || lines[cursor] !== "Review status: COMPLETE") return false;
+	const statusIndex = cursor;
+	if (lines.some((line, index) => index !== statusIndex && /^Review status\s*:/i.test(line.trim()))) return false;
+	cursor++;
 	const framingValues: string[] = [];
 	for (const expected of FRAMING_LABELS) {
 		while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 		const label = framingLabel(lines[cursor] ?? "");
 		if (!label || canonicalField(label.field) !== expected.toLowerCase()) return false;
-		const values = [label.value];
 		cursor++;
-		while (cursor < lines.length) {
-			const nextFraming = framingLabel(lines[cursor]!);
-			if (nextFraming) break;
-			if (expected === "Risk areas") {
-				const line = lines[cursor]!.trim();
-				if (line === "NO FINDINGS." || canonicalField(candidateLabel(lines[cursor] ?? "")?.field ?? "") === "title") break;
-				if (/^#{1,6}[ \t]+/.test(line)) return false;
-			}
-			values.push(lines[cursor]!);
+		let value = label.value;
+		if (label.kind === "heading") {
+			if (cursor >= lines.length || !lines[cursor]!.trim() || isReservedContractLine(lines[cursor]!)) return false;
+			value = lines[cursor]!;
 			cursor++;
 		}
-		if (!framingValueIsMeaningful(values)) return false;
-		framingValues.push(...values);
+		if (!meaningfulValue(value) || framingValueHasReservedProduction(value)) return false;
+		framingValues.push(value);
 	}
+	if (topLevelFailure(framingValues.join("\n"))) return false;
 
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-	const afterFraming = cursor;
 	if (cursor < lines.length && lines[cursor]!.trim() === "NO FINDINGS.") {
 		cursor++;
 		while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-		return cursor === lines.length && !topLevelFailure(framingValues.join("\n"));
+		return cursor === lines.length;
 	}
 
 	const candidates: CandidateBlock[] = [];
@@ -287,17 +301,22 @@ function parseIntegratedCompletion(text: string): boolean {
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) return false;
 			fields.set(expected, field.value);
 			cursor++;
+			if (expected !== "why") continue;
+			const whyLines = [field.value];
+			while (cursor < lines.length) {
+				const continuation = lines[cursor]!;
+				if (!continuation.trim()) break;
+				if (candidateLabel(continuation) || isReservedContractLine(continuation)) break;
+				if (!/^[ \t]{2,}\S/.test(continuation) || /^[ \t]+(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) return false;
+				whyLines.push(continuation.trim());
+				cursor++;
+			}
+			fields.set("why", whyLines.join("\n"));
 		}
 		if (!validCandidateFields(fields)) return false;
 		candidates.push({ start, end: cursor, fields });
 	}
-	if (candidates.length === 0) return false;
-	const candidateLineIndexes = new Set(candidates.flatMap((candidate) =>
-		Array.from({ length: candidate.end - candidate.start }, (_, offset) => candidate.start + offset)));
-	const topLevel = lines
-		.map((line, index) => index >= afterFraming && candidateLineIndexes.has(index) ? "" : line)
-		.join("\n");
-	return !topLevelFailure(topLevel);
+	return candidates.length > 0;
 }
 
 function hasMeaningfulField(text: string, field: string): boolean {
