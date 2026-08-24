@@ -19,6 +19,7 @@ mock.module("@earendil-works/pi-tui", () => ({
 	fuzzyFilter: (items: unknown[]) => items,
 	getKeybindings: () => ({ matches: () => false }),
 	Input: class {},
+	matchesKey: () => false,
 	SelectList: class {},
 	SettingsList: class {},
 	Text: class {},
