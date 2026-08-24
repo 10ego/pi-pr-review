@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/10ego/pi-pr-review/compare/v1.14.5...v1.15.0) (2026-08-24)
+
+
+### Features
+
+* **review:** add deep single-pass review mode ([#86](https://github.com/10ego/pi-pr-review/issues/86)) ([6668c63](https://github.com/10ego/pi-pr-review/commit/6668c63797dc8de1cf154a6d46a1360a24cfb26d))
+
 ## [1.14.5](https://github.com/10ego/pi-pr-review/compare/v1.14.4...v1.14.5) (2026-08-24)
 
 
