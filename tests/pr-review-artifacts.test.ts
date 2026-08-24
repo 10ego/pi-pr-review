@@ -102,6 +102,10 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({
 			tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 		})).toBe("failed");
+		// Degenerate refusals do not complete a nonempty lane.
+		expect(classifyReviewLane({
+			tier: "heavy", rawText: "I could not access the diff.", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("partial");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview: change\nStrengths: clear", exitCode: 0, stopReason: "stop" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview:\nStrengths:", exitCode: 0, stopReason: "stop" })).toBe("partial");
 		expect(classifyReviewLane({

@@ -1422,6 +1422,11 @@ const ReviewSubagentsParams = Type.Object({
 	// cause malformed markup to absorb every later argument into that string.
 	passes: Type.Array(
 		Type.Object({
+			expected_output: Type.Optional(
+				StringEnum(["review_lane", "nonempty"] as const, {
+					description: "Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: any nonempty terminal output completes; use for an integrated pass that carries framing prose around its findings.",
+				}),
+			),
 			id: Type.Optional(
 				Type.String({
 					description: "Stable pass label used in the ordered batch result, e.g. overview, conventions, correctness.",
@@ -1889,6 +1894,7 @@ export default function registerPrReviewSubagents(
 				key: pass.artifactKey,
 				tier: pass.tier,
 				minorHygiene: pass.minorHygiene === true,
+				...(pass.expectedOutput ? { expectedOutput: pass.expectedOutput } : {}),
 			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}

@@ -35,6 +35,8 @@ export interface ExpectedReviewLane {
 	readonly key: string;
 	readonly tier: "light" | "medium" | "heavy";
 	readonly minorHygiene: boolean;
+	/** Completion contract captured at dispatch so cache-restore revalidates identically. */
+	readonly expectedOutput?: "review_lane" | "nonempty";
 }
 
 export interface ReviewLaneArtifact {
@@ -120,7 +122,13 @@ function hasMeaningfulField(text: string, field: string): boolean {
 function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	const text = input.rawText.trim();
 	if (!text) return false;
-	if (input.expectedOutput === "nonempty") return true;
+	// The nonempty contract accepts framing prose around findings, but not
+	// degenerate refusals: the lane must either carry candidate evidence or a
+	// substantive statement (overview/no-findings text), not a bare refusal.
+	if (input.expectedOutput === "nonempty") {
+		if (["title", "severity", "why", "overview"].some((field) => hasMeaningfulField(text, field))) return true;
+		return text.length >= 16 && !/^(?:i could not|unable to|cannot|i cannot|error|failed)[^.]*\.*$/i.test(text);
+	}
 	if (input.tier === "light") {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];
 		return fields.every((field) => hasMeaningfulLightSection(text, field, fields));
