@@ -220,11 +220,12 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	const full = tokens.includes("--full");
 	const majorOnly = tokens.includes("--major-only");
 	const balanced = tokens.includes("--balanced");
+	const deep = tokens.includes("--deep");
 	if (force && disabled) {
 		return { matched: true, error: "--comment and --no-comment cannot be used together" };
 	}
-	if ([full, majorOnly, balanced].filter(Boolean).length > 1) {
-		return { matched: true, error: "--full, --major-only, and --balanced cannot be used together" };
+	if ([full, majorOnly, balanced, deep].filter(Boolean).length > 1) {
+		return { matched: true, error: "--full, --major-only, --balanced, and --deep cannot be used together" };
 	}
 	return {
 		matched: true,

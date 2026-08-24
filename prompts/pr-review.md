@@ -1,6 +1,6 @@
 ---
 description: Review a GitHub Pull Request and return a Markdown review (nit → P0)
-argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced]"
+argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced|--deep]"
 ---
 You are acting as a senior code reviewer for pull request **#$1** in the GitHub repository of the current working directory.
 
@@ -22,6 +22,8 @@ When `$@` includes `--major-only`, use the same four heavy lenses but omit P3/ni
 
 When `$@` includes `--full`, run the comprehensive six-pass topology: add the medium conventions/maintainability pass and let every pass report all qualifying severities from nit through P0. This is the higher-token option for exhaustive minor/style coverage. Do not combine `--full`, `--major-only`, or `--balanced` with one another.
 
+When `$@` includes `--deep`, replace the fan-out topology with **one integrated review pass**: a single heavy reviewer holds the whole PR at once — what it is trying to do, whether the approach is sound, and how the changed code behaves in its real callers and tests — instead of five narrow lenses each seeing a slice. Use it for ordinary diffs where holistic judgment beats parallel coverage; the default fan-out remains better for very large or heavily sharded diffs. Do not combine `--deep` with `--full`, `--major-only`, or `--balanced`.
+
 ### Reviewer topology (parallel tiered subagents, with inline fallback)
 
 You are the **orchestrator**. You own GitHub reads, skip decisions, convention-file discovery when `--full` needs it, selecting at most one discovered trusted baseline name, final validation/classification, and Markdown synthesis. The extension owns verification profile resolution, argv, deadlines, worktree, original-POSIX-group supervision, cleanup, and every GitHub write. You never perform direct GitHub writes. The extension captures invocation publishing intent and host target binding before execution, then owns any configured review publication after terminal synthesis. On a later turn, the extension intercepts a direct interactive/RPC request to post the completed cached review and publishes it without an agent turn. Subagents are non-modifying reviewers: they receive PR context from you and return candidate evidence only.
@@ -38,6 +40,8 @@ If the `review_subagents` batch tool is available, prefer it over multiple singl
 | `performance-resources` | `heavy` | `configured` | Step 5 performance, cleanup/ownership, scalability, I/O, memory, and contention regressions |
 
 By default, and when `--balanced` is present, call `review_subagents` with `major_only: true`, `minor_hygiene: true`, and exactly these five passes: `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`. Do **not** dispatch `conventions-maintainability`. For an ordinary diff use `max_parallel: 5`; for 200,000–399,999 byte multi-file diffs use `shard_count: 2` and `max_parallel: 10`; for diffs at least 400,000 bytes with at least three changed files use `shard_count: 3` and `max_parallel: 15`. The four heavy passes remain P0–P2-only. The overview remains context-only and may return at most three direct-diff P3/nit candidates; it must not use tools or conduct a repository audit.
+
+When `--deep` is present, call `review_subagents` with exactly one pass: id `deep-review`, `tier: heavy`, `tool_policy: configured`, `major_only: false`, `minor_hygiene: false`, and `max_parallel: 1`. The objective must be the integrated whole-PR review: read the complete diff and the PR's stated intent, explore the surrounding repository with configured tools (callers, tests, sibling implementations) as needed to confirm or refute each candidate, and report every substantiated finding from nit through P0 with severity proportional to real impact — plus a brief overview, verification note, and the same Markdown contract as any other mode. There is no separate overview lane and no sharding. Register exactly one expected lane artifact for this pass.
 
 When `--major-only` is present, use the same five passes and parallelism with `major_only: true` and `minor_hygiene: false`. This removes P3/nit exploration without removing any major correctness/security/resource lens.
 

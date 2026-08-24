@@ -72,7 +72,7 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	test("supports an opt-in major-only mode without dropping heavy-lens coverage", () => {
-		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced]"');
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--full|--major-only|--balanced|--deep]"');
 		expect(prompt).toContain("When `$@` includes `--major-only`");
 		expect(prompt).toContain("exactly these five passes: `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
 		expect(prompt).toContain("Do **not** dispatch `conventions-maintainability`");
