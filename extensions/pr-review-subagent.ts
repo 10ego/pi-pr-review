@@ -438,7 +438,7 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false): string {
+function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: "review_lane" | "nonempty"): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
@@ -480,9 +480,16 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
 			"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
 			"- confidence: a float 0.0-1.0",
-			majorOnly
-				? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
-				: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
+			// A nonempty completion contract lets the pass carry framing prose
+			// (overview, strengths, risk) around its findings; the exact-match
+			// sentinel would forbid that and strand the lane as partial.
+			expectedOutput === "nonempty"
+				? majorOnly
+					? "If there are no substantiated P0-P2 findings, state that plainly in prose after your overview; do not emit the candidate fields."
+					: "If there are genuinely no findings at any severity, state that plainly in prose after your overview; do not emit the candidate fields."
+				: majorOnly
+					? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
+					: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
 		);
 	}
 	lines.push("Do not attempt to post GitHub comments or modify files. Reviewing only.");
@@ -923,6 +930,7 @@ async function runSubagentAttempt(
 				pass.tier,
 				pass.majorOnly === true,
 				pass.minorHygiene && pass.tier === "light",
+				pass.expectedOutput,
 			),
 		);
 		args.push("--append-system-prompt", tmp.filePath);
@@ -1841,6 +1849,7 @@ export default function registerPrReviewSubagents(
 					// Every actual shard receives an explicit identity, including shard 1.
 					// The unsharded compatibility path retains the caller's exact base ID.
 					id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
+					expectedOutput: pass.expected_output,
 					tier,
 					objective: shard
 						? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
