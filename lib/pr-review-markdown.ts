@@ -687,7 +687,8 @@ export function synthesizeReviewArtifact(input: {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
 		.filter((lane) => !!lane && typeof lane.key === "string" && !!lane.key &&
-			new Set(["light", "medium", "heavy"]).has(lane.tier) && typeof lane.minorHygiene === "boolean")
+			new Set(["light", "medium", "heavy"]).has(lane.tier) && typeof lane.minorHygiene === "boolean" &&
+			(lane.expectedOutput === undefined || lane.expectedOutput === "review_lane" || lane.expectedOutput === "nonempty"))
 		.map((lane) => Object.freeze({ ...lane })));
 	const expectedLaneCount = expectedLaneDescriptors.length;
 	const exactLaneCoverage = expectedLaneCount > 0 && lanes.length === expectedLaneCount &&

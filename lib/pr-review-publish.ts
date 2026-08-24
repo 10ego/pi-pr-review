@@ -851,6 +851,7 @@ export class CompletedReviewCache {
 						classifyReviewLane({
 							tier: expected.tier,
 							minorHygiene: expected.minorHygiene,
+							...(expected.expectedOutput ? { expectedOutput: expected.expectedOutput } : {}),
 							rawText: lane.rawText,
 							exitCode: lane.exitCode,
 							stopReason: lane.stopReason,
