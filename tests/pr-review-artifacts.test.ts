@@ -102,10 +102,26 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({
 			tier: "heavy", rawText: "", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
 		})).toBe("failed");
-		// Degenerate refusals do not complete a nonempty lane.
+		// Degenerate refusals do not complete a nonempty lane — bare, prefixed
+		// with an overview label, or embedded mid-text.
+		for (const refusal of [
+			"I could not access the diff.",
+			"Overview: I could not access the diff.",
+			"Sorry, I could not access the diff.",
+			"I was unable to access the diff.",
+			"No diff provided.",
+			"Cannot read the repository files.",
+		]) {
+			expect(classifyReviewLane({
+				tier: "heavy", rawText: refusal, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+			})).toBe("partial");
+		}
+		// Substantive framing still completes.
 		expect(classifyReviewLane({
-			tier: "heavy", rawText: "I could not access the diff.", exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
-		})).toBe("partial");
+			tier: "heavy",
+			rawText: "The PR adds a focused mode. Strengths include tight scoping and matching tests. No findings at any severity.",
+			exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+		})).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview: change\nStrengths: clear", exitCode: 0, stopReason: "stop" })).toBe("complete");
 		expect(classifyReviewLane({ tier: "light", rawText: "Overview:\nStrengths:", exitCode: 0, stopReason: "stop" })).toBe("partial");
 		expect(classifyReviewLane({

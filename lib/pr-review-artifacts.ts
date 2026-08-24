@@ -114,6 +114,9 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
 		.some((line) => line.replace(/^[ \\t]*(?:[-*>][ \\t]*)+/, "").trim().length > 0);
 }
 
+/** Refusal language anywhere in a nonempty lane marks it partial, not complete. */
+const REFUSAL_SIGNAL = /(?:\b(?:i could not|i can'?t|cannot|unable to|failed to|no diff provided|nothing to review)\b)/i;
+
 function hasMeaningfulField(text: string, field: string): boolean {
 	const match = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im").exec(text);
 	return !!match?.[1]?.trim();
@@ -123,11 +126,12 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	const text = input.rawText.trim();
 	if (!text) return false;
 	// The nonempty contract accepts framing prose around findings, but not
-	// degenerate refusals: the lane must either carry candidate evidence or a
-	// substantive statement (overview/no-findings text), not a bare refusal.
+	// degenerate refusals: check refusal language anywhere first, then accept
+	// candidate evidence or a substantive statement.
 	if (input.expectedOutput === "nonempty") {
+		if (REFUSAL_SIGNAL.test(text)) return false;
 		if (["title", "severity", "why", "overview"].some((field) => hasMeaningfulField(text, field))) return true;
-		return text.length >= 16 && !/^(?:i could not|unable to|cannot|i cannot|error|failed)[^.]*\.*$/i.test(text);
+		return text.length >= 16;
 	}
 	if (input.tier === "light") {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];

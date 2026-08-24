@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -595,6 +596,54 @@ describe("auto-approve priority gate", () => {
 		const invocation = gate.consume()!;
 		expect(invocation.allowStaleApprovals).toBeFalse();
 		expect(invocation.approveMaxPriorityLevel).toBe("off");
+	});
+
+	test("a persisted deep completion contract round-trips and revalidates framing prose as complete", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "disabled" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, autoPost: { value: false, valid: true, source: "user" } as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const deepLaneText = "## Overview\nThe PR adds deep mode.\n## Strengths\n- focused\nNo findings at any severity.";
+		const record = cache.replace(
+			{ ...approveReview, findings: [], verdict: "approve" },
+			invocation as any,
+			repository,
+			{
+				publicationBody: "# PR Review\n\n**Verdict:** approve\n\n## Overview\nDeep mode.\n\n## Verification\nNot run.\n\n## Findings\nNo findings.\n\n## Lane completeness\nAll requested lanes completed.",
+				synthesisQuality: "fully_parsed",
+				rawText: "# PR Review\n\n**Verdict:** approve\n\n## Overview\nDeep mode.\n\n## Verification\nNot run.\n\n## Findings\nNo findings.\n\n## Lane completeness\nAll requested lanes completed.",
+				laneArtifacts: [{
+					generation: 1, key: "call:0", passId: "deep-review", tier: "heavy",
+					rawText: deepLaneText, exitCode: 0, stopReason: "stop", lifecycle: "complete",
+					attempts: [], fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+				}],
+				expectedLaneDescriptors: [{ key: "call:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+				expectedLaneCount: 1,
+				completeness: "complete",
+				mergeApprovalEligible: true,
+				diagnostics: [],
+			},
+		).record;
+		const persisted = cache.persist(record, { id: "s", startedAt: "2026-01-01T00:00:00.000Z" });
+		// The descriptor — including its completion contract — persists intact.
+		expect(persisted.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
+		expect(persisted.laneArtifacts?.[0]).toMatchObject({ stopReason: "stop", lifecycle: "complete" });
+		// Restore-time revalidation is the exact classify call CompletedReviewCache
+		// makes with the persisted descriptor: framing prose stays complete under
+		// the nonempty contract and is partial under the default contract — the
+		// persisted field is load-bearing, not incidental.
+		const descriptor = persisted.expectedLaneDescriptors![0]!;
+		const lane = persisted.laneArtifacts![0]!;
+		const classify = (withContract: boolean) => classifyReviewLane({
+			tier: descriptor.tier,
+			minorHygiene: descriptor.minorHygiene,
+			...(withContract && descriptor.expectedOutput ? { expectedOutput: descriptor.expectedOutput } : {}),
+			rawText: lane.rawText,
+			exitCode: lane.exitCode,
+			stopReason: lane.stopReason,
+			errorMessage: lane.errorMessage,
+		});
+		expect(classify(true)).toBe("complete");
+		expect(classify(false)).toBe("partial");
 	});
 
 	test("persisted invocation without stale-approval settings defaults safely on restore", () => {

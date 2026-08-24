@@ -669,7 +669,9 @@ function parsePersistedLaneArtifacts(value: unknown): readonly ReviewLaneArtifac
 		!Number.isInteger(lane.generation) || typeof lane.key !== "string" || typeof lane.passId !== "string" ||
 		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) ||
 		(lane.minorHygiene !== undefined && typeof lane.minorHygiene !== "boolean") || typeof lane.rawText !== "string" ||
-		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) || !Array.isArray(lane.attempts) ||
+		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) ||
+		(lane.stopReason !== undefined && typeof lane.stopReason !== "string") ||
+		!Array.isArray(lane.attempts) ||
 		lane.attempts.some((attempt) => !isObject(attempt) || !Number.isInteger(attempt.ordinal) ||
 			typeof attempt.rawText !== "string" || !Number.isInteger(attempt.exitCode) || !lifecycles.has(String(attempt.lifecycle)))
 	)) return undefined;
