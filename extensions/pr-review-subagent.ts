@@ -1424,7 +1424,7 @@ const ReviewSubagentsParams = Type.Object({
 		Type.Object({
 			expected_output: Type.Optional(
 				StringEnum(["review_lane", "nonempty"] as const, {
-					description: "Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: completes when the output carries framing prose or candidate evidence and is not a bare refusal; use for an integrated pass that returns overview framing around its findings.",
+					description: "Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: after a successful terminal stop, completes for substantive framing prose or candidate evidence that is not a review refusal; empty, arbitrary bytes, and refusal output remain incomplete. Use for an integrated pass that returns overview framing around its findings.",
 				}),
 			),
 			id: Type.Optional(

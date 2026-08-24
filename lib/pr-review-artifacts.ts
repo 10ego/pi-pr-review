@@ -114,12 +114,41 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
 		.some((line) => line.replace(/^[ \\t]*(?:[-*>][ \\t]*)+/, "").trim().length > 0);
 }
 
-/** Refusal language anywhere in a nonempty lane marks it partial, not complete. */
-const REFUSAL_SIGNAL = /(?:\b(?:i could not|i can'?t|cannot|unable to|failed to|no diff provided|nothing to review)\b)/i;
+/**
+ * Review-output refusal signals are deliberately scoped to review access and
+ * completion, rather than matching generic inability language. A finding such
+ * as "the refresh path is unable to renew a token" is valid evidence and must
+ * not downgrade an otherwise complete lane.
+ */
+const REVIEW_REFUSAL_SIGNALS = [
+	/\b(?:i|we|the reviewer|the review agent|the review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
+	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to|am unable to|are unable to|wasn'?t able to|weren'?t able to)\s+(?:review|inspect|analy[sz]e|evaluate|examine|assess|conduct|complete)\b/i,
+	/\b(?:i|we|the reviewer|the review agent|the review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load)\s+(?:the\s+)?(?:diff|patch|changes?|pull request|pr\b|repository|repo(?:sitory)?|changed files?|review context)\b/i,
+	/\b(?:the|this)\s+(?:review|reviewer|review agent|review model)\s+(?:could not|couldn'?t|cannot|can'?t|am unable to|are unable to|was unable to|were unable to|failed to|am not able to|are not able to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load|complete)\b/i,
+	/(?:^|[\n.!?:;,])\s*(?:could not|couldn'?t|cannot|can'?t|unable to|failed to|was unable to|were unable to|am unable to|are unable to|wasn'?t able to|weren'?t able to)\s+(?:access|read|inspect|examine|retrieve|obtain|load)\s+(?:the\s+)?(?:diff|patch|changes?|pull request|pr\b|repository|repo(?:sitory)?|changed files?|review context)\b/i,
+	/\b(?:no\s+(?:diff|patch|review context)\s+(?:(?:was|were)\s+)?(?:provided|available|accessible)|nothing\s+to\s+review)\b/i,
+	/\b(?:diff|patch|review context)\s+(?:was|were)\s+(?:not\s+)?(?:provided|available|accessible)\b/i,
+	/\bchanges?\s+(?:was|were)\s+not\s+provided\b/i,
+	/\b(?:review|analysis|assessment)\s+(?:failed|was not possible|is unavailable|could not be completed)\b/i,
+] as const;
+
+function hasSubstantiveProse(text: string): boolean {
+	const words = text.match(/[A-Za-z]{2,}/g) ?? [];
+	return words.length >= 2 || words.some((word) => new Set(word.toLowerCase()).size > 1);
+}
+
+function hasReviewRefusalSignal(text: string): boolean {
+	return REVIEW_REFUSAL_SIGNALS.some((signal) => signal.test(text));
+}
 
 function hasMeaningfulField(text: string, field: string): boolean {
 	const match = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im").exec(text);
 	return !!match?.[1]?.trim();
+}
+
+function hasMeaningfulNonemptyField(text: string, field: string): boolean {
+	const match = new RegExp(`^[ \\t]*(?:[-*][ \\t]*)?${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im").exec(text);
+	return !!match?.[1]?.trim() && hasSubstantiveProse(match[1]!);
 }
 
 function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
@@ -129,9 +158,11 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	// degenerate refusals: check refusal language anywhere first, then accept
 	// candidate evidence or a substantive statement.
 	if (input.expectedOutput === "nonempty") {
-		if (REFUSAL_SIGNAL.test(text)) return false;
-		if (["title", "severity", "why", "overview"].some((field) => hasMeaningfulField(text, field))) return true;
-		return text.length >= 16;
+		if (hasReviewRefusalSignal(text)) return false;
+		if (["title", "why", "overview"].some((field) => hasMeaningfulNonemptyField(text, field))) return true;
+		// Do not let arbitrary bytes satisfy the contract: prose must contain
+		// at least two words (or one varied word) in addition to minimum length.
+		return text.length >= 16 && hasSubstantiveProse(text) && /\s/.test(text);
 	}
 	if (input.tier === "light") {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];
@@ -166,11 +197,16 @@ export class ReviewLaneArtifactRegistry {
 	expect(generation: number, lanes: readonly ExpectedReviewLane[]): boolean {
 		if (
 			this.generation !== generation || lanes.length === 0 ||
-			lanes.some((lane) => !lane.key || !new Set(["light", "medium", "heavy"]).has(lane.tier))
+			lanes.some((lane) => !lane.key || !new Set(["light", "medium", "heavy"]).has(lane.tier) ||
+				(lane.expectedOutput !== undefined && !new Set(["review_lane", "nonempty"]).has(lane.expectedOutput)))
 		) return false;
 		for (const lane of lanes) {
 			const existing = this.expectedLanes.get(lane.key);
-			if (existing && (existing.tier !== lane.tier || existing.minorHygiene !== lane.minorHygiene)) return false;
+			if (existing && (
+				existing.tier !== lane.tier ||
+				existing.minorHygiene !== lane.minorHygiene ||
+				(existing.expectedOutput ?? "review_lane") !== (lane.expectedOutput ?? "review_lane")
+			)) return false;
 			this.expectedLanes.set(lane.key, Object.freeze({ ...lane }));
 		}
 		return true;

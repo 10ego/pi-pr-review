@@ -802,7 +802,8 @@ export class CompletedReviewCache {
 		const expectedLaneDescriptors = Array.isArray(value.expectedLaneDescriptors) &&
 			value.expectedLaneDescriptors.length <= 200 && value.expectedLaneDescriptors.every((lane) =>
 				isObject(lane) && typeof lane.key === "string" && !!lane.key &&
-				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean") &&
+				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean" &&
+				(lane.expectedOutput === undefined || lane.expectedOutput === "review_lane" || lane.expectedOutput === "nonempty")) &&
 			new Set(value.expectedLaneDescriptors.map((lane) => (lane as Record<string, unknown>).key)).size ===
 				value.expectedLaneDescriptors.length
 			? value.expectedLaneDescriptors as unknown as ExpectedReviewLane[]

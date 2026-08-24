@@ -108,13 +108,37 @@ describe("semantic lane completion", () => {
 			"I could not access the diff.",
 			"Overview: I could not access the diff.",
 			"Sorry, I could not access the diff.",
+			"Overview: Unable to review this pull request.",
+			"Overview: I am unable to review this pull request.",
+			"I couldn't complete the review.",
 			"I was unable to access the diff.",
+			"Could not access the repository.",
 			"No diff provided.",
+			"The diff was not provided.",
+			"Nothing to review.",
 			"Cannot read the repository files.",
 		]) {
 			expect(classifyReviewLane({
 				tier: "heavy", rawText: refusal, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
-			})).toBe("partial");
+			}), refusal).toBe("partial");
+		}
+		// Candidate prose may discuss product behavior that cannot do something;
+		// generic inability wording alone is not a reviewer refusal.
+		for (const evidence of [
+			"Finding: the refresh path is unable to renew a token after expiry.",
+			"The implementation failed to refresh the token when the session expired.",
+			"The cache could not decode an expired token, so the request is rejected.",
+			"The sync component is unable to access repository metadata during refresh.",
+			"Finding: changes were not available to subscribers after reconnect, so clients remained stale.",
+		]) {
+			expect(classifyReviewLane({
+				tier: "heavy", rawText: evidence, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+			}), evidence).toBe("complete");
+		}
+		for (const arbitrary of ["1234567890123456", "................", "xxxxxxxxxxxxxxxx", "........ .......a"]) {
+			expect(classifyReviewLane({
+				tier: "heavy", rawText: arbitrary, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty",
+			}), arbitrary).toBe("partial");
 		}
 		// Substantive framing still completes.
 		expect(classifyReviewLane({
@@ -195,7 +219,8 @@ describe("invocation lane artifact retention", () => {
 		const registry = new ReviewLaneArtifactRegistry();
 		registry.open(7);
 		const retained = artifact();
-		expect(registry.expect(7, [{ key: retained.key, tier: retained.tier, minorHygiene: false }])).toBeTrue();
+		expect(registry.expect(7, [{ key: retained.key, tier: retained.tier, minorHygiene: false, expectedOutput: "nonempty" }])).toBeTrue();
+		expect(registry.expect(7, [{ key: retained.key, tier: retained.tier, minorHygiene: false, expectedOutput: "review_lane" }])).toBeFalse();
 		expect(registry.retain(7, retained)).toBeTrue();
 		const snapshot = registry.snapshot(7)!;
 		expect(snapshot[0]?.rawText).toBe("NO FINDINGS.");

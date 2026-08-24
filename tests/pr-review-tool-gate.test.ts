@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 mock.module("@earendil-works/pi-ai", () => ({
-	StringEnum: () => ({}),
+	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
@@ -22,10 +22,10 @@ mock.module("@earendil-works/pi-tui", () => ({
 	Text: class {},
 }));
 mock.module("typebox", () => {
-	const schema = () => ({});
+	const schema = (options: Record<string, unknown> = {}) => ({ ...options });
 	return {
 		Type: {
-			Array: schema,
+			Array: (items: Record<string, unknown>, options: Record<string, unknown> = {}) => ({ type: "array", items, ...options }),
 			Boolean: schema,
 			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema,
@@ -35,7 +35,7 @@ mock.module("typebox", () => {
 				properties,
 				...options,
 			}),
-			Optional: schema,
+			Optional: (value: Record<string, unknown>) => value,
 			String: schema,
 			Union: schema,
 		},
@@ -206,6 +206,42 @@ describe("review tool execution gate", () => {
 				observedModel: "provider/observed",
 				lifecycle: "complete",
 			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("public batch path accepts nonempty framing output under passes[].expected_output", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-public-nonempty-"));
+		const child = path.join(root, "child.mjs");
+		const framing = "Overview: the integrated review found no actionable issues.";
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(framing)} }] },
+			})));
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-public-nonempty",
+				{ passes: [{ id: "deep-review", tier: "heavy", objective: "review", expected_output: "nonempty" }], max_parallel: 1 },
+				undefined,
+				undefined,
+				h.ctx,
+			);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details.results[0]).toMatchObject({ rawText: framing, status: "complete" });
+			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)).toEqual([{
+				key: "batch-public-nonempty:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty",
+			}]);
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });

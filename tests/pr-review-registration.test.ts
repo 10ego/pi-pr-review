@@ -147,6 +147,19 @@ describe("extension registration without self-review prerequisites", () => {
 		expect(Object.keys(parameters.properties)[0]).toBe("passes");
 	});
 
+	test("exposes expected_output on the public batch pass schema with the real enum", () => {
+		const harness = registrationHarness();
+		registerPrReview(harness.pi as any);
+
+		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
+		const passSchema = parameters.properties.passes.items;
+		const expectedOutput = passSchema.properties.expected_output;
+		expect(expectedOutput).toMatchObject({ enum: ["review_lane", "nonempty"] });
+		expect(expectedOutput.description).toContain("successful terminal stop");
+		expect(expectedOutput.description).toContain("arbitrary bytes");
+		expect(expectedOutput.description).not.toContain("any nonempty terminal output");
+	});
+
 	test("registers without Git and keeps the startup PATH failure local to self-review", async () => {
 		process.env.PATH = "";
 		const harness = registrationHarness();
