@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.14.5](https://github.com/10ego/pi-pr-review/compare/v1.14.4...v1.14.5) (2026-08-24)
+
+
+### Tests
+
+* **extract:** complete the pi-tui mock to stop cross-file leakage ([#85](https://github.com/10ego/pi-pr-review/issues/85)) ([7c6dd99](https://github.com/10ego/pi-pr-review/commit/7c6dd9994d9770ad08f71711c4fe553a571b26cb))
+* **extract:** cover the real subprocess path and add a dev-only gate tally ([#83](https://github.com/10ego/pi-pr-review/issues/83)) ([d40170b](https://github.com/10ego/pi-pr-review/commit/d40170b2b4def0dec9928cf9dbf543adb910eb84))
+
 ## [1.14.4](https://github.com/10ego/pi-pr-review/compare/v1.14.3...v1.14.4) (2026-08-23)
 
 
