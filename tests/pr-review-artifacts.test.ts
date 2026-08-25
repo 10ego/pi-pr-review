@@ -133,12 +133,10 @@ describe("semantic lane completion", () => {
 			"I can't inspect the diff.",
 			"I was unable to review the change.",
 			"I lack access to the repository.",
-			"Access denied while loading the review context.",
+			"I was denied access to the review context.",
+			"I failed to review the supplied diff.",
 			"The review did not run.",
 			"The review was skipped.",
-			"The review tool failed with a server error.",
-			"The model encountered an error while reading the diff.",
-			"The review server returned an error.",
 		] as const;
 		for (const overview of failures) {
 			const rawText = `${integratedFraming("plain", { overview, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." })}\nNO FINDINGS.`;
@@ -148,7 +146,8 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: candidateEvidence, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		for (const framing of [
 			integratedFraming("plain", { overview: "The review tool error handling preserves diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
-			integratedFraming("plain", { overview: "The change validates product failures.", strengths: "Focused tests cover the path.", riskAreas: "The service returned an error for invalid input." }),
+			integratedFraming("plain", { overview: "The review tool failed gracefully and preserved diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
+			integratedFraming("plain", { overview: "The change validates product failures.", strengths: "Focused tests cover the path.", riskAreas: "The server returned an error for invalid input." }),
 		]) {
 			expect(classifyReviewLane({ tier: "heavy", rawText: `${framing}\nNO FINDINGS.`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		}
@@ -173,9 +172,13 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: cjk, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		const trivial = `${integratedFraming("plain", { overview: "好", strengths: "测试", riskAreas: "风险" })}\n${integratedCandidate("失败").replace("[P2] Preserve review evidence", "[P2] 修复").replace("src/a.ts:10-12", "repo-wide")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: trivial, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
-		for (const boilerplate of ["哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "特に問題なし", "レビュー完了", "문제없음"]) {
+		for (const boilerplate of ["哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "没有 问题", "重复内容风险重复内容风险", "特に問題なし", "問題 なし", "レビュー完了", "문제없음", "문제 없음"]) {
 			const rawText = integratedFraming("plain", { overview: boilerplate, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), boilerplate).toBe("partial");
+		}
+		for (const substantive of ["入力検証を強化", "エラー処理改善", "오류처리개선"]) {
+			const rawText = integratedFraming("plain", { overview: substantive, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), substantive).toBe("complete");
 		}
 	});
 

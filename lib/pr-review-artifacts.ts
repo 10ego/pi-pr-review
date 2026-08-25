@@ -226,14 +226,22 @@ function canonicalField(field: string): string {
 const CJK_SCRIPT_CHARACTERS = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
 const CJK_BOILERPLATE_ONLY = /^(?:无问题|没有(?:任何|发现)?问题|未发现问题|一切正常|测试测试|哈哈哈哈|审查完成|评审完成|没有风险|无风险|問題なし|特に問題なし|レビュー完了|検証完了|문제없음|검토완료)[。.!！!?？]*$/u;
 
+function repeatedText(value: string): boolean {
+	for (let width = 1; width <= Math.floor(value.length / 2); width++) {
+		if (value.length % width === 0 && value.slice(0, width).repeat(value.length / width) === value) return true;
+	}
+	return false;
+}
+
 function meaningfulValue(value: string): boolean {
 	const normalized = value.trim();
 	const words = normalized.match(/[\p{L}\p{N}]+/gu) ?? [];
 	const cjkCharacters = normalized.match(CJK_SCRIPT_CHARACTERS) ?? [];
 	const cjkText = cjkCharacters.join("");
-	const meaningfulCjk = cjkCharacters.length >= 8 && new Set(cjkCharacters).size >= 5 &&
-		!/^(.{1,3})\1+$/u.test(cjkText) && !CJK_BOILERPLATE_ONLY.test(normalized);
-	return (words.length >= 2 || meaningfulCjk) && !PLACEHOLDER_ONLY.test(normalized) &&
+	const meaningfulCjk = cjkCharacters.length >= 5 && new Set(cjkCharacters).size >= 4 &&
+		!repeatedText(cjkText) && !CJK_BOILERPLATE_ONLY.test(normalized.replace(/\s+/gu, ""));
+	const meaningfulLanguage = cjkCharacters.length > 0 ? meaningfulCjk : words.length >= 2;
+	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) &&
 		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
 
@@ -342,13 +350,10 @@ function contradictoryFraming(values: readonly string[]): boolean {
 		/\b(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
 		/\b(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
 		/\b(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/\b(?:access denied|access unavailable|review context unavailable|diff unavailable|patch unavailable)\b/i,
-		/\b(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\s+(?:was\s+)?(?:unavailable|inaccessible)\b/i,
+		/\b(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/\b(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
 		/\b(?:the\s+)?review\s+(?:did not|didn't|was not|wasn't)\s+run\b/i,
 		/\b(?:the\s+)?review\s+(?:(?:was\s+)?skipped)\b/i,
-		/\b(?:the\s+)?(?:review\s+)?(?:tool|model|server)\s+(?:returned|encountered|reported|raised|hit)\s+(?:an?\s+)?(?:error|failure)\b/i,
-		/\b(?:the\s+)?(?:review\s+)?(?:tool|model)\s+(?:failed|was unavailable)\b/i,
-		/\b(?:the\s+)?(?:review\s+)?(?:tool|model|server)\s+(?:had|reported)\s+(?:an?\s+)?(?:internal|fatal)\s+error\b/i,
 	];
 	return values.some((value) => {
 		const normalized = value.replace(/\s+/g, " ").trim();
