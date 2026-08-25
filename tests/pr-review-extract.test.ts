@@ -383,6 +383,61 @@ describe("finding extraction", () => {
 		expect(decideExtractionEligibility("synthesis", throwing)).toEqual({ eligible: false, reason: "no_lane_evidence" });
 	});
 
+	test("stateful getters are read exactly once at the extraction defense boundary", () => {
+		const reads: Record<string, number> = {};
+		/** Stateful getter: good first read, hostile (Symbol or throw) afterwards, counted. */
+		const flip = (name: string, good: unknown, hostile: unknown | (() => unknown)) => () => {
+			reads[name] = (reads[name] ?? 0) + 1;
+			if (reads[name] === 1) return good;
+			if (typeof hostile === "function") return hostile();
+			return hostile;
+		};
+		/** Build a lane whose consumed fields flip after the first read. */
+		const hostileLane = (key: string, fields: Record<string, () => unknown>) => {
+			const source: Record<string, unknown> = { ...lane(key, `${key} evidence text`) };
+			for (const [name, getter] of Object.entries(fields)) {
+				Object.defineProperty(source, name, { get: getter, enumerable: true, configurable: true });
+			}
+			return source as unknown as ReviewLaneArtifact;
+		};
+		const lanes = [
+			// rawText flips good→Symbol: the first valid text is the only one read.
+			hostileLane("correctness", { rawText: flip("rawText", "parseInput crashes on empty input.", Symbol("hostile")) }),
+			// passId flips good→throw: the first valid id is snapshotted, never reread.
+			hostileLane("security", { passId: flip("passId", "security", () => { throw new Error("second read boom"); }) }),
+			// lifecycle flips good→wrong-type: the first valid label is snapshotted.
+			hostileLane("tests", { lifecycle: flip("lifecycle", "timed_out", 42) }),
+		];
+		const eligible = decideExtractionEligibility(synthesis, lanes);
+		// Exactly one read per consumed field across evidence decision AND input
+		// assembly — the same snapshot serves both, getters are never reread.
+		expect(reads).toEqual({ rawText: 1, passId: 1, lifecycle: 1 });
+		expect(eligible.eligible).toBeTrue();
+		if (!eligible.eligible) return;
+		expect(eligible.input.text).toContain("--- Retained lane output: correctness (timed_out) ---");
+		expect(eligible.input.text).toContain("--- Retained lane output: security (timed_out) ---");
+		expect(eligible.input.text).toContain("--- Retained lane output: tests (timed_out) ---");
+		expect(eligible.input.text).toContain("parseInput crashes on empty input.");
+		expect(eligible.input.text).toContain("security evidence text");
+		// A second, independent boundary crossing rereads the hostile objects: the
+		// getters now surface their hostile values, so every lane is dropped —
+		// one snapshot per crossing, and the hostile second values never enter.
+		const secondPass = buildExtractionInput(synthesis, lanes);
+		expect(secondPass.text).not.toContain("Retained lane output");
+		expect(reads).toEqual({ rawText: 2, passId: 2, lifecycle: 2 });
+		// Hostile-on-first-read lanes are dropped without a crash, and a valid
+		// sibling lane still contributes its evidence.
+		const hostileFirst = { ...lane("perf", "usable evidence") };
+		Object.defineProperty(hostileFirst, "rawText", {
+			get: () => { throw new Error("first read boom"); }, enumerable: true, configurable: true,
+		});
+		const mixed = decideExtractionEligibility(synthesis, [hostileFirst as unknown as ReviewLaneArtifact, lane("correctness", "valid sibling evidence")]);
+		expect(mixed.eligible).toBeTrue();
+		if (!mixed.eligible) return;
+		expect(mixed.input.text).not.toContain("perf evidence");
+		expect(mixed.input.text).toContain("--- Retained lane output: correctness (timed_out) ---");
+	});
+
 	test("mixed malformed and valid lanes keep only the valid lane evidence", () => {
 		const mixed = [
 			{ passId: "broken", lifecycle: "timed_out", rawText: 99 } as unknown as ReviewLaneArtifact,

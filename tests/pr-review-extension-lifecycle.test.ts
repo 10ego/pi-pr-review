@@ -1060,6 +1060,89 @@ describe("completed review extension lifecycle", () => {
 			expect(entries.some((entry) => entry.data.outcome === "published" && entry.data.counts?.provenanceChecked === 1)).toBeTrue();
 		});
 
+		test("stateful-getter lane artifacts publish through the actual lifecycle with exactly one read per field", async () => {
+			const reads: Record<string, number> = {};
+			/** Stateful getter: good first read, hostile value afterwards, counted. */
+			const flip = (name: string, good: unknown, hostile: unknown) => () => {
+				reads[name] = (reads[name] ?? 0) + 1;
+				return reads[name] === 1 ? good : hostile;
+			};
+			/** Stateful getter whose second read throws instead of returning a value. */
+			const flipThrow = (name: string, good: unknown) => () => {
+				reads[name] = (reads[name] ?? 0) + 1;
+				if (reads[name] === 1) return good;
+				throw new Error("second read boom");
+			};
+			let extractionInput = "";
+			const findingsJson = JSON.stringify({ findings: [{
+				title: "Guard empty input", severity: "P2",
+				body: "The reviewer states that parseInput crashes on empty input in the summary path.",
+				confidence: 0.86,
+				quote: "parseInput crashes on empty input",
+				path: "src/parser.ts", start_line: 2, end_line: 3, side: "RIGHT",
+				location_quote: "src/parser.ts:2-3 RIGHT",
+			}] });
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: async (_ctx: any, _lease: any, input: string) => {
+					extractionInput = input;
+					return { text: findingsJson, exitCode: 0 };
+				},
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+			// A lane whose consumed fields flip good→Symbol / good→throw after the
+			// first read, retained through the REAL artifact publisher path.
+			const lane: Record<string, unknown> = {
+				generation: lease.generation, key: "correctness:0", requestedPassOrdinal: 0,
+				tier: "heavy", exitCode: 143, stopReason: "timeout", attempts: [], fallbackUsed: false,
+				elapsedMs: 44_000, toolElapsedMs: 0, toolCallCount: 0,
+			};
+			Object.defineProperty(lane, "passId", { get: flip("passId", "correctness", Symbol("hostile")), enumerable: true, configurable: true });
+			Object.defineProperty(lane, "rawText", { get: flip("rawText", "parseInput crashes on empty input.", Symbol("hostile")), enumerable: true, configurable: true });
+				Object.defineProperty(lane, "lifecycle", { get: flipThrow("lifecycle", "timed_out"), enumerable: true, configurable: true });
+			// A nested attempt whose rawText and model-spec getters are hostile too.
+			const attempt: Record<string, unknown> = {
+				ordinal: 1, exitCode: 1, lifecycle: "partial", retryable: true,
+				elapsedMs: 20, toolElapsedMs: 5, toolCallCount: 1,
+			};
+			Object.defineProperty(attempt, "rawText", { get: flip("attemptRawText", "partial attempt evidence", Symbol("hostile")), enumerable: true, configurable: true });
+			Object.defineProperty(attempt, "observedModel", { get: flip("observedModel", "provider/fallback", 42), enumerable: true, configurable: true });
+			lane.attempts = [attempt];
+			expect(harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain(lane as any)).toBe(true);
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			// The actual publication completed using only the first valid values.
+			expect(probe.postCount()).toBe(1);
+			expect(String(probe.payload()?.body)).toContain('"correctness" — `timed_out`');
+			expect(extractionInput).toContain("--- Retained lane output: correctness (timed_out) ---");
+			expect(extractionInput).toContain("parseInput crashes on empty input.");
+			// Exactly one read per hostile property across retention, snapshot,
+			// extraction eligibility, input assembly, and publication.
+			expect(reads).toEqual({ passId: 1, rawText: 1, lifecycle: 1, attemptRawText: 1, observedModel: 1 });
+			// The persisted completed record stores the frozen first-value snapshot.
+			const completed = harness.branch.findLast((entry: any) => entry.customType === "pr-review-completed");
+			const retained = (completed?.data as any)?.laneArtifacts?.[0];
+			expect(retained?.passId).toBe("correctness");
+			expect(retained?.rawText).toBe("parseInput crashes on empty input.");
+			expect(retained?.lifecycle).toBe("timed_out");
+			expect(retained?.attempts?.[0]?.rawText).toBe("partial attempt evidence");
+			expect(retained?.attempts?.[0]?.observedModel).toBe("provider/fallback");
+			// The runtime published event mirrors the authoritative merged metrics.
+			const entries = extractionEntry(harness).map((entry: any) => entry.data);
+			const merged = entries.find((entry: any) => entry.outcome === "merged");
+			const published = entries.find((entry: any) => entry.outcome === "published");
+			expect(merged).toBeDefined();
+			expect(published).toBeDefined();
+			expect(published?.counts).toEqual(merged?.counts);
+			expect(published?.provenanceRejectionReasons).toEqual(merged?.provenanceRejectionReasons);
+			expect(published?.inputBytes).toBe(merged?.inputBytes);
+			expect(published?.elapsedMs).toBe(merged?.elapsedMs);
+			expect(published?.attemptId).toBe(merged?.attemptId);
+		});
+
 		test("keeps the deterministic artifact byte-identical on extraction failure paths", async () => {
 			for (const [name, runner] of [
 				["timeout", runExtraction("", { timedOut: true })],

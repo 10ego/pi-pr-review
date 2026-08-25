@@ -109,12 +109,53 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
  * invalid. Any conflicting or repeated terminal sequence — success then
  * failure, failure then success, `merged` then an unrelated terminal, a
  * terminal then `merged`, `published` then anything — is an invalid attempt:
- * the tally never picks the favorable record, it fails closed. Invalid
+ * the tally never picks the favorable record, it fails closed. In the valid
+ * merged→published sequence, `merged` stays AUTHORITATIVE for every
+ * gate-affecting field; `published` must mirror counts,
+ * `provenanceRejectionReasons`, `inputBytes`, and `elapsedMs` exactly, and any
+ * mismatch, promised-field omission, or extra favorable override invalidates
+ * the attempt — published is decoration only and can never replace, repair, or
+ * erase merged metrics. Invalid
  * attempts are returned separately, count against execution success and
  * sample volume in the metrics, and invalidate gate validity; they are never
  * silently dropped. `not_run` entries are excluded decision events, never part
  * of an attempt sequence.
  */
+/** Gate-affecting fields the runtime contract promises the `published` event repeats from its `merged` attempt. */
+const PUBLISHED_MIRRORED_FIELDS = ["counts", "provenanceRejectionReasons", "inputBytes", "elapsedMs"];
+
+/** Structural deep equality over plain JSON-like values; exotic values never compare equal. */
+function deepEqual(left, right) {
+	if (left === right) return true;
+	if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) return false;
+	if (Array.isArray(left) !== Array.isArray(right)) return false;
+	const leftKeys = Object.keys(left);
+	const rightKeys = Object.keys(right);
+	if (leftKeys.length !== rightKeys.length) return false;
+	for (const key of leftKeys) {
+		if (!Object.hasOwn(right, key)) return false;
+		if (!deepEqual(left[key], right[key])) return false;
+	}
+	return true;
+}
+
+/**
+ * Decoration rule for the only valid two-event sequence merged→published:
+ * `merged` is AUTHORITATIVE for every gate-affecting field (counts,
+ * provenanceChecked, reason counters, elapsedMs, inputBytes). The `published`
+ * event must mirror each promised field exactly; any mismatch, promised-field
+ * omission, malformed value, or extra favorable override makes the attempt
+ * invalid — published can never replace, repair, or erase merged metrics.
+ */
+function publishedDivergence(merged, published) {
+	for (const field of PUBLISHED_MIRRORED_FIELDS) {
+		if (published[field] === undefined) return `published_missing_${field}`;
+		if (merged[field] === undefined) return `published_extra_${field}`;
+		if (!deepEqual(merged[field], published[field])) return `published_divergent_${field}`;
+	}
+	return undefined;
+}
+
 export function tallyRuns(entries) {
 	const byAttempt = new Map();
 	const excluded = [];
@@ -136,26 +177,40 @@ export function tallyRuns(entries) {
 		// Ordered scan of this attempt's events only.
 		let terminal = undefined;
 		let invalidReason = undefined;
+		let mergedEvent = undefined; // authoritative metrics source for merged→published
+		let publishedEvent = undefined;
 		for (const entry of attemptEntries) {
 			if (entry.outcome === "published") {
-				// Valid only as the immediate decoration of this attempt's `merged`.
-				if (terminal === "merged") terminal = "published";
-				else invalidReason ??= terminal === undefined ? "orphan_published" : "published_after_terminal";
+				// Valid only as the immediate decoration of this attempt's `merged`,
+				// and only when it mirrors every gate-affecting field of that merge.
+				if (terminal === "merged" && mergedEvent !== undefined) {
+					const divergence = publishedDivergence(mergedEvent, entry);
+					if (divergence !== undefined) invalidReason ??= divergence;
+					else {
+						terminal = "published";
+						publishedEvent = entry;
+					}
+				} else invalidReason ??= terminal === undefined ? "orphan_published" : "published_after_terminal";
 				continue;
 			}
 			if (!TERMINAL_OUTCOMES.has(entry.outcome)) {
 				invalidReason ??= "unknown_outcome";
 				continue;
 			}
-			if (terminal === undefined) terminal = entry.outcome;
-			else invalidReason ??= terminal === "published" ? "terminal_after_published" : "conflicting_terminal_sequence";
+			if (terminal === undefined) {
+				terminal = entry.outcome;
+				if (entry.outcome === "merged") mergedEvent = entry;
+			} else invalidReason ??= terminal === "published" ? "terminal_after_published" : "conflicting_terminal_sequence";
 		}
 		if (invalidReason !== undefined || terminal === undefined) {
 			invalid.push({ ...attemptEntries.at(-1), invalidReason: invalidReason ?? "no_terminal_outcome" });
 			continue;
 		}
-		// Terminal representative: the last event of the valid sequence.
-		const representative = attemptEntries.at(-1);
+		// Terminal representative: outcome may display `published`, but every
+		// gate-affecting metric comes from the authoritative merged event.
+		const representative = terminal === "published" && mergedEvent
+			? { ...mergedEvent, outcome: "published", ...(publishedEvent?.inlineComments !== undefined ? { inlineComments: publishedEvent.inlineComments } : {}), ...(publishedEvent?.publishStatus !== undefined ? { publishStatus: publishedEvent.publishStatus } : {}) }
+			: attemptEntries.at(-1);
 		// Latency completeness: every event's elapsedMs must agree on exactly one
 		// finite nonnegative measurement (legitimate 0 counts).
 		const elapsedValues = new Set();

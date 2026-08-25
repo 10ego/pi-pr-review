@@ -14,6 +14,8 @@ import {
 } from "./extraction-tally.mjs";
 
 const ATTEMPT = (ordinal) => `g1-${String(ordinal).padStart(4, "0")}-0000-0000-0000-000000000000`;
+const EMPTY_REASONS = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
+const MIRROR_COUNTS = { findingsExtracted: 1, findingsMerged: 1 };
 
 function writeSession(dir, project, file, entries) {
 	const projectDir = path.join(dir, project);
@@ -74,19 +76,25 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("published terminal entries complete their own run and merge earlier outcomes", () => {
+		const counts = { findingsExtracted: 1, findingsMerged: 1 };
+		const reasons = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
 		const { runs } = tallyRuns([
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { findingsMerged: 1 }, elapsedMs: 1000 },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { findingsMerged: 1 }, elapsedMs: 1000 },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 1000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 1000 },
 			{ outcome: "empty", schemaVersion: 2, attemptId: ATTEMPT(2), source: "b" },
 		]);
 		assert.equal(runs.length, 2);
 		assert.equal(runs[0].outcome, "published");
+		// The representative displays published but keeps merged-authoritative metrics.
+		assert.equal(runs[0].counts, counts);
+		assert.equal(runs[0].elapsedMs, 1000);
 	});
 
 	test("an earlier success cannot mask a later failure in the same session (success → failure)", () => {
+		const counts = { findingsExtracted: 2, findingsMerged: 2 };
 		const { runs } = tallyRuns([
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: { findingsExtracted: 2, findingsMerged: 2 }, elapsedMs: 4000 },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: { findingsExtracted: 2, findingsMerged: 2 }, elapsedMs: 4000 },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 			{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", elapsedMs: 9000 },
 		]);
 		assert.equal(runs.length, 2);
@@ -97,10 +105,11 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("an earlier failure stays a failure when a later attempt succeeds (failure → success)", () => {
+		const counts = { findingsExtracted: 1, findingsMerged: 1 };
 		const { runs } = tallyRuns([
 			{ outcome: "timeout", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", elapsedMs: 9000 },
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 4000 },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 4000 },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 		]);
 		assert.equal(runs.length, 2);
 		assert.deepEqual(runs.map((run) => run.outcome).sort(), ["published", "timeout"]);
@@ -132,13 +141,13 @@ describe("§9 extraction tally cohort semantics", () => {
 				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
 			]],
 			["duplicate published", [
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
 			]],
 			["terminal after published", [
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 1000 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
 				{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s", elapsedMs: 2000 },
 			]],
 			["orphan published", [
@@ -164,9 +173,9 @@ describe("§9 extraction tally cohort semantics", () => {
 		// Specific deterministic reasons for the headline cases.
 		assert.equal(tallyRuns([{ outcome: "published", schemaVersion: 2, attemptId: "g1-orphan", source: "s" }]).invalid[0].invalidReason, "orphan_published");
 		assert.equal(tallyRuns([
-				{ outcome: "merged", schemaVersion: 2, attemptId: "g1-x", source: "s" },
-				{ outcome: "published", schemaVersion: 2, attemptId: "g1-x", source: "s" },
-				{ outcome: "published", schemaVersion: 2, attemptId: "g1-x", source: "s" },
+				{ outcome: "merged", schemaVersion: 2, attemptId: "g1-x", source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: "g1-x", source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: "g1-x", source: "s", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 1000 },
 		]).invalid[0].invalidReason, "published_after_terminal");
 		assert.equal(tallyRuns([
 				{ outcome: "merged", schemaVersion: 2, attemptId: "g1-x", source: "s" },
@@ -175,10 +184,11 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("valid merged→published survives interleaving with another attempt's records", () => {
+		const counts = { findingsExtracted: 2, findingsMerged: 2 };
 		const { runs, invalid } = tallyRuns([
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: { findingsExtracted: 2, findingsMerged: 2 }, elapsedMs: 4000 },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 			{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", elapsedMs: 8000 },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: { findingsExtracted: 2, findingsMerged: 2 }, elapsedMs: 4000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 		]);
 		assert.equal(invalid.length, 0);
 		assert.equal(runs.length, 2);
@@ -189,10 +199,12 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("published decorates only its own attempt, never an earlier attempt in the same session", () => {
+		const countsA = { findingsExtracted: 2, findingsMerged: 2 };
+		const countsB = { findingsExtracted: 1, findingsMerged: 1 };
 		const { runs } = tallyRuns([
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: { findingsExtracted: 2, findingsMerged: 2 } },
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: { findingsExtracted: 1, findingsMerged: 1 } },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: { findingsExtracted: 1, findingsMerged: 1 } },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: countsA, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 3000 },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: countsB, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 800, elapsedMs: 3500 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: countsB, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 800, elapsedMs: 3500 },
 		]);
 		assert.equal(runs.length, 2);
 		// The first attempt stays merged-only; the published event completes the
@@ -201,6 +213,8 @@ describe("§9 extraction tally cohort semantics", () => {
 			["merged", ATTEMPT(1)],
 			["published", ATTEMPT(2)],
 		]);
+		// The published run keeps its own merged-authoritative counts.
+		assert.equal(runs.find((run) => run.attemptId === ATTEMPT(2)).counts, countsB);
 	});
 
 	test("repeated attempts sharing a generation or session stay separate runs", () => {
@@ -437,14 +451,18 @@ describe("§9 extraction tally cohort semantics", () => {
 			{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", elapsedMs: NaN },
 		]);
 		assert.equal(computeGateMetrics(nan).latencyMalformed, 1);
-		// Conflicting measurements inside one valid merged→published sequence.
-		const { runs: conflicting } = tallyRuns([
-			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", elapsedMs: 4000 },
-			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", elapsedMs: 5000 },
+		// Divergent elapsedMs inside a merged→published sequence: the published
+		// event fails to mirror the authoritative merged measurement, so the whole
+		// attempt fails closed as invalid — never a favorable run.
+		const { runs: conflicting, invalid: conflictingInvalid } = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 5000 },
 		]);
-		const conflictingMetrics = computeGateMetrics(conflicting);
-		assert.equal(conflictingMetrics.latencyConflicting, 1);
-		assert.equal(conflictingMetrics.latencyComplete, false);
+		assert.equal(conflicting.length, 0);
+		assert.equal(conflictingInvalid.length, 1);
+		assert.equal(conflictingInvalid[0].invalidReason, "published_divergent_elapsedMs");
+		const conflictingMetrics = computeGateMetrics(conflicting, [], conflictingInvalid);
+		assert.equal(conflictingMetrics.invalidAttempts, 1);
 		assert.equal(conflictingMetrics.gateValid, false);
 	});
 
@@ -464,6 +482,90 @@ describe("§9 extraction tally cohort semantics", () => {
 			{ outcome: "not_run", reason: "no_lane_evidence", schemaVersion: 2, attemptId: ATTEMPT(3), source: "c" },
 		]);
 		assert.equal(withExcluded.latencyMissing, 1);
+	});
+
+	test("merged metrics stay authoritative through published: malformed merged + favorable published fails", () => {
+		// Fifteen attempts whose MERGED telemetry is malformed (oversized claimed
+		// checked denominator) while every published mirror looks exact and
+		// favorable. The gate must stay invalid on the merged side.
+		const malformedCounts = { findingsExtracted: 1, findingsMerged: 1, findingsRejectedProvenance: 1, provenanceChecked: 100 };
+		const entries = [];
+		for (let index = 0; index < 15; index++) {
+			entries.push({ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: malformedCounts, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 900, elapsedMs: 3000 });
+			entries.push({ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: malformedCounts, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 900, elapsedMs: 3000 });
+		}
+		const { runs, invalid } = tallyRuns(entries);
+		assert.equal(invalid.length, 0);
+		assert.equal(runs.length, 15);
+		const metrics = computeGateMetrics(runs);
+		assert.equal(metrics.sufficientSample, true);
+		assert.equal(metrics.successRate, 1);
+		// The merged-authoritative counts expose the malformed denominator.
+		assert.equal(metrics.provenanceCheckedExact, false);
+		assert.equal(metrics.malformedCounts, 15);
+		assert.equal(metrics.provenanceChecked, 15 * 2);
+		assert.equal(metrics.provenanceRejectionRate, 15 / 30);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("published cannot replace merged metrics: mismatches invalidate the attempt", () => {
+		const base = (overrides) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			counts: { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 },
+			provenanceRejectionReasons: { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
+			inputBytes: 900, elapsedMs: 3000, ...overrides,
+		});
+		const published = (overrides) => ({
+			outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			counts: { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 },
+			provenanceRejectionReasons: { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
+			inputBytes: 900, elapsedMs: 3000, ...overrides,
+		});
+		// Favorable published counts claiming the all-rejected merge actually merged findings.
+		let result = tallyRuns([base(), published({ counts: { findingsExtracted: 6, findingsMerged: 6, findingsRejectedProvenance: 0, provenanceChecked: 6 } })]);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "published_divergent_counts");
+		// Favorable published reason counters erasing the rejects.
+		result = tallyRuns([base(), published({ provenanceRejectionReasons: EMPTY_REASONS })]);
+		assert.equal(result.invalid[0].invalidReason, "published_divergent_provenanceRejectionReasons");
+		// Divergent inputBytes and elapsedMs.
+		result = tallyRuns([base(), published({ inputBytes: 1 })]);
+		assert.equal(result.invalid[0].invalidReason, "published_divergent_inputBytes");
+		result = tallyRuns([base(), published({ elapsedMs: 4000 })]);
+		assert.equal(result.invalid[0].invalidReason, "published_divergent_elapsedMs");
+		// Promised-field omissions on the published event.
+		for (const field of ["counts", "provenanceRejectionReasons", "inputBytes", "elapsedMs"]) {
+			const { [field]: omitted, ...rest } = published();
+			void omitted;
+			const omittedResult = tallyRuns([base(), rest]);
+			assert.equal(omittedResult.runs.length, 0, field);
+			assert.equal(omittedResult.invalid[0].invalidReason, `published_missing_${field}`);
+		}
+		// A malformed (non-object) published counts value is divergent, not trusted.
+		result = tallyRuns([base(), published({ counts: "6 findings" })]);
+		assert.equal(result.invalid[0].invalidReason, "published_divergent_counts");
+		// Invalid attempts count against success and sample and block the gate.
+		const metrics = computeGateMetrics(result.runs, [], result.invalid);
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("published cannot erase all-rejected provenance when it mirrors exactly", () => {
+		const counts = { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 };
+		const reasons = { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
+		const { runs } = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 3000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 3000 },
+		]);
+		assert.equal(runs.length, 1);
+		// Representative displays published but carries the merged-authoritative
+		// all-rejected counts: the provenance rate stays 100%.
+		assert.equal(runs[0].outcome, "published");
+		assert.equal(runs[0].counts, counts);
+		const metrics = computeGateMetrics(runs);
+		assert.equal(metrics.provenanceChecked, 6);
+		assert.equal(metrics.provenanceRejectionRate, 1);
 	});
 
 	test("the gate requires 15 eligible current-cohort attempts", () => {
@@ -579,15 +681,15 @@ describe("§9 extraction tally cohort semantics", () => {
 		test("two attempts in one jsonl session stay separate gate runs in both orders", () => {
 			// success → failure in one file
 			writeSession(dir, "--private-tmp-eval--", "sf.jsonl", [
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 3000 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 3000 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 3000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 3000 },
 				{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(2), elapsedMs: 8000 },
 			]);
 			// failure → success in another file
 			writeSession(dir, "--private-tmp-eval--", "fs.jsonl", [
 				{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(3), elapsedMs: 9000 },
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(4), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 4000 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(4), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 4000 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(4), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(4), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 			]);
 			const { entries } = collectExtractionEntries(dir);
 			const { current } = partitionCohorts(entries.filter((entry) =>
@@ -607,9 +709,9 @@ describe("§9 extraction tally cohort semantics", () => {
 
 		test("a published event associates with its own merged attempt across the jsonl boundary", () => {
 			writeSession(dir, "--private-tmp-eval--", "assoc.jsonl", [
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), counts: { findingsExtracted: 2, findingsMerged: 2 }, elapsedMs: 3000 },
-				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 3500 },
-				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), counts: { findingsExtracted: 1, findingsMerged: 1 }, elapsedMs: 3500 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), counts: { findingsExtracted: 2, findingsMerged: 2 }, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 950, elapsedMs: 3000 },
+				{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 800, elapsedMs: 3500 },
+				{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 800, elapsedMs: 3500 },
 			]);
 			const { entries } = collectExtractionEntries(dir);
 			const { current } = partitionCohorts(entries.filter((entry) => entry.source.endsWith("assoc.jsonl")));

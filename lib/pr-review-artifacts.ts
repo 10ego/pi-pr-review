@@ -514,9 +514,9 @@ const isFiniteNumber = (value: unknown): value is number => typeof value === "nu
 const isEnum = (allowed: Set<string>) => (value: unknown): value is string => isString(value) && allowed.has(value);
 const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
 
-/** Copy an optional field into a snapshot only when it is present (null is preserved). */
-function copyOptional(target: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
-	if (source[key] !== undefined) target[key] = source[key];
+/** Copy an already-read optional local into a snapshot (null preserved, undefined omitted). */
+function withOptional(snapshot: Record<string, unknown>, key: string, local: unknown): void {
+	if (local !== undefined) snapshot[key] = local;
 }
 
 /**
@@ -524,81 +524,113 @@ function copyOptional(target: Record<string, unknown>, source: Record<string, un
  * subprocess results and session-log restores; TypeScript types are not runtime
  * guarantees. Every field consumed downstream (degraded synthesis Markdown
  * interpolation, approval revalidation, extraction input assembly) is read
- * safely inside try/catch and fully validated; the returned value is a NEW
- * frozen plain snapshot — the hostile original (with its getters or exotic
- * values like a Symbol errorMessage that would throw during string
- * interpolation) is never stored. A malformed or throwing field drops the
+ * EXACTLY ONCE inside a single guarded access phase into local plain values;
+ * validation and the stored frozen snapshot are built only from those locals,
+ * so a stateful getter cannot pass validation with a good first value and then
+ * return a hostile one (Symbol, throw, different value) while it is copied or
+ * used. A malformed or throwing field drops the
  * entire lane; valid optional null/undefined values and real fallback attempt
  * shapes are preserved.
  */
 function laneArtifactSnapshot(value: unknown): ReviewLaneArtifact | undefined {
 	try {
 		if (!value || typeof value !== "object") return undefined;
-		const lane = value as Record<string, unknown>;
-		if (!isString(lane.key) || !lane.key) return undefined;
-		if (!isInteger(lane.generation)) return undefined;
-		if (!isString(lane.passId)) return undefined;
-		if (!isString(lane.rawText)) return undefined;
-		if (!isInteger(lane.exitCode)) return undefined;
-		if (!isEnum(LANE_LIFECYCLES)(lane.lifecycle)) return undefined;
-		if (!isEnum(LANE_TIERS)(lane.tier)) return undefined;
-		if (!isBoolean(lane.fallbackUsed)) return undefined;
-		if (!isFiniteNumber(lane.elapsedMs)) return undefined;
-		if (!isFiniteNumber(lane.toolElapsedMs)) return undefined;
-		if (!isInteger(lane.toolCallCount) || lane.toolCallCount < 0) return undefined;
-		if (lane.requestedPassOrdinal !== undefined && !isInteger(lane.requestedPassOrdinal)) return undefined;
-		if (!optional(lane.minorHygiene, isBoolean)) return undefined;
-		if (!optional(lane.requestedModel, isString)) return undefined;
-		if (!optional(lane.observedModel, isString)) return undefined;
-		if (!optional(lane.processSignal, isString)) return undefined;
-		if (!optional(lane.stopReason, isString)) return undefined;
-		if (!optional(lane.errorMessage, isString)) return undefined;
-		if (!optional(lane.deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
-		if (!optional(lane.firstEventMs, isFiniteNumber)) return undefined;
-		if (!optional(lane.firstAssistantMs, isFiniteNumber)) return undefined;
-		if (!optional(lane.startOffsetMs, isFiniteNumber)) return undefined;
-		if (!optional(lane.endOffsetMs, isFiniteNumber)) return undefined;
-		if (!optional(lane.fallbackBudgetRejected, isBoolean)) return undefined;
-		if (!optional(lane.deadlineSource, isEnum(LANE_DEADLINE_SOURCES))) return undefined;
-		if (!optional(lane.batchDeadlineMs, isFiniteNumber)) return undefined;
-		if (!optional(lane.totalDeadlineMs, isFiniteNumber)) return undefined;
-		if (!Array.isArray(lane.attempts)) return undefined;
+		const source = value as Record<string, unknown>;
+		// --- One-read phase: every property is accessed exactly once. ---
+		const generation = source.generation;
+		const key = source.key;
+		const passId = source.passId;
+		const rawText = source.rawText;
+		const exitCode = source.exitCode;
+		const lifecycle = source.lifecycle;
+		const tier = source.tier;
+		const fallbackUsed = source.fallbackUsed;
+		const elapsedMs = source.elapsedMs;
+		const toolElapsedMs = source.toolElapsedMs;
+		const toolCallCount = source.toolCallCount;
+		const requestedPassOrdinal = source.requestedPassOrdinal;
+		const minorHygiene = source.minorHygiene;
+		const requestedModel = source.requestedModel;
+		const observedModel = source.observedModel;
+		const processSignal = source.processSignal;
+		const stopReason = source.stopReason;
+		const errorMessage = source.errorMessage;
+		const deadlineExpired = source.deadlineExpired;
+		const firstEventMs = source.firstEventMs;
+		const firstAssistantMs = source.firstAssistantMs;
+		const startOffsetMs = source.startOffsetMs;
+		const endOffsetMs = source.endOffsetMs;
+		const fallbackBudgetRejected = source.fallbackBudgetRejected;
+		const deadlineSource = source.deadlineSource;
+		const batchDeadlineMs = source.batchDeadlineMs;
+		const totalDeadlineMs = source.totalDeadlineMs;
+		const attemptsSource = source.attempts;
+		// --- Validation phase: locals only, never rereading the hostile object. ---
+		if (!isString(key) || !key) return undefined;
+		if (!isInteger(generation)) return undefined;
+		if (!isString(passId)) return undefined;
+		if (!isString(rawText)) return undefined;
+		if (!isInteger(exitCode)) return undefined;
+		if (!isEnum(LANE_LIFECYCLES)(lifecycle)) return undefined;
+		if (!isEnum(LANE_TIERS)(tier)) return undefined;
+		if (!isBoolean(fallbackUsed)) return undefined;
+		if (!isFiniteNumber(elapsedMs)) return undefined;
+		if (!isFiniteNumber(toolElapsedMs)) return undefined;
+		if (!isInteger(toolCallCount) || toolCallCount < 0) return undefined;
+		if (requestedPassOrdinal !== undefined && !isInteger(requestedPassOrdinal)) return undefined;
+		if (!optional(minorHygiene, isBoolean)) return undefined;
+		if (!optional(requestedModel, isString)) return undefined;
+		if (!optional(observedModel, isString)) return undefined;
+		if (!optional(processSignal, isString)) return undefined;
+		if (!optional(stopReason, isString)) return undefined;
+		if (!optional(errorMessage, isString)) return undefined;
+		if (!optional(deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
+		if (!optional(firstEventMs, isFiniteNumber)) return undefined;
+		if (!optional(firstAssistantMs, isFiniteNumber)) return undefined;
+		if (!optional(startOffsetMs, isFiniteNumber)) return undefined;
+		if (!optional(endOffsetMs, isFiniteNumber)) return undefined;
+		if (!optional(fallbackBudgetRejected, isBoolean)) return undefined;
+		if (!optional(deadlineSource, isEnum(LANE_DEADLINE_SOURCES))) return undefined;
+		if (!optional(batchDeadlineMs, isFiniteNumber)) return undefined;
+		if (!optional(totalDeadlineMs, isFiniteNumber)) return undefined;
+		if (!Array.isArray(attemptsSource)) return undefined;
 		const attempts = [];
-		for (const raw of lane.attempts) {
+		for (const raw of attemptsSource) {
 			const attempt = attemptArtifactSnapshot(raw);
 			if (!attempt) return undefined;
 			attempts.push(attempt);
 		}
+		// --- Snapshot phase: built only from the validated locals. ---
 		const snapshot: Record<string, unknown> = {
-			generation: lane.generation,
-			key: lane.key,
-			passId: lane.passId,
-			tier: lane.tier,
-			rawText: lane.rawText,
-			exitCode: lane.exitCode,
-			lifecycle: lane.lifecycle,
+			generation,
+			key,
+			passId,
+			tier,
+			rawText,
+			exitCode,
+			lifecycle,
 			attempts: Object.freeze(attempts),
-			fallbackUsed: lane.fallbackUsed,
-			elapsedMs: lane.elapsedMs,
-			toolElapsedMs: lane.toolElapsedMs,
-			toolCallCount: lane.toolCallCount,
+			fallbackUsed,
+			elapsedMs,
+			toolElapsedMs,
+			toolCallCount,
 		};
-		copyOptional(snapshot, lane, "requestedPassOrdinal");
-		copyOptional(snapshot, lane, "minorHygiene");
-		copyOptional(snapshot, lane, "requestedModel");
-		copyOptional(snapshot, lane, "observedModel");
-		copyOptional(snapshot, lane, "processSignal");
-		copyOptional(snapshot, lane, "stopReason");
-		copyOptional(snapshot, lane, "errorMessage");
-		copyOptional(snapshot, lane, "deadlineExpired");
-		copyOptional(snapshot, lane, "firstEventMs");
-		copyOptional(snapshot, lane, "firstAssistantMs");
-		copyOptional(snapshot, lane, "startOffsetMs");
-		copyOptional(snapshot, lane, "endOffsetMs");
-		copyOptional(snapshot, lane, "fallbackBudgetRejected");
-		copyOptional(snapshot, lane, "deadlineSource");
-		copyOptional(snapshot, lane, "batchDeadlineMs");
-		copyOptional(snapshot, lane, "totalDeadlineMs");
+		withOptional(snapshot, "requestedPassOrdinal", requestedPassOrdinal);
+		withOptional(snapshot, "minorHygiene", minorHygiene);
+		withOptional(snapshot, "requestedModel", requestedModel);
+		withOptional(snapshot, "observedModel", observedModel);
+		withOptional(snapshot, "processSignal", processSignal);
+		withOptional(snapshot, "stopReason", stopReason);
+		withOptional(snapshot, "errorMessage", errorMessage);
+		withOptional(snapshot, "deadlineExpired", deadlineExpired);
+		withOptional(snapshot, "firstEventMs", firstEventMs);
+		withOptional(snapshot, "firstAssistantMs", firstAssistantMs);
+		withOptional(snapshot, "startOffsetMs", startOffsetMs);
+		withOptional(snapshot, "endOffsetMs", endOffsetMs);
+		withOptional(snapshot, "fallbackBudgetRejected", fallbackBudgetRejected);
+		withOptional(snapshot, "deadlineSource", deadlineSource);
+		withOptional(snapshot, "batchDeadlineMs", batchDeadlineMs);
+		withOptional(snapshot, "totalDeadlineMs", totalDeadlineMs);
 		return Object.freeze(snapshot) as ReviewLaneArtifact;
 	} catch {
 		// A throwing getter is a malformed artifact, never a crash at this boundary.
@@ -606,59 +638,94 @@ function laneArtifactSnapshot(value: unknown): ReviewLaneArtifact | undefined {
 	}
 }
 
-/** Same safe-snapshot contract for one retained lane attempt. */
+/**
+ * Same one-read safe-snapshot contract for one retained lane attempt: every
+ * property is read exactly once into locals, validated, and copied into a new
+ * frozen plain snapshot; the hostile original is never reread.
+ */
 function attemptArtifactSnapshot(value: unknown): ReviewLaneAttemptArtifact | undefined {
-	if (!value || typeof value !== "object") return undefined;
-	const attempt = value as Record<string, unknown>;
-	if (!isInteger(attempt.ordinal)) return undefined;
-	if (!isString(attempt.rawText)) return undefined;
-	if (!isInteger(attempt.exitCode)) return undefined;
-	if (!isEnum(LANE_LIFECYCLES)(attempt.lifecycle)) return undefined;
-	if (attempt.kind !== undefined && !isEnum(LANE_ATTEMPT_KINDS)(attempt.kind)) return undefined;
-	if (!optional(attempt.requestedModel, isString)) return undefined;
-	if (!optional(attempt.observedModel, isString)) return undefined;
-	if (!optional(attempt.usedTier, isEnum(LANE_TIERS))) return undefined;
-	if (!optional(attempt.processSignal, isString)) return undefined;
-	if (!optional(attempt.stopReason, isString)) return undefined;
-	if (!optional(attempt.errorMessage, isString)) return undefined;
-	if (!optional(attempt.deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
-	if (!optional(attempt.retryable, isBoolean)) return undefined;
-	if (!optional(attempt.elapsedMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.firstEventMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.firstAssistantMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.toolElapsedMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.toolCallCount, isInteger)) return undefined;
-	if (!optional(attempt.timedOut, isBoolean)) return undefined;
-	if (!optional(attempt.terminationGraceMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.forcedTermination, isBoolean)) return undefined;
-	if (!optional(attempt.deadlineMs, isFiniteNumber)) return undefined;
-	if (!optional(attempt.configuredDeadlineMs, isFiniteNumber)) return undefined;
-	const snapshot: Record<string, unknown> = {
-		ordinal: attempt.ordinal,
-		rawText: attempt.rawText,
-		exitCode: attempt.exitCode,
-		lifecycle: attempt.lifecycle,
-	};
-	copyOptional(snapshot, attempt, "kind");
-	copyOptional(snapshot, attempt, "requestedModel");
-	copyOptional(snapshot, attempt, "observedModel");
-	copyOptional(snapshot, attempt, "usedTier");
-	copyOptional(snapshot, attempt, "processSignal");
-	copyOptional(snapshot, attempt, "stopReason");
-	copyOptional(snapshot, attempt, "errorMessage");
-	copyOptional(snapshot, attempt, "deadlineExpired");
-	copyOptional(snapshot, attempt, "retryable");
-	copyOptional(snapshot, attempt, "elapsedMs");
-	copyOptional(snapshot, attempt, "firstEventMs");
-	copyOptional(snapshot, attempt, "firstAssistantMs");
-	copyOptional(snapshot, attempt, "toolElapsedMs");
-	copyOptional(snapshot, attempt, "toolCallCount");
-	copyOptional(snapshot, attempt, "timedOut");
-	copyOptional(snapshot, attempt, "terminationGraceMs");
-	copyOptional(snapshot, attempt, "forcedTermination");
-	copyOptional(snapshot, attempt, "deadlineMs");
-	copyOptional(snapshot, attempt, "configuredDeadlineMs");
-	return Object.freeze(snapshot) as ReviewLaneAttemptArtifact;
+	try {
+		if (!value || typeof value !== "object") return undefined;
+		const source = value as Record<string, unknown>;
+		// --- One-read phase. ---
+		const ordinal = source.ordinal;
+		const rawText = source.rawText;
+		const exitCode = source.exitCode;
+		const lifecycle = source.lifecycle;
+		const kind = source.kind;
+		const requestedModel = source.requestedModel;
+		const observedModel = source.observedModel;
+		const usedTier = source.usedTier;
+		const processSignal = source.processSignal;
+		const stopReason = source.stopReason;
+		const errorMessage = source.errorMessage;
+		const deadlineExpired = source.deadlineExpired;
+		const retryable = source.retryable;
+		const elapsedMs = source.elapsedMs;
+		const firstEventMs = source.firstEventMs;
+		const firstAssistantMs = source.firstAssistantMs;
+		const toolElapsedMs = source.toolElapsedMs;
+		const toolCallCount = source.toolCallCount;
+		const timedOut = source.timedOut;
+		const terminationGraceMs = source.terminationGraceMs;
+		const forcedTermination = source.forcedTermination;
+		const deadlineMs = source.deadlineMs;
+		const configuredDeadlineMs = source.configuredDeadlineMs;
+		// --- Validation phase (locals only). ---
+		if (!isInteger(ordinal)) return undefined;
+		if (!isString(rawText)) return undefined;
+		if (!isInteger(exitCode)) return undefined;
+		if (!isEnum(LANE_LIFECYCLES)(lifecycle)) return undefined;
+		if (kind !== undefined && !isEnum(LANE_ATTEMPT_KINDS)(kind)) return undefined;
+		if (!optional(requestedModel, isString)) return undefined;
+		if (!optional(observedModel, isString)) return undefined;
+		if (!optional(usedTier, isEnum(LANE_TIERS))) return undefined;
+		if (!optional(processSignal, isString)) return undefined;
+		if (!optional(stopReason, isString)) return undefined;
+		if (!optional(errorMessage, isString)) return undefined;
+		if (!optional(deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
+		if (!optional(retryable, isBoolean)) return undefined;
+		if (!optional(elapsedMs, isFiniteNumber)) return undefined;
+		if (!optional(firstEventMs, isFiniteNumber)) return undefined;
+		if (!optional(firstAssistantMs, isFiniteNumber)) return undefined;
+		if (!optional(toolElapsedMs, isFiniteNumber)) return undefined;
+		if (!optional(toolCallCount, isInteger)) return undefined;
+		if (!optional(timedOut, isBoolean)) return undefined;
+		if (!optional(terminationGraceMs, isFiniteNumber)) return undefined;
+		if (!optional(forcedTermination, isBoolean)) return undefined;
+		if (!optional(deadlineMs, isFiniteNumber)) return undefined;
+		if (!optional(configuredDeadlineMs, isFiniteNumber)) return undefined;
+		// --- Snapshot phase. ---
+		const snapshot: Record<string, unknown> = {
+			ordinal,
+			rawText,
+			exitCode,
+			lifecycle,
+		};
+		withOptional(snapshot, "kind", kind);
+		withOptional(snapshot, "requestedModel", requestedModel);
+		withOptional(snapshot, "observedModel", observedModel);
+		withOptional(snapshot, "usedTier", usedTier);
+		withOptional(snapshot, "processSignal", processSignal);
+		withOptional(snapshot, "stopReason", stopReason);
+		withOptional(snapshot, "errorMessage", errorMessage);
+		withOptional(snapshot, "deadlineExpired", deadlineExpired);
+		withOptional(snapshot, "retryable", retryable);
+		withOptional(snapshot, "elapsedMs", elapsedMs);
+		withOptional(snapshot, "firstEventMs", firstEventMs);
+		withOptional(snapshot, "firstAssistantMs", firstAssistantMs);
+		withOptional(snapshot, "toolElapsedMs", toolElapsedMs);
+		withOptional(snapshot, "toolCallCount", toolCallCount);
+		withOptional(snapshot, "timedOut", timedOut);
+		withOptional(snapshot, "terminationGraceMs", terminationGraceMs);
+		withOptional(snapshot, "forcedTermination", forcedTermination);
+		withOptional(snapshot, "deadlineMs", deadlineMs);
+		withOptional(snapshot, "configuredDeadlineMs", configuredDeadlineMs);
+		return Object.freeze(snapshot) as ReviewLaneAttemptArtifact;
+	} catch {
+		// A throwing getter is a malformed attempt, never a crash at this boundary.
+		return undefined;
+	}
 }
 
 /** Invocation-scoped, host-owned artifact storage. The review coordinator owns its lifetime. */

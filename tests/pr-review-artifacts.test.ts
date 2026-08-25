@@ -543,6 +543,80 @@ describe("invocation lane artifact retention", () => {
 		expect(registry.snapshot(7)).toHaveLength(1);
 	});
 
+	test("stateful getters cannot pass validation and then turn hostile (one-read snapshot)", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, Array.from({ length: 7 }, (_, index) => ({
+			key: `call:${index}`, tier: "heavy" as const, minorHygiene: false,
+		})))).toBeTrue();
+		/** Install real getters on a plain artifact clone. */
+		const withGetters = (key: string, fields: Record<string, () => unknown>) => {
+			const lane: Record<string, unknown> = { ...artifact({ key }) };
+			for (const [name, getter] of Object.entries(fields)) {
+				Object.defineProperty(lane, name, { get: getter, enumerable: true, configurable: true });
+			}
+			return lane as unknown as ReviewLaneArtifact;
+		};
+		/** Stateful getter: a good first value, a hostile second value, counted reads. */
+		const flips = (good: unknown, hostile: unknown, reads: Record<string, number>, name: string) => () => {
+			reads[name] = (reads[name] ?? 0) + 1;
+			return reads[name] === 1 ? good : hostile;
+		};
+		/** Stateful getter whose second read throws instead of returning a value. */
+		const flipsThrow = (good: unknown, reads: Record<string, number>, name: string) => () => {
+			reads[name] = (reads[name] ?? 0) + 1;
+			if (reads[name] === 1) return good;
+			throw new Error("second read boom");
+		};
+		const reads: Record<string, number> = {};
+		// Good→Symbol flips: the first valid value is snapshotted safely.
+		expect(registry.retain(7, withGetters("call:0", { rawText: flips("NO FINDINGS.", Symbol("hostile"), reads, "rawText") }))).toBeTrue();
+		expect(registry.retain(7, withGetters("call:1", { errorMessage: flips("429 capacity", Symbol("hostile"), reads, "errorMessage") }))).toBeTrue();
+		expect(registry.retain(7, withGetters("call:2", { requestedModel: flips("provider/primary", Symbol("hostile"), reads, "requestedModel") }))).toBeTrue();
+		// Good→throw flip on passId: first read is valid, snapshot keeps it, the
+		// hostile second read never happens.
+		expect(registry.retain(7, withGetters("call:3", { passId: flipsThrow("correctness", reads, "passId") }))).toBeTrue();
+		// A getter that is hostile on the FIRST read drops the whole lane.
+		expect(registry.retain(7, withGetters("call:4", { lifecycle: flips(Symbol("bad-first"), "complete", reads, "lifecycleBad") }))).toBeFalse();
+		expect(registry.retain(7, withGetters("call:5", { lifecycle: () => { throw new Error("first read boom"); } }))).toBeFalse();
+		// Nested attempt fields flip good→Symbol/good→wrong-type: first values kept, one read each.
+		const attemptReads: Record<string, number> = {};
+		const attemptLane = { ...artifact({ key: "call:6" }) } as Record<string, unknown>;
+		const attempt: Record<string, unknown> = {
+			ordinal: 1,
+			kind: "fallback",
+			exitCode: 1,
+			lifecycle: "partial",
+			retryable: true,
+			elapsedMs: 20,
+			toolElapsedMs: 5,
+			toolCallCount: 1,
+		};
+		Object.defineProperty(attempt, "rawText", { get: flips("partial evidence", Symbol("hostile"), attemptReads, "rawText"), enumerable: true, configurable: true });
+		Object.defineProperty(attempt, "observedModel", { get: flips("provider/fallback", 42, attemptReads, "observedModel"), enumerable: true, configurable: true });
+		attemptLane.attempts = [attempt as never];
+		expect(registry.retain(7, attemptLane as unknown as ReviewLaneArtifact)).toBeTrue();
+		// Exactly one read per property: validation never rereads the getters and
+		// neither does the snapshot copy.
+		expect(reads.rawText).toBe(1);
+		expect(reads.errorMessage).toBe(1);
+		expect(reads.requestedModel).toBe(1);
+		expect(reads.passId).toBe(1);
+		expect(reads.lifecycleBad).toBe(1);
+		expect(attemptReads.rawText).toBe(1);
+		expect(attemptReads.observedModel).toBe(1);
+		// The stored snapshots hold the first valid values and are stable.
+		const snapshot = registry.snapshot(7)!;
+		expect(snapshot.find((lane) => lane.key === "call:0")?.rawText).toBe("NO FINDINGS.");
+		expect(snapshot.find((lane) => lane.key === "call:1")?.errorMessage).toBe("429 capacity");
+		expect(snapshot.find((lane) => lane.key === "call:2")?.requestedModel).toBe("provider/primary");
+		expect(snapshot.find((lane) => lane.key === "call:3")?.passId).toBe("correctness");
+		expect(snapshot.find((lane) => lane.key === "call:6")?.attempts[0]?.rawText).toBe("partial evidence");
+		expect(snapshot.find((lane) => lane.key === "call:6")?.attempts[0]?.observedModel).toBe("provider/fallback");
+		// Valid siblings of dropped lanes remain retained (call:4/call:5 dropped).
+		expect(snapshot.map((lane) => lane.key).sort()).toEqual(["call:0", "call:1", "call:2", "call:3", "call:6"]);
+	});
+
 	test("retains a safe frozen snapshot, not the hostile original", () => {
 		const registry = new ReviewLaneArtifactRegistry();
 		registry.open(7);
