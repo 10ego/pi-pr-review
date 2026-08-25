@@ -244,7 +244,9 @@ function meaningfulValue(value: string): boolean {
 		!repeatedText(cjkText) && !cjkBoilerplate;
 	const wordEvidence = cjkCharacters.length > 0 ? latinOrNumericWords.length >= 2 : words.length >= 2;
 	const meaningfulLanguage = !cjkBoilerplate && (wordEvidence || meaningfulCjk);
-	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) &&
+	const nonCjkProjection = normalized.replace(CJK_SCRIPT_CHARACTERS, " ").replace(/\s+/g, " ").trim();
+	const projectedPlaceholder = nonCjkProjection.length > 0 && PLACEHOLDER_ONLY.test(nonCjkProjection);
+	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) && !projectedPlaceholder &&
 		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
 
@@ -350,11 +352,11 @@ function topLevelFailure(text: string): boolean {
  */
 function contradictoryFraming(values: readonly string[]): boolean {
 	const patterns = [
-		/^(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
-		/^(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/^(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/^(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/^(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/^(?:(?:unfortunately|regrettably|sorry|apologies?|sadly)[,:]?\s+)?(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/^(?:(?:unfortunately|regrettably|sorry|apologies?|sadly)[,:]?\s+)?(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:(?:unfortunately|regrettably|sorry|apologies?|sadly)[,:]?\s+)?(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:(?:unfortunately|regrettably|sorry|apologies?|sadly)[,:]?\s+)?(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:(?:unfortunately|regrettably|sorry|apologies?|sadly)[,:]?\s+)?(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
 		/^(?:the\s+)?review\s+(?:did not|didn't|was not|wasn't)\s+run\b/i,
 		/^(?:the\s+)?review\s+(?:(?:was\s+)?skipped)\b/i,
 	];
