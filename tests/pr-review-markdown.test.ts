@@ -47,6 +47,44 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 	});
 
+	test("keeps a valid nit candidate approval-eligible while reserved nit prose degrades", () => {
+		const synthesis = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const nit = [
+			"Review status: COMPLETE",
+			"Overview: The change integrates the review.",
+			"Strengths: Focused tests cover the path.",
+			"Risk areas: Integration boundaries remain the main risk.",
+			"title: [nit] Preserve review evidence",
+			"severity: nit",
+			"why: The changed path drops a required result.",
+			"location: src/a.ts:10-12",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.9",
+		].join("\n");
+		const lifecycle = classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+		const artifact = synthesizeReviewArtifact({
+			rawText: synthesis,
+			...binding,
+			laneArtifacts: [{ ...completeLane, key: "nit:0", passId: "nit", rawText: nit, lifecycle }],
+			expectedLaneDescriptors: [{ key: "nit:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+		});
+		expect(lifecycle).toBe("complete");
+		expect(artifact.mergeApprovalEligible).toBe(true);
+
+		const reservedNit = nit.replace("why: The changed path drops a required result.", "why: The changed path drops a required [nit] result.");
+		const reservedLifecycle = classifyReviewLane({ tier: "heavy", rawText: reservedNit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+		expect(reservedLifecycle).toBe("partial");
+		const degraded = synthesizeReviewArtifact({
+			rawText: synthesis,
+			...binding,
+			laneArtifacts: [{ ...completeLane, key: "nit:0", passId: "nit", rawText: reservedNit, lifecycle: reservedLifecycle }],
+			expectedLaneDescriptors: [{ key: "nit:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+		});
+		expect(degraded.mergeApprovalEligible).toBe(false);
+	});
+
 	test("parses CRLF Markdown equivalently while retaining exact raw text", () => {
 		const normalized = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const rawText = normalized.replace(/\n/g, "\r\n");
