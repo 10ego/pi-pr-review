@@ -146,6 +146,19 @@ export function assertPackageMetadata(packageData, packageJson, pathCount) {
 	}
 }
 
+export function assertNoDuplicateTopLevelFunctions(source, filePath = "source") {
+	invariant(typeof source === "string", `${filePath} must contain text source`);
+	const declarations = new Map();
+	const pattern = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
+	for (const match of source.matchAll(pattern)) {
+		const name = match[1];
+		const line = source.slice(0, match.index).split("\n").length;
+		const previous = declarations.get(name);
+		invariant(previous === undefined, `${filePath} declares top-level function ${name} more than once (lines ${previous} and ${line})`);
+		declarations.set(name, line);
+	}
+}
+
 export function verifyPackageContents(rootDir = process.cwd()) {
 	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 	const result = spawnSync(npmCommand, ["pack", "--dry-run", "--ignore-scripts", "--json"], {
@@ -169,6 +182,9 @@ export function verifyPackageContents(rootDir = process.cwd()) {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 	const paths = assertPackageContents(payload[0].files);
 	assertPackageMetadata(payload[0], packageJson, paths.length);
+	for (const filePath of paths.filter((candidate) => candidate.endsWith(".ts"))) {
+		assertNoDuplicateTopLevelFunctions(fs.readFileSync(path.join(rootDir, filePath), "utf8"), filePath);
+	}
 	return { package: payload[0], paths };
 }
 

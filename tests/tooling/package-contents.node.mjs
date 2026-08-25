@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, test } from "node:test";
 import {
+	assertNoDuplicateTopLevelFunctions,
 	assertPackageContents,
 	assertPackageMetadata,
 	EXPECTED_PACKAGE_FILES,
@@ -42,6 +43,18 @@ describe("npm release package policy", () => {
 	test("rejects missing required entry points", () => {
 		const files = current.package.files.filter((file) => file.path !== "extensions/index.ts");
 		assert.throws(() => assertPackageContents(files), /missing required path/);
+	});
+
+	test("rejects duplicate top-level function implementations that Pi's extension loader cannot parse", () => {
+		assert.doesNotThrow(() => assertNoDuplicateTopLevelFunctions([
+			"function first() {}",
+			"export async function second() {}",
+			"\tfunction nested() {}",
+		].join("\n"), "valid.ts"));
+		assert.throws(
+			() => assertNoDuplicateTopLevelFunctions("function duplicate() {}\nexport function duplicate() {}\n", "duplicate.ts"),
+			/duplicate\.ts declares top-level function duplicate more than once \(lines 1 and 2\)/,
+		);
 	});
 
 	test("rejects unsafe package metadata and lifecycle scripts", () => {
