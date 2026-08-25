@@ -1047,12 +1047,16 @@ async function runSelfReviewAttempt(
 	}
 }
 
-const OUTPUT_REPAIR_SYSTEM_PROMPT = [
-	"You are an isolated output-repair subagent for a completed PR review.",
-	"You have no tools. Do not review the PR, add findings, remove findings, or change the review's substance.",
-	"Convert the supplied completed-review text into exactly one JSON object that satisfies the supplied output contract.",
-	"Return only that JSON object: no Markdown, headings, prose, or code fences. If the source cannot be safely converted, return it unchanged so host validation rejects it.",
-].join("\n");
+export function buildOutputRepairSystemPrompt(): string {
+	return [
+		"You are an isolated output-repair subagent for a completed PR review.",
+		"You have no tools. Do not review the PR, add findings, remove findings, or change the review's substance.",
+		"Convert the supplied completed-review text into exactly one JSON object that satisfies the supplied output contract.",
+		"Return only that JSON object: no Markdown, headings, prose, or code fences. If the source cannot be safely converted, return it unchanged so host validation rejects it.",
+	].join("\n");
+}
+
+const OUTPUT_REPAIR_SYSTEM_PROMPT = buildOutputRepairSystemPrompt();
 
 /** Run the configured light-tier model as a no-tools, one-shot JSON-format repairer. */
 export async function repairReviewOutput(
