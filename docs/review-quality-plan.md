@@ -172,10 +172,14 @@ Mirrors the existing self-review subprocess plumbing
 `message_end` (final assistant text) does **not** await the child. The flow is:
 
 1. `message_end`: host builds the deterministic artifact as today. If
-   extraction is enabled and `quality !== "fully_parsed"`, it **starts** the
-   extraction subprocess and stores the promise; rendering proceeds
-   immediately with the deterministic artifact so the terminal response,
-   telemetry completion, and TUI rendering are never blocked.
+   extraction is enabled, `quality !== "fully_parsed"`, **and the
+   host-authoritative eligibility check passes** (retained lane evidence for
+   the active generation plus a nonempty assembled input; see §6), it
+   **starts** the extraction subprocess and stores the promise; rendering
+   proceeds immediately with the deterministic artifact so the terminal
+   response, telemetry completion, and TUI rendering are never blocked. An
+   ineligible invocation records an excluded `not_run` entry and never
+   spawns the child.
 2. `turn_end`: `generationsReadyForSynthesis` re-arms the synthesis cap —
    this is where extraction is awaited, **bounded by `min(synthesisMs,
    remaining total budget − termination reserve)`** via the same lease/budget
@@ -220,9 +224,11 @@ awaited stage.
 | Extraction outcome | Result |
 | --- | --- |
 | Valid findings | merged; inline notes on degraded review; verdict line unchanged unless a deterministically parsed P0/P1 exists |
-| Empty findings `{"findings":[]}` | deterministic artifact unchanged (absence of structure ≠ clean review) |
-| Timeout / child failure | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
+| Empty findings `{"findings":[]}` on **eligible** lane evidence | deterministic artifact unchanged (absence of structure ≠ clean review); **extractor execution success** for §9 metrics |
+| Every extracted finding provenance-rejected | deterministic artifact unchanged; telemetry `outcome: "rejected"` (verification failure, never a correct empty) |
+| Timeout / child failure (incl. no usable output) | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
 | Malformed / unsafe / over-cap JSON | deterministic artifact unchanged; telemetry `outcome: "rejected"` |
+| No retained lane evidence, or empty assembled input | **never started**; excluded telemetry `outcome: "not_run"` with reason `no_lane_evidence`/`empty_input`; not an attempt |
 | Not configured / disabled | current behavior, zero new code paths taken |
 
 ## 4. Security
@@ -315,6 +321,34 @@ Two records, split because they occur at different lifecycle points:
   persisted cache record, and not in invocation telemetry (which finalizes in
   `message_end` before publication).
 
+**v2 telemetry semantics (schemaVersion 2 cohort).** Every extraction entry
+now carries `schemaVersion: 2`. The semantics of that cohort:
+
+- **Host-authoritative eligibility.** The child starts only when the
+  invocation retained actual host review-lane evidence for the active
+  generation and the assembled degraded Markdown input is nonempty after
+  trim. Eligibility is never inferred from assistant prose. A non-run
+  decision emits `outcome: "not_run"` with a stable `reason`
+  (`no_lane_evidence` or `empty_input`) — an excluded event that never enters
+  the success, provenance, latency, or sample-volume denominators.
+- **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
+  eligible lane evidence keeps the `empty` outcome label but counts as
+  extractor **execution** success in §9 tooling. It still claims nothing
+  about the review being clean: the deterministic artifact, verdict safety,
+  and approval ineligibility are unchanged. A child that produces no usable
+  output, or a record whose findings were all provenance-rejected, is a
+  failure (`failed`/`rejected`).
+- **Per-reason provenance observability.** `provenanceRejectionReasons`
+  carries aggregate counts for the three real host checks —
+  `sourceQuoteAbsent` (the finding's `quote` is not a verbatim substring of
+  the input), `locationQuoteAbsent` (a claimed location's `location_quote`
+  is not verbatim in the input), and `locationQuotePathMismatch` (the claimed
+  `path` does not appear inside the verified `location_quote`). Counts only:
+  no source code, quotes, paths, or private snippets are ever emitted.
+- **Homogeneous cohorts.** Entries without `schemaVersion: 2` are legacy and
+  are displayed separately for context; they are permanently excluded from
+  the default-on decision. No backfilling or rewriting of session logs.
+
 ## 7. Rollout
 
 - **Phase 0 (this PR):** design document only. No behavior change.
@@ -358,15 +392,45 @@ Two records, split because they occur at different lifecycle points:
 
 ## 9. Success criteria (Phase 2 gate)
 
-- Extraction success (valid merged output) ≥ 95% of enabled runs.
+**Cohort requirement (v2).** An 18-run real campaign against 1.15.7 (PRs
+100, 88, 81, 72, 63, 46, 48, 42, 99, 37, 52, 50, 44 plus baseline runs)
+proved the pre-v2 denominator was semantically contaminated: 3 absent-synthesis
+runs (inputBytes = 0) and 2 same-head skip notices were counted as extraction
+attempts despite no retained review-lane evidence, and 2 genuinely clean
+degraded reviews returned a correct `{"findings":[]}` that was counted as
+failure. That campaign invalidated the old mixed denominator. All §9
+metrics below therefore evaluate exactly one **homogeneous current cohort**
+(`schemaVersion: 2` events), which starts at 0 after the v2 change:
+
+- **Sample volume:** ≥ 15 real eligible current-cohort extraction attempts
+  before default-on can even be considered. No grandfathering, backfilling,
+  rewriting of session logs, or cherry-picking; excluded `not_run` events
+  never satisfy sample volume. Legacy history prints separately, context
+  only.
+
+Metrics over those eligible current-cohort attempts only:
+
+- **Extractor execution success** (valid merged output *or* a schema-valid
+  correct-empty answer on eligible lane evidence) ≥ 95% of eligible
+  attempts. This is deliberately distinct from "findings merged": an
+  execution success never claims the review itself is clean.
 - On degraded reviews with substantive lane evidence, ≥ 1 inline note in a
   target majority of runs where a human spot-check confirms a real finding
   existed in the Markdown.
-- Provenance rejection rate < 5% (a high rate means the prompt/schema fights
-  the models and must be fixed before any default-on).
+- Provenance rejection rate < 5% of extracted findings (a high rate means
+  the prompt/schema fights the models and must be fixed before any
+  default-on). The per-reason counts (`sourceQuoteAbsent`,
+  `locationQuoteAbsent`, `locationQuotePathMismatch`) identify which host
+  check fails. (Diagnosis note: in the 1.15.7 campaign, PRs 88 and 42 each
+  had one finding rejected, but the extraction child runs `--no-session`, so
+  the raw child output is unpersisted and the exact failed check cannot be
+  recovered from retained logs — the reason counts exist precisely so the
+  fresh cohort can answer it. No prompt change is justified by that
+  evidence.)
 - No regression: full suite green; publish-safety invariants unchanged
   (degraded never APPROVEs, no false completion claims).
-- Wall-clock overhead ≤ ~20s p50 inside the synthesis window.
+- Wall-clock overhead ≤ ~20s p50 inside the synthesis window, computed over
+  eligible current-cohort attempts only.
 
 ## 10. Alternatives considered
 

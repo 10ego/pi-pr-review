@@ -239,6 +239,8 @@ Set it in **user scope only** (`~/.pi/agent/pr-review.json`); project configurat
 
 Outcomes are recorded in session `pr-review-extraction` entries for the Phase 2 evaluation described in [docs/review-quality-plan.md](docs/review-quality-plan.md).
 
+Development notes (v2 telemetry semantics, default remains **off**): the extraction child now starts only when the invocation actually retained host review-lane evidence for the active generation and the assembled degraded Markdown input is nonempty — absent-synthesis sessions and same-head skip notices are never sent to the provider and are recorded as excluded `not_run` events (`no_lane_evidence`/`empty_input`) that do not count as attempts. A schema-valid `{"findings":[]}` answer on eligible evidence counts as extractor **execution** success (it still never claims the review is clean); child failures and provenance-rejected records remain failures, and every entry carries `provenanceRejectionReasons` aggregate counts (`sourceQuoteAbsent`, `locationQuoteAbsent`, `locationQuotePathMismatch`) — counts only, never payload text. A real 18-run campaign against 1.15.7 proved the pre-v2 outcome denominator mixed incompatible semantics, so the default-on decision requires a fresh homogeneous `schemaVersion: 2` cohort of at least 15 eligible real extraction attempts; the development tally (`node tests/tooling/extraction-tally.mjs`) evaluates only that cohort and prints legacy history separately.
+
 ## Optional verification
 
 You can define fixed test commands in `verificationBaselines` in the **user** config. Project config cannot add or override these profiles. The reviewer may select at most one applicable profile and runs it against the exact captured PR head.
