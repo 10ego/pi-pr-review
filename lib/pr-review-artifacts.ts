@@ -132,7 +132,6 @@ const FRAMING_LABELS = ["Overview", "Strengths", "Risk areas"] as const;
 const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|review complete|no findings|nothing to review)(?:\s+(?:identified|found|available|present))?[.!]?$/i;
 const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
 const CODE_FENCE = /^ {0,3}(?:`{3,}|~{3,})/m;
-const HTML_CONTAINER = /<\/?[A-Za-z][^>]*>|<!--[\s\S]*?-->/;
 const COMMONMARK_HTML_BLOCK_TAGS = [
 	"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
 	"colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure",
@@ -141,13 +140,30 @@ const COMMONMARK_HTML_BLOCK_TAGS = [
 	"optgroup", "option", "p", "param", "search", "section", "summary", "table", "tbody", "td", "tfoot",
 	"th", "thead", "title", "tr", "track", "ul",
 ].join("|");
+const COMMONMARK_BLANK_TERMINATED_HTML = new RegExp(
+	`^ {0,3}</?(?:${COMMONMARK_HTML_BLOCK_TAGS})(?:[ \\t]+|/?>|$)`,
+	"i",
+);
+// CommonMark type 7 accepts a complete open or closing tag for any tag name,
+// including custom elements. Unlike types 1–6, it cannot interrupt a paragraph.
+const COMMONMARK_COMPLETE_HTML_TAG = /^ {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ "'=<>`\u0000-\u0020]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>|<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$/;
 // These are CommonMark HTML block openers. The opener itself is sufficient:
 // an assistant must not be able to hide later contract lines behind an
 // unterminated comment, declaration, raw block tag, or other container.
-const HTML_BLOCK_OPENER = new RegExp(
-	`^ {0,3}(?:<!--|<\\?|<![A-Za-z]|<!\\[CDATA\\[|</?(?:script|pre|style|textarea)(?=[ \\t/>]|$)|</?(?:${COMMONMARK_HTML_BLOCK_TAGS})(?=[ \\t/>]|$))`,
-	"i",
-);
+function htmlBlockOpener(line: string): boolean {
+	return /^ {0,3}<(?:script|pre|style|textarea)(?:[ \t]+|>|$)/i.test(line) ||
+		/^ {0,3}<!--/.test(line) ||
+		/^ {0,3}<\?/.test(line) ||
+		/^ {0,3}<![A-Z]/i.test(line) ||
+		/^ {0,3}<!\[CDATA\[/i.test(line) ||
+		COMMONMARK_BLANK_TERMINATED_HTML.test(line) ||
+		COMMONMARK_COMPLETE_HTML_TAG.test(line);
+}
+
+function hasHtmlContainer(text: string): boolean {
+	return text.split("\n").some((line) => htmlBlockOpener(line));
+}
+
 const CONTAINER_PREFIX = /^(?:[-*+>]|#{1,6})[ \t]+/;
 const RESERVED_LABEL_PRODUCTION = /(?:^|[ \t])(?:\*\*|__)?(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)(?:\*\*|__)?[ \t]*:/i;
 const SEVERITY_TAG_PRODUCTION = /\[P[0-3]\]/gi;
@@ -248,10 +264,10 @@ function hasReservedStatusProduction(line: string): boolean {
 function hasReservedContractProduction(value: string): boolean {
 	if (!value) return false;
 	if (value.includes(NO_FINDINGS_SENTINEL) || /Review status\s*:/i.test(value) || RESERVED_LABEL_PRODUCTION.test(value)) return true;
-	if (HTML_CONTAINER.test(value)) return true;
+	if (hasHtmlContainer(value)) return true;
 	return value.split("\n").some((line) => {
 		const structural = line.trim();
-		return CODE_FENCE.test(line) || HTML_BLOCK_OPENER.test(line) ||
+		return CODE_FENCE.test(line) || htmlBlockOpener(line) ||
 			structural === NO_FINDINGS_SENTINEL || hasReservedStatusProduction(structural) ||
 			!!framingLabel(structural) || !!candidateLabel(structural) || CONTAINER_PREFIX.test(structural);
 	});
@@ -313,7 +329,7 @@ function topLevelFailure(text: string): boolean {
  * indented continuation lines; reserved productions cannot be continuations.
  */
 function parseIntegratedCompletion(text: string): boolean {
-	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || HTML_CONTAINER.test(text)) return false;
+	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || hasHtmlContainer(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;

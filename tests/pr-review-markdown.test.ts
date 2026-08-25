@@ -69,13 +69,20 @@ describe("Markdown-first canonical review artifacts", () => {
 			"~~~",
 			"   ~~~",
 			"<!--",
+			"<!-- hidden -->",
 			"<?",
+			"<?xml version=\"1.0\"?>",
 			"<!DOCTYPE",
+			"<!DOCTYPE html>",
 			"<![CDATA[",
+			"<![CDATA[hidden]]>",
 			"<script",
 			"<pre",
 			"<style",
 			"<textarea",
+			"<div>hidden</div>",
+			"<x-review data-kind=example>",
+			"</x-review>",
 			"[P1] Hidden blocker",
 			"A valid first line.\n  ~~~",
 			"A valid first line.\n  <!--",
@@ -93,7 +100,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		].join("\n");
 		const synthesis = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const expected = [{ key: completeLane.key, tier: completeLane.tier, minorHygiene: false, expectedOutput: "nonempty" as const }];
-		const validRaw = `${framing}\n${candidate("The operator compares a < b and the path uses src/a.ts without a Markdown container.")}`;
+		const validRaw = `${framing}\n${candidate("The returned value preserves its declared type.\n  Map<string, number> carries the successful branch.").replace("title: [P2] Preserve review evidence", "title: [P2] Result<T>")}`;
 		const validLifecycle = classifyReviewLane({ tier: "heavy", rawText: validRaw, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
 		expect(validLifecycle).toBe("complete");
 		const valid = synthesizeReviewArtifact({

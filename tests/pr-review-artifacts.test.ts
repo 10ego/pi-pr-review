@@ -297,15 +297,46 @@ declared prose\nNO FINDINGS.`,
 		}
 	});
 
-	test("keeps positive non-container prose valid in candidate values", () => {
-		const why = "The operator compares a < b and the path uses src/a.ts without a Markdown container.";
+	test.each([
+		["scalar title generic", integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P2] Result<T>")],
+		["scalar title map type", integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P2] Map<string, number>")],
+		["scalar why generic", integratedCandidate("The returned Result<T> preserves the caller's type.")],
+		["scalar why map type", integratedCandidate("The lookup returns Map<string, number> for the caller.")],
+		["scalar why comparison", integratedCandidate("The operator compares x < y before applying the update.")],
+		["continuation generic", integratedCandidate("The returned value preserves its declared type.\n  Result<T> carries the successful branch.")],
+		["continuation map type", integratedCandidate("The lookup retains its key and value types.\n  Map<string, number> carries the result.")],
+		["continuation comparison", integratedCandidate("The guard evaluates the operands before the write.\n  x < y selects the expected branch.")],
+	] as const)("accepts %s as ordinary candidate prose", (_label, candidate) => {
 		expect(classifyReviewLane({
 			tier: "heavy",
-			rawText: `${integratedFraming()}\n${integratedCandidate(why)}`,
+			rawText: `${integratedFraming()}\n${candidate}`,
 			exitCode: 0,
 			stopReason: "stop",
 			expectedOutput: "nonempty",
 		})).toBe("complete");
+	});
+
+	test.each([
+		["unterminated HTML comment", "<!--"],
+		["complete HTML comment", "<!-- hidden -->"],
+		["unterminated processing instruction", "<?"],
+		["complete processing instruction", "<?xml version=\"1.0\"?>"],
+		["unterminated declaration", "<!DOCTYPE"],
+		["complete declaration", "<!DOCTYPE html>"],
+		["unterminated CDATA opener", "<![CDATA["],
+		["complete CDATA block", "<![CDATA[hidden]]>"],
+		["unterminated raw block tag", "<div"],
+		["complete raw block tag", "<div>hidden</div>"],
+		["complete custom block tag", "<x-review data-kind=example>"],
+		["closing custom block tag", "</x-review>"],
+	] as const)("rejects an actual %s at the candidate value's structural start", (_label, html) => {
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: `${integratedFraming()}\n${integratedCandidate(html)}`,
+			exitCode: 0,
+			stopReason: "stop",
+			expectedOutput: "nonempty",
+		})).toBe("partial");
 	});
 
 	test("does not let an empty light section consume the next populated section", () => {
