@@ -40,7 +40,7 @@ mock.module("typebox", () => {
 	};
 });
 
-const { repairReviewOutput, runFindingExtraction, overridePiInvocation } = await import("../extensions/pr-review-subagent.ts");
+const { buildOutputRepairSystemPrompt, repairReviewOutput, runFindingExtraction, overridePiInvocation } = await import("../extensions/pr-review-subagent.ts");
 
 /** Point the runner's subprocess discovery at the fake pi binary. */
 function routeToFake(dir: string) {
@@ -157,6 +157,9 @@ describe("finding extraction subprocess", () => {
 					{ cwd: dir, isProjectTrusted: () => false },
 				);
 				expect(repaired).toBe(expected);
+				const promptText = readFileSync(join(dir, "system-prompt.md"), "utf8");
+				expect(promptText).toBe(buildOutputRepairSystemPrompt());
+				expect(promptText).not.toContain("\\n");
 			} finally {
 				overridePiInvocation(undefined);
 			}

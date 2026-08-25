@@ -148,6 +148,7 @@ describe("semantic lane completion", () => {
 			integratedFraming("plain", { overview: "The review tool error handling preserves diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
 			integratedFraming("plain", { overview: "The review tool failed gracefully and preserved diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
 			integratedFraming("plain", { overview: "The change validates product failures.", strengths: "Focused tests cover the path.", riskAreas: "The server returned an error for invalid input." }),
+			integratedFraming("plain", { overview: "This fixes a path where the review was skipped.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
 		]) {
 			expect(classifyReviewLane({ tier: "heavy", rawText: `${framing}\nNO FINDINGS.`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		}
@@ -176,7 +177,7 @@ describe("semantic lane completion", () => {
 			const rawText = integratedFraming("plain", { overview: boilerplate, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), boilerplate).toBe("partial");
 		}
-		for (const substantive of ["入力検証を強化", "エラー処理改善", "오류처리개선"]) {
+		for (const substantive of ["错误处理", "入力検証を強化", "エラー処理改善", "오류처리개선", "Fix 用户 validation"]) {
 			const rawText = integratedFraming("plain", { overview: substantive, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), substantive).toBe("complete");
 		}

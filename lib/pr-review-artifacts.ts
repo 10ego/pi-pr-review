@@ -238,9 +238,10 @@ function meaningfulValue(value: string): boolean {
 	const words = normalized.match(/[\p{L}\p{N}]+/gu) ?? [];
 	const cjkCharacters = normalized.match(CJK_SCRIPT_CHARACTERS) ?? [];
 	const cjkText = cjkCharacters.join("");
-	const meaningfulCjk = cjkCharacters.length >= 5 && new Set(cjkCharacters).size >= 4 &&
-		!repeatedText(cjkText) && !CJK_BOILERPLATE_ONLY.test(normalized.replace(/\s+/gu, ""));
-	const meaningfulLanguage = cjkCharacters.length > 0 ? meaningfulCjk : words.length >= 2;
+	const cjkBoilerplate = CJK_BOILERPLATE_ONLY.test(normalized.replace(/\s+/gu, ""));
+	const meaningfulCjk = cjkCharacters.length >= 4 && new Set(cjkCharacters).size >= 4 &&
+		!repeatedText(cjkText) && !cjkBoilerplate;
+	const meaningfulLanguage = !cjkBoilerplate && (words.length >= 2 || meaningfulCjk);
 	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) &&
 		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
@@ -347,13 +348,13 @@ function topLevelFailure(text: string): boolean {
  */
 function contradictoryFraming(values: readonly string[]): boolean {
 	const patterns = [
-		/\b(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
-		/\b(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/\b(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/\b(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
-		/\b(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
-		/\b(?:the\s+)?review\s+(?:did not|didn't|was not|wasn't)\s+run\b/i,
-		/\b(?:the\s+)?review\s+(?:(?:was\s+)?skipped)\b/i,
+		/^(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/^(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/^(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/^(?:the\s+)?review\s+(?:did not|didn't|was not|wasn't)\s+run\b/i,
+		/^(?:the\s+)?review\s+(?:(?:was\s+)?skipped)\b/i,
 	];
 	return values.some((value) => {
 		const normalized = value.replace(/\s+/g, " ").trim();
