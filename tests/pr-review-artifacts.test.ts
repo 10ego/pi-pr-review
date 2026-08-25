@@ -146,6 +146,12 @@ describe("semantic lane completion", () => {
 		}
 		const candidateEvidence = `${integratedFraming()}\n${integratedCandidate("The reviewer could not access the repository after the workspace changed, so this path drops a required result.")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: candidateEvidence, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		for (const framing of [
+			integratedFraming("plain", { overview: "The review tool error handling preserves diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
+			integratedFraming("plain", { overview: "The change validates product failures.", strengths: "Focused tests cover the path.", riskAreas: "The service returned an error for invalid input." }),
+		]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: `${framing}\nNO FINDINGS.`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		}
 	});
 
 	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
@@ -163,11 +169,11 @@ describe("semantic lane completion", () => {
 			overview: "这个变更处理用户输入并保留错误上下文",
 			strengths: "测试覆盖成功和失败路径",
 			riskAreas: "跨服务边界仍需要关注",
-		})}\n${integratedCandidate("当输入为空时结果会丢失并导致后续请求失败").replace("[P2] Preserve review evidence", "[P2] 保留错误上下文")}`;
+		})}\n${integratedCandidate("当输入为空时结果会丢失并导致后续请求失败").replace("[P2] Preserve review evidence", "[P2] 保留完整错误上下文信息")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: cjk, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		const trivial = `${integratedFraming("plain", { overview: "好", strengths: "测试", riskAreas: "风险" })}\n${integratedCandidate("失败").replace("[P2] Preserve review evidence", "[P2] 修复").replace("src/a.ts:10-12", "repo-wide")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: trivial, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
-		for (const boilerplate of ["没有发现问题", "レビュー完了", "문제없음"]) {
+		for (const boilerplate of ["哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "特に問題なし", "レビュー完了", "문제없음"]) {
 			const rawText = integratedFraming("plain", { overview: boilerplate, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), boilerplate).toBe("partial");
 		}
