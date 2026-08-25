@@ -111,11 +111,15 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
  * terminal then `merged`, `published` then anything — is an invalid attempt:
  * the tally never picks the favorable record, it fails closed. In the valid
  * merged→published sequence, `merged` stays AUTHORITATIVE for every
- * gate-affecting field; `published` must mirror counts,
- * `provenanceRejectionReasons`, `inputBytes`, and `elapsedMs` exactly, and any
- * mismatch, promised-field omission, or extra favorable override invalidates
- * the attempt — published is decoration only and can never replace, repair, or
- * erase merged metrics. Invalid
+ * gate-affecting field; BOTH sides must independently be schema-valid
+ * against the runtime contract (counts with the exact expected integer
+ * fields, exact per-reason integer counters, nonnegative integer inputBytes,
+ * nonnegative finite elapsedMs) and `published` must mirror counts,
+ * `provenanceRejectionReasons`, `inputBytes`, and `elapsedMs` exactly. Any
+ * mismatch, promised-field omission, malformed value on either side, or extra
+ * favorable override invalidates the attempt — equality of two identically
+ * malformed records never legitimizes them, and published is decoration only
+ * that can never replace, repair, or erase merged metrics. Invalid
  * attempts are returned separately, count against execution success and
  * sample volume in the metrics, and invalidate gate validity; they are never
  * silently dropped. `not_run` entries are excluded decision events, never part
@@ -123,6 +127,53 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
  */
 /** Gate-affecting fields the runtime contract promises the `published` event repeats from its `merged` attempt. */
 const PUBLISHED_MIRRORED_FIELDS = ["counts", "provenanceRejectionReasons", "inputBytes", "elapsedMs"];
+
+/** Exact required integer fields of the runtime `counts` contract (provenanceChecked optional; its accepted+rejected consistency is validated by the metrics, not the schema). */
+const COUNTS_REQUIRED_INTEGER_FIELDS = [
+	"findingsExtracted",
+	"findingsMerged",
+	"findingsDeduped",
+	"findingsRejectedProvenance",
+	"findingsDroppedOverflow",
+];
+
+/** Exact per-check provenance rejection reason counters the runtime contract emits. */
+const PROVENANCE_REASON_FIELDS = ["sourceQuoteAbsent", "locationQuoteAbsent", "locationQuotePathMismatch"];
+
+const isNonNegativeFiniteInteger = (value) => Number.isInteger(value) && value >= 0;
+const isNonNegativeFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+
+/**
+ * Exact-shape plain record of finite nonnegative integers: every present key
+ * must be expected, every required key must be present, nulls, arrays,
+ * strings, NaN/Infinity, negatives, and fractions are all rejected.
+ */
+function isExactIntegerRecord(value, requiredFields, optionalFields = []) {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	for (const key of Object.keys(value)) {
+		if (!requiredFields.includes(key) && !optionalFields.includes(key)) return false;
+		if (!isNonNegativeFiniteInteger(value[key])) return false;
+	}
+	return requiredFields.every((field) => Object.hasOwn(value, field));
+}
+
+/**
+ * Independent schema validity of one gate/runtime-contract record (the
+ * authoritative `merged` event or its `published` mirror) against the exact
+ * runtime contract: counts with the exact expected integer fields (the
+ * optional provenanceChecked must itself be a nonnegative integer; its
+ * accepted+rejected consistency stays with metric validation), exact
+ * per-reason integer counters, nonnegative integer inputBytes, and
+ * nonnegative finite elapsedMs. Returns the first malformed gate field, or
+ * undefined when the record is schema-valid.
+ */
+function gateFieldMalformation(event) {
+	if (!isExactIntegerRecord(event.counts, COUNTS_REQUIRED_INTEGER_FIELDS, ["provenanceChecked"])) return "counts";
+	if (!isExactIntegerRecord(event.provenanceRejectionReasons, PROVENANCE_REASON_FIELDS)) return "provenanceRejectionReasons";
+	if (!isNonNegativeFiniteInteger(event.inputBytes)) return "inputBytes";
+	if (!isNonNegativeFiniteNumber(event.elapsedMs)) return "elapsedMs";
+	return undefined;
+}
 
 /** Structural deep equality over plain JSON-like values; exotic values never compare equal. */
 function deepEqual(left, right) {
@@ -142,15 +193,24 @@ function deepEqual(left, right) {
 /**
  * Decoration rule for the only valid two-event sequence merged→published:
  * `merged` is AUTHORITATIVE for every gate-affecting field (counts,
- * provenanceChecked, reason counters, elapsedMs, inputBytes). The `published`
- * event must mirror each promised field exactly; any mismatch, promised-field
- * omission, malformed value, or extra favorable override makes the attempt
- * invalid — published can never replace, repair, or erase merged metrics.
+ * provenanceChecked, reason counters, elapsedMs, inputBytes). BOTH sides must
+ * independently be schema-valid against the runtime contract first — two
+ * identically malformed records never pass — and then the `published` event
+ * must mirror each promised field exactly; any mismatch, promised-field
+ * omission, malformed value on either side, or extra favorable override makes
+ * the attempt invalid — published can never replace, repair, or erase merged
+ * metrics.
  */
 function publishedDivergence(merged, published) {
 	for (const field of PUBLISHED_MIRRORED_FIELDS) {
 		if (published[field] === undefined) return `published_missing_${field}`;
 		if (merged[field] === undefined) return `published_extra_${field}`;
+	}
+	const mergedMalformed = gateFieldMalformation(merged);
+	if (mergedMalformed !== undefined) return `merged_malformed_${mergedMalformed}`;
+	const publishedMalformed = gateFieldMalformation(published);
+	if (publishedMalformed !== undefined) return `published_malformed_${publishedMalformed}`;
+	for (const field of PUBLISHED_MIRRORED_FIELDS) {
 		if (!deepEqual(merged[field], published[field])) return `published_divergent_${field}`;
 	}
 	return undefined;

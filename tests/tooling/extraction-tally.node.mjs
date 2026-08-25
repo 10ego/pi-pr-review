@@ -15,7 +15,15 @@ import {
 
 const ATTEMPT = (ordinal) => `g1-${String(ordinal).padStart(4, "0")}-0000-0000-0000-000000000000`;
 const EMPTY_REASONS = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
-const MIRROR_COUNTS = { findingsExtracted: 1, findingsMerged: 1 };
+/** Exact runtime-contract mirror counts: all six emitted fields, provenanceChecked = accepted + rejected. */
+const MIRROR_COUNTS = {
+	findingsExtracted: 1,
+	findingsMerged: 1,
+	findingsDeduped: 0,
+	findingsRejectedProvenance: 0,
+	findingsDroppedOverflow: 0,
+	provenanceChecked: 1,
+};
 
 function writeSession(dir, project, file, entries) {
 	const projectDir = path.join(dir, project);
@@ -76,7 +84,7 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("published terminal entries complete their own run and merge earlier outcomes", () => {
-		const counts = { findingsExtracted: 1, findingsMerged: 1 };
+		const counts = { ...MIRROR_COUNTS };
 		const reasons = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
 		const { runs } = tallyRuns([
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 1000 },
@@ -91,7 +99,7 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("an earlier success cannot mask a later failure in the same session (success → failure)", () => {
-		const counts = { findingsExtracted: 2, findingsMerged: 2 };
+		const counts = { ...MIRROR_COUNTS, findingsExtracted: 2, findingsMerged: 2, provenanceChecked: 2 };
 		const { runs } = tallyRuns([
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
@@ -105,7 +113,7 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("an earlier failure stays a failure when a later attempt succeeds (failure → success)", () => {
-		const counts = { findingsExtracted: 1, findingsMerged: 1 };
+		const counts = { ...MIRROR_COUNTS };
 		const { runs } = tallyRuns([
 			{ outcome: "timeout", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", elapsedMs: 9000 },
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
@@ -184,7 +192,7 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("valid merged→published survives interleaving with another attempt's records", () => {
-		const counts = { findingsExtracted: 2, findingsMerged: 2 };
+		const counts = { ...MIRROR_COUNTS, findingsExtracted: 2, findingsMerged: 2, provenanceChecked: 2 };
 		const { runs, invalid } = tallyRuns([
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 4000 },
 			{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", elapsedMs: 8000 },
@@ -199,8 +207,8 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("published decorates only its own attempt, never an earlier attempt in the same session", () => {
-		const countsA = { findingsExtracted: 2, findingsMerged: 2 };
-		const countsB = { findingsExtracted: 1, findingsMerged: 1 };
+		const countsA = { ...MIRROR_COUNTS, findingsExtracted: 2, findingsMerged: 2, provenanceChecked: 2 };
+		const countsB = { ...MIRROR_COUNTS };
 		const { runs } = tallyRuns([
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "s1.jsonl", counts: countsA, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 900, elapsedMs: 3000 },
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: countsB, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 800, elapsedMs: 3500 },
@@ -488,7 +496,7 @@ describe("§9 extraction tally cohort semantics", () => {
 		// Fifteen attempts whose MERGED telemetry is malformed (oversized claimed
 		// checked denominator) while every published mirror looks exact and
 		// favorable. The gate must stay invalid on the merged side.
-		const malformedCounts = { findingsExtracted: 1, findingsMerged: 1, findingsRejectedProvenance: 1, provenanceChecked: 100 };
+		const malformedCounts = { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 };
 		const entries = [];
 		for (let index = 0; index < 15; index++) {
 			entries.push({ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: malformedCounts, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 900, elapsedMs: 3000 });
@@ -511,18 +519,18 @@ describe("§9 extraction tally cohort semantics", () => {
 	test("published cannot replace merged metrics: mismatches invalidate the attempt", () => {
 		const base = (overrides) => ({
 			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
-			counts: { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 },
+			counts: { findingsExtracted: 0, findingsMerged: 0, findingsDeduped: 0, findingsRejectedProvenance: 6, findingsDroppedOverflow: 0, provenanceChecked: 6 },
 			provenanceRejectionReasons: { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
 			inputBytes: 900, elapsedMs: 3000, ...overrides,
 		});
 		const published = (overrides) => ({
 			outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
-			counts: { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 },
+			counts: { findingsExtracted: 0, findingsMerged: 0, findingsDeduped: 0, findingsRejectedProvenance: 6, findingsDroppedOverflow: 0, provenanceChecked: 6 },
 			provenanceRejectionReasons: { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
 			inputBytes: 900, elapsedMs: 3000, ...overrides,
 		});
 		// Favorable published counts claiming the all-rejected merge actually merged findings.
-		let result = tallyRuns([base(), published({ counts: { findingsExtracted: 6, findingsMerged: 6, findingsRejectedProvenance: 0, provenanceChecked: 6 } })]);
+		let result = tallyRuns([base(), published({ counts: { findingsExtracted: 6, findingsMerged: 6, findingsDeduped: 0, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0, provenanceChecked: 6 } })]);
 		assert.equal(result.runs.length, 0);
 		assert.equal(result.invalid[0].invalidReason, "published_divergent_counts");
 		// Favorable published reason counters erasing the rejects.
@@ -541,9 +549,9 @@ describe("§9 extraction tally cohort semantics", () => {
 			assert.equal(omittedResult.runs.length, 0, field);
 			assert.equal(omittedResult.invalid[0].invalidReason, `published_missing_${field}`);
 		}
-		// A malformed (non-object) published counts value is divergent, not trusted.
+		// A malformed (non-object) published counts value fails the schema, never trusted.
 		result = tallyRuns([base(), published({ counts: "6 findings" })]);
-		assert.equal(result.invalid[0].invalidReason, "published_divergent_counts");
+		assert.equal(result.invalid[0].invalidReason, "published_malformed_counts");
 		// Invalid attempts count against success and sample and block the gate.
 		const metrics = computeGateMetrics(result.runs, [], result.invalid);
 		assert.equal(metrics.total, 1);
@@ -552,7 +560,7 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("published cannot erase all-rejected provenance when it mirrors exactly", () => {
-		const counts = { findingsExtracted: 0, findingsMerged: 0, findingsRejectedProvenance: 6, provenanceChecked: 6 };
+		const counts = { findingsExtracted: 0, findingsMerged: 0, findingsDeduped: 0, findingsRejectedProvenance: 6, findingsDroppedOverflow: 0, provenanceChecked: 6 };
 		const reasons = { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
 		const { runs } = tallyRuns([
 			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts, provenanceRejectionReasons: reasons, inputBytes: 900, elapsedMs: 3000 },
@@ -566,6 +574,153 @@ describe("§9 extraction tally cohort semantics", () => {
 		const metrics = computeGateMetrics(runs);
 		assert.equal(metrics.provenanceChecked, 6);
 		assert.equal(metrics.provenanceRejectionRate, 1);
+	});
+
+	test("identically malformed gate fields on both sides never pass: 15 identical inputBytes strings fail closed", () => {
+		// The exact accepted-P2 regression: presence + deep equality alone would
+		// accept fifteen attempts whose inputBytes is the same malformed string on
+		// the merged AND published sides. Independent schema validation of the
+		// authoritative merged record must fail all fifteen.
+		const entries = [];
+		for (let index = 0; index < 15; index++) {
+			entries.push({ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: { ...MIRROR_COUNTS }, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: "tiny", elapsedMs: 3000 });
+			entries.push({ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: { ...MIRROR_COUNTS }, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: "tiny", elapsedMs: 3000 });
+		}
+		const { runs, invalid } = tallyRuns(entries);
+		assert.equal(runs.length, 0);
+		assert.equal(invalid.length, 15);
+		assert.equal(invalid[0].invalidReason, "merged_malformed_inputBytes");
+		const metrics = computeGateMetrics(runs, [], invalid);
+		assert.equal(metrics.total, 15);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.sufficientSample, true);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("identically malformed counts, reasons, and elapsed on both sides fail closed per field", () => {
+		const VALID_COUNTS = { ...MIRROR_COUNTS };
+		const VALID_REASONS = { ...EMPTY_REASONS };
+		/** A merged→published pair sharing one identically malformed field on both sides. */
+		const pair = (field, value) => [
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { ...VALID_COUNTS }, provenanceRejectionReasons: { ...VALID_REASONS }, inputBytes: 900, elapsedMs: 3000, [field]: value },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { ...VALID_COUNTS }, provenanceRejectionReasons: { ...VALID_REASONS }, inputBytes: 900, elapsedMs: 3000, [field]: value },
+		];
+		const cases = [
+			// Malformed counts shapes on BOTH sides: equality never legitimizes them.
+			["counts missing a required field", "counts", { findingsExtracted: 1, findingsMerged: 1, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0, provenanceChecked: 1 }],
+			["counts array", "counts", [1, 1, 0, 0, 0, 1]],
+			["counts null", "counts", null],
+			["counts string", "counts", "1 merged"],
+			["counts negative integer", "counts", { ...VALID_COUNTS, findingsExtracted: -1 }],
+			["counts fractional integer field", "counts", { ...VALID_COUNTS, findingsMerged: 1.5 }],
+			["counts NaN field", "counts", { ...VALID_COUNTS, findingsDeduped: Number.NaN }],
+			["counts Infinity field", "counts", { ...VALID_COUNTS, findingsDroppedOverflow: Number.POSITIVE_INFINITY }],
+			["counts unexpected extra field", "counts", { ...VALID_COUNTS, findingsHallucinated: 3 }],
+			["counts non-integer provenanceChecked", "counts", { ...VALID_COUNTS, provenanceChecked: 1.5 }],
+			// Malformed reason-counter shapes on BOTH sides.
+			["reasons missing a field", "provenanceRejectionReasons", { sourceQuoteAbsent: 0, locationQuoteAbsent: 0 }],
+			["reasons array", "provenanceRejectionReasons", [0, 0, 0]],
+			["reasons null", "provenanceRejectionReasons", null],
+			["reasons negative counter", "provenanceRejectionReasons", { sourceQuoteAbsent: -1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["reasons fractional counter", "provenanceRejectionReasons", { sourceQuoteAbsent: 0.5, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["reasons string counter", "provenanceRejectionReasons", { sourceQuoteAbsent: "0", locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["reasons unexpected extra field", "provenanceRejectionReasons", { ...EMPTY_REASONS, sourceQuoteAbsentTwice: 1 }],
+			// Malformed inputBytes shapes on BOTH sides.
+			["inputBytes negative", "inputBytes", -900],
+			["inputBytes fractional", "inputBytes", 900.5],
+			["inputBytes NaN", "inputBytes", Number.NaN],
+			["inputBytes Infinity", "inputBytes", Number.POSITIVE_INFINITY],
+			["inputBytes string", "inputBytes", "900"],
+			["inputBytes null", "inputBytes", null],
+			["inputBytes array", "inputBytes", [900]],
+			// Malformed elapsedMs shapes on BOTH sides (nonnegative finite number required).
+			["elapsedMs negative", "elapsedMs", -3000],
+			["elapsedMs NaN", "elapsedMs", Number.NaN],
+			["elapsedMs Infinity", "elapsedMs", Number.POSITIVE_INFINITY],
+			["elapsedMs string", "elapsedMs", "3000"],
+			["elapsedMs null", "elapsedMs", null],
+			["elapsedMs array", "elapsedMs", [3000]],
+		];
+		for (const [name, field, value] of cases) {
+			const { runs, invalid } = tallyRuns(pair(field, value));
+			assert.equal(runs.length, 0, `${name} must not produce a favorable run`);
+			assert.equal(invalid.length, 1, `${name} must be reported invalid`);
+			assert.equal(invalid[0].invalidReason, `merged_malformed_${field}`, name);
+		}
+		// The malformed side always blocks the gate.
+		const metrics = computeGateMetrics([], [], tallyRuns(pair("inputBytes", "900")).invalid);
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("a schema-invalid published mirror is rejected even against a valid merged record", () => {
+		const valid = (outcome) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			counts: { ...MIRROR_COUNTS }, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 900, elapsedMs: 3000,
+		});
+		const cases = [
+			["counts missing a required field", "counts", { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 0, provenanceChecked: 1 }],
+			["counts array", "counts", [1, 1, 0, 0, 0, 1]],
+			["counts negative", "counts", { ...MIRROR_COUNTS, findingsExtracted: -1 }],
+			["counts unexpected extra field", "counts", { ...MIRROR_COUNTS, findingsHallucinated: 3 }],
+			["reasons missing a field", "provenanceRejectionReasons", { sourceQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["reasons negative counter", "provenanceRejectionReasons", { sourceQuoteAbsent: -1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["reasons string counter", "provenanceRejectionReasons", { sourceQuoteAbsent: "0", locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }],
+			["inputBytes fractional", "inputBytes", 900.5],
+			["inputBytes negative", "inputBytes", -1],
+			["inputBytes string", "inputBytes", "900"],
+			["inputBytes Infinity", "inputBytes", Number.POSITIVE_INFINITY],
+			["elapsedMs negative", "elapsedMs", -1],
+			["elapsedMs NaN", "elapsedMs", Number.NaN],
+			["elapsedMs Infinity", "elapsedMs", Number.POSITIVE_INFINITY],
+			["elapsedMs string", "elapsedMs", "3000"],
+		];
+		for (const [name, field, value] of cases) {
+			const { runs, invalid } = tallyRuns([valid("merged"), { ...valid("published"), [field]: value }]);
+			assert.equal(runs.length, 0, `${name} must not produce a favorable run`);
+			assert.equal(invalid.length, 1, `${name} must be reported invalid`);
+			assert.equal(invalid[0].invalidReason, `published_malformed_${field}`, name);
+		}
+	});
+
+	test("valid zero values and exact valid runtime mirrors pass the schema gate", () => {
+		// All-zero legitimate values: zero counts (including optional
+		// provenanceChecked), zero reason counters, zero inputBytes, zero elapsedMs.
+		const zeroCounts = { findingsExtracted: 0, findingsMerged: 0, findingsDeduped: 0, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0, provenanceChecked: 0 };
+		const { runs, invalid } = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { ...zeroCounts }, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 0, elapsedMs: 0 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", counts: { ...zeroCounts }, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 0, elapsedMs: 0 },
+		]);
+		assert.equal(invalid.length, 0);
+		assert.equal(runs.length, 1);
+		assert.equal(runs[0].outcome, "published");
+		assert.deepEqual(runs[0].counts, zeroCounts);
+		const zeroMetrics = computeGateMetrics(runs);
+		assert.equal(zeroMetrics.succeeded, 1);
+		assert.equal(zeroMetrics.gateValid, true);
+		// The exact runtime mirror: the precise record shape the extension emits
+		// for a real merged→published publication (byte-equivalent gate fields,
+		// fractional elapsedMs allowed as a finite nonnegative number).
+		const runtimeCounts = { findingsExtracted: 2, findingsMerged: 1, findingsDeduped: 1, findingsRejectedProvenance: 0, findingsDroppedOverflow: 1, provenanceChecked: 2 };
+		const runtimeReasons = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
+		const { runs: runtimeRuns, invalid: runtimeInvalid } = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: runtimeCounts, provenanceRejectionReasons: runtimeReasons, inputBytes: 12_345, elapsedMs: 3210.5, effectiveModel: "provider/primary" },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", counts: runtimeCounts, provenanceRejectionReasons: runtimeReasons, inputBytes: 12_345, elapsedMs: 3210.5, effectiveModel: "provider/primary", inlineComments: 1 },
+		]);
+		assert.equal(runtimeInvalid.length, 0);
+		assert.equal(runtimeRuns.length, 1);
+		assert.equal(runtimeRuns[0].outcome, "published");
+		// The representative keeps merged-authoritative metrics and accepts
+		// published-only decoration (inlineComments).
+		assert.equal(runtimeRuns[0].counts, runtimeCounts);
+		assert.equal(runtimeRuns[0].inputBytes, 12_345);
+		assert.equal(runtimeRuns[0].elapsedMs, 3210.5);
+		assert.equal(runtimeRuns[0].inlineComments, 1);
+		const runtimeMetrics = computeGateMetrics(runtimeRuns);
+		assert.equal(runtimeMetrics.succeeded, 1);
+		assert.equal(runtimeMetrics.gateValid, true);
 	});
 
 	test("the gate requires 15 eligible current-cohort attempts", () => {
