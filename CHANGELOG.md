@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.4](https://github.com/10ego/pi-pr-review/compare/v1.15.3...v1.15.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* **package:** prevent duplicate extension declarations ([#94](https://github.com/10ego/pi-pr-review/issues/94)) ([950bb26](https://github.com/10ego/pi-pr-review/commit/950bb26e3ed7df460ec2db820b08b483f27a23ed))
+
 ## [1.15.3](https://github.com/10ego/pi-pr-review/compare/v1.15.2...v1.15.3) (2026-08-25)
 
 
