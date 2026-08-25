@@ -7,6 +7,7 @@ import {
 	assertPackageContents,
 	assertPackageMetadata,
 	EXPECTED_PACKAGE_FILES,
+	resolveNpmPackInvocation,
 	verifyPackageContents,
 } from "../../scripts/verify-package-contents.mjs";
 
@@ -44,6 +45,23 @@ describe("npm release package policy", () => {
 		assert.throws(() => assertPackageContents(files), /missing required path/);
 	});
 
+	test("invokes npm through Node instead of spawning an unlaunchable Windows cmd shim", () => {
+		const invocation = resolveNpmPackInvocation({
+			platform: "win32",
+			execPath: "C:\\node\\node.exe",
+			npmExecPath: "C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
+			exists: (candidate) => candidate.endsWith("npm-cli.js"),
+		});
+		assert.equal(invocation.command, "C:\\node\\node.exe");
+		assert.deepEqual(invocation.arguments, [
+			"C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
+			"pack",
+			"--dry-run",
+			"--ignore-scripts",
+			"--json",
+		]);
+	});
+
 	test("strictly parses every packaged TypeScript module through a real module parser", () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-duplicate-source-"));
 		try {
@@ -70,7 +88,7 @@ describe("npm release package policy", () => {
 			);
 			assert.throws(
 				() => verifyPackageContents(directory),
-				/lib\/pr-review-markdown\.ts: Identifier 'duplicateLoaderProbe' has already been declared/,
+				/lib[\\/]pr-review-markdown\.ts: Identifier 'duplicateLoaderProbe' has already been declared/,
 			);
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });

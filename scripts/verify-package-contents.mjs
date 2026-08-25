@@ -164,9 +164,27 @@ export function assertTypeScriptModulesParse(rootDir, paths) {
 	invariant(result.status === 0, detail || "packaged TypeScript module parser failed");
 }
 
+export function resolveNpmPackInvocation({
+	platform = process.platform,
+	execPath = process.execPath,
+	npmExecPath = process.env.npm_execpath,
+	exists = fs.existsSync,
+} = {}) {
+	const arguments_ = ["pack", "--dry-run", "--ignore-scripts", "--json"];
+	const pathApi = platform === "win32" ? path.win32 : path;
+	const cliCandidates = [
+		npmExecPath,
+		pathApi.join(pathApi.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+	].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+	const npmCli = cliCandidates.find((candidate) => exists(candidate));
+	if (npmCli) return { command: execPath, arguments: [npmCli, ...arguments_] };
+	invariant(platform !== "win32", "could not resolve npm-cli.js for lifecycle-script-disabled package inspection");
+	return { command: "npm", arguments: arguments_ };
+}
+
 export function verifyPackageContents(rootDir = process.cwd()) {
-	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-	const result = spawnSync(npmCommand, ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+	const invocation = resolveNpmPackInvocation();
+	const result = spawnSync(invocation.command, invocation.arguments, {
 		cwd: rootDir,
 		encoding: "utf8",
 		shell: false,
