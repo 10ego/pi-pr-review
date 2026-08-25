@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { tmpdir } from "node:os";
 
 mock.module("@earendil-works/pi-ai", () => ({
 	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
-	getAgentDir: () => tmpdir(),
+	getAgentDir: () => process.env.PI_PR_REVIEW_TEST_AGENT_DIR ?? "/tmp/pi-pr-review-tool-gate-agent",
 	getSelectListTheme: () => ({}),
 	getSettingsListTheme: () => ({}),
 }));
@@ -145,6 +144,25 @@ describe("extension registration without self-review prerequisites", () => {
 
 		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
 		expect(Object.keys(parameters.properties)[0]).toBe("passes");
+	});
+
+	test("exposes expected_output on the public batch pass schema with the real enum", () => {
+		const harness = registrationHarness();
+		registerPrReview(harness.pi as any);
+
+		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
+		const passSchema = parameters.properties.passes.items;
+		const expectedOutput = passSchema.properties.expected_output;
+		expect(expectedOutput).toMatchObject({ enum: ["review_lane", "nonempty"] });
+		expect(expectedOutput.description).toContain("successful terminal stop");
+		expect(expectedOutput.description).toContain("Review status: COMPLETE");
+		expect(expectedOutput.description).toContain("Review status: INCOMPLETE");
+		expect(expectedOutput.description).toContain("Overview:");
+		expect(expectedOutput.description).toContain("Strengths:");
+		expect(expectedOutput.description).toContain("Risk areas:");
+		expect(expectedOutput.description).toContain("NO FINDINGS.");
+		expect(expectedOutput.description).toContain("arbitrary prose");
+		expect(expectedOutput.description).not.toContain("any nonempty terminal output");
 	});
 
 	test("registers without Git and keeps the startup PATH failure local to self-review", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
+import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
 
 const binding = { prNumber: 57, prTitle: "Markdown publication", headSha: "a".repeat(40) };
@@ -58,6 +59,101 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toHaveLength(1);
 		expect(artifact.review.verdict).toBe("approve");
 		expect(artifact.mergeApprovalEligible).toBe(true);
+	});
+
+	test("does not make approval eligible from malformed candidate evidence", () => {
+		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.";
+		const probes = [
+			"```",
+			"  ```",
+			"~~~",
+			"   ~~~",
+			"<!--",
+			"<!-- hidden -->",
+			"<?",
+			"<?xml version=\"1.0\"?>",
+			"<!DOCTYPE",
+			"<!DOCTYPE html>",
+			"<![CDATA[",
+			"<![CDATA[hidden]]>",
+			"<script",
+			"<pre",
+			"<style",
+			"<textarea",
+			"<div>hidden</div>",
+			"<x-review data-kind=example>",
+			"</x-review>",
+			"[P1] Hidden blocker",
+			"A valid first line.\n  ~~~",
+			"A valid first line.\n  <!--",
+			"A valid first line.\n  [P1] Hidden blocker",
+		] as const;
+		const candidate = (why: string) => [
+			"title: [P2] Preserve review evidence",
+			"severity: P2",
+			`why: ${why}`,
+			"location: src/review.ts:10-11",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.9",
+		].join("\n");
+		const synthesis = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const expected = [{ key: completeLane.key, tier: completeLane.tier, minorHygiene: false, expectedOutput: "nonempty" as const }];
+		const validRaw = `${framing}\n${candidate("The returned value preserves its declared type.\n  Map<string, number> carries the successful branch.").replace("title: [P2] Preserve review evidence", "title: [P2] Result<T>")}`;
+		const validLifecycle = classifyReviewLane({ tier: "heavy", rawText: validRaw, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+		expect(validLifecycle).toBe("complete");
+		const valid = synthesizeReviewArtifact({
+			rawText: synthesis,
+			...binding,
+			laneArtifacts: [{ ...completeLane, rawText: validRaw, lifecycle: validLifecycle }],
+			expectedLaneDescriptors: expected,
+		});
+		expect(valid.mergeApprovalEligible).toBe(true);
+		for (const why of probes) {
+			const raw = `${framing}\n${candidate(why)}`;
+			const lifecycle = classifyReviewLane({ tier: "heavy", rawText: raw, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+			expect(lifecycle, why).toBe("partial");
+			const artifact = synthesizeReviewArtifact({
+				rawText: synthesis,
+				...binding,
+				laneArtifacts: [{ ...completeLane, rawText: raw, lifecycle }],
+				expectedLaneDescriptors: expected,
+			});
+			expect(artifact.mergeApprovalEligible, why).toBe(false);
+		}
+	});
+
+	test("keeps indented deep-contract bypass probes out of approval eligibility", () => {
+		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.";
+		const candidate = [
+			"title: [P2] Preserve review evidence",
+			"severity: P2",
+			"why: The changed path drops a required result.",
+			"location: src/review.ts:10-11",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.9",
+		].join("\n");
+		const probes = [
+			`    Review status: COMPLETE\n${framing.slice(framing.indexOf("\n") + 1)}\nNO FINDINGS.`,
+			`${framing}\n    NO FINDINGS.`,
+			`${framing}\n${candidate.split("\n").map((line) => `    ${line}`).join("\n")}`,
+		];
+		for (const rawText of probes) {
+			const lifecycle = classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+			expect(lifecycle).toBe("partial");
+			const lane = { ...completeLane, key: "deep-review", passId: "deep-review", rawText, lifecycle };
+			const artifact = synthesizeReviewArtifact({
+				rawText: markdown.replace("**Verdict:** comment", "**Verdict:** approve"),
+				...binding,
+				laneArtifacts: [lane],
+				expectedLaneDescriptors: [{ key: "deep-review", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+			});
+			expect(artifact.completeness).toBe("incomplete");
+			expect(artifact.mergeApprovalEligible).toBe(false);
+		}
 	});
 
 	test("preserves mixed parsed and unparsed findings in the original body", () => {

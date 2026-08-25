@@ -25,7 +25,7 @@ import {
 } from "../lib/pr-review-publish.ts";
 
 mock.module("@earendil-works/pi-ai", () => ({
-	StringEnum: () => ({}),
+	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
@@ -43,10 +43,10 @@ mock.module("@earendil-works/pi-tui", () => ({
 	Text: class {},
 }));
 mock.module("typebox", () => {
-	const schema = () => ({});
+	const schema = (options: Record<string, unknown> = {}) => ({ ...options });
 	return {
 		Type: {
-			Array: schema,
+			Array: (items: Record<string, unknown>, options: Record<string, unknown> = {}) => ({ type: "array", items, ...options }),
 			Boolean: schema,
 			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema,
@@ -56,7 +56,7 @@ mock.module("typebox", () => {
 				properties,
 				...options,
 			}),
-			Optional: schema,
+			Optional: (value: Record<string, unknown>) => value,
 			String: schema,
 			Union: schema,
 		},
@@ -579,17 +579,17 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
-	test("publishes fully parsed complete Markdown through the host approval gates", async () => {
+	test("publishes a restored deep contract through the host approval gates", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3", allowStaleApprovals: true },
 		});
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
-		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], harness.ctx)).toBe(true);
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
-			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			tier: "heavy", rawText: "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
 			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
 		});
 		const raw = [
@@ -610,7 +610,7 @@ describe("completed review extension lifecycle", () => {
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({
 			synthesisQuality: "fully_parsed", rawText: raw,
-			expectedLaneDescriptors: [{ key: "correctness:0", tier: "heavy", minorHygiene: false }],
+			expectedLaneDescriptors: [{ key: "correctness:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
 			expectedLaneCount: 1, mergeApprovalEligible: true,
 		});
 		expect(persisted?.data).not.toHaveProperty("publicationBody");

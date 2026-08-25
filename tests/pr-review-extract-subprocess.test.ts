@@ -6,7 +6,7 @@ import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionInput, buildExtractionSystemPrompt } from "../lib/pr-review-extract.ts";
 
 mock.module("@earendil-works/pi-ai", () => ({
-	StringEnum: () => ({}),
+	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
@@ -25,16 +25,17 @@ mock.module("@earendil-works/pi-tui", () => ({
 	Text: class {},
 }));
 mock.module("typebox", () => {
-	const schema = () => ({});
+	const schema = (options: Record<string, unknown> = {}) => ({ ...options });
 	return {
 		Type: {
-			Array: schema, Boolean: schema,
+			Array: (items: Record<string, unknown>, options: Record<string, unknown> = {}) => ({ type: "array", items, ...options }),
+			Boolean: schema,
 			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema, Number: schema,
 			Object: (properties: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
 				type: "object", properties, ...options,
 			}),
-			Optional: schema, String: schema, Union: schema,
+			Optional: (value: Record<string, unknown>) => value, String: schema, Union: schema,
 		},
 	};
 });

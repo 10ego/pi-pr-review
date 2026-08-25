@@ -664,14 +664,44 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 function parsePersistedLaneArtifacts(value: unknown): readonly ReviewLaneArtifact[] | undefined {
 	if (!Array.isArray(value)) return undefined;
 	const lifecycles = new Set(["complete", "partial", "timed_out", "failed"]);
+	const tiers = new Set(["light", "medium", "heavy"]);
+	const deadlineKinds = new Set(["total", "synthesis"]);
+	const deadlineSources = new Set(["default", "user", "project"]);
+	const optional = (object: Record<string, unknown>, key: string, predicate: (value: unknown) => boolean): boolean =>
+		object[key] === undefined || predicate(object[key]);
+	const isFiniteNumber = (item: unknown): boolean => typeof item === "number" && Number.isFinite(item);
+	const isString = (item: unknown): boolean => typeof item === "string";
+	const validAttempt = (attempt: unknown): attempt is Record<string, unknown> => {
+		if (!isObject(attempt)) return false;
+		return Number.isInteger(attempt.ordinal) &&
+			(attempt.kind === undefined || new Set(["primary", "fallback", "nearest", "default"]).has(String(attempt.kind))) &&
+			typeof attempt.rawText === "string" && Number.isInteger(attempt.exitCode) && lifecycles.has(String(attempt.lifecycle)) &&
+			(typeof attempt.retryable === "boolean" || attempt.retryable === undefined) &&
+			optional(attempt, "requestedModel", isString) && optional(attempt, "observedModel", isString) &&
+			optional(attempt, "usedTier", (item) => tiers.has(String(item))) &&
+			optional(attempt, "processSignal", isString) && optional(attempt, "stopReason", isString) &&
+			optional(attempt, "errorMessage", isString) && optional(attempt, "deadlineExpired", (item) => deadlineKinds.has(String(item))) &&
+			optional(attempt, "elapsedMs", isFiniteNumber) && optional(attempt, "firstEventMs", isFiniteNumber) &&
+			optional(attempt, "firstAssistantMs", isFiniteNumber) && optional(attempt, "toolElapsedMs", isFiniteNumber) &&
+			optional(attempt, "toolCallCount", (item) => Number.isInteger(item)) && optional(attempt, "timedOut", (item) => typeof item === "boolean") &&
+			optional(attempt, "terminationGraceMs", isFiniteNumber) && optional(attempt, "forcedTermination", (item) => typeof item === "boolean") &&
+			optional(attempt, "deadlineMs", isFiniteNumber) && optional(attempt, "configuredDeadlineMs", isFiniteNumber);
+	};
 	const lanes = value.filter((lane): lane is Record<string, unknown> => isObject(lane));
 	if (lanes.length !== value.length || lanes.some((lane) =>
 		!Number.isInteger(lane.generation) || typeof lane.key !== "string" || typeof lane.passId !== "string" ||
-		!new Set(["light", "medium", "heavy"]).has(String(lane.tier)) ||
+		!tiers.has(String(lane.tier)) ||
 		(lane.minorHygiene !== undefined && typeof lane.minorHygiene !== "boolean") || typeof lane.rawText !== "string" ||
-		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) || !Array.isArray(lane.attempts) ||
-		lane.attempts.some((attempt) => !isObject(attempt) || !Number.isInteger(attempt.ordinal) ||
-			typeof attempt.rawText !== "string" || !Number.isInteger(attempt.exitCode) || !lifecycles.has(String(attempt.lifecycle)))
+		!Number.isInteger(lane.exitCode) || !lifecycles.has(String(lane.lifecycle)) ||
+		!Array.isArray(lane.attempts) || lane.attempts.some((attempt) => !validAttempt(attempt)) ||
+		!optional(lane, "requestedModel", isString) || !optional(lane, "observedModel", isString) ||
+		!optional(lane, "processSignal", isString) || !optional(lane, "stopReason", isString) ||
+		!optional(lane, "errorMessage", isString) || !optional(lane, "deadlineExpired", (item) => deadlineKinds.has(String(item))) ||
+		!optional(lane, "firstEventMs", isFiniteNumber) || !optional(lane, "firstAssistantMs", isFiniteNumber) ||
+		!optional(lane, "startOffsetMs", isFiniteNumber) || !optional(lane, "endOffsetMs", isFiniteNumber) ||
+		!optional(lane, "fallbackBudgetRejected", (item) => typeof item === "boolean") ||
+		!optional(lane, "deadlineSource", (item) => deadlineSources.has(String(item))) ||
+		!optional(lane, "batchDeadlineMs", isFiniteNumber) || !optional(lane, "totalDeadlineMs", isFiniteNumber)
 	)) return undefined;
 	return lanes as unknown as readonly ReviewLaneArtifact[];
 }
@@ -800,7 +830,8 @@ export class CompletedReviewCache {
 		const expectedLaneDescriptors = Array.isArray(value.expectedLaneDescriptors) &&
 			value.expectedLaneDescriptors.length <= 200 && value.expectedLaneDescriptors.every((lane) =>
 				isObject(lane) && typeof lane.key === "string" && !!lane.key &&
-				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean") &&
+				new Set(["light", "medium", "heavy"]).has(String(lane.tier)) && typeof lane.minorHygiene === "boolean" &&
+				(lane.expectedOutput === undefined || lane.expectedOutput === "review_lane" || lane.expectedOutput === "nonempty")) &&
 			new Set(value.expectedLaneDescriptors.map((lane) => (lane as Record<string, unknown>).key)).size ===
 				value.expectedLaneDescriptors.length
 			? value.expectedLaneDescriptors as unknown as ExpectedReviewLane[]

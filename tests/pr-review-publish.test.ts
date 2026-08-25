@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +42,7 @@ import {
 	shouldPublishReview,
 	validateInlineComments,
 	validateReviewInvocation,
+	type ReviewHostBinding,
 	type ReviewLike,
 } from "../lib/pr-review-publish.ts";
 
@@ -595,6 +597,128 @@ describe("auto-approve priority gate", () => {
 		const invocation = gate.consume()!;
 		expect(invocation.allowStaleApprovals).toBeFalse();
 		expect(invocation.approveMaxPriorityLevel).toBe("off");
+	});
+
+	test("restores a persisted deep contract through cache validation and preserves approval eligibility", () => {
+		const session = { id: "deep-cache-session", startedAt: "2026-08-24T00:00:00.000Z" };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const binding = {
+			...repository,
+			prNumber: 7,
+			prTitle: "Deep completion contract",
+			reviewedHeadSha: "a".repeat(40),
+			state: "OPEN",
+			draft: false,
+			invocationGeneration: 1,
+			sessionId: session.id,
+			sessionStartedAt: session.startedAt,
+		} satisfies ReviewHostBinding;
+		const invocation = {
+			mode: "force" as const,
+			prNumber: 7,
+			allowNonOpen: false,
+			reviewBinding: binding,
+			allowStalePublish: false,
+			allowStaleApprovals: false,
+			autoPost: { value: false, valid: true, source: "user" } as const,
+			approveMaxPriorityLevel: "P2" as const,
+		};
+		const deepLane = {
+			generation: 1,
+			key: "batch:0",
+			passId: "deep-review",
+			tier: "heavy" as const,
+			minorHygiene: false,
+			rawText: "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.",
+			exitCode: 0,
+			stopReason: "stop",
+			lifecycle: "complete" as const,
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 10,
+			toolElapsedMs: 0,
+			toolCallCount: 0,
+		};
+		const expectedLane = { key: deepLane.key, tier: deepLane.tier, minorHygiene: false, expectedOutput: "nonempty" as const };
+		const rawText = [
+			"# PR Review",
+			"",
+			"**Verdict:** approve",
+			"",
+			"## Overview",
+			"The integrated deep review found no actionable issues.",
+			"",
+			"## Verification",
+			"Not run.",
+			"",
+			"## Findings",
+			"No findings.",
+			"",
+			"## Lane completeness",
+			"All requested lanes completed.",
+		].join("\n");
+		const synthesis = synthesizeReviewArtifact({
+			rawText,
+			prNumber: binding.prNumber,
+			prTitle: binding.prTitle,
+			headSha: binding.reviewedHeadSha,
+			laneArtifacts: [deepLane],
+			expectedLaneDescriptors: [expectedLane],
+		});
+		expect(synthesis.quality).toBe("fully_parsed");
+		expect(synthesis.completeness).toBe("complete");
+		expect(synthesis.mergeApprovalEligible).toBeTrue();
+		const cache = new CompletedReviewCache();
+		const record = cache.replace(synthesis.review, invocation, repository, {
+			synthesisQuality: synthesis.quality,
+			rawText,
+			laneArtifacts: synthesis.laneArtifacts,
+			expectedLaneDescriptors: synthesis.expectedLaneDescriptors,
+			expectedLaneCount: synthesis.expectedLaneCount,
+			completeness: synthesis.completeness,
+			mergeApprovalEligible: synthesis.mergeApprovalEligible,
+			diagnostics: synthesis.diagnostics,
+		}).record;
+		const persisted = cache.persist(record, session);
+		expect(persisted).not.toHaveProperty("publicationBody");
+		expect(persisted.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
+		expect(persisted.invocation.reviewBinding).toMatchObject({ invocationGeneration: 1, sessionId: session.id });
+
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted, session)).toBeTrue();
+		const recovered = restored.get(7, repository)!;
+		expect(recovered.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
+		expect(recovered.mergeApprovalEligible).toBeTrue();
+		expect(recovered.review.verdict).toBe("approve");
+		expect(shouldApproveReview(recovered.review, recovered.invocation.approveMaxPriorityLevel)).toBeTrue();
+
+		const malformedError = structuredClone(persisted) as any;
+		malformedError.laneArtifacts[0].errorMessage = 7;
+		const malformedRestored = new CompletedReviewCache();
+		expect(() => malformedRestored.restore(malformedError, session)).not.toThrow();
+		expect(malformedRestored.get(7, repository)?.mergeApprovalEligible).toBeFalse();
+		expect(malformedRestored.get(7, repository)?.review.verdict).toBe("comment");
+
+		// A legacy/default contract revalidates this same framing-only heavy lane
+		// under review_lane, so restore must retain it only as body-only COMMENT.
+		const defaultContract = {
+			...persisted,
+			expectedLaneDescriptors: [{ key: deepLane.key, tier: "heavy" as const, minorHygiene: false }],
+		};
+		const defaultRestored = new CompletedReviewCache();
+		expect(defaultRestored.restore(defaultContract, session)).toBeTrue();
+		const defaultRecovered = defaultRestored.get(7, repository)!;
+		expect(defaultRecovered.mergeApprovalEligible).toBeFalse();
+		expect(defaultRecovered.review.verdict).toBe("comment");
+		expect(shouldApproveReview(defaultRecovered.review, defaultRecovered.invocation.approveMaxPriorityLevel)).toBeFalse();
+
+		const invalidContract = {
+			...persisted,
+			expectedLaneDescriptors: [{ key: deepLane.key, tier: "heavy" as const, minorHygiene: false, expectedOutput: "unknown" }],
+		};
+		const invalidRestored = new CompletedReviewCache();
+		expect(invalidRestored.restore(invalidContract, session)).toBeTrue();
+		expect(invalidRestored.get(7, repository)?.mergeApprovalEligible).toBeFalse();
 	});
 
 	test("persisted invocation without stale-approval settings defaults safely on restore", () => {

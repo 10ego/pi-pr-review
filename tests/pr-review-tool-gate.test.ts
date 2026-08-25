@@ -3,29 +3,56 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import * as os from "node:os";
 import * as path from "node:path";
 
+const testAgentDir = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-tool-gate-agent-"));
+process.env.PI_PR_REVIEW_TEST_AGENT_DIR = testAgentDir;
+
 mock.module("@earendil-works/pi-ai", () => ({
-	StringEnum: () => ({}),
+	StringEnum: (values: readonly string[], options: Record<string, unknown> = {}) => ({ enum: values, ...options }),
 }));
 mock.module("@earendil-works/pi-coding-agent", () => ({
 	CONFIG_DIR_NAME: ".pi",
-	getAgentDir: () => "/tmp/pi-pr-review-tool-gate-agent",
+	getAgentDir: () => process.env.PI_PR_REVIEW_TEST_AGENT_DIR ?? "/tmp/pi-pr-review-tool-gate-agent",
 	getSelectListTheme: () => ({}),
 	getSettingsListTheme: () => ({}),
 }));
 mock.module("@earendil-works/pi-tui", () => ({
-	Container: class {},
+	Container: class { addChild() {} },
 	fuzzyFilter: (items: unknown[]) => items,
 	getKeybindings: () => ({ matches: () => false }),
 	Input: class {},
 	SelectList: class {},
 	SettingsList: class {},
 	Text: class {},
+	matchesKey: (data: string, key: string) => ({
+		escape: "\x1b",
+		"ctrl+c": "\x03",
+		tab: "\t",
+		"shift+tab": "\x1b[Z",
+		right: "\x1b[C",
+		left: "\x1b[D",
+		up: "\x1b[A",
+		down: "\x1b[B",
+		pageUp: "\x1b[5~",
+		pageDown: "\x1b[6~",
+		home: "\x1b[H",
+		end: "\x1b[F",
+	} as Record<string, string>)[key] === data,
+	truncateToWidth: (text: string, width: number, ellipsis = "…", pad = false) => {
+		const truncated = text.length > width ? `${text.slice(0, Math.max(0, width - ellipsis.length))}${ellipsis}` : text;
+		return pad ? truncated.padEnd(width) : truncated;
+	},
+	wrapTextWithAnsi: (text: string, width: number) => text.split("\n").flatMap((line) => {
+		if (!line) return [""];
+		const chunks: string[] = [];
+		for (let index = 0; index < line.length; index += width) chunks.push(line.slice(index, index + width));
+		return chunks;
+	}),
 }));
 mock.module("typebox", () => {
-	const schema = () => ({});
+	const schema = (options: Record<string, unknown> = {}) => ({ ...options });
 	return {
 		Type: {
-			Array: schema,
+			Array: (items: Record<string, unknown>, options: Record<string, unknown> = {}) => ({ type: "array", items, ...options }),
 			Boolean: schema,
 			Integer: (options: Record<string, unknown> = {}) => ({ type: "integer", ...options }),
 			Literal: schema,
@@ -35,7 +62,7 @@ mock.module("typebox", () => {
 				properties,
 				...options,
 			}),
-			Optional: schema,
+			Optional: (value: Record<string, unknown>) => value,
 			String: schema,
 			Union: schema,
 		},
@@ -45,6 +72,7 @@ mock.module("typebox", () => {
 const registerPrReviewSubagents = (await import("../extensions/pr-review-subagent.ts")).default;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
+const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 
 function harness() {
 	const tools = new Map<string, any>();
@@ -206,6 +234,42 @@ describe("review tool execution gate", () => {
 				observedModel: "provider/observed",
 				lifecycle: "complete",
 			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("public batch path accepts nonempty framing output under passes[].expected_output", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-public-nonempty-"));
+		const child = path.join(root, "child.mjs");
+		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.\nNO FINDINGS.";
+		writeFileSync(child, `
+			process.stdin.resume();
+			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(framing)} }] },
+			})));
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute(
+				"batch-public-nonempty",
+				{ passes: [{ id: "deep-review", tier: "heavy", objective: "review", expected_output: "nonempty" }], max_parallel: 1 },
+				undefined,
+				undefined,
+				h.ctx,
+			);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details.results[0]).toMatchObject({ rawText: framing, status: "complete" });
+			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)).toEqual([{
+				key: "batch-public-nonempty:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty",
+			}]);
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });
@@ -403,7 +467,7 @@ describe("review tool execution gate", () => {
 	});
 
 	test("the config command persists approval gates and explicit stale-approval opt-in", async () => {
-		const agentDir = "/tmp/pi-pr-review-tool-gate-agent";
+		const agentDir = getAgentDir();
 		const configPath = `${agentDir}/pr-review.json`;
 		rmSync(agentDir, { recursive: true, force: true });
 		try {

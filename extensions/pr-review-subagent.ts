@@ -429,6 +429,8 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+const NONEMPTY_CONTRACT_DESCRIPTION = "After a successful terminal stop, nonempty output is exact Markdown with no wrapper: the first nonblank line must be exactly `Review status: COMPLETE` with no leading or trailing whitespace. If you could not inspect required evidence for any reason, return the top-level exact line `Review status: INCOMPLETE` followed by a concise reason; INCOMPLETE and every other status are partial. COMPLETE must be followed in exact order by meaningful one-line `Overview: ...`, `Strengths: ...`, and `Risk areas: ...` sections, then either the exact standalone `NO FINDINGS.` line or one or more complete candidate blocks. Nonblank contract lines have no trailing spaces or tabs. Framing may use plain labels, bold labels, or an ATX label followed immediately by exactly one top-level value line; do not use list-indented or quoted contract lines. Candidate fields are in exact order and each appears once: title prefixed [P0], [P1], [P2], [P3], or [nit] (the tag must match severity); severity P0/P1/P2/P3/nit; meaningful why; location as repo-relative/path:positive-line or repo-relative/path:positive-start-positive-end (ordered), or repo-wide; side RIGHT/LEFT; in_diff yes/no; pr_related yes/no; confidence 0.0-1.0. Candidate labels may be plain/bold or use exactly one top-level `- ` list marker; no other indentation or list marker is accepted. A why value may continue only on lines beginning with exactly two spaces plus a non-list character until the next reserved field. Scalar and continuation values must not contain status/field/severity/sentinel productions, code fences, HTML/container wrappers, blockquotes, lists, or code indentation. Do not emit code fences, blockquotes, JSON, HTML/container wrappers, duplicate/out-of-order fields, arbitrary prose, or placeholder values (none, n/a, unavailable, unknown, skipped, error, review complete). Status/refusal/access/tool/model/error reasons belong in an INCOMPLETE status; inability discussed inside a valid candidate why is allowed. COMPLETE is the primary completion attestation; only obvious exact failure placeholders are rejected as defense-in-depth."
+
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
 		"You are a fast overview reviewer. Produce a concise overview of what the change does and how, list genuine strengths, and note high-level risk areas worth closer specialist review. Do not deep-dive into defects.",
@@ -467,26 +469,27 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 		lines.push(
 			"Start from the supplied complete diff. Use repository tools only to substantiate a concrete candidate caused by that diff; never browse for unrelated issues or run broad repository audits/tests.",
 			"Before your first tool call, identify the evidence needed for all current candidates. Issue independent reads/searches/checks together when the interface supports concurrent calls, grouped to avoid rereading the same file. Use at most one follow-up tool turn, only for a dependency revealed by the first evidence wave. This schedules validation efficiently but never permits skipping evidence needed to substantiate a finding.",
-			"Return your findings as a concise Markdown list. For each finding include, on its own lines:",
-			majorOnly
-				? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
-				: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
-			majorOnly
-				? "- severity: one of P0, P1, P2 (P0/P1 are blocking)"
-				: "- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
-			"- why: the impact and the exact input/environment needed for it to bite",
-			"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
-			"- side: RIGHT for added/context lines, LEFT for removed lines",
-			"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
-			"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
-			"- confidence: a float 0.0-1.0",
-			// A nonempty completion contract lets the pass carry framing prose
-			// (overview, strengths, risk) around its findings; the exact-match
-			// sentinel would forbid that and strand the lane as partial.
 			expectedOutput === "nonempty"
-				? majorOnly
-					? "If there are no substantiated P0-P2 findings, state that plainly in prose after your overview; do not emit the candidate fields."
-					: "If there are genuinely no findings at any severity, state that plainly in prose after your overview; do not emit the candidate fields."
+				? NONEMPTY_CONTRACT_DESCRIPTION
+				: "Return your findings as a concise Markdown list. For each finding include, on its own lines:",
+			expectedOutput === "nonempty"
+				? "For nonempty output, begin with the exact first nonblank top-level line `Review status: COMPLETE` with no trailing whitespace; use the exact top-level `Review status: INCOMPLETE` plus a concise reason whenever required evidence cannot be inspected. COMPLETE then requires Overview, Strengths, and Risk areas in order, followed immediately by NO FINDINGS. or complete candidate blocks; do not add other prose."
+				: majorOnly
+					? "- title: an imperative summary prefixed with [P0], [P1], or [P2]"
+					: "- title: an imperative summary prefixed with a severity tag [P0]|[P1]|[P2]|[P3]|[nit]",
+			...(expectedOutput === "nonempty" ? [] : [
+				majorOnly
+					? "- severity: one of P0, P1, P2 (P0/P1 are blocking)"
+					: "- severity: one of P0, P1, P2, P3, nit (P0/P1 are blocking)",
+				"- why: the impact and the exact input/environment needed for it to bite",
+				"- location: <repo-relative file path>:<start-end lines exactly as they appear in the diff> (or 'repo-wide')",
+				"- side: RIGHT for added/context lines, LEFT for removed lines",
+				"- in_diff: yes if those lines are inside the PR diff (so an inline comment can be posted), otherwise no",
+				"- pr_related: yes only if this PR introduces or provably affects the issue (drop pre-existing/unrelated issues)",
+				"- confidence: a float 0.0-1.0",
+			]),
+			expectedOutput === "nonempty"
+				? "After the exact COMPLETE status and three framing sections, the clean sentinel is one top-level standalone uppercase line `NO FINDINGS.`; never use `No findings.` or append a sentence. Candidate fields are top-level or use exactly one `- ` marker, with no arbitrary indentation; candidate `why` may use exactly-two-space non-list continuation lines, but never absorb a reserved field, status, sentinel, or wrapper."
 				: majorOnly
 					? "If there are no substantiated P0-P2 findings, reply exactly with: NO FINDINGS."
 					: "If there are genuinely no findings at any severity, reply exactly with: NO FINDINGS.",
@@ -1424,7 +1427,7 @@ const ReviewSubagentsParams = Type.Object({
 		Type.Object({
 			expected_output: Type.Optional(
 				StringEnum(["review_lane", "nonempty"] as const, {
-					description: "Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: any nonempty terminal output completes; use for an integrated pass that carries framing prose around its findings.",
+					description: `Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: ${NONEMPTY_CONTRACT_DESCRIPTION}`,
 				}),
 			),
 			id: Type.Optional(
