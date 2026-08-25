@@ -129,6 +129,9 @@ describe("semantic lane completion", () => {
 	test("rejects contradictory COMPLETE framing while preserving candidate evidence", () => {
 		const failures = [
 			"I could not access the supplied diff.",
+			"Unfortunately, I could not inspect the diff.",
+			"Sorry, I cannot review the repository.",
+			"Regrettably: we failed to assess the patch.",
 			"I cannot review the repository.",
 			"I can't inspect the diff.",
 			"I was unable to review the change.",
@@ -173,7 +176,7 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: cjk, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 		const trivial = `${integratedFraming("plain", { overview: "好", strengths: "测试", riskAreas: "风险" })}\n${integratedCandidate("失败").replace("[P2] Preserve review evidence", "[P2] 修复").replace("src/a.ts:10-12", "repo-wide")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: trivial, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
-		for (const boilerplate of ["好 好", "测 试", "风险 风险", "哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "没有 问题", "重复内容风险重复内容风险", "特に問題なし", "問題 なし", "レビュー完了", "문제없음", "문제 없음"]) {
+		for (const boilerplate of ["no findings 测", "n/a 测", "review complete 测", "好 好", "测 试", "风险 风险", "哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "没有 问题", "重复内容风险重复内容风险", "特に問題なし", "問題 なし", "レビュー完了", "문제없음", "문제 없음"]) {
 			const rawText = integratedFraming("plain", { overview: boilerplate, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), boilerplate).toBe("partial");
 		}
