@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.6](https://github.com/10ego/pi-pr-review/compare/v1.15.5...v1.15.6) (2026-08-25)
+
+
+### Bug Fixes
+
+* **review:** preserve legitimate completion prose ([#98](https://github.com/10ego/pi-pr-review/issues/98)) ([787e43f](https://github.com/10ego/pi-pr-review/commit/787e43fe44df7853c7cc52f8e491e307ed9cc8ec))
+
 ## [1.15.5](https://github.com/10ego/pi-pr-review/compare/v1.15.4...v1.15.5) (2026-08-25)
 
 
