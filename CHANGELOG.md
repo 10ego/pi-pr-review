@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3](https://github.com/10ego/pi-pr-review/compare/v1.15.2...v1.15.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* **review:** harden the nonempty refusal check and document the contract ([#92](https://github.com/10ego/pi-pr-review/issues/92)) ([e8339a0](https://github.com/10ego/pi-pr-review/commit/e8339a029b1d12722f941339d1e8164e6d1ef09d))
+
 ## [1.15.2](https://github.com/10ego/pi-pr-review/compare/v1.15.1...v1.15.2) (2026-08-24)
 
 
