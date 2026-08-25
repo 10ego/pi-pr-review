@@ -236,12 +236,14 @@ function repeatedText(value: string): boolean {
 function meaningfulValue(value: string): boolean {
 	const normalized = value.trim();
 	const words = normalized.match(/[\p{L}\p{N}]+/gu) ?? [];
+	const latinOrNumericWords = normalized.match(/[\p{Script=Latin}\p{N}]+/gu) ?? [];
 	const cjkCharacters = normalized.match(CJK_SCRIPT_CHARACTERS) ?? [];
 	const cjkText = cjkCharacters.join("");
 	const cjkBoilerplate = CJK_BOILERPLATE_ONLY.test(normalized.replace(/\s+/gu, ""));
 	const meaningfulCjk = cjkCharacters.length >= 4 && new Set(cjkCharacters).size >= 4 &&
 		!repeatedText(cjkText) && !cjkBoilerplate;
-	const meaningfulLanguage = !cjkBoilerplate && (words.length >= 2 || meaningfulCjk);
+	const wordEvidence = cjkCharacters.length > 0 ? latinOrNumericWords.length >= 2 : words.length >= 2;
+	const meaningfulLanguage = !cjkBoilerplate && (wordEvidence || meaningfulCjk);
 	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) &&
 		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
