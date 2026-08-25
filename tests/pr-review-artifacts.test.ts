@@ -261,6 +261,53 @@ declared prose\nNO FINDINGS.`,
 		expect(classifyReviewLane({ tier: "heavy", rawText: valid, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
 	});
 
+	test.each([
+		["backtick fence", "```"],
+		["spaced backtick fence", "  ```"],
+		["tilde fence", "~~~"],
+		["spaced tilde fence", "   ~~~"],
+		["unterminated HTML comment", "<!--"],
+		["unterminated processing instruction", "<?"],
+		["unterminated declaration", "<!DOCTYPE"],
+		["unterminated CDATA opener", "<![CDATA["],
+		["unterminated script opener", "<script"],
+		["unterminated pre opener", "<pre"],
+		["unterminated style opener", "<style"],
+		["unterminated textarea opener", "<textarea"],
+		["embedded severity tag", "[P1] Hidden blocker"],
+	] as const)("rejects candidate %s without requiring a closing container", (_label, why) => {
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: `${integratedFraming()}\n${integratedCandidate(why)}`,
+			exitCode: 0,
+			stopReason: "stop",
+			expectedOutput: "nonempty",
+		})).toBe("partial");
+	});
+
+	test("rejects reserved productions on multiline candidate continuation lines", () => {
+		for (const why of ["A valid first line.\n  ```", "A valid first line.\n  ~~~", "A valid first line.\n  [P1] Hidden blocker", "A valid first line.\n  <!--"]) {
+			expect(classifyReviewLane({
+				tier: "heavy",
+				rawText: `${integratedFraming()}\n${integratedCandidate(why)}`,
+				exitCode: 0,
+				stopReason: "stop",
+				expectedOutput: "nonempty",
+			}), why).toBe("partial");
+		}
+	});
+
+	test("keeps positive non-container prose valid in candidate values", () => {
+		const why = "The operator compares a < b and the path uses src/a.ts without a Markdown container.";
+		expect(classifyReviewLane({
+			tier: "heavy",
+			rawText: `${integratedFraming()}\n${integratedCandidate(why)}`,
+			exitCode: 0,
+			stopReason: "stop",
+			expectedOutput: "nonempty",
+		})).toBe("complete");
+	});
+
 	test("does not let an empty light section consume the next populated section", () => {
 		const fields = ["Overview", "Strengths", "Minor Candidates"];
 		for (const [index, emptyField] of fields.entries()) {

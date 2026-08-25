@@ -131,10 +131,26 @@ const CANDIDATE_SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const FRAMING_LABELS = ["Overview", "Strengths", "Risk areas"] as const;
 const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|review complete|no findings|nothing to review)(?:\s+(?:identified|found|available|present))?[.!]?$/i;
 const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
-const CODE_FENCE = /```/;
+const CODE_FENCE = /^ {0,3}(?:`{3,}|~{3,})/m;
 const HTML_CONTAINER = /<\/?[A-Za-z][^>]*>|<!--[\s\S]*?-->/;
+const COMMONMARK_HTML_BLOCK_TAGS = [
+	"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
+	"colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure",
+	"footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr",
+	"html", "iframe", "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes", "ol",
+	"optgroup", "option", "p", "param", "search", "section", "summary", "table", "tbody", "td", "tfoot",
+	"th", "thead", "title", "tr", "track", "ul",
+].join("|");
+// These are CommonMark HTML block openers. The opener itself is sufficient:
+// an assistant must not be able to hide later contract lines behind an
+// unterminated comment, declaration, raw block tag, or other container.
+const HTML_BLOCK_OPENER = new RegExp(
+	`^ {0,3}(?:<!--|<\\?|<![A-Za-z]|<!\\[CDATA\\[|</?(?:script|pre|style|textarea)(?=[ \\t/>]|$)|</?(?:${COMMONMARK_HTML_BLOCK_TAGS})(?=[ \\t/>]|$))`,
+	"i",
+);
 const CONTAINER_PREFIX = /^(?:[-*+>]|#{1,6})[ \t]+/;
 const RESERVED_LABEL_PRODUCTION = /(?:^|[ \t])(?:\*\*|__)?(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)(?:\*\*|__)?[ \t]*:/i;
+const SEVERITY_TAG_PRODUCTION = /\[P[0-3]\]/gi;
 
 interface MarkdownLabel {
 	readonly field: string;
@@ -225,22 +241,40 @@ function hasReservedStatusProduction(line: string): boolean {
 /**
  * Values are prose, but they may not contain a line-shaped contract
  * production. This is deliberately limited to the documented grammar (and
- * containers), rather than an English keyword denylist.
+ * containers), rather than an English keyword denylist. Every line is
+ * checked independently so a multiline `why` cannot hide a fence or an
+ * unterminated HTML block opener in a continuation.
  */
 function hasReservedContractProduction(value: string): boolean {
 	if (!value) return false;
 	if (value.includes(NO_FINDINGS_SENTINEL) || /Review status\s*:/i.test(value) || RESERVED_LABEL_PRODUCTION.test(value)) return true;
-	if (CODE_FENCE.test(value) || HTML_CONTAINER.test(value)) return true;
+	if (HTML_CONTAINER.test(value)) return true;
 	return value.split("\n").some((line) => {
 		const structural = line.trim();
-		return structural === NO_FINDINGS_SENTINEL || hasReservedStatusProduction(structural) ||
+		return CODE_FENCE.test(line) || HTML_BLOCK_OPENER.test(line) ||
+			structural === NO_FINDINGS_SENTINEL || hasReservedStatusProduction(structural) ||
 			!!framingLabel(structural) || !!candidateLabel(structural) || CONTAINER_PREFIX.test(structural);
 	});
 }
 
+function hasReservedCandidateProduction(field: string, value: string): boolean {
+	if (hasReservedContractProduction(value)) return true;
+	let allowedLeadingTitleTag = field === "title";
+	for (const [lineIndex, line] of value.split("\n").entries()) {
+		for (const match of line.matchAll(SEVERITY_TAG_PRODUCTION)) {
+			if (allowedLeadingTitleTag && lineIndex === 0 && match.index === 0) {
+				allowedLeadingTitleTag = false;
+				continue;
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 	if (CANDIDATE_FIELDS.some((field) => !fields.has(field))) return false;
-	if ([...fields.values()].some((value) => hasReservedContractProduction(value))) return false;
+	if ([...fields.entries()].some(([field, value]) => hasReservedCandidateProduction(field, value))) return false;
 	const title = fields.get("title")!.trim();
 	const titleMatch = /^\[(P0|P1|P2|P3|nit)\][ \t]+(.+)$/.exec(title);
 	const severity = fields.get("severity")!.trim();
@@ -324,7 +358,7 @@ function parseIntegratedCompletion(text: string): boolean {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 			const field = candidateLabel(lines[cursor] ?? "");
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) return false;
-			if (hasReservedContractProduction(field.value)) return false;
+			if (hasReservedCandidateProduction(expected, field.value)) return false;
 			fields.set(expected, field.value);
 			cursor++;
 			if (expected !== "why") continue;
@@ -334,7 +368,7 @@ function parseIntegratedCompletion(text: string): boolean {
 				if (!continuation.trim()) break;
 				if (isReservedContractLine(continuation)) break;
 				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) return false;
-				if (hasReservedContractProduction(continuation.slice(2))) return false;
+				if (hasReservedCandidateProduction("why", continuation.slice(2))) return false;
 				whyLines.push(continuation.slice(2));
 				cursor++;
 			}

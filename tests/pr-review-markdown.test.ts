@@ -61,6 +61,62 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.mergeApprovalEligible).toBe(true);
 	});
 
+	test("does not make approval eligible from malformed candidate evidence", () => {
+		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.";
+		const probes = [
+			"```",
+			"  ```",
+			"~~~",
+			"   ~~~",
+			"<!--",
+			"<?",
+			"<!DOCTYPE",
+			"<![CDATA[",
+			"<script",
+			"<pre",
+			"<style",
+			"<textarea",
+			"[P1] Hidden blocker",
+			"A valid first line.\n  ~~~",
+			"A valid first line.\n  <!--",
+			"A valid first line.\n  [P1] Hidden blocker",
+		] as const;
+		const candidate = (why: string) => [
+			"title: [P2] Preserve review evidence",
+			"severity: P2",
+			`why: ${why}`,
+			"location: src/review.ts:10-11",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.9",
+		].join("\n");
+		const synthesis = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const expected = [{ key: completeLane.key, tier: completeLane.tier, minorHygiene: false, expectedOutput: "nonempty" as const }];
+		const validRaw = `${framing}\n${candidate("The operator compares a < b and the path uses src/a.ts without a Markdown container.")}`;
+		const validLifecycle = classifyReviewLane({ tier: "heavy", rawText: validRaw, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+		expect(validLifecycle).toBe("complete");
+		const valid = synthesizeReviewArtifact({
+			rawText: synthesis,
+			...binding,
+			laneArtifacts: [{ ...completeLane, rawText: validRaw, lifecycle: validLifecycle }],
+			expectedLaneDescriptors: expected,
+		});
+		expect(valid.mergeApprovalEligible).toBe(true);
+		for (const why of probes) {
+			const raw = `${framing}\n${candidate(why)}`;
+			const lifecycle = classifyReviewLane({ tier: "heavy", rawText: raw, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" });
+			expect(lifecycle, why).toBe("partial");
+			const artifact = synthesizeReviewArtifact({
+				rawText: synthesis,
+				...binding,
+				laneArtifacts: [{ ...completeLane, rawText: raw, lifecycle }],
+				expectedLaneDescriptors: expected,
+			});
+			expect(artifact.mergeApprovalEligible, why).toBe(false);
+		}
+	});
+
 	test("keeps indented deep-contract bypass probes out of approval eligibility", () => {
 		const framing = "Review status: COMPLETE\nOverview: the integrated review is complete.\nStrengths: focused scope and matching tests.\nRisk areas: low integration risk.";
 		const candidate = [
