@@ -6,6 +6,8 @@ import {
 	buildExtractionInput,
 	buildExtractionTask,
 	buildExtractionSystemPrompt,
+	decideExtractionEligibility,
+	EXTRACTION_TELEMETRY_SCHEMA_VERSION,
 	mergeFindings,
 	MAX_EXTRACTED_FINDINGS,
 	MAX_EXTRACTION_INPUT_BYTES,
@@ -327,6 +329,47 @@ describe("finding extraction", () => {
 		expect(merged.body).toContain("**Verdict:** Comment");
 		expect(merged.body).not.toContain("**Verdict:** Request changes");
 		expect(before).toContain("**Verdict:** Comment");
+	});
+
+	test("extraction eligibility is host-authoritative: lane evidence and nonempty input", () => {
+		// Absent synthesis (inputBytes = 0 in the 1.15.7 campaign): excluded.
+		expect(decideExtractionEligibility("", [])).toEqual({ eligible: false, reason: "empty_input" });
+		expect(decideExtractionEligibility("   \n\t", [lane("correctness", "   ")])).toEqual({ eligible: false, reason: "empty_input" });
+		// Same-head skip-notice prose with no retained lanes: the synthesis is
+		// nonempty but assistant prose never establishes eligibility.
+		expect(decideExtractionEligibility("This head was already reviewed; skipping.", [])).toEqual({ eligible: false, reason: "no_lane_evidence" });
+		// A whitespace-only retained lane is not lane evidence either.
+		expect(decideExtractionEligibility("skip prose with no lane evidence", [lane("correctness", "  ")])).toEqual({ eligible: false, reason: "no_lane_evidence" });
+		// Genuine degraded/partially parsed review with retained lane Markdown runs.
+		const eligible = decideExtractionEligibility(synthesis, [lane("correctness", "partial lane evidence")]);
+		expect(eligible.eligible).toBeTrue();
+		if (eligible.eligible) {
+			expect(eligible.input.text).toContain("--- Retained lane output: correctness (timed_out) ---");
+			expect(eligible.input.inputBytes).toBe(Buffer.byteLength(eligible.input.text, "utf8"));
+		}
+	});
+
+	test("splits provenance rejections into stable per-check reason counts", () => {
+		const input = "The reviewer states that parseInput crashes on empty input. Focused tests passed and src/other.ts guards.";
+		const base = { title: "t", severity: "P2", body: "b", confidence: 0.5 };
+		const located = { ...base, quote: "parseInput crashes on empty input", path: "src/parser.ts", start_line: 2, end_line: 3, side: "RIGHT" };
+		const parsed = parseExtractionOutput(JSON.stringify({ findings: [
+			{ ...base, quote: "this quote appears nowhere in the document" },
+			{ ...located, location_quote: "also appears nowhere in the document" },
+			{ ...located, location_quote: "Focused tests passed and src/other.ts guards" },
+		] }), input);
+		expect(parsed.ok).toBeTrue();
+		if (!parsed.ok) return;
+		expect(parsed.value.counts.findingsRejectedProvenance).toBe(3);
+		expect(parsed.value.provenanceRejectionReasons).toEqual({
+			sourceQuoteAbsent: 1,
+			locationQuoteAbsent: 1,
+			locationQuotePathMismatch: 1,
+		});
+	});
+
+	test("pins the telemetry semantics cohort to schema version 2", () => {
+		expect(EXTRACTION_TELEMETRY_SCHEMA_VERSION).toBe(2);
 	});
 
 	test("resolves the user-scope flag with fail-closed warnings", () => {

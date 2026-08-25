@@ -27,6 +27,25 @@ const MAX_QUOTE_BYTES = 2 * 1024;
 
 export const EXTRACTION_ENTRY_TYPE = "pr-review-extraction";
 
+/**
+ * Telemetry semantics cohort for extraction events. Events carrying this
+ * schema version use the v2 semantics: host-authoritative eligibility
+ * (retained lane evidence + nonempty input), valid `empty` counted as
+ * extraction success, excluded `not_run` outcomes, and per-reason provenance
+ * counts. Events without it belong to the legacy cohort and must never be
+ * combined with v2 metrics (the 18-run 1.15.7 campaign mixed incompatible
+ * semantics in one denominator).
+ */
+export const EXTRACTION_TELEMETRY_SCHEMA_VERSION = 2;
+
+/** Stable exclusion reasons for a host-side decision not to run extraction. */
+export type ExtractionExclusionReason = "no_lane_evidence" | "empty_input";
+
+/** Host-authoritative eligibility decision for one degraded synthesis. */
+export type ExtractionEligibility =
+	| { eligible: true; input: ExtractionInput }
+	| { eligible: false; reason: ExtractionExclusionReason };
+
 export interface ExtractedFindingWire {
 	title: string;
 	severity: string;
@@ -56,9 +75,21 @@ export interface ExtractionInput {
 	truncatedLanes: number;
 }
 
+/** Aggregate reason counts for host-side provenance rejections (privacy-safe: counts only). */
+export interface ProvenanceRejectionReasons {
+	/** The finding's `quote` is not a verbatim substring of the extraction input. */
+	sourceQuoteAbsent: number;
+	/** A claimed location's `location_quote` is not a verbatim substring of the input. */
+	locationQuoteAbsent: number;
+	/** The claimed `path` does not appear inside the verified `location_quote`. */
+	locationQuotePathMismatch: number;
+}
+
 export interface ParsedExtraction {
 	findings: ReviewFindingLike[];
 	counts: ExtractionCounts;
+	/** Per-check provenance rejection counts (sum equals counts.findingsRejectedProvenance). */
+	provenanceRejectionReasons: ProvenanceRejectionReasons;
 }
 
 export type ExtractionRejection =
@@ -193,6 +224,27 @@ export function buildExtractionInput(
 	};
 }
 
+/**
+ * Host-authoritative extraction eligibility. Model-assisted extraction may
+ * start only when the invocation has actual retained host review-lane
+ * evidence AND the assembled degraded Markdown input is nonempty after
+ * trim. Eligibility is never inferred from assistant prose: absent-synthesis
+ * sessions and same-head skip notices have no lane evidence and must not
+ * launch the child. The decision returns the assembled input only when
+ * eligible, so the caller never builds a second copy.
+ */
+export function decideExtractionEligibility(
+	rawText: string,
+	lanes: readonly ReviewLaneArtifact[],
+	maxBytes = MAX_EXTRACTION_INPUT_BYTES,
+): ExtractionEligibility {
+	const input = buildExtractionInput(rawText, lanes, maxBytes);
+	if (!input.text.trim()) return { eligible: false, reason: "empty_input" };
+	const hasLaneEvidence = lanes.some((lane) => lane.rawText.trim().length > 0);
+	if (!hasLaneEvidence) return { eligible: false, reason: "no_lane_evidence" };
+	return { eligible: true, input };
+}
+
 function byteLength(value: string): number {
 	return Buffer.byteLength(value, "utf8");
 }
@@ -312,6 +364,11 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 	const normalizedInput = normalizeForQuote(input);
 	const findings: ReviewFindingLike[] = [];
 	let rejectedProvenance = 0;
+	const provenanceRejectionReasons: ProvenanceRejectionReasons = {
+		sourceQuoteAbsent: 0,
+		locationQuoteAbsent: 0,
+		locationQuotePathMismatch: 0,
+	};
 	for (const raw of record.findings) {
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 			return { ok: false, rejection: { kind: "rejected", reason: "a finding was not an object" } };
@@ -330,6 +387,7 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 		}
 		if (!verifyQuote(quote, normalizedInput)) {
 			rejectedProvenance++;
+			provenanceRejectionReasons.sourceQuoteAbsent++;
 			continue;
 		}
 		const hasLocation = wire.path !== undefined || wire.start_line !== undefined ||
@@ -341,10 +399,12 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 			const locationQuote = wire.location_quote;
 			if (typeof locationQuote !== "string" || !verifyQuote(locationQuote, normalizedInput)) {
 				rejectedProvenance++;
+			provenanceRejectionReasons.locationQuoteAbsent++;
 				continue;
 			}
 			if (typeof wire.path === "string" && !normalizeForQuote(locationQuote).includes(normalizeForQuote(wire.path))) {
 				rejectedProvenance++;
+			provenanceRejectionReasons.locationQuotePathMismatch++;
 				continue;
 			}
 		}
@@ -365,6 +425,7 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 				findingsRejectedProvenance: rejectedProvenance,
 				findingsDroppedOverflow: 0,
 			},
+			provenanceRejectionReasons,
 		},
 	};
 }

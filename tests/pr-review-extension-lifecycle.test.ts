@@ -1078,15 +1078,17 @@ describe("completed review extension lifecycle", () => {
 				expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
 				harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 					generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
-					tier: "heavy", rawText: "", exitCode: 143, stopReason: "timeout",
+					tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 143, stopReason: "timeout",
 					lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
 				});
 				await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 				expect(probe.postCount()).toBe(1);
 				expect(probe.payload()?.comments).toBeUndefined();
 				expect(String(probe.payload()?.body)).toContain("No structurally parsed findings were extracted");
+				// "empty" is reserved for a valid {"findings":[]} answer; a child
+				// that produced no output is a failure like any other child error.
 				const outcome = extractionEntry(harness).at(-1)?.data.outcome;
-				expect(["timeout", "failed", "empty", "rejected"]).toContain(outcome);
+				expect(["timeout", "failed", "rejected"]).toContain(outcome);
 				void name;
 			}
 		});
@@ -1252,6 +1254,123 @@ describe("completed review extension lifecycle", () => {
 			expect(body).toContain("**Verdict:** Comment");
 			expect(body).not.toContain("**Verdict:** Request changes");
 			expect(probe.payload()?.event).toBe("COMMENT");
+		});
+
+		test("does not spawn the child for a degraded synthesis with no retained lanes and records excluded not_run telemetry", async () => {
+			// Absent-synthesis / preflight-only sessions: no review_subagents lane
+			// ever ran, so no host lane evidence exists. Eligibility must come from
+			// retained lanes, never from assistant prose.
+			let spawned = 0;
+			const runner = async () => { spawned++; return { text: "{}", exitCode: 0 }; };
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner,
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			// Non-canonical degraded prose (no expected lanes registered, nothing
+			// retained): quality is degraded purely from the synthesis shape.
+			const proseRaw = degradedRaw("## Findings\nThe reviewer states that parseInput crashes on empty input somewhere.");
+			await degrade(harness, proseRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: proseRaw }] });
+			expect(spawned).toBe(0);
+			expect(probe.postCount()).toBe(1);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries).toEqual([{ outcome: "not_run", reason: "no_lane_evidence", schemaVersion: 2 }]);
+		});
+
+		test("a whitespace-only retained lane is not lane evidence and is excluded without spawning", async () => {
+			let spawned = 0;
+			const runner = async () => { spawned++; return { text: "{}", exitCode: 0 }; };
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner,
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			// Retain a lane whose evidence is whitespace-only: not actual evidence.
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+			harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+				generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+				tier: "heavy", rawText: "   \n\t", exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+				attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+			});
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			expect(spawned).toBe(0);
+			expect(probe.postCount()).toBe(1);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries).toEqual([{ outcome: "not_run", reason: "no_lane_evidence", schemaVersion: 2 }]);
+		});
+
+		test("a valid empty findings answer on eligible lane evidence records empty, counts as success, and cannot enable approval", async () => {
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runExtraction('{"findings":[]}'),
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			await retainTimedOutLane(harness);
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			expect(probe.postCount()).toBe(1);
+			// Extraction ran and returned a schema-valid empty answer: the
+			// extractor executed successfully, but that alone never claims the
+			// review is clean, flips the verdict, or earns APPROVE eligibility.
+			expect(probe.payload()?.event).toBe("COMMENT");
+			expect(String(probe.payload()?.body)).toContain("**Verdict:** Comment");
+			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
+			expect(completed?.data.mergeApprovalEligible).toBe(false);
+			const entry = extractionEntry(harness).at(-1)?.data;
+			expect(entry).toMatchObject({
+				outcome: "empty",
+				schemaVersion: 2,
+				counts: { findingsExtracted: 0, findingsRejectedProvenance: 0 },
+			});
+		});
+
+		test("telemetry carries the cohort version and per-reason provenance counts without leaking review payload", async () => {
+			const secretProse = "parseInput crashes on empty input when the guard is missing entirely";
+			const findingsJson = JSON.stringify({ findings: [
+				{
+					title: "Guard empty input", severity: "P2", body: secretProse, confidence: 0.9,
+					quote: "parseInput crashes on empty input",
+					path: "src/parser.ts", start_line: 2, end_line: 3, side: "RIGHT",
+					location_quote: "src/parser.ts:2-3 RIGHT",
+				},
+				{
+					title: "Fabricated", severity: "P2", body: "never stated anywhere", confidence: 0.9,
+					quote: "this quote exists nowhere in the retained document at all",
+				},
+			] });
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runExtraction(findingsJson),
+			});
+			const probe = installPublishingProbe();
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const raw = degradedRaw([
+				"## Findings", "",
+				"The reviewer states that parseInput crashes on empty input at src/parser.ts:2-3 RIGHT.", "",
+			].join("\n"));
+			await retainTimedOutLane(harness);
+			await degrade(harness, raw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] });
+			expect(probe.postCount()).toBe(1);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries.length).toBeGreaterThanOrEqual(2);
+			expect(entries.every((entry) => entry.schemaVersion === 2)).toBeTrue();
+			const terminal = entries.findLast((entry) => entry.outcome === "merged" || entry.outcome === "published");
+			expect(terminal?.counts?.findingsRejectedProvenance).toBe(1);
+			expect(terminal?.provenanceRejectionReasons).toEqual({
+				sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0,
+			});
+			// Privacy: extraction telemetry is counts and bounded metadata only.
+			const serialized = JSON.stringify(entries);
+			expect(serialized).not.toContain(secretProse);
+			expect(serialized).not.toContain("parseInput crashes on empty input");
+			expect(serialized).not.toContain("src/parser.ts");
 		});
 
 		test("spawns nothing and posts normally when extraction is disabled or fully parsed", async () => {

@@ -53,13 +53,15 @@ import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeRevie
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
-	buildExtractionInput,
+	decideExtractionEligibility,
 	EXTRACTION_ENTRY_TYPE,
+	EXTRACTION_TELEMETRY_SCHEMA_VERSION,
 	mergeFindings,
 	parseExtractionOutput,
 	resolveExtractionSetting,
 	type FindingExtractionRunner,
 	type ExtractionCounts,
+	type ProvenanceRejectionReasons,
 } from "../lib/pr-review-extract.ts";
 import { runFindingExtraction } from "./pr-review-subagent.ts";
 import {
@@ -508,7 +510,7 @@ export default function registerReviewTable(
 			readonly replacedRecord?: CompletedReviewRecord;
 			readonly session?: CompletedReviewSessionIdentity;
 			/** Extraction telemetry emitted after the publish result is known. */
-			readonly extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string };
+			readonly extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; effectiveModel?: string };
 		}
 		| { readonly error: string };
 	let pendingCompletion: PendingCompletion | undefined;
@@ -536,16 +538,23 @@ export default function registerReviewTable(
 	 */	const settlePendingExtraction = async (
 		deferred: PendingExtraction,
 		ctx: ExtensionContext,
-	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; inputBytes: number; elapsedMs: number; effectiveModel?: string } } | undefined> => {
+	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; effectiveModel?: string } } | undefined> => {
 		const elapsedFromStart = () => Date.now() - deferred.startedAt;
 		let elapsedMs = elapsedFromStart();
-		const recordOutcome = (outcome: string, counts?: ExtractionCounts, effectiveModel?: string) => {
+		const recordOutcome = (
+			outcome: string,
+			counts?: ExtractionCounts,
+			effectiveModel?: string,
+			provenanceRejectionReasons?: ProvenanceRejectionReasons,
+		) => {
 			try {
 				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 					outcome,
 					...(counts ? { counts } : {}),
+					...(provenanceRejectionReasons ? { provenanceRejectionReasons } : {}),
 					inputBytes: deferred.inputBytes,
 					elapsedMs,
+					schemaVersion: EXTRACTION_TELEMETRY_SCHEMA_VERSION,
 					...(effectiveModel ? { effectiveModel } : {}),
 				});
 			} catch {
@@ -587,16 +596,30 @@ export default function registerReviewTable(
 			return { artifact: deferred.artifact };
 		}
 		if (result.exitCode !== 0 || !result.text.trim()) {
-			recordOutcome(result.errorMessage ? "failed" : "empty", undefined, result.effectiveModel);
+			// A child that produced no usable output is a child failure, never a
+			// valid-empty extraction success ("empty" is reserved for a
+			// schema-valid {"findings":[]} answer on eligible lane evidence).
+			recordOutcome("failed", undefined, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		const parsed = parseExtractionOutput(result.text, deferred.inputText);
 		if (!parsed.ok) {
-			recordOutcome(parsed.rejection.kind === "empty" ? "empty" : "rejected", undefined, result.effectiveModel);
+			recordOutcome(parsed.rejection.kind === "empty" ? "failed" : "rejected", undefined, result.effectiveModel);
 			return { artifact: deferred.artifact };
 		}
 		if (parsed.value.findings.length === 0) {
-			recordOutcome("empty", parsed.value.counts, result.effectiveModel);
+			// A schema-valid {"findings":[]} answer on eligible lane evidence is an
+			// extraction SUCCESS (tooling counts it in the success-rate numerator)
+			// while claiming nothing about the review being clean. But a record
+			// whose findings were all provenance-rejected is a verification
+			// failure, never a correct empty.
+			const allRejected = parsed.value.counts.findingsRejectedProvenance > 0;
+			recordOutcome(
+				allRejected ? "rejected" : "empty",
+				parsed.value.counts,
+				result.effectiveModel,
+				parsed.value.provenanceRejectionReasons,
+			);
 			return { artifact: deferred.artifact };
 		}
 		const deterministic = deferred.artifact.review.findings ?? [];
@@ -612,12 +635,13 @@ export default function registerReviewTable(
 			...merged.counts,
 			findingsRejectedProvenance: parsed.value.counts.findingsRejectedProvenance,
 		};
-		recordOutcome("merged", counts, result.effectiveModel);
+		recordOutcome("merged", counts, result.effectiveModel, parsed.value.provenanceRejectionReasons);
 		return {
 			artifact: mergedArtifact,
 			extraction: {
 				outcome: "merged",
 				counts,
+				provenanceRejectionReasons: parsed.value.provenanceRejectionReasons,
 				inputBytes: deferred.inputBytes,
 				elapsedMs,
 				...(result.effectiveModel ? { effectiveModel: result.effectiveModel } : {}),
@@ -1017,9 +1041,10 @@ export default function registerReviewTable(
 		const publishResult = await publishCompletedReview(pending.record, { kind: "frozen-invocation" }, ctx);
 		if (pending.extraction) {
 			try {
-				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
+					pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 					...pending.extraction,
 					outcome: "published",
+					schemaVersion: EXTRACTION_TELEMETRY_SCHEMA_VERSION,
 					...(publishResult.inlineComments !== undefined ? { inlineComments: publishResult.inlineComments } : {}),
 					...(publishResult.status !== "posted" && publishResult.status !== "posted_degraded"
 						? { publishStatus: publishResult.status }
@@ -1100,22 +1125,42 @@ export default function registerReviewTable(
 			const setting = resolveExtractionSetting(getAgentDir());
 			if (setting.warning) ctx.ui.notify(setting.warning, "warning");
 			if (setting.enabled && !pendingExtraction && !loopCoordinator.deadlineExpired()) {
-				// acquire() must never see a deadline-expired binding: it would
-				// clear the retained invocation that degraded synthesis still
-				// needs. An expired deadline leaves no window for extraction.
-				const lease = loopCoordinator.acquire(ctx);
-				if (lease) {
-					const input = buildExtractionInput(artifact.rawText, laneArtifacts);
-				pendingExtraction = {
-						lease,
-						promise: extractionRunner(ctx, lease, input.text),
-						inputText: input.text,
-						inputBytes: input.inputBytes,
-						startedAt: Date.now(),
-						parsed: publishable!,
-						artifact,
-						invocation: completionInvocation,
-					};
+				// Host-authoritative eligibility: the child may start only when the
+				// invocation retained actual review-lane evidence for this generation
+				// AND the assembled degraded Markdown input is nonempty. Eligibility
+				// is never inferred from assistant prose: absent-synthesis sessions
+				// and same-head skip notices have no lane evidence and must not run.
+				const eligibility = decideExtractionEligibility(artifact.rawText, laneArtifacts);
+				if (!eligibility.eligible) {
+					// Privacy-safe not-run telemetry: an explicit stable reason, never
+					// counted as an extraction attempt (no elapsedMs, excluded outcome).
+					try {
+						pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
+							outcome: "not_run",
+							reason: eligibility.reason,
+							schemaVersion: EXTRACTION_TELEMETRY_SCHEMA_VERSION,
+						});
+					} catch {
+						// Telemetry is best-effort and must never affect the review.
+					}
+				} else {
+					// acquire() must never see a deadline-expired binding: it would
+					// clear the retained invocation that degraded synthesis still
+					// needs. An expired deadline leaves no window for extraction.
+					const lease = loopCoordinator.acquire(ctx);
+					if (lease) {
+						const input = eligibility.input;
+						pendingExtraction = {
+							lease,
+							promise: extractionRunner(ctx, lease, input.text),
+							inputText: input.text,
+							inputBytes: input.inputBytes,
+							startedAt: Date.now(),
+							parsed: publishable!,
+							artifact,
+							invocation: completionInvocation,
+						};
+					}
 				}
 			}
 		}
