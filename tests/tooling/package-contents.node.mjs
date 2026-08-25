@@ -45,21 +45,34 @@ describe("npm release package policy", () => {
 		assert.throws(() => assertPackageContents(files), /missing required path/);
 	});
 
-	test("invokes npm through Node instead of spawning an unlaunchable Windows cmd shim", () => {
-		const invocation = resolveNpmPackInvocation({
+	test("invokes npm's CLI through Node on Windows and POSIX, then fails closed when it is unavailable", () => {
+		const windows = resolveNpmPackInvocation({
 			platform: "win32",
 			execPath: "C:\\node\\node.exe",
 			npmExecPath: "C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
 			exists: (candidate) => candidate.endsWith("npm-cli.js"),
 		});
-		assert.equal(invocation.command, "C:\\node\\node.exe");
-		assert.deepEqual(invocation.arguments, [
+		assert.equal(windows.command, "C:\\node\\node.exe");
+		assert.deepEqual(windows.arguments, [
 			"C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
 			"pack",
 			"--dry-run",
 			"--ignore-scripts",
 			"--json",
 		]);
+
+		const posix = resolveNpmPackInvocation({
+			platform: "linux",
+			execPath: "/opt/node/bin/node",
+			npmExecPath: "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+			exists: (candidate) => candidate === "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+		});
+		assert.equal(posix.command, "/opt/node/bin/node");
+		assert.equal(posix.arguments[0], "/opt/node/lib/node_modules/npm/bin/npm-cli.js");
+		assert.throws(
+			() => resolveNpmPackInvocation({ platform: "linux", execPath: "/opt/node/bin/node", npmExecPath: "", exists: () => false }),
+			/could not resolve npm-cli\.js/,
+		);
 	});
 
 	test("strictly parses every packaged TypeScript module through a real module parser", () => {

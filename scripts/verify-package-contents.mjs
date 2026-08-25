@@ -172,14 +172,15 @@ export function resolveNpmPackInvocation({
 } = {}) {
 	const arguments_ = ["pack", "--dry-run", "--ignore-scripts", "--json"];
 	const pathApi = platform === "win32" ? path.win32 : path;
+	const executableDirectory = pathApi.dirname(execPath);
 	const cliCandidates = [
 		npmExecPath,
-		pathApi.join(pathApi.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+		pathApi.join(executableDirectory, "node_modules", "npm", "bin", "npm-cli.js"),
+		pathApi.resolve(executableDirectory, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
 	].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
 	const npmCli = cliCandidates.find((candidate) => exists(candidate));
-	if (npmCli) return { command: execPath, arguments: [npmCli, ...arguments_] };
-	invariant(platform !== "win32", "could not resolve npm-cli.js for lifecycle-script-disabled package inspection");
-	return { command: "npm", arguments: arguments_ };
+	invariant(!!npmCli, "could not resolve npm-cli.js for lifecycle-script-disabled package inspection");
+	return { command: execPath, arguments: [npmCli, ...arguments_] };
 }
 
 export function verifyPackageContents(rootDir = process.cwd()) {
