@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	classifyReviewJsonObject,
 	classifyReviewLane,
 	finalAssistantText,
 	ReviewLaneArtifactRegistry,
@@ -108,6 +109,79 @@ describe("ordinary review-lane reconstruction", () => {
 });
 
 describe("semantic lane completion", () => {
+	test("characterizes the strict JSON-object repair contract independently of Markdown", () => {
+		const base = { tier: "light" as const, exitCode: 0, stopReason: "stop" };
+		for (const rawText of ["{}", " {\n  \"findings\": []\n} \t"]) {
+			expect(classifyReviewJsonObject({ ...base, rawText }), rawText).toBe("complete");
+		}
+		for (const rawText of ["", "[]", "null", "42", "\"text\"", "prefix {}", "```json\n{}\n```"]) {
+			expect(classifyReviewJsonObject({ ...base, rawText }), rawText).toBe(rawText ? "partial" : "failed");
+		}
+		for (const input of [
+			{ ...base, rawText: "{}", exitCode: 1 },
+			{ ...base, rawText: "{}", stopReason: "length" },
+			{ ...base, rawText: "{}", errorMessage: "model error" },
+		]) {
+			expect(classifyReviewJsonObject(input)).toBe("partial");
+		}
+	});
+
+	test("rejects contradictory COMPLETE framing while preserving candidate evidence", () => {
+		const failures = [
+			"I could not access the supplied diff.",
+			"I cannot review the repository.",
+			"I can't inspect the diff.",
+			"I was unable to review the change.",
+			"I lack access to the repository.",
+			"I was denied access to the review context.",
+			"I failed to review the supplied diff.",
+			"The review did not run.",
+			"The review was skipped.",
+		] as const;
+		for (const overview of failures) {
+			const rawText = `${integratedFraming("plain", { overview, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." })}\nNO FINDINGS.`;
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), overview).toBe("partial");
+		}
+		const candidateEvidence = `${integratedFraming()}\n${integratedCandidate("The reviewer could not access the repository after the workspace changed, so this path drops a required result.")}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: candidateEvidence, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		for (const framing of [
+			integratedFraming("plain", { overview: "The review tool error handling preserves diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
+			integratedFraming("plain", { overview: "The review tool failed gracefully and preserved diagnostics.", strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }),
+			integratedFraming("plain", { overview: "The change validates product failures.", strengths: "Focused tests cover the path.", riskAreas: "The server returned an error for invalid input." }),
+		]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: `${framing}\nNO FINDINGS.`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		}
+	});
+
+	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
+		const nit = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.").replace("[P2] Preserve review evidence", "[nit] Preserve review evidence").replace("severity: P2", "severity: nit")}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		const hiddenNit = nit.replace("why: The changed path drops a required result.", "why: The changed path drops a required [nit] result.");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hiddenNit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+
+		const withBlankSeparators = `${integratedFraming()}\r\n \t\r\n${integratedCandidate()}\r\n\t\r\n`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: withBlankSeparators, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		const nonblankTrailing = `${integratedFraming()} \r\nNO FINDINGS.`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: nonblankTrailing, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+
+		const cjk = `${integratedFraming("plain", {
+			overview: "这个变更处理用户输入并保留错误上下文",
+			strengths: "测试覆盖成功和失败路径",
+			riskAreas: "跨服务边界仍需要关注",
+		})}\n${integratedCandidate("当输入为空时结果会丢失并导致后续请求失败").replace("[P2] Preserve review evidence", "[P2] 保留完整错误上下文信息")}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: cjk, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		const trivial = `${integratedFraming("plain", { overview: "好", strengths: "测试", riskAreas: "风险" })}\n${integratedCandidate("失败").replace("[P2] Preserve review evidence", "[P2] 修复").replace("src/a.ts:10-12", "repo-wide")}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: trivial, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+		for (const boilerplate of ["哈哈哈哈", "测试测试", "一切正常", "没有任何问题", "没有发现问题", "没有 问题", "重复内容风险重复内容风险", "特に問題なし", "問題 なし", "レビュー完了", "문제없음", "문제 없음"]) {
+			const rawText = integratedFraming("plain", { overview: boilerplate, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), boilerplate).toBe("partial");
+		}
+		for (const substantive of ["入力検証を強化", "エラー処理改善", "오류처리개선"]) {
+			const rawText = integratedFraming("plain", { overview: substantive, strengths: "Focused tests cover the path.", riskAreas: "Integration boundaries remain the main risk." }) + "\nNO FINDINGS.";
+			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" }), substantive).toBe("complete");
+		}
+	});
+
 	test("requires the exact integrated Markdown contract under a successful terminal stop", () => {
 		const clean = `${integratedFraming()}\nNO FINDINGS.`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: clean, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");

@@ -166,7 +166,7 @@ function hasHtmlContainer(text: string): boolean {
 
 const CONTAINER_PREFIX = /^(?:[-*+>]|#{1,6})[ \t]+/;
 const RESERVED_LABEL_PRODUCTION = /(?:^|[ \t])(?:\*\*|__)?(?:Overview|Strengths|Risk areas|title|severity|why|location|side|in_diff|pr_related|confidence)(?:\*\*|__)?[ \t]*:/i;
-const SEVERITY_TAG_PRODUCTION = /\[P[0-3]\]/gi;
+const SEVERITY_TAG_PRODUCTION = /\[(?:P[0-3]|nit)\]/gi;
 
 interface MarkdownLabel {
 	readonly field: string;
@@ -187,7 +187,10 @@ function normalizeReviewText(text: string): string {
 }
 
 function hasTrailingHorizontalWhitespace(text: string): boolean {
-	return text.split("\n").some((line) => /[ \t]+$/.test(line));
+	// Spaces/tabs on a separator line are still a blank separator. Contract
+	// productions remain exact: only a nonblank line with trailing horizontal
+	// whitespace is rejected.
+	return text.split("\n").some((line) => line.trim() && /[ \t]+$/.test(line));
 }
 
 function escapePattern(value: string): string {
@@ -220,10 +223,25 @@ function canonicalField(field: string): string {
 	return field.toLowerCase();
 }
 
+const CJK_SCRIPT_CHARACTERS = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+const CJK_BOILERPLATE_ONLY = /^(?:无问题|没有(?:任何|发现)?问题|未发现问题|一切正常|测试测试|哈哈哈哈|审查完成|评审完成|没有风险|无风险|問題なし|特に問題なし|レビュー完了|検証完了|문제없음|검토완료)[。.!！!?？]*$/u;
+
+function repeatedText(value: string): boolean {
+	for (let width = 1; width <= Math.floor(value.length / 2); width++) {
+		if (value.length % width === 0 && value.slice(0, width).repeat(value.length / width) === value) return true;
+	}
+	return false;
+}
+
 function meaningfulValue(value: string): boolean {
 	const normalized = value.trim();
 	const words = normalized.match(/[\p{L}\p{N}]+/gu) ?? [];
-	return words.length >= 2 && !PLACEHOLDER_ONLY.test(normalized) &&
+	const cjkCharacters = normalized.match(CJK_SCRIPT_CHARACTERS) ?? [];
+	const cjkText = cjkCharacters.join("");
+	const meaningfulCjk = cjkCharacters.length >= 5 && new Set(cjkCharacters).size >= 4 &&
+		!repeatedText(cjkText) && !CJK_BOILERPLATE_ONLY.test(normalized.replace(/\s+/gu, ""));
+	const meaningfulLanguage = cjkCharacters.length > 0 ? meaningfulCjk : words.length >= 2;
+	return meaningfulLanguage && !PLACEHOLDER_ONLY.test(normalized) &&
 		!/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalized);
 }
 
@@ -322,6 +340,28 @@ function topLevelFailure(text: string): boolean {
 }
 
 /**
+ * Defense-in-depth only: COMPLETE remains the semantic protocol's primary
+ * self-attestation. Keep this detector bounded to the three framing values so
+ * legitimate candidate evidence can discuss inability, denied access, failed
+ * review behavior, or server errors; it is intentionally not exhaustive.
+ */
+function contradictoryFraming(values: readonly string[]): boolean {
+	const patterns = [
+		/\b(?:i|we)\s+(?:could not|couldn't|cannot|can't|was unable to|were unable to)\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/\b(?:i|we)\s+(?:do not|don't|does not|doesn't|did not|didn't)\s+(?:have\s+)?access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/\b(?:i|we)\s+lacks?\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/\b(?:i|we)\s+(?:was|were)\s+denied\s+access\s+to\s+(?:the\s+)?(?:review|diff|patch|repository|repo|source|context)\b/i,
+		/\b(?:i|we)\s+failed\s+to\s+(?:access|inspect|review|assess|evaluate|read|view)\b/i,
+		/\b(?:the\s+)?review\s+(?:did not|didn't|was not|wasn't)\s+run\b/i,
+		/\b(?:the\s+)?review\s+(?:(?:was\s+)?skipped)\b/i,
+	];
+	return values.some((value) => {
+		const normalized = value.replace(/\s+/g, " ").trim();
+		return patterns.some((pattern) => pattern.test(normalized));
+	});
+}
+
+/**
  * Parse and validate the integrated deep-lane grammar statefully. COMPLETE is
  * an explicit reviewer attestation: every other status, a missing/later/
  * wrapped/duplicate status, or a malformed production is partial. Framing has
@@ -353,7 +393,9 @@ function parseIntegratedCompletion(text: string): boolean {
 		if (!meaningfulValue(value) || framingValueHasReservedProduction(value)) return false;
 		framingValues.push(value);
 	}
-	if (topLevelFailure(framingValues.join("\n"))) return false;
+	// COMPLETE is still the documented trust boundary; this bounded framing-only
+	// contradiction check is defense-in-depth and intentionally not exhaustive.
+	if (topLevelFailure(framingValues.join("\n")) || contradictoryFraming(framingValues)) return false;
 
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 	if (cursor < lines.length && lines[cursor] === NO_FINDINGS_SENTINEL) {
@@ -425,6 +467,30 @@ export function classifyReviewLane(input: ReviewLaneCompletionInput): ReviewLane
 	if (reason?.includes("timeout") || error?.includes("timed out") || error?.includes("timeout")) return "timed_out";
 	const hasText = input.rawText.length > 0;
 	if (input.exitCode === 0 && reason === "stop" && expectedLaneSections(input)) return "complete";
+	return hasText ? "partial" : "failed";
+}
+
+/**
+ * Internal-only completion contract for the no-tools output-repair subprocess.
+ * It deliberately accepts exactly one parseable, non-array JSON object after
+ * trim; process success, terminal stop, and absence of an error are required.
+ * The public review_subagents schema remains limited to review_lane/nonempty.
+ */
+export function classifyReviewJsonObject(input: ReviewLaneCompletionInput): ReviewLaneLifecycle {
+	const reason = typeof input.stopReason === "string" ? input.stopReason.toLowerCase() : undefined;
+	const error = typeof input.errorMessage === "string" ? input.errorMessage.trim() : undefined;
+	if (reason?.includes("timeout") || error?.toLowerCase().includes("timed out") || error?.toLowerCase().includes("timeout")) return "timed_out";
+	const hasText = input.rawText.length > 0;
+	let isObject = false;
+	if (hasText) {
+		try {
+			const parsed: unknown = JSON.parse(input.rawText.trim());
+			isObject = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+		} catch {
+			isObject = false;
+		}
+	}
+	if (input.exitCode === 0 && reason === "stop" && !error && isObject) return "complete";
 	return hasText ? "partial" : "failed";
 }
 

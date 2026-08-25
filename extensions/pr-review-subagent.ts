@@ -49,6 +49,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+	classifyReviewJsonObject,
 	classifyReviewLane,
 	finalAssistantText,
 	type ReviewLaneArtifact,
@@ -431,6 +432,8 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 const NONEMPTY_CONTRACT_DESCRIPTION = "After a successful terminal stop, nonempty output is exact Markdown with no wrapper: the first nonblank line must be exactly `Review status: COMPLETE` with no leading or trailing whitespace. If you could not inspect required evidence for any reason, return the top-level exact line `Review status: INCOMPLETE` followed by a concise reason; INCOMPLETE and every other status are partial. COMPLETE must be followed in exact order by meaningful one-line `Overview: ...`, `Strengths: ...`, and `Risk areas: ...` sections, then either the exact standalone `NO FINDINGS.` line or one or more complete candidate blocks. Nonblank contract lines have no trailing spaces or tabs. Framing may use plain labels, bold labels, or an ATX label followed immediately by exactly one top-level value line; do not use list-indented or quoted contract lines. Candidate fields are in exact order and each appears once: title prefixed [P0], [P1], [P2], [P3], or [nit] (the tag must match severity); severity P0/P1/P2/P3/nit; meaningful why; location as repo-relative/path:positive-line or repo-relative/path:positive-start-positive-end (ordered), or repo-wide; side RIGHT/LEFT; in_diff yes/no; pr_related yes/no; confidence 0.0-1.0. Candidate labels may be plain/bold or use exactly one top-level `- ` list marker; no other indentation or list marker is accepted. A why value may continue only on lines beginning with exactly two spaces plus a non-list character until the next reserved field. Scalar and continuation values must not contain status/field/severity/sentinel productions, code fences, HTML/container wrappers, blockquotes, lists, or code indentation. Do not emit code fences, blockquotes, JSON, HTML/container wrappers, duplicate/out-of-order fields, arbitrary prose, or placeholder values (none, n/a, unavailable, unknown, skipped, error, review complete). Status/refusal/access/tool/model/error reasons belong in an INCOMPLETE status; inability discussed inside a valid candidate why is allowed. COMPLETE is the primary completion attestation; only obvious exact failure placeholders are rejected as defense-in-depth."
 
+type InternalExpectedOutput = "review_lane" | "nonempty" | "json_object";
+
 const TIER_GUIDANCE: Record<Tier, string> = {
 	light:
 		"You are a fast overview reviewer. Produce a concise overview of what the change does and how, list genuine strengths, and note high-level risk areas worth closer specialist review. Do not deep-dive into defects.",
@@ -440,7 +443,7 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: "review_lane" | "nonempty"): string {
+function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
@@ -804,7 +807,7 @@ interface SubagentPassRequest {
 	toolPolicy?: ToolPolicy;
 	majorOnly?: boolean;
 	minorHygiene?: boolean;
-	expectedOutput?: "review_lane" | "nonempty";
+	expectedOutput?: InternalExpectedOutput;
 	systemPrompt?: string;
 	focusPublisher?: ReviewFocusPublisher;
 	artifactPublisher?: ReviewArtifactPublisher;
@@ -1049,7 +1052,7 @@ const OUTPUT_REPAIR_SYSTEM_PROMPT = [
 	"You have no tools. Do not review the PR, add findings, remove findings, or change the review's substance.",
 	"Convert the supplied completed-review text into exactly one JSON object that satisfies the supplied output contract.",
 	"Return only that JSON object: no Markdown, headings, prose, or code fences. If the source cannot be safely converted, return it unchanged so host validation rejects it.",
-].join("\\n");
+].join("\n");
 
 /** Run the configured light-tier model as a no-tools, one-shot JSON-format repairer. */
 export async function repairReviewOutput(
@@ -1063,7 +1066,7 @@ export async function repairReviewOutput(
 		tier: "light",
 		objective: `Reformat this completed review without changing its substance.\n\n--- required output contract ---\n${outputContract}\n\n--- completed review ---\n${text}`,
 		toolPolicy: "none",
-		expectedOutput: "nonempty",
+		expectedOutput: "json_object",
 		systemPrompt: OUTPUT_REPAIR_SYSTEM_PROMPT,
 	}, signal);
 	return result.status === "complete" && result.text.trim() ? result.text : undefined;
@@ -1169,15 +1172,18 @@ async function runSubagentPass(
 			beforeSpawn,
 			budget,
 		);
-		const lifecycle = classifyReviewLane({
+		const completionInput = {
 			tier,
 			rawText: result.text,
 			exitCode: result.exitCode,
 			stopReason: result.stopReason,
 			errorMessage: result.errorMessage,
 			minorHygiene: pass.minorHygiene,
-			expectedOutput: pass.expectedOutput,
-		});
+			expectedOutput: pass.expectedOutput === "json_object" ? undefined : pass.expectedOutput,
+		};
+		const lifecycle = pass.expectedOutput === "json_object"
+			? classifyReviewJsonObject(completionInput)
+			: classifyReviewLane(completionInput);
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;

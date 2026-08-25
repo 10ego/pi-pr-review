@@ -40,7 +40,7 @@ mock.module("typebox", () => {
 	};
 });
 
-const { runFindingExtraction, overridePiInvocation } = await import("../extensions/pr-review-subagent.ts");
+const { repairReviewOutput, runFindingExtraction, overridePiInvocation } = await import("../extensions/pr-review-subagent.ts");
 
 /** Point the runner's subprocess discovery at the fake pi binary. */
 function routeToFake(dir: string) {
@@ -143,6 +143,23 @@ describe("finding extraction subprocess", () => {
 		} finally {
 			process.env.PATH = previousPath;
 			overridePiInvocation(undefined);
+		}
+	});
+
+	test("runs output repair through the real subprocess path and accepts only JSON objects", async () => {
+		for (const [reply, expected] of [["{\"findings\":[]}", "{\"findings\":[]}"], ["[]", undefined]] as const) {
+			const { dir } = installFakePi({ reply });
+			routeToFake(dir);
+			try {
+				const repaired = await repairReviewOutput(
+					"Review status: COMPLETE\nNO FINDINGS.",
+					"Return one object with a findings array.",
+					{ cwd: dir, isProjectTrusted: () => false },
+				);
+				expect(repaired).toBe(expected);
+			} finally {
+				overridePiInvocation(undefined);
+			}
 		}
 	});
 
