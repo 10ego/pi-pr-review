@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, test } from "node:test";
 import {
-	assertNoDuplicateTopLevelFunctions,
 	assertPackageContents,
 	assertPackageMetadata,
 	EXPECTED_PACKAGE_FILES,
@@ -45,30 +44,7 @@ describe("npm release package policy", () => {
 		assert.throws(() => assertPackageContents(files), /missing required path/);
 	});
 
-	test("lexically rejects duplicate top-level implementations without matching valid TypeScript text", () => {
-		assert.doesNotThrow(() => assertNoDuplicateTopLevelFunctions([
-			"function overload(value: string): string;",
-			"function overload(value: number): number;",
-			"function overload(value: string | number): string | number { return value; }",
-			"function generic<T>(value: T): T { return value; }",
-			"function outer() {",
-			"function nested() {}",
-			"}",
-			"/* function commented<T>() {} */",
-			"const quoted = 'function quoted<T>() {}';",
-			"const templated = `function templated<T>() {}`;",
-		].join("\n"), "valid.ts"));
-		assert.throws(
-			() => assertNoDuplicateTopLevelFunctions("function duplicate<T>() {}\nexport function duplicate<T>() {}\n", "duplicate.ts"),
-			/duplicate\.ts declares top-level function duplicate more than once \(lines 1 and 2\)/,
-		);
-		assert.throws(
-			() => assertNoDuplicateTopLevelFunctions("function* duplicate() {}\nexport function * duplicate() {}\n", "generator.ts"),
-			/generator\.ts declares top-level function duplicate more than once/,
-		);
-	});
-
-	test("verifyPackageContents scans every packaged TypeScript source", () => {
+	test("strictly parses every packaged TypeScript module through a real module parser", () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-duplicate-source-"));
 		try {
 			for (const filePath of current.paths) {
@@ -76,13 +52,25 @@ describe("npm release package policy", () => {
 				fs.mkdirSync(path.dirname(destination), { recursive: true });
 				fs.copyFileSync(path.join(process.cwd(), filePath), destination);
 			}
+			const probe = path.join(directory, "lib/pr-review-markdown.ts");
+			fs.appendFileSync(probe, [
+				"",
+				"/* function commentedLoaderProbe<T>() {} */",
+				"const loaderRegexProbe = /[`]/;",
+				"const loaderTemplateProbe = `function templatedLoaderProbe<T>() {}`;",
+				"function validLoaderProbe<T extends { value: string }>(value: T): Readonly<{ value: string }>;",
+				"function validLoaderProbe<T extends { value: string }>(value: T): Readonly<{ value: string }> { return value; }",
+				"",
+			].join("\n"));
+			assert.doesNotThrow(() => verifyPackageContents(directory));
+
 			fs.appendFileSync(
-				path.join(directory, "lib/pr-review-artifacts.ts"),
-				"\nfunction duplicateLoaderProbe<T>(): void {}\nfunction duplicateLoaderProbe<T>(): void {}\n",
+				probe,
+				"function duplicateLoaderProbe<T extends { value: string }>(): void {}\nfunction duplicateLoaderProbe<T extends { value: string }>(): void {}\n",
 			);
 			assert.throws(
 				() => verifyPackageContents(directory),
-				/lib\/pr-review-artifacts\.ts declares top-level function duplicateLoaderProbe more than once/,
+				/lib\/pr-review-markdown\.ts: Identifier 'duplicateLoaderProbe' has already been declared/,
 			);
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });
