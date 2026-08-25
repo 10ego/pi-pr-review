@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.5](https://github.com/10ego/pi-pr-review/compare/v1.15.4...v1.15.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* **review:** harden deep completion contracts ([#96](https://github.com/10ego/pi-pr-review/issues/96)) ([1834811](https://github.com/10ego/pi-pr-review/commit/18348114d10edaf917d317495cca023e0076de2b))
+
 ## [1.15.4](https://github.com/10ego/pi-pr-review/compare/v1.15.3...v1.15.4) (2026-08-25)
 
 
