@@ -11,6 +11,7 @@
  */
 
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -510,7 +511,7 @@ export default function registerReviewTable(
 			readonly replacedRecord?: CompletedReviewRecord;
 			readonly session?: CompletedReviewSessionIdentity;
 			/** Extraction telemetry emitted after the publish result is known. */
-			readonly extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; effectiveModel?: string };
+			readonly extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; attemptId: string; effectiveModel?: string };
 		}
 		| { readonly error: string };
 	let pendingCompletion: PendingCompletion | undefined;
@@ -520,11 +521,21 @@ export default function registerReviewTable(
 		readonly inputText: string;
 		readonly inputBytes: number;
 		readonly startedAt: number;
+		/** Stable privacy-safe attempt identity (lease generation + per-attempt nonce) shared by every event of this attempt. */
+		readonly attemptId: string;
 		readonly parsed: ReturnType<typeof parsePublishableReview>;
 		readonly artifact: ReviewSynthesisArtifact;
 		readonly invocation: ReviewInvocation | undefined;
 	}
 	let pendingExtraction: PendingExtraction | undefined;
+	/**
+	 * Privacy-safe extraction attempt identity, generated only from host state:
+	 * the authoritative active lease generation plus a fresh per-attempt random
+	 * nonce. Collision-safe by construction across repeated attempts that share
+	 * a generation or session, and across extension reloads inside one session;
+	 * never derived from PR numbers, model output, or assistant prose.
+	 */
+	const newExtractionAttemptId = (generation: number | undefined) => `g${generation ?? 0}-${randomUUID()}`;
 	const completionError = (invocation: ReviewInvocation, failure?: string): PendingCompletion | undefined => {
 		const decision = decideReviewPublication(invocation);
 		const error = decision.error ?? (decision.publish ? failure : undefined);
@@ -538,7 +549,7 @@ export default function registerReviewTable(
 	 */	const settlePendingExtraction = async (
 		deferred: PendingExtraction,
 		ctx: ExtensionContext,
-	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; effectiveModel?: string } } | undefined> => {
+	): Promise<{ artifact: ReviewSynthesisArtifact; extraction?: { outcome: string; counts: ExtractionCounts; provenanceRejectionReasons?: ProvenanceRejectionReasons; inputBytes: number; elapsedMs: number; attemptId: string; effectiveModel?: string } } | undefined> => {
 		const elapsedFromStart = () => Date.now() - deferred.startedAt;
 		let elapsedMs = elapsedFromStart();
 		const recordOutcome = (
@@ -550,6 +561,7 @@ export default function registerReviewTable(
 			try {
 				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 					outcome,
+					attemptId: deferred.attemptId,
 					...(counts ? { counts } : {}),
 					...(provenanceRejectionReasons ? { provenanceRejectionReasons } : {}),
 					inputBytes: deferred.inputBytes,
@@ -628,12 +640,19 @@ export default function registerReviewTable(
 		// The merged review must survive the same publication validation as any
 		// other review before the deterministic artifact is replaced.
 		if (!canonicalReviewSnapshot(mergedArtifact.review).review) {
-			recordOutcome("rejected", merged.counts);
+			// The candidates were still provenance-checked before the publication
+			// validation rejected the merge, so the checked denominator applies here too.
+			recordOutcome("rejected", {
+				...merged.counts,
+				findingsRejectedProvenance: parsed.value.counts.findingsRejectedProvenance,
+				provenanceChecked: parsed.value.counts.provenanceChecked,
+			}, undefined, parsed.value.provenanceRejectionReasons);
 			return { artifact: deferred.artifact };
 		}
 		const counts = {
 			...merged.counts,
 			findingsRejectedProvenance: parsed.value.counts.findingsRejectedProvenance,
+			provenanceChecked: parsed.value.counts.provenanceChecked,
 		};
 		recordOutcome("merged", counts, result.effectiveModel, parsed.value.provenanceRejectionReasons);
 		return {
@@ -644,6 +663,7 @@ export default function registerReviewTable(
 				provenanceRejectionReasons: parsed.value.provenanceRejectionReasons,
 				inputBytes: deferred.inputBytes,
 				elapsedMs,
+				attemptId: deferred.attemptId,
 				...(result.effectiveModel ? { effectiveModel: result.effectiveModel } : {}),
 			},
 		};
@@ -1041,7 +1061,10 @@ export default function registerReviewTable(
 		const publishResult = await publishCompletedReview(pending.record, { kind: "frozen-invocation" }, ctx);
 		if (pending.extraction) {
 			try {
-					pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
+				// `published` decorates exactly the attempt whose merged event it
+				// follows: the spread carries that attempt's identity, so tooling can
+				// never attach it to a different attempt in the same session.
+				pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 					...pending.extraction,
 					outcome: "published",
 					schemaVersion: EXTRACTION_TELEMETRY_SCHEMA_VERSION,
@@ -1134,10 +1157,12 @@ export default function registerReviewTable(
 				if (!eligibility.eligible) {
 					// Privacy-safe not-run telemetry: an explicit stable reason, never
 					// counted as an extraction attempt (no elapsedMs, excluded outcome).
+					// The attempt identity is host state only (active generation + nonce).
 					try {
 						pi.appendEntry(EXTRACTION_ENTRY_TYPE, {
 							outcome: "not_run",
 							reason: eligibility.reason,
+							attemptId: newExtractionAttemptId(loopCoordinator.activeGeneration(ctx)),
 							schemaVersion: EXTRACTION_TELEMETRY_SCHEMA_VERSION,
 						});
 					} catch {
@@ -1156,6 +1181,7 @@ export default function registerReviewTable(
 							inputText: input.text,
 							inputBytes: input.inputBytes,
 							startedAt: Date.now(),
+							attemptId: newExtractionAttemptId(lease.generation),
 							parsed: publishable!,
 							artifact,
 							invocation: completionInvocation,

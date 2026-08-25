@@ -349,6 +349,87 @@ describe("finding extraction", () => {
 		}
 	});
 
+	test("malformed lane artifacts never throw and degrade to deterministic not_run reasons", () => {
+		const evidenceless = [
+			null,
+			undefined,
+			{},
+			{ passId: "correctness", lifecycle: "timed_out" }, // rawText missing entirely
+			{ passId: "correctness", lifecycle: "timed_out", rawText: 12345 },
+			{ passId: "correctness", lifecycle: "timed_out", rawText: null },
+			{ passId: "correctness", lifecycle: "timed_out", rawText: { text: "nested" } },
+			{ passId: "correctness", lifecycle: "timed_out", rawText: ["array"] },
+			{ passId: "correctness", lifecycle: "timed_out", get rawText() { throw new Error("boom"); } },
+		] as unknown as ReviewLaneArtifact[];
+		// Non-string synthesis degrades the same way: an empty document, never a throw.
+		expect(decideExtractionEligibility(123 as unknown as string, evidenceless)).toEqual({ eligible: false, reason: "empty_input" });
+		expect(decideExtractionEligibility(null as unknown as string, evidenceless)).toEqual({ eligible: false, reason: "empty_input" });
+		// Nonempty synthesis with only malformed lanes: no usable lane evidence.
+		expect(decideExtractionEligibility("degraded synthesis prose", evidenceless)).toEqual({ eligible: false, reason: "no_lane_evidence" });
+		// Input assembly over malformed lanes never throws.
+		expect(() => buildExtractionInput("synthesis", evidenceless)).not.toThrow();
+		expect(buildExtractionInput("synthesis", evidenceless).text).toContain("--- Review synthesis ---");
+		// Throwing getters on any lane field never crash the boundary either.
+		const throwing = [
+			{ get passId() { throw new Error("boom"); }, lifecycle: "timed_out", rawText: "usable evidence text" },
+			{ passId: "correctness", get lifecycle() { throw new Error("boom"); }, rawText: "more usable evidence" },
+		] as unknown as ReviewLaneArtifact[];
+		expect(() => buildExtractionInput("synthesis", throwing)).not.toThrow();
+		const eligible = decideExtractionEligibility("synthesis", throwing);
+		expect(eligible.eligible).toBeTrue();
+		if (eligible.eligible) {
+			// Throwing header fields degrade to stable placeholders, never a crash.
+			expect(eligible.input.text).toContain("--- Retained lane output: unknown (timed_out) ---");
+			expect(eligible.input.text).toContain("--- Retained lane output: correctness (unknown) ---");
+			expect(eligible.input.text).toContain("usable evidence text");
+		}
+	});
+
+	test("mixed malformed and valid lanes keep only the valid lane evidence", () => {
+		const mixed = [
+			{ passId: "broken", lifecycle: "timed_out", rawText: 99 } as unknown as ReviewLaneArtifact,
+			lane("correctness", "parseInput crashes on empty input."),
+			null as unknown as ReviewLaneArtifact,
+		];
+		const eligible = decideExtractionEligibility(synthesis, mixed);
+		expect(eligible.eligible).toBeTrue();
+		if (!eligible.eligible) return;
+		expect(eligible.input.text).toContain("--- Retained lane output: correctness (timed_out) ---");
+		expect(eligible.input.text).not.toContain("broken");
+		expect(eligible.input.text).not.toContain("unknown");
+	});
+
+	test("provenanceChecked counts every provenance-checked candidate (accepted + rejected)", () => {
+		const input = "The reviewer states that parseInput crashes on empty input. Focused tests passed and src/other.ts guards.";
+		const base = { title: "t", severity: "P2", body: "b", confidence: 0.5 };
+		// All candidates rejected: checked = rejected, never 0/0.
+		const allRejected = parseExtractionOutput(JSON.stringify({ findings: [
+			{ ...base, quote: "this quote appears nowhere in the document" },
+			{ ...base, quote: "neither does this second fabricated quote exist" },
+		] }), input);
+		expect(allRejected.ok).toBeTrue();
+		if (allRejected.ok) {
+			expect(allRejected.value.counts.findingsExtracted).toBe(0);
+			expect(allRejected.value.counts.findingsRejectedProvenance).toBe(2);
+			expect(allRejected.value.counts.provenanceChecked).toBe(2);
+		}
+		// Mixed accepted + rejected: checked is the sum.
+		const mixed = parseExtractionOutput(JSON.stringify({ findings: [
+			{ ...base, quote: "parseInput crashes on empty input" },
+			{ ...base, quote: "a fabricated quote that exists nowhere at all" },
+		] }), input);
+		expect(mixed.ok).toBeTrue();
+		if (mixed.ok) {
+			expect(mixed.value.counts.provenanceChecked).toBe(2);
+			expect(mixed.value.counts.findingsExtracted).toBe(1);
+			expect(mixed.value.counts.findingsRejectedProvenance).toBe(1);
+		}
+		// A correct empty answer checked zero candidates.
+		const empty = parseExtractionOutput('{"findings":[]}', input);
+		expect(empty.ok).toBeTrue();
+		if (empty.ok) expect(empty.value.counts.provenanceChecked).toBe(0);
+	});
+
 	test("splits provenance rejections into stable per-check reason counts", () => {
 		const input = "The reviewer states that parseInput crashes on empty input. Focused tests passed and src/other.ts guards.";
 		const base = { title: "t", severity: "P2", body: "b", confidence: 0.5 };
@@ -361,11 +442,16 @@ describe("finding extraction", () => {
 		expect(parsed.ok).toBeTrue();
 		if (!parsed.ok) return;
 		expect(parsed.value.counts.findingsRejectedProvenance).toBe(3);
+		expect(parsed.value.counts.provenanceChecked).toBe(3);
 		expect(parsed.value.provenanceRejectionReasons).toEqual({
 			sourceQuoteAbsent: 1,
 			locationQuoteAbsent: 1,
 			locationQuotePathMismatch: 1,
 		});
+		// Per-reason counts always partition the aggregate reject count.
+		const reasons = parsed.value.provenanceRejectionReasons;
+		expect(reasons.sourceQuoteAbsent + reasons.locationQuoteAbsent + reasons.locationQuotePathMismatch)
+			.toBe(parsed.value.counts.findingsRejectedProvenance);
 	});
 
 	test("pins the telemetry semantics cohort to schema version 2", () => {

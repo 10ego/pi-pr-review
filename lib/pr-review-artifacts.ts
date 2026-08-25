@@ -499,6 +499,43 @@ export function classifyReviewJsonObject(input: ReviewLaneCompletionInput): Revi
 	return hasText ? "partial" : "failed";
 }
 
+const LANE_LIFECYCLES = new Set<string>(["complete", "partial", "timed_out", "failed"]);
+const LANE_TIERS = new Set<string>(["light", "medium", "heavy"]);
+
+/**
+ * Boundary-safe lane artifact shape check. Lane artifacts enter host state from
+ * subprocess results and session-log restores; TypeScript types are not runtime
+ * guarantees, so every downstream string operation (degraded synthesis,
+ * approval revalidation, extraction input assembly) requires this validation
+ * first. A malformed lane (non-string rawText/passId/key, invalid lifecycle or
+ * tier, non-array or malformed attempts, a throwing getter) is rejected — never
+ * stored, never able to influence completeness, approval, or extraction.
+ */
+function isValidLaneArtifactShape(value: unknown): value is ReviewLaneArtifact {
+	try {
+		if (!value || typeof value !== "object") return false;
+		const lane = value as Record<string, unknown>;
+		if (typeof lane.key !== "string" || !lane.key) return false;
+		if (!Number.isInteger(lane.generation)) return false;
+		if (typeof lane.passId !== "string") return false;
+		if (typeof lane.rawText !== "string") return false;
+		if (!Number.isInteger(lane.exitCode)) return false;
+		if (typeof lane.lifecycle !== "string" || !LANE_LIFECYCLES.has(lane.lifecycle)) return false;
+		if (typeof lane.tier !== "string" || !LANE_TIERS.has(lane.tier)) return false;
+		if (!Array.isArray(lane.attempts)) return false;
+		return lane.attempts.every((attempt) => {
+			if (!attempt || typeof attempt !== "object") return false;
+			const record = attempt as Record<string, unknown>;
+			return Number.isInteger(record.ordinal) && typeof record.rawText === "string" &&
+				(record.lifecycle === undefined ||
+					(typeof record.lifecycle === "string" && LANE_LIFECYCLES.has(record.lifecycle)));
+		});
+	} catch {
+		// A throwing getter is a malformed artifact, never a crash at this boundary.
+		return false;
+	}
+}
+
 /** Invocation-scoped, host-owned artifact storage. The review coordinator owns its lifetime. */
 export class ReviewLaneArtifactRegistry {
 	private generation?: number;
@@ -537,17 +574,24 @@ export class ReviewLaneArtifactRegistry {
 	}
 
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
-		if (
-			this.generation !== generation || artifact.generation !== generation ||
-			!this.expectedLanes.has(artifact.key)
-		) return false;
-		const expected = this.expectedLanes.get(artifact.key)!;
-		if (artifact.tier !== expected.tier || !!artifact.minorHygiene !== expected.minorHygiene) return false;
-		this.artifacts.set(artifact.key, Object.freeze({
-			...artifact,
-			attempts: Object.freeze(artifact.attempts.map((attempt) => Object.freeze({ ...attempt }))),
-		}));
-		return true;
+		try {
+			if (
+				!isValidLaneArtifactShape(artifact) ||
+				this.generation !== generation || artifact.generation !== generation ||
+				!this.expectedLanes.has(artifact.key)
+			) return false;
+			const expected = this.expectedLanes.get(artifact.key)!;
+			if (artifact.tier !== expected.tier || !!artifact.minorHygiene !== expected.minorHygiene) return false;
+			this.artifacts.set(artifact.key, Object.freeze({
+				...artifact,
+				attempts: Object.freeze(artifact.attempts.map((attempt) => Object.freeze({ ...attempt }))),
+			}));
+			return true;
+		} catch {
+			// Malformed artifacts (including throwing getters surfaced by the copy)
+			// are rejected at this boundary; the deterministic degraded flow continues.
+			return false;
+		}
 	}
 
 	snapshot(generation: number): readonly ReviewLaneArtifact[] | undefined {

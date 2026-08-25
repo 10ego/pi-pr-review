@@ -210,6 +210,18 @@ export class ReviewLoopCoordinator {
 		return this.invocationGate.peek();
 	}
 
+	/**
+	 * Authoritative generation of the current live binding, when one exists for
+	 * this session. Read-only: never acquires, clears, or mutates any state, so
+	 * it is safe to call for telemetry identity even while a binding is retained
+	 * for degraded synthesis.
+	 */
+	activeGeneration(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): number | undefined {
+		const binding = this.binding;
+		if (!binding || !sameBinding(binding, ctx) || binding.controller.signal.aborted) return undefined;
+		return binding.generation;
+	}
+
 	phase(): ReviewInvocationPhase | undefined {
 		return this.invocationGate.phase();
 	}

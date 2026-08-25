@@ -311,9 +311,9 @@ necessarily a cheap one; the warning names the effective model); a dedicated
 Two records, split because they occur at different lifecycle points:
 
 - **Extraction record** (`pi.appendEntry("pr-review-extraction", …)` at
-  merge time): `outcome`, `findingsExtracted`, `findingsMerged`,
-  `findingsDeduped`, `findingsRejectedProvenance`, `findingsDroppedOverflow`,
-  `inputBytes`, `elapsedMs`.
+  merge time): `outcome`, `attemptId`, `findingsExtracted`,
+  `findingsMerged`, `findingsDeduped`, `findingsRejectedProvenance`,
+  `findingsDroppedOverflow`, `provenanceChecked`, `inputBytes`, `elapsedMs`.
 - **Publication counts** are emitted as a **post-publication record** via
   `pi.appendEntry("pr-review-extraction", …)` at the same point the publish
   result is notified, carrying the selected inline-comment count and any
@@ -330,7 +330,25 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   trim. Eligibility is never inferred from assistant prose. A non-run
   decision emits `outcome: "not_run"` with a stable `reason`
   (`no_lane_evidence` or `empty_input`) — an excluded event that never enters
-  the success, provenance, latency, or sample-volume denominators.
+  the success, provenance, latency, or sample-volume denominators. Malformed
+  lane artifacts (non-string `rawText`, null entries, throwing getters)
+  never cross the retention boundary and never reach extraction: they are
+  evidence-less, deterministic `not_run` decisions, never a crash that could
+  abort `message_end` or publication, and they can never start the child,
+  grant approval, or alter the deterministic degraded artifact.
+- **Explicit per-attempt identity.** Every v2 event carries an `attemptId`
+  generated only from host state: the authoritative active lease generation
+  plus a fresh per-attempt random nonce (`g<generation>-<uuid>`). It is
+  privacy-safe (no PR number, model, or assistant text) and collision-safe
+  across repeated attempts sharing a generation or session and across
+  extension reloads in one session. §9 tooling coalesces events by
+  (source, attemptId) only: intermediate/terminal events of one attempt
+  coalesce within that attempt, a later independent attempt in the same
+  session stays a separate run that an earlier success can never mask, and
+  `published` decorates only the merged attempt whose identity it carries.
+  v2 events without an `attemptId` are ambiguous (attempts cannot be
+  segmented) and are displayed separately for context only — exact
+  current-cohort metrics are never claimed from them.
 - **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
   eligible lane evidence keeps the `empty` outcome label but counts as
   extractor **execution** success in §9 tooling. It still claims nothing
@@ -344,7 +362,17 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   the input), `locationQuoteAbsent` (a claimed location's `location_quote`
   is not verbatim in the input), and `locationQuotePathMismatch` (the claimed
   `path` does not appear inside the verified `location_quote`). Counts only:
-  no source code, quotes, paths, or private snippets are ever emitted.
+  no source code, quotes, paths, or private snippets are ever emitted. The
+  three counts always partition `findingsRejectedProvenance` exactly.
+- **Provenance-checked denominator.** `provenanceChecked` counts every
+  candidate subjected to provenance verification: accepted
+  (`findingsExtracted`) **plus** rejected (`findingsRejectedProvenance`).
+  `findingsExtracted` alone is accepted-only and is **not** the rejection-rate
+  denominator — an all-rejected attempt reports N/N checked, never 0/0, so
+  nineteen empty successes plus one all-rejected failure cannot pass the
+  provenance gate. §9 tooling derives the same accepted+rejected sum when the
+  explicit count is missing and fails safely (deterministic derived values,
+  visible warnings) on negative or non-integer telemetry.
 - **Homogeneous cohorts.** Entries without `schemaVersion: 2` are legacy and
   are displayed separately for context; they are permanently excluded from
   the default-on decision. No backfilling or rewriting of session logs.
@@ -400,13 +428,15 @@ attempts despite no retained review-lane evidence, and 2 genuinely clean
 degraded reviews returned a correct `{"findings":[]}` that was counted as
 failure. That campaign invalidated the old mixed denominator. All §9
 metrics below therefore evaluate exactly one **homogeneous current cohort**
-(`schemaVersion: 2` events), which starts at 0 after the v2 change:
+(`schemaVersion: 2` events carrying an `attemptId`), which starts at 0 after
+the v2 change:
 
 - **Sample volume:** ≥ 15 real eligible current-cohort extraction attempts
-  before default-on can even be considered. No grandfathering, backfilling,
-  rewriting of session logs, or cherry-picking; excluded `not_run` events
-  never satisfy sample volume. Legacy history prints separately, context
-  only.
+  before default-on can even be considered. Each attempt is one distinct
+  `attemptId`; multiple attempts inside one session never collapse. No
+  grandfathering, backfilling, rewriting of session logs, or cherry-picking;
+  excluded `not_run` events never satisfy sample volume. Legacy history and
+  ambiguous no-ID v2 events print separately, context only.
 
 Metrics over those eligible current-cohort attempts only:
 
@@ -417,9 +447,10 @@ Metrics over those eligible current-cohort attempts only:
 - On degraded reviews with substantive lane evidence, ≥ 1 inline note in a
   target majority of runs where a human spot-check confirms a real finding
   existed in the Markdown.
-- Provenance rejection rate < 5% of extracted findings (a high rate means
-  the prompt/schema fights the models and must be fixed before any
-  default-on). The per-reason counts (`sourceQuoteAbsent`,
+- Provenance rejection rate < 5% of **provenance-checked candidates**
+  (accepted + rejected — the `provenanceChecked` denominator, never the
+  accepted-only `findingsExtracted`; a high rate means the prompt/schema
+  fights the models and must be fixed before any default-on). The per-reason counts (`sourceQuoteAbsent`,
   `locationQuoteAbsent`, `locationQuotePathMismatch`) identify which host
   check fails. (Diagnosis note: in the 1.15.7 campaign, PRs 88 and 42 each
   had one finding rejected, but the extraction child runs `--no-session`, so

@@ -489,4 +489,32 @@ describe("invocation lane artifact retention", () => {
 		expect(registry.retain(7, artifact())).toBeFalse();
 		expect(registry.snapshot(8)).toEqual([]);
 	});
+
+	test("rejects malformed lane artifacts at the retention boundary instead of storing them", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [{ key: "call:0", tier: "heavy", minorHygiene: false }])).toBeTrue();
+		const malformed = [
+			null,
+			undefined,
+			"a string is not a lane",
+			artifact({ rawText: 12345 as unknown as string }),
+			artifact({ rawText: undefined as unknown as string }),
+			artifact({ passId: undefined as unknown as string }),
+			artifact({ key: undefined as unknown as string }),
+			artifact({ lifecycle: "finished" as ReviewLaneArtifact["lifecycle"] }),
+			artifact({ attempts: "not an array" as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: 42 as unknown as string }] as unknown as ReviewLaneArtifact["attempts"] }),
+			// Throwing getters must be rejected, never crash the publisher boundary.
+			{ ...artifact(), get rawText() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get attempts() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+		];
+		for (const lane of malformed) {
+			expect(registry.retain(7, lane as ReviewLaneArtifact)).toBeFalse();
+		}
+		expect(registry.snapshot(7)).toEqual([]);
+		// A valid artifact still retains normally afterwards.
+		expect(registry.retain(7, artifact())).toBeTrue();
+		expect(registry.snapshot(7)).toHaveLength(1);
+	});
 });

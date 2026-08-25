@@ -1014,6 +1014,9 @@ describe("completed review extension lifecycle", () => {
 		const extractionEntry = (harness: Harness) =>
 			harness.branch.filter((entry) => entry.customType === "pr-review-extraction");
 
+		/** Host-state attempt identity: lease generation prefix + random UUID nonce. */
+		const ATTEMPT_ID_PATTERN = /^g\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 		test("merges validated findings into a degraded review and posts inline notes without touching the verdict", async () => {
 			const raw = noFindingsRaw;
 			const findingsJson = JSON.stringify({ findings: [{
@@ -1053,6 +1056,8 @@ describe("completed review extension lifecycle", () => {
 			const entries = extractionEntry(harness);
 			expect(entries.length).toBeGreaterThanOrEqual(1);
 			expect(entries.some((entry) => entry.data.outcome === "published" && entry.data.counts?.findingsMerged === 1)).toBeTrue();
+			// The published record carries the checked-candidate denominator too.
+			expect(entries.some((entry) => entry.data.outcome === "published" && entry.data.counts?.provenanceChecked === 1)).toBeTrue();
 		});
 
 		test("keeps the deterministic artifact byte-identical on extraction failure paths", async () => {
@@ -1276,7 +1281,12 @@ describe("completed review extension lifecycle", () => {
 			expect(spawned).toBe(0);
 			expect(probe.postCount()).toBe(1);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
-			expect(entries).toEqual([{ outcome: "not_run", reason: "no_lane_evidence", schemaVersion: 2 }]);
+			expect(entries).toEqual([{
+				outcome: "not_run",
+				reason: "no_lane_evidence",
+				schemaVersion: 2,
+				attemptId: expect.stringMatching(ATTEMPT_ID_PATTERN),
+			}]);
 		});
 
 		test("a whitespace-only retained lane is not lane evidence and is excluded without spawning", async () => {
@@ -1301,7 +1311,12 @@ describe("completed review extension lifecycle", () => {
 			expect(spawned).toBe(0);
 			expect(probe.postCount()).toBe(1);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
-			expect(entries).toEqual([{ outcome: "not_run", reason: "no_lane_evidence", schemaVersion: 2 }]);
+			expect(entries).toEqual([{
+				outcome: "not_run",
+				reason: "no_lane_evidence",
+				schemaVersion: 2,
+				attemptId: expect.stringMatching(ATTEMPT_ID_PATTERN),
+			}]);
 		});
 
 		test("a valid empty findings answer on eligible lane evidence records empty, counts as success, and cannot enable approval", async () => {
@@ -1361,8 +1376,16 @@ describe("completed review extension lifecycle", () => {
 			const entries = extractionEntry(harness).map((entry) => entry.data);
 			expect(entries.length).toBeGreaterThanOrEqual(2);
 			expect(entries.every((entry) => entry.schemaVersion === 2)).toBeTrue();
+			// Every v2 event carries the explicit privacy-safe attempt identity, and
+			// the published event decorates exactly the merged attempt it follows.
+			expect(entries.every((entry) => typeof entry.attemptId === "string" && ATTEMPT_ID_PATTERN.test(entry.attemptId))).toBeTrue();
+			const mergedEntry = entries.find((entry) => entry.outcome === "merged");
+			const publishedEntry = entries.findLast((entry) => entry.outcome === "published");
+			expect(publishedEntry?.attemptId).toBe(mergedEntry?.attemptId);
 			const terminal = entries.findLast((entry) => entry.outcome === "merged" || entry.outcome === "published");
 			expect(terminal?.counts?.findingsRejectedProvenance).toBe(1);
+			// Runtime emits the explicit provenance-checked denominator (accepted 1 + rejected 1).
+			expect(terminal?.counts?.provenanceChecked).toBe(2);
 			expect(terminal?.provenanceRejectionReasons).toEqual({
 				sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0,
 			});
@@ -1371,6 +1394,155 @@ describe("completed review extension lifecycle", () => {
 			expect(serialized).not.toContain(secretProse);
 			expect(serialized).not.toContain("parseInput crashes on empty input");
 			expect(serialized).not.toContain("src/parser.ts");
+			expect(serialized).not.toContain("PR #7");
+		});
+
+		test("two extraction attempts in one session keep distinct identities; published decorates only its attempt", async () => {
+			const findingsJson = JSON.stringify({ findings: [{
+				title: "Guard empty input", severity: "P2",
+				body: "The reviewer states that parseInput crashes on empty input in the summary path.",
+				confidence: 0.86,
+				quote: "parseInput crashes on empty input",
+			}]});
+			let call = 0;
+			const runner = async () => {
+				call++;
+				// Attempt 1 fails (malformed output), attempt 2 succeeds: both stay
+				// separate terminal runs — the failure cannot be masked and vice versa.
+				return call === 1 ? { text: "not json at all", exitCode: 0 } : { text: findingsJson, exitCode: 0 };
+			};
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner,
+			});
+			const probe = installPublishingProbe({ inlinePatch: true });
+			const runReviewTurn = async () => {
+				await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+				const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+				expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBeTrue();
+				harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+					generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+					tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 143,
+					stopReason: "timeout", lifecycle: "timed_out", attempts: [], fallbackUsed: false,
+					elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+				});
+				const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] };
+				await harness.emit("message_end", { message });
+				harness.appendMessage(message);
+				await harness.emit("turn_end", { message, toolResults: [] });
+			};
+			await runReviewTurn();
+			await runReviewTurn();
+			expect(probe.postCount()).toBe(2);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries).toHaveLength(3);
+			const [first] = entries;
+			expect(first.outcome).toBe("rejected");
+			expect(first.attemptId).toMatch(ATTEMPT_ID_PATTERN);
+			const second = entries.find((entry) => entry.outcome === "merged")!;
+			const published = entries.findLast((entry) => entry.outcome === "published")!;
+			expect(second.attemptId).toMatch(ATTEMPT_ID_PATTERN);
+			expect(published.attemptId).toBe(second.attemptId);
+			expect(published.attemptId).not.toBe(first.attemptId);
+			// Privacy: identities and counts only — no PR number, prose, or model text.
+			const serialized = JSON.stringify(entries);
+			expect(serialized).not.toContain("Lifecycle review");
+			expect(serialized).not.toContain("parseInput crashes on empty input");
+		});
+
+		test("malformed retained lane artifacts cannot throw, spawn, approve, or abort publication", async () => {
+			let spawned = 0;
+			const runner = async () => { spawned++; return { text: "{}", exitCode: 0 }; };
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner,
+			});
+			const probe = installPublishingProbe({ inlinePatch: true });
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBeTrue();
+			const publisher = harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!;
+			// Malformed artifacts cross the publisher boundary exactly like a
+			// compromised or buggy lane-runner result would: non-string rawText,
+			// missing rawText, a null entry, and a throwing getter.
+			const malformed = [
+				null,
+				{
+					generation: lease.generation, key: "correctness:0", passId: "correctness", tier: "heavy",
+					rawText: 12345, exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+					attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+				},
+				{
+					generation: lease.generation, key: "correctness:0", passId: "correctness", tier: "heavy",
+					exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+					attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+				},
+				{
+					generation: lease.generation, key: "correctness:0", passId: "correctness", tier: "heavy",
+					get rawText() { throw new Error("boom"); },
+					exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+					attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+				},
+			] as unknown as Parameters<typeof publisher.retain>[0][];
+			for (const lane of malformed) expect(publisher.retain(lane)).toBeFalse();
+			// message_end must complete deterministically: no throw, no child, the
+			// malformed lanes are evidence-less (not_run no_lane_evidence), the
+			// deterministic degraded artifact publishes, and it can never approve.
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			expect(spawned).toBe(0);
+			expect(probe.postCount()).toBe(1);
+			expect(probe.payload()?.event).toBe("COMMENT");
+			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
+			expect(completed?.data.mergeApprovalEligible).toBe(false);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries).toEqual([{
+				outcome: "not_run",
+				reason: "no_lane_evidence",
+				schemaVersion: 2,
+				attemptId: expect.stringMatching(ATTEMPT_ID_PATTERN),
+			}]);
+		});
+
+		test("a malformed lane beside a valid lane never reaches the extraction input", async () => {
+			const inputs: string[] = [];
+			const runner = async (_ctx: unknown, _lease: unknown, input: string) => {
+				inputs.push(input);
+				return { text: '{"findings":[]}', exitCode: 0 };
+			};
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner as HarnessOptions["extractionRunner"],
+			});
+			const probe = installPublishingProbe({ inlinePatch: true });
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+				{ key: "correctness:0", tier: "heavy", minorHygiene: false },
+				{ key: "security:0", tier: "heavy", minorHygiene: false },
+			], harness.ctx)).toBeTrue();
+			const publisher = harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!;
+			expect(publisher.retain({
+				generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+				tier: "heavy", rawText: 424242, exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+				attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+			} as unknown as Parameters<typeof publisher.retain>[0])).toBeFalse();
+			expect(publisher.retain({
+				generation: lease.generation, key: "security:0", passId: "security", requestedPassOrdinal: 1,
+				tier: "heavy", rawText: "parseInput crashes on empty input.", exitCode: 143, stopReason: "timeout",
+				lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+			})).toBeTrue();
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			// The valid lane alone establishes eligibility; the malformed lane never
+			// enters the assembled document.
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain("--- Retained lane output: security (timed_out) ---");
+			expect(inputs[0]).not.toContain("correctness");
+			expect(probe.postCount()).toBe(1);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries.findLast((entry) => entry.outcome)?.outcome).toBe("empty");
 		});
 
 		test("spawns nothing and posts normally when extraction is disabled or fully parsed", async () => {

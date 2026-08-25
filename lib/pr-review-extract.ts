@@ -61,11 +61,18 @@ export interface ExtractedFindingWire {
 }
 
 export interface ExtractionCounts {
+	/** Candidates the host ACCEPTED after provenance verification (excludes rejected candidates). */
 	findingsExtracted: number;
 	findingsMerged: number;
 	findingsDeduped: number;
 	findingsRejectedProvenance: number;
 	findingsDroppedOverflow: number;
+	/**
+	 * Every candidate subjected to provenance verification: accepted +
+	 * rejected. This is the correct provenance-rate denominator; it differs
+	 * from `findingsExtracted` whenever candidates were rejected.
+	 */
+	provenanceChecked?: number;
 }
 
 export interface ExtractionInput {
@@ -162,6 +169,42 @@ export function buildExtractionTask(input: string): string {
 	].join("\n");
 }
 
+/**
+ * Boundary-safe read of a lane's retained evidence text. Persisted or
+ * runtime lane artifacts cross trust boundaries (session-log restore, harness
+ * feeds) and may carry non-string `rawText`, missing fields, null entries, or
+ * even throwing getters; a malformed lane is simply evidence-less, never a
+ * crash that could abort deterministic publication.
+ */
+export function laneEvidenceText(lane: unknown): string {
+	try {
+		const raw = (lane as { rawText?: unknown } | null | undefined)?.rawText;
+		return typeof raw === "string" ? raw : "";
+	} catch {
+		return "";
+	}
+}
+
+/** Boundary-safe lane pass id for section headers (never throws, never unbounded). */
+export function lanePassId(lane: unknown): string {
+	try {
+		const id = (lane as { passId?: unknown } | null | undefined)?.passId;
+		return typeof id === "string" && id ? id : "unknown";
+	} catch {
+		return "unknown";
+	}
+}
+
+/** Boundary-safe lane lifecycle label for section headers. */
+export function laneLifecycle(lane: unknown): string {
+	try {
+		const lifecycle = (lane as { lifecycle?: unknown } | null | undefined)?.lifecycle;
+		return typeof lifecycle === "string" && lifecycle ? lifecycle : "unknown";
+	} catch {
+		return "unknown";
+	}
+}
+
 export function buildExtractionInput(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
@@ -179,7 +222,8 @@ export function buildExtractionInput(
 		}
 		return false;
 	};
-	const synthesis = rawText.trim();
+	// Boundary safety: never trust the artifact's rawText shape at this persistence/runtime boundary.
+	const synthesis = (typeof rawText === "string" ? rawText : "").trim();
 	if (synthesis) {
 		const header = "--- Review synthesis ---\n";
 		const headerBytes = Buffer.byteLength(header, "utf8");
@@ -188,11 +232,11 @@ export function buildExtractionInput(
 		sections.push(`${header}${fitted.text}`);
 		remaining -= Buffer.byteLength(sections[0]!, "utf8") + 2;
 	}
-	const usable = lanes.filter((lane) => lane.rawText.trim());
+	const usable = lanes.filter((lane) => laneEvidenceText(lane).trim());
 	let lanesAdded = 0;
 	for (const lane of usable) {
-		const header = `--- Retained lane output: ${lane.passId} (${lane.lifecycle}) ---`;
-		const laneText = lane.rawText.trim();
+		const header = `--- Retained lane output: ${lanePassId(lane)} (${laneLifecycle(lane)}) ---`;
+		const laneText = laneEvidenceText(lane).trim();
 		if (push(`${header}\n${laneText}`)) {
 			lanesAdded++;
 			continue;
@@ -230,17 +274,22 @@ export function buildExtractionInput(
  * evidence AND the assembled degraded Markdown input is nonempty after
  * trim. Eligibility is never inferred from assistant prose: absent-synthesis
  * sessions and same-head skip notices have no lane evidence and must not
- * launch the child. The decision returns the assembled input only when
- * eligible, so the caller never builds a second copy.
+ * launch the child. Malformed lane artifacts (non-string rawText, null
+ * entries, throwing getters) are evidence-less and never abort the decision.
+ * The decision returns the assembled input only when eligible, so the caller
+ * never builds a second copy.
  */
 export function decideExtractionEligibility(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
 	maxBytes = MAX_EXTRACTION_INPUT_BYTES,
 ): ExtractionEligibility {
-	const input = buildExtractionInput(rawText, lanes, maxBytes);
+	// Boundary safety: a malformed artifact carrying non-string rawText must
+	// degrade to an empty document, never throw out of message_end.
+	const synthesis = typeof rawText === "string" ? rawText : "";
+	const input = buildExtractionInput(synthesis, lanes, maxBytes);
 	if (!input.text.trim()) return { eligible: false, reason: "empty_input" };
-	const hasLaneEvidence = lanes.some((lane) => lane.rawText.trim().length > 0);
+	const hasLaneEvidence = lanes.some((lane) => laneEvidenceText(lane).trim().length > 0);
 	if (!hasLaneEvidence) return { eligible: false, reason: "no_lane_evidence" };
 	return { eligible: true, input };
 }
@@ -399,12 +448,12 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 			const locationQuote = wire.location_quote;
 			if (typeof locationQuote !== "string" || !verifyQuote(locationQuote, normalizedInput)) {
 				rejectedProvenance++;
-			provenanceRejectionReasons.locationQuoteAbsent++;
+				provenanceRejectionReasons.locationQuoteAbsent++;
 				continue;
 			}
 			if (typeof wire.path === "string" && !normalizeForQuote(locationQuote).includes(normalizeForQuote(wire.path))) {
 				rejectedProvenance++;
-			provenanceRejectionReasons.locationQuotePathMismatch++;
+				provenanceRejectionReasons.locationQuotePathMismatch++;
 				continue;
 			}
 		}
@@ -424,6 +473,10 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 				findingsDeduped: 0,
 				findingsRejectedProvenance: rejectedProvenance,
 				findingsDroppedOverflow: 0,
+				// Every candidate subjected to provenance: accepted + rejected. This
+				// is the unambiguous provenance-rate denominator (an all-rejected
+				// record must report N/N checked, not 0/0).
+				provenanceChecked: findings.length + rejectedProvenance,
 			},
 			provenanceRejectionReasons,
 		},
