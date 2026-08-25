@@ -45,16 +45,48 @@ describe("npm release package policy", () => {
 		assert.throws(() => assertPackageContents(files), /missing required path/);
 	});
 
-	test("rejects duplicate top-level function implementations that Pi's extension loader cannot parse", () => {
+	test("lexically rejects duplicate top-level implementations without matching valid TypeScript text", () => {
 		assert.doesNotThrow(() => assertNoDuplicateTopLevelFunctions([
-			"function first() {}",
-			"export async function second() {}",
-			"\tfunction nested() {}",
+			"function overload(value: string): string;",
+			"function overload(value: number): number;",
+			"function overload(value: string | number): string | number { return value; }",
+			"function generic<T>(value: T): T { return value; }",
+			"function outer() {",
+			"function nested() {}",
+			"}",
+			"/* function commented<T>() {} */",
+			"const quoted = 'function quoted<T>() {}';",
+			"const templated = `function templated<T>() {}`;",
 		].join("\n"), "valid.ts"));
 		assert.throws(
-			() => assertNoDuplicateTopLevelFunctions("function duplicate() {}\nexport function duplicate() {}\n", "duplicate.ts"),
+			() => assertNoDuplicateTopLevelFunctions("function duplicate<T>() {}\nexport function duplicate<T>() {}\n", "duplicate.ts"),
 			/duplicate\.ts declares top-level function duplicate more than once \(lines 1 and 2\)/,
 		);
+		assert.throws(
+			() => assertNoDuplicateTopLevelFunctions("function* duplicate() {}\nexport function * duplicate() {}\n", "generator.ts"),
+			/generator\.ts declares top-level function duplicate more than once/,
+		);
+	});
+
+	test("verifyPackageContents scans every packaged TypeScript source", () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-duplicate-source-"));
+		try {
+			for (const filePath of current.paths) {
+				const destination = path.join(directory, filePath);
+				fs.mkdirSync(path.dirname(destination), { recursive: true });
+				fs.copyFileSync(path.join(process.cwd(), filePath), destination);
+			}
+			fs.appendFileSync(
+				path.join(directory, "lib/pr-review-artifacts.ts"),
+				"\nfunction duplicateLoaderProbe<T>(): void {}\nfunction duplicateLoaderProbe<T>(): void {}\n",
+			);
+			assert.throws(
+				() => verifyPackageContents(directory),
+				/lib\/pr-review-artifacts\.ts declares top-level function duplicateLoaderProbe more than once/,
+			);
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("rejects unsafe package metadata and lifecycle scripts", () => {

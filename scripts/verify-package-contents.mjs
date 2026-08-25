@@ -146,16 +146,109 @@ export function assertPackageMetadata(packageData, packageJson, pathCount) {
 	}
 }
 
+function maskCommentsAndLiterals(source) {
+	let state = "code";
+	let escaped = false;
+	let masked = "";
+	for (let index = 0; index < source.length; index++) {
+		const char = source[index];
+		const next = source[index + 1];
+		if (state === "code") {
+			if (char === "/" && next === "/") {
+				masked += "  ";
+				index++;
+				state = "line-comment";
+			} else if (char === "/" && next === "*") {
+				masked += "  ";
+				index++;
+				state = "block-comment";
+			} else if (char === "'" || char === '"' || char === "`") {
+				masked += " ";
+				state = char === "'" ? "single" : char === '"' ? "double" : "template";
+				escaped = false;
+			} else {
+				masked += char;
+			}
+			continue;
+		}
+		if (char === "\n") {
+			masked += "\n";
+			if (state === "line-comment") state = "code";
+			continue;
+		}
+		masked += " ";
+		if (state === "block-comment" && char === "*" && next === "/") {
+			masked += " ";
+			index++;
+			state = "code";
+			continue;
+		}
+		if (state === "single" || state === "double" || state === "template") {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if ((state === "single" && char === "'") || (state === "double" && char === '"') || (state === "template" && char === "`")) state = "code";
+		}
+	}
+	return masked;
+}
+
+function braceDepthAt(source, end) {
+	let depth = 0;
+	for (let index = 0; index < end; index++) {
+		if (source[index] === "{") depth++;
+		else if (source[index] === "}") depth = Math.max(0, depth - 1);
+	}
+	return depth;
+}
+
+function hasFunctionImplementation(source, parameterStart) {
+	let parenDepth = 1;
+	for (let index = parameterStart; index < source.length; index++) {
+		const char = source[index];
+		if (char === "(") parenDepth++;
+		else if (char === ")" && --parenDepth === 0) {
+			let sawReturnColon = false;
+			let returnTypeStarted = false;
+			for (let cursor = index + 1; cursor < source.length; cursor++) {
+				const token = source[cursor];
+				if (token === ";") return false;
+				if (token === ":" && !sawReturnColon) {
+					sawReturnColon = true;
+					continue;
+				}
+				if (token !== "{") {
+					if (sawReturnColon && !/\s/.test(token)) returnTypeStarted = true;
+					continue;
+				}
+				if (!sawReturnColon || returnTypeStarted) return true;
+				// A return type may begin with an object type. Skip that balanced
+				// type literal; a later opening brace is the implementation body.
+				let braceDepth = 1;
+				for (cursor++; cursor < source.length && braceDepth > 0; cursor++) {
+					if (source[cursor] === "{") braceDepth++;
+					else if (source[cursor] === "}") braceDepth--;
+				}
+				cursor--;
+				returnTypeStarted = true;
+			}
+			return false;
+		}
+	}
+	return false;
+}
+
 export function assertNoDuplicateTopLevelFunctions(source, filePath = "source") {
 	invariant(typeof source === "string", `${filePath} must contain text source`);
-	const declarations = new Map();
-	const pattern = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
-	for (const match of source.matchAll(pattern)) {
+	const code = maskCommentsAndLiterals(source);
+	const implementations = new Map();
+	const pattern = /^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+([A-Za-z_$][\w$]*)(?:\s*<[^\n(){};]*>)?\s*\(/gm;
+	for (const match of code.matchAll(pattern)) {
+		if (braceDepthAt(code, match.index) !== 0 || !hasFunctionImplementation(code, match.index + match[0].length)) continue;
 		const name = match[1];
-		const line = source.slice(0, match.index).split("\n").length;
-		const previous = declarations.get(name);
+		const line = code.slice(0, match.index).split("\n").length;
+		const previous = implementations.get(name);
 		invariant(previous === undefined, `${filePath} declares top-level function ${name} more than once (lines ${previous} and ${line})`);
-		declarations.set(name, line);
+		implementations.set(name, line);
 	}
 }
 
