@@ -169,39 +169,33 @@ export function buildExtractionTask(input: string): string {
 	].join("\n");
 }
 
+/** Complete, boundary-safe lane evidence snapshot used for extraction input assembly. */
+export interface SafeLaneEvidence {
+	readonly passId: string;
+	readonly lifecycle: string;
+	readonly rawText: string;
+}
+
 /**
- * Boundary-safe read of a lane's retained evidence text. Persisted or
- * runtime lane artifacts cross trust boundaries (session-log restore, harness
- * feeds) and may carry non-string `rawText`, missing fields, null entries, or
- * even throwing getters; a malformed lane is simply evidence-less, never a
- * crash that could abort deterministic publication.
+ * Boundary-safe snapshot of every lane field extraction consumes. Persisted or
+ * runtime lane artifacts cross trust boundaries and may carry non-string
+ * `rawText`/`passId`/`lifecycle`, missing fields, null entries, or throwing
+ * getters. The extraction defense boundary requires a COMPLETE safe snapshot:
+ * if any consumed field fails to read safely with the right type, the entire
+ * lane is dropped (evidence-less) — a lane whose passId or lifecycle getter
+ * throws never sends its rawText to the child, never throws out of message_end,
+ * and never aborts deterministic publication.
  */
-export function laneEvidenceText(lane: unknown): string {
+export function safeLaneEvidence(lane: unknown): SafeLaneEvidence | undefined {
 	try {
-		const raw = (lane as { rawText?: unknown } | null | undefined)?.rawText;
-		return typeof raw === "string" ? raw : "";
+		if (!lane || typeof lane !== "object") return undefined;
+		const record = lane as { passId?: unknown; lifecycle?: unknown; rawText?: unknown };
+		if (typeof record.passId !== "string" || !record.passId) return undefined;
+		if (typeof record.lifecycle !== "string" || !record.lifecycle) return undefined;
+		if (typeof record.rawText !== "string") return undefined;
+		return { passId: record.passId, lifecycle: record.lifecycle, rawText: record.rawText };
 	} catch {
-		return "";
-	}
-}
-
-/** Boundary-safe lane pass id for section headers (never throws, never unbounded). */
-export function lanePassId(lane: unknown): string {
-	try {
-		const id = (lane as { passId?: unknown } | null | undefined)?.passId;
-		return typeof id === "string" && id ? id : "unknown";
-	} catch {
-		return "unknown";
-	}
-}
-
-/** Boundary-safe lane lifecycle label for section headers. */
-export function laneLifecycle(lane: unknown): string {
-	try {
-		const lifecycle = (lane as { lifecycle?: unknown } | null | undefined)?.lifecycle;
-		return typeof lifecycle === "string" && lifecycle ? lifecycle : "unknown";
-	} catch {
-		return "unknown";
+		return undefined;
 	}
 }
 
@@ -232,11 +226,16 @@ export function buildExtractionInput(
 		sections.push(`${header}${fitted.text}`);
 		remaining -= Buffer.byteLength(sections[0]!, "utf8") + 2;
 	}
-	const usable = lanes.filter((lane) => laneEvidenceText(lane).trim());
+	// Extraction consumes only complete safe lane snapshots: any lane whose
+	// rawText, passId, or lifecycle fails to read safely with the right type is
+	// dropped entirely rather than assembled with placeholder headers.
+	const snapshots = lanes.map(safeLaneEvidence);
+	const usable = snapshots.filter((snapshot): snapshot is SafeLaneEvidence =>
+		!!snapshot && !!snapshot.rawText.trim());
 	let lanesAdded = 0;
 	for (const lane of usable) {
-		const header = `--- Retained lane output: ${lanePassId(lane)} (${laneLifecycle(lane)}) ---`;
-		const laneText = laneEvidenceText(lane).trim();
+		const header = `--- Retained lane output: ${lane.passId} (${lane.lifecycle}) ---`;
+		const laneText = lane.rawText.trim();
 		if (push(`${header}\n${laneText}`)) {
 			lanesAdded++;
 			continue;
@@ -289,7 +288,11 @@ export function decideExtractionEligibility(
 	const synthesis = typeof rawText === "string" ? rawText : "";
 	const input = buildExtractionInput(synthesis, lanes, maxBytes);
 	if (!input.text.trim()) return { eligible: false, reason: "empty_input" };
-	const hasLaneEvidence = lanes.some((lane) => laneEvidenceText(lane).trim().length > 0);
+	// Lane evidence requires a complete safe snapshot with nonempty retained text.
+	const hasLaneEvidence = lanes.some((lane) => {
+		const snapshot = safeLaneEvidence(lane);
+		return !!snapshot && snapshot.rawText.trim().length > 0;
+	});
 	if (!hasLaneEvidence) return { eligible: false, reason: "no_lane_evidence" };
 	return { eligible: true, input };
 }

@@ -1505,6 +1505,53 @@ describe("completed review extension lifecycle", () => {
 			}]);
 		});
 
+		test("Symbol and throwing error fields cannot throw, spawn, or abort publication", async () => {
+			let spawned = 0;
+			const runner = async () => { spawned++; return { text: "{}", exitCode: 0 }; };
+			const harness = createHarness([], session, {
+				projectConfig: { autoPostReviews: true },
+				userConfig: { extractFindings: true },
+				extractionRunner: runner,
+			});
+			const probe = installPublishingProbe({ inlinePatch: true });
+			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+			const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+			expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+				{ key: "correctness:0", tier: "heavy", minorHygiene: false },
+			{ key: "security:0", tier: "heavy", minorHygiene: false },
+			{ key: "batch:0", tier: "heavy", minorHygiene: false },
+			], harness.ctx)).toBeTrue();
+			const publisher = harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!;
+			const base = (key: string, passId: string) => ({
+				generation: lease.generation, key, passId, tier: "heavy" as const,
+				rawText: "parseInput crashes on empty input.", exitCode: 143, stopReason: "timeout",
+				lifecycle: "timed_out" as const, attempts: [], fallbackUsed: false,
+				elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+			});
+			// A Symbol errorMessage would throw during Markdown interpolation if it
+			// ever reached synthesis; throwing passId/errorMessage getters would throw
+			// at the boundary read. All are dropped at retention instead.
+			expect(publisher.retain({ ...base("correctness:0", "correctness"), errorMessage: Symbol("kaboom") } as never)).toBeFalse();
+			expect(publisher.retain({ ...base("security:0", "security"), get passId() { throw new Error("boom"); } } as never)).toBeFalse();
+			expect(publisher.retain({ ...base("batch:0", "batch"), get errorMessage() { throw new Error("boom"); } } as never)).toBeFalse();
+			// The malformed lanes never reach synthesis or extraction: message_end
+			// completes deterministically with not_run telemetry and a COMMENT post.
+			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
+			expect(spawned).toBe(0);
+			expect(probe.postCount()).toBe(1);
+			expect(probe.payload()?.event).toBe("COMMENT");
+			expect(String(probe.payload()?.body)).not.toContain("Symbol");
+			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
+			expect(completed?.data.mergeApprovalEligible).toBe(false);
+			const entries = extractionEntry(harness).map((entry) => entry.data);
+			expect(entries).toEqual([{
+				outcome: "not_run",
+				reason: "no_lane_evidence",
+				schemaVersion: 2,
+				attemptId: expect.stringMatching(ATTEMPT_ID_PATTERN),
+			}]);
+		});
+
 		test("a malformed lane beside a valid lane never reaches the extraction input", async () => {
 			const inputs: string[] = [];
 			const runner = async (_ctx: unknown, _lease: unknown, input: string) => {

@@ -503,11 +503,36 @@ describe("invocation lane artifact retention", () => {
 			artifact({ passId: undefined as unknown as string }),
 			artifact({ key: undefined as unknown as string }),
 			artifact({ lifecycle: "finished" as ReviewLaneArtifact["lifecycle"] }),
+			artifact({ tier: "ultra" as unknown as ReviewLaneArtifact["tier"] }),
+			artifact({ generation: 1.5 as unknown as number }),
+			artifact({ exitCode: "0" as unknown as number }),
+			artifact({ fallbackUsed: "yes" as unknown as boolean }),
+			artifact({ elapsedMs: Infinity as unknown as number }),
+			artifact({ toolElapsedMs: NaN as unknown as number }),
+			artifact({ toolCallCount: -1 }),
+			// Malformed optional fields: symbols, wrong types, invalid enums.
+			artifact({ errorMessage: Symbol("kaboom") as unknown as string }),
+			artifact({ stopReason: Symbol("kaboom") as unknown as string }),
+			artifact({ processSignal: 42 as unknown as string }),
+			artifact({ requestedModel: { model: "x" } as unknown as string }),
+			artifact({ deadlineExpired: "whenever" as unknown as ReviewLaneArtifact["deadlineExpired"] }),
+			artifact({ minorHygiene: 1 as unknown as boolean }),
+			artifact({ firstEventMs: "soon" as unknown as number }),
+			artifact({ deadlineSource: "vibes" as unknown as ReviewLaneArtifact["deadlineSource"] }),
 			artifact({ attempts: "not an array" as unknown as ReviewLaneArtifact["attempts"] }),
-			artifact({ attempts: [{ ordinal: 1, rawText: 42 as unknown as string }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [null] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: 42 as unknown as string, exitCode: 0, lifecycle: "partial" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ rawText: "text but no ordinal", exitCode: 0, lifecycle: "partial" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "done" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", kind: "retry" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", usedTier: "ultra" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", errorMessage: Symbol("kaboom") }] as unknown as ReviewLaneArtifact["attempts"] }),
 			// Throwing getters must be rejected, never crash the publisher boundary.
 			{ ...artifact(), get rawText() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
 			{ ...artifact(), get attempts() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get passId() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get lifecycle() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get errorMessage() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
 		];
 		for (const lane of malformed) {
 			expect(registry.retain(7, lane as ReviewLaneArtifact)).toBeFalse();
@@ -516,5 +541,81 @@ describe("invocation lane artifact retention", () => {
 		// A valid artifact still retains normally afterwards.
 		expect(registry.retain(7, artifact())).toBeTrue();
 		expect(registry.snapshot(7)).toHaveLength(1);
+	});
+
+	test("retains a safe frozen snapshot, not the hostile original", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false },
+			{ key: "call:1", tier: "heavy", minorHygiene: false },
+		])).toBeTrue();
+		// A full production artifact with real fallback attempt shapes retains.
+		const full = artifact({
+			fallbackUsed: true,
+			deadlineExpired: "total",
+			deadlineSource: "user",
+			requestedPassOrdinal: 3,
+			minorHygiene: undefined,
+			batchDeadlineMs: 90_000,
+			totalDeadlineMs: 180_000,
+			firstEventMs: 12.5,
+			startOffsetMs: 1.5,
+			endOffsetMs: 2.5,
+			fallbackBudgetRejected: true,
+			attempts: [
+				{
+					ordinal: 1,
+					kind: "fallback",
+					requestedModel: "provider/primary",
+					observedModel: "provider/fallback",
+					usedTier: "light",
+					rawText: "partial primary evidence",
+					exitCode: 1,
+					processSignal: "SIGKILL",
+					stopReason: "error",
+					errorMessage: "429 capacity",
+					lifecycle: "partial",
+					deadlineExpired: "synthesis",
+					retryable: true,
+					elapsedMs: 20,
+					firstEventMs: 3,
+					firstAssistantMs: 5,
+					toolElapsedMs: 5,
+					toolCallCount: 1,
+					timedOut: true,
+					terminationGraceMs: 100,
+					forcedTermination: true,
+					deadlineMs: 30_000,
+					configuredDeadlineMs: 60_000,
+				},
+				{
+					ordinal: 2,
+					rawText: "NO FINDINGS.",
+					exitCode: 0,
+					stopReason: "stop",
+					lifecycle: "complete",
+					retryable: false,
+					elapsedMs: 40,
+					toolElapsedMs: 0,
+					toolCallCount: 0,
+				},
+			],
+		} as ReviewLaneArtifact);
+		expect(registry.retain(7, full)).toBeTrue();
+		const snapshot = registry.snapshot(7)![0]!;
+		expect(snapshot.attempts).toHaveLength(2);
+		expect(snapshot.attempts[0]?.kind).toBe("fallback");
+		expect(snapshot.attempts[1]?.kind).toBeUndefined();
+		expect(Object.isFrozen(snapshot)).toBeTrue();
+		expect(Object.isFrozen(snapshot.attempts)).toBeTrue();
+		expect(Object.isFrozen(snapshot.attempts[0])).toBeTrue();
+		// The snapshot is a copy: later mutation of the original cannot poison it.
+		(full as unknown as { rawText: string }).rawText = "poisoned";
+		expect(snapshot.rawText).toBe("NO FINDINGS.");
+		// Mixed valid and malformed siblings: the malformed lane drops, the valid one stays.
+		expect(registry.retain(7, { ...artifact({ key: "call:1" }), errorMessage: Symbol("kaboom") } as unknown as ReviewLaneArtifact)).toBeFalse();
+		expect(registry.retain(7, artifact({ key: "call:1", passId: "second" }))).toBeTrue();
+		expect(registry.snapshot(7)!.map((lane) => lane.passId)).toEqual(["correctness-shard-2", "second"]);
 	});
 });

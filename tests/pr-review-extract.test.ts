@@ -369,20 +369,18 @@ describe("finding extraction", () => {
 		// Input assembly over malformed lanes never throws.
 		expect(() => buildExtractionInput("synthesis", evidenceless)).not.toThrow();
 		expect(buildExtractionInput("synthesis", evidenceless).text).toContain("--- Review synthesis ---");
-		// Throwing getters on any lane field never crash the boundary either.
+		// Throwing getters on any consumed field drop the entire lane: a lane whose
+	// passId or lifecycle getter throws never sends its rawText to the child.
 		const throwing = [
 			{ get passId() { throw new Error("boom"); }, lifecycle: "timed_out", rawText: "usable evidence text" },
 			{ passId: "correctness", get lifecycle() { throw new Error("boom"); }, rawText: "more usable evidence" },
+			{ passId: "correctness", lifecycle: "timed_out", get rawText() { throw new Error("boom"); } },
+			{ passId: 42, lifecycle: "timed_out", rawText: "non-string pass id" },
+			{ passId: "correctness", lifecycle: "", rawText: "empty lifecycle label" },
 		] as unknown as ReviewLaneArtifact[];
 		expect(() => buildExtractionInput("synthesis", throwing)).not.toThrow();
-		const eligible = decideExtractionEligibility("synthesis", throwing);
-		expect(eligible.eligible).toBeTrue();
-		if (eligible.eligible) {
-			// Throwing header fields degrade to stable placeholders, never a crash.
-			expect(eligible.input.text).toContain("--- Retained lane output: unknown (timed_out) ---");
-			expect(eligible.input.text).toContain("--- Retained lane output: correctness (unknown) ---");
-			expect(eligible.input.text).toContain("usable evidence text");
-		}
+		expect(buildExtractionInput("synthesis", throwing).text).not.toContain("Retained lane output");
+		expect(decideExtractionEligibility("synthesis", throwing)).toEqual({ eligible: false, reason: "no_lane_evidence" });
 	});
 
 	test("mixed malformed and valid lanes keep only the valid lane evidence", () => {

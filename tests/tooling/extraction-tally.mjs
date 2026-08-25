@@ -92,14 +92,28 @@ export function partitionCohorts(entries, currentVersion = CURRENT_SCHEMA_VERSIO
 	return { current, ambiguous, legacy };
 }
 
+/** Outcomes that terminate an extraction attempt's event sequence. */
+const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "rejected", "aborted"]);
+
 /**
- * Merge current-cohort entries into one run per (source, attemptId) pair: the
- * terminal outcome wins over intermediate ones within that attempt only.
- * `not_run` decisions are excluded events, not runs: they are returned
- * separately and never enter any attempt denominator. A later independent
- * attempt in the same session keeps its own identity and can never be masked
- * by an earlier attempt's success; `published` decorates only the attempt whose
- * merged event it follows because both carry that attempt's identity.
+ * Ordered per-attempt event state machine, evaluated in session-log order.
+ *
+ * A valid attempt is exactly one of:
+ *   - a single terminal outcome (`merged`, `empty`, `failed`, `timeout`,
+ *     `rejected`, `aborted`), or
+ *   - `merged` immediately followed (in the attempt's own event order, so
+ *     another attempt's records may be interleaved between them) by exactly
+ *     one `published` decoration for that same attempt.
+ *
+ * `published` without a preceding same-attempt `merged` is an orphan and
+ * invalid. Any conflicting or repeated terminal sequence — success then
+ * failure, failure then success, `merged` then an unrelated terminal, a
+ * terminal then `merged`, `published` then anything — is an invalid attempt:
+ * the tally never picks the favorable record, it fails closed. Invalid
+ * attempts are returned separately, count against execution success and
+ * sample volume in the metrics, and invalidate gate validity; they are never
+ * silently dropped. `not_run` entries are excluded decision events, never part
+ * of an attempt sequence.
  */
 export function tallyRuns(entries) {
 	const byAttempt = new Map();
@@ -117,14 +131,53 @@ export function tallyRuns(entries) {
 		byAttempt.set(key, attemptEntries);
 	}
 	const runs = [];
+	const invalid = [];
 	for (const attemptEntries of byAttempt.values()) {
-		const terminal = attemptEntries.findLast((entry) => entry.outcome === "published")
-			?? attemptEntries.findLast((entry) => entry.outcome === "merged")
-			?? attemptEntries.findLast((entry) => entry.outcome !== "not_run")
-			?? attemptEntries.at(-1);
-		runs.push(terminal);
+		// Ordered scan of this attempt's events only.
+		let terminal = undefined;
+		let invalidReason = undefined;
+		for (const entry of attemptEntries) {
+			if (entry.outcome === "published") {
+				// Valid only as the immediate decoration of this attempt's `merged`.
+				if (terminal === "merged") terminal = "published";
+				else invalidReason ??= terminal === undefined ? "orphan_published" : "published_after_terminal";
+				continue;
+			}
+			if (!TERMINAL_OUTCOMES.has(entry.outcome)) {
+				invalidReason ??= "unknown_outcome";
+				continue;
+			}
+			if (terminal === undefined) terminal = entry.outcome;
+			else invalidReason ??= terminal === "published" ? "terminal_after_published" : "conflicting_terminal_sequence";
+		}
+		if (invalidReason !== undefined || terminal === undefined) {
+			invalid.push({ ...attemptEntries.at(-1), invalidReason: invalidReason ?? "no_terminal_outcome" });
+			continue;
+		}
+		// Terminal representative: the last event of the valid sequence.
+		const representative = attemptEntries.at(-1);
+		// Latency completeness: every event's elapsedMs must agree on exactly one
+		// finite nonnegative measurement (legitimate 0 counts).
+		const elapsedValues = new Set();
+		let elapsedMalformed = false;
+		for (const entry of attemptEntries) {
+			if (entry.elapsedMs === undefined) continue;
+			if (typeof entry.elapsedMs !== "number" || !Number.isFinite(entry.elapsedMs) || entry.elapsedMs < 0) {
+				elapsedMalformed = true;
+				continue;
+			}
+			elapsedValues.add(entry.elapsedMs);
+		}
+		runs.push({
+			...representative,
+			attemptEventCount: attemptEntries.length,
+			attemptElapsedMs: !elapsedMalformed && elapsedValues.size === 1 ? elapsedValues.values().next().value : undefined,
+			attemptElapsedMissing: elapsedValues.size === 0 && !elapsedMalformed,
+			attemptElapsedConflicting: elapsedValues.size > 1,
+			attemptElapsedMalformed: elapsedMalformed,
+		});
 	}
-	return { runs, excluded };
+	return { runs, invalid, excluded };
 }
 
 const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? value : undefined;
@@ -133,25 +186,34 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * Compute the §9 gate metrics from terminal per-attempt outcomes over one
  * current cohort. `empty` counts as extractor execution success: on the current
  * cohort it can only mean a schema-valid {"findings":[]} answer for eligible
- * lane evidence.
+ * lane evidence. Attempts whose event sequence failed the state machine
+ * (`invalid`) count in the sample and against execution success — an invalid
+ * attempt is never a success — and invalidate gate validity.
  *
  * Provenance denominator: every candidate subjected to provenance verification
- * (accepted + rejected), never the accepted-only `findingsExtracted`. An
- * all-rejected attempt therefore reports N/N checked, and 19 empty successes
- * plus one all-rejected failure cannot pass the provenance gate. Malformed
- * telemetry (negative or non-integer counts) degrades deterministically:
- * missing/invalid `provenanceChecked` falls back to the derived accepted+
- * rejected sum, the denominator never drops below the reject numerator, and
- * per-reason counts are only trusted when they exactly partition their
- * attempt's aggregate reject count.
+ * (accepted + rejected), never the accepted-only `findingsExtracted`. When a
+ * `provenanceChecked` count is present it must equal accepted + rejected
+ * EXACTLY; any mismatch (including an oversized claimed denominator such as
+ * checked=100 for 1 accepted + 1 rejected) marks the telemetry malformed and
+ * gate-invalid, and the conservative derived denominator is used instead. The
+ * per-reason counters must each be finite nonnegative integers summing exactly
+ * to the attempt's aggregate rejects before the breakdown is trusted; invalid
+ * or missing values are untrusted (partitioned=false) and block gate validity
+ * rather than being normalized into a trusted partition.
+ *
+ * Latency completeness: every eligible current attempt must carry exactly one
+ * finite nonnegative elapsedMs terminal measurement (legitimate 0 counts in
+ * the p50). Missing, negative, nonnumeric, nonfinite, or conflicting latency
+ * marks telemetry/gate invalid and cannot pass the default-on gate.
  */
-export function computeGateMetrics(runs, excluded = []) {
-	const total = runs.length;
+export function computeGateMetrics(runs, excluded = [], invalid = []) {
+	const total = runs.length + invalid.length;
 	const succeeded = runs.filter((run) => SUCCESS_OUTCOMES.has(run.outcome)).length;
 	let provenanceRejected = 0;
 	let extractedTotal = 0;
 	let checkedTotal = 0;
 	let malformedCounts = 0;
+	let provenanceCheckedExact = true;
 	let reasonsPartitioned = true;
 	const provenanceReasons = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
 	for (const run of runs) {
@@ -161,32 +223,44 @@ export function computeGateMetrics(runs, excluded = []) {
 		const checkedRaw = counts.provenanceChecked;
 		const rejectedValue = nonNegativeInteger(rejectedRaw);
 		const extractedValue = nonNegativeInteger(extractedRaw);
-		const checkedValue = nonNegativeInteger(checkedRaw);
 		if (
 			(rejectedRaw !== undefined && rejectedValue === undefined) ||
-			(extractedRaw !== undefined && extractedValue === undefined) ||
-			(checkedRaw !== undefined && checkedValue === undefined)
+			(extractedRaw !== undefined && extractedValue === undefined)
 		) malformedCounts++;
 		const rejected = rejectedValue ?? 0;
 		const extracted = extractedValue ?? 0;
 		const derived = extracted + rejected;
-		const checked = Math.max(checkedValue ?? derived, derived);
+		// Exactness: a present provenanceChecked must equal accepted + rejected;
+		// the derived denominator is always used so an oversized claim can never
+		// dilute the rejection rate.
+		if (checkedRaw !== undefined) {
+			if (nonNegativeInteger(checkedRaw) === undefined || checkedRaw !== derived) {
+				malformedCounts++;
+				provenanceCheckedExact = false;
+			}
+		}
 		provenanceRejected += rejected;
 		extractedTotal += extracted;
-		checkedTotal += checked;
+		checkedTotal += derived;
 		const reasons = run.provenanceRejectionReasons;
 		if (!reasons) {
 			if (rejected > 0) reasonsPartitioned = false;
 			continue;
 		}
 		const parts = {
-			sourceQuoteAbsent: nonNegativeInteger(reasons.sourceQuoteAbsent) ?? 0,
-			locationQuoteAbsent: nonNegativeInteger(reasons.locationQuoteAbsent) ?? 0,
-			locationQuotePathMismatch: nonNegativeInteger(reasons.locationQuotePathMismatch) ?? 0,
+			sourceQuoteAbsent: reasons.sourceQuoteAbsent,
+			locationQuoteAbsent: reasons.locationQuoteAbsent,
+			locationQuotePathMismatch: reasons.locationQuotePathMismatch,
 		};
-		if (parts.sourceQuoteAbsent + parts.locationQuoteAbsent + parts.locationQuotePathMismatch !== rejected) {
-			// The per-reason breakdown must partition the aggregate reject count;
-			// a non-partitioning breakdown is never presented as authoritative.
+		const values = Object.values(parts);
+		if (values.some((value) => nonNegativeInteger(value) === undefined)) {
+			// Invalid (negative, fractional, string, nonfinite) reason counters are
+		// untrusted, never normalized into a partition.
+			malformedCounts++;
+			reasonsPartitioned = false;
+			continue;
+		}
+		if (values.reduce((sum, value) => sum + value, 0) !== rejected) {
 			reasonsPartitioned = false;
 			continue;
 		}
@@ -194,22 +268,41 @@ export function computeGateMetrics(runs, excluded = []) {
 		provenanceReasons.locationQuoteAbsent += parts.locationQuoteAbsent;
 		provenanceReasons.locationQuotePathMismatch += parts.locationQuotePathMismatch;
 	}
-	const elapsed = runs.map((run) => run.elapsedMs ?? 0).filter((value) => value > 0).sort((a, b) => a - b);
+	// Latency completeness over every eligible valid attempt.
+	const latencyMeasured = runs.filter((run) => run.attemptElapsedMs !== undefined);
+	const latencyMissing = runs.filter((run) => run.attemptElapsedMissing).length;
+	const latencyConflicting = runs.filter((run) => run.attemptElapsedConflicting).length;
+	const latencyMalformed = runs.filter((run) => run.attemptElapsedMalformed).length;
+	const latencyComplete = runs.length === 0 || latencyMeasured.length === runs.length;
+	const elapsed = latencyMeasured.map((run) => run.attemptElapsedMs).sort((a, b) => a - b);
 	const p50 = elapsed.length > 0 ? elapsed[Math.floor((elapsed.length - 1) / 2)] : 0;
 	const excludedByReason = {};
 	for (const entry of excluded) excludedByReason[entry.reason ?? "unknown"] = (excludedByReason[entry.reason ?? "unknown"] ?? 0) + 1;
+	const invalidByReason = {};
+	for (const entry of invalid) invalidByReason[entry.invalidReason ?? "unknown"] = (invalidByReason[entry.invalidReason ?? "unknown"] ?? 0) + 1;
+	const gateValid = invalid.length === 0 && malformedCounts === 0 && reasonsPartitioned &&
+		provenanceCheckedExact && latencyComplete;
 	return {
 		total,
 		succeeded,
 		successRate: total > 0 ? succeeded / total : 0,
+		invalidAttempts: invalid.length,
+		invalidByReason,
 		provenanceRejectionRate: checkedTotal > 0 ? provenanceRejected / checkedTotal : 0,
 		provenanceChecked: checkedTotal,
+		provenanceCheckedExact,
 		findingsExtracted: extractedTotal,
 		findingsMerged: runs.reduce((total, run) => total + (nonNegativeInteger(run.counts?.findingsMerged) ?? 0), 0),
 		p50ElapsedMs: p50,
+		latencyComplete,
+		latencyMeasured: latencyMeasured.length,
+		latencyMissing,
+		latencyConflicting,
+		latencyMalformed,
 		provenanceReasons,
 		provenanceReasonsPartitioned: reasonsPartitioned,
 		malformedCounts,
+		gateValid,
 		excludedCount: excluded.length,
 		excludedByReason,
 		sufficientSample: total >= GATE.minimumAttempts,
@@ -224,17 +317,28 @@ export function formatScoreboard(runs, metrics) {
 		`Eligible attempts (terminal)   : ${metrics.total}  (gate needs >= ${GATE.minimumAttempts})`,
 		`  extractor success            : ${metrics.succeeded}  (merged/published/correct-empty)`,
 		`  extractor success rate       : ${pct(metrics.successRate)}  (gate >= ${pct(GATE.successRate)})`,
+		`  invalid attempt sequences    : ${metrics.invalidAttempts}${Object.keys(metrics.invalidByReason).length ? `  (${Object.entries(metrics.invalidByReason).map(([r, c]) => `${r}: ${c}`).join(", ")})` : ""}`,
 		`Excluded not-run decisions     : ${metrics.excludedCount}${Object.keys(metrics.excludedByReason).length ? `  (${Object.entries(metrics.excludedByReason).map(([r, c]) => `${r}: ${c}`).join(", ")})` : ""}`,
 		`Provenance rejection rate      : ${pct(metrics.provenanceRejectionRate)}  (gate < ${pct(GATE.provenanceRejectionRate)})`,
-		`  checked candidates           : ${metrics.provenanceChecked}  (accepted + provenance-rejected)`,
+		`  checked candidates           : ${metrics.provenanceChecked}  (accepted + provenance-rejected, exact)`,
 		`  rejection reasons            : sourceQuoteAbsent ${metrics.provenanceReasons.sourceQuoteAbsent}, locationQuoteAbsent ${metrics.provenanceReasons.locationQuoteAbsent}, locationQuotePathMismatch ${metrics.provenanceReasons.locationQuotePathMismatch}`,
 		`Findings extracted / merged    : ${metrics.findingsExtracted} / ${metrics.findingsMerged}`,
 		`Extraction elapsed p50         : ${(metrics.p50ElapsedMs / 1000).toFixed(1)}s  (gate <= ${GATE.overheadP50Ms / 1000}s)`,
+		`  latency measurements         : ${metrics.latencyMeasured}/${metrics.total - metrics.invalidAttempts} complete  (missing ${metrics.latencyMissing}, conflicting ${metrics.latencyConflicting}, malformed ${metrics.latencyMalformed})`,
+		`Gate telemetry validity        : ${metrics.gateValid ? "valid" : "INVALID"}`,
 		"",
 	];
 	if (metrics.malformedCounts > 0) {
 		lines.push(
-			`WARNING: ${metrics.malformedCounts} attempt(s) carry malformed count telemetry; affected counts degrade to fail-safe derived values.`,
+			`WARNING: ${metrics.malformedCounts} attempt(s) carry malformed count telemetry; affected counts degrade to the conservative derived values.`,
+			"",
+		);
+	}
+	if (!metrics.provenanceCheckedExact) {
+		lines.push(
+			"WARNING: provenanceChecked does not exactly equal accepted + rejected",
+			"on every attempt; the derived accepted+rejected denominator is used and",
+			"the gate stays invalid until exact telemetry accumulates.",
 			"",
 		);
 	}
@@ -242,6 +346,22 @@ export function formatScoreboard(runs, metrics) {
 		lines.push(
 			"WARNING: per-reason counts do not partition the aggregate reject count",
 			"(missing or non-partitioning telemetry); the breakdown above is partial.",
+			"",
+		);
+	}
+	if (!metrics.latencyComplete) {
+		lines.push(
+			"WARNING: latency telemetry is incomplete (missing " + metrics.latencyMissing +
+			", conflicting " + metrics.latencyConflicting + ", malformed " + metrics.latencyMalformed + ");",
+			"the overhead p50 cannot support the default-on gate until every eligible",
+			"attempt carries exactly one finite nonnegative elapsedMs measurement.",
+			"",
+		);
+	}
+	if (metrics.invalidAttempts > 0) {
+		lines.push(
+			`WARNING: ${metrics.invalidAttempts} attempt(s) failed the per-attempt event state machine;`,
+			"they count against success and sample volume and keep the gate invalid.",
 			"",
 		);
 	}
@@ -311,8 +431,8 @@ export function formatAmbiguousSummary(entries) {
 if (import.meta.url === `file://${process.argv[1]}`) {
 	const { entries, filesScanned } = collectExtractionEntries();
 	const { current, ambiguous, legacy } = partitionCohorts(entries);
-	const { runs, excluded } = tallyRuns(current);
-	const metrics = computeGateMetrics(runs, excluded);
+	const { runs, invalid, excluded } = tallyRuns(current);
+	const metrics = computeGateMetrics(runs, excluded, invalid);
 	console.log(`Scanned ${filesScanned} session logs in ${sessionDir}`);
 	console.log(formatScoreboard(runs, metrics));
 	if (ambiguous.length > 0) {
