@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const EXPECTED_PACKAGE_FILES = Object.freeze([
 	"README.md",
@@ -146,9 +146,46 @@ export function assertPackageMetadata(packageData, packageJson, pathCount) {
 	}
 }
 
+export function assertTypeScriptModulesParse(rootDir, paths) {
+	const sources = paths.filter((candidate) => candidate.endsWith(".ts"));
+	const verifier = path.join(path.dirname(fileURLToPath(import.meta.url)), "verify-typescript-module-syntax.mjs");
+	const result = spawnSync(process.execPath, [
+		"--no-warnings",
+		"--experimental-vm-modules",
+		verifier,
+		...sources.map((filePath) => path.join(rootDir, filePath)),
+	], {
+		cwd: rootDir,
+		encoding: "utf8",
+		shell: false,
+	});
+	if (result.error) throw new Error(`Could not parse packaged TypeScript modules: ${result.error.message}`);
+	const detail = result.stderr.trim() || result.stdout.trim();
+	invariant(result.status === 0, detail || "packaged TypeScript module parser failed");
+}
+
+export function resolveNpmPackInvocation({
+	platform = process.platform,
+	execPath = process.execPath,
+	npmExecPath = process.env.npm_execpath,
+	exists = fs.existsSync,
+} = {}) {
+	const arguments_ = ["pack", "--dry-run", "--ignore-scripts", "--json"];
+	const pathApi = platform === "win32" ? path.win32 : path;
+	const executableDirectory = pathApi.dirname(execPath);
+	const cliCandidates = [
+		npmExecPath,
+		pathApi.join(executableDirectory, "node_modules", "npm", "bin", "npm-cli.js"),
+		pathApi.resolve(executableDirectory, "..", "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+	].filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+	const npmCli = cliCandidates.find((candidate) => exists(candidate));
+	invariant(!!npmCli, "could not resolve npm-cli.js for lifecycle-script-disabled package inspection");
+	return { command: execPath, arguments: [npmCli, ...arguments_] };
+}
+
 export function verifyPackageContents(rootDir = process.cwd()) {
-	const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-	const result = spawnSync(npmCommand, ["pack", "--dry-run", "--ignore-scripts", "--json"], {
+	const invocation = resolveNpmPackInvocation();
+	const result = spawnSync(invocation.command, invocation.arguments, {
 		cwd: rootDir,
 		encoding: "utf8",
 		shell: false,
@@ -169,6 +206,7 @@ export function verifyPackageContents(rootDir = process.cwd()) {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 	const paths = assertPackageContents(payload[0].files);
 	assertPackageMetadata(payload[0], packageJson, paths.length);
+	assertTypeScriptModulesParse(rootDir, paths);
 	return { package: payload[0], paths };
 }
 

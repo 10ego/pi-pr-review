@@ -405,19 +405,6 @@ function fieldPattern(field: string): RegExp {
 	return new RegExp(`^[ \\t]*(?:[-*+][ \\t]*)?(?:#{1,6}[ \\t]*)?(?:\\*\\*|__)?${escapePattern(field)}(?:\\*\\*|__)?[ \\t]*:[ \\t]*(.+?)[ \\t]*\\r?$`, "im");
 }
 
-function hasMeaningfulLightSection(text: string, field: string, fields: readonly string[]): boolean {
-	const escapedFields = fields.map((candidate) => escapePattern(candidate)).join("|");
-	const heading = new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?${escapePattern(field)}[ \\t]*:?[ \\t]*(.*)\\r?$`, "im").exec(text);
-	if (!heading || heading.index === undefined) return false;
-	const inlineValue = heading[1] ?? "";
-	const bodyStart = heading.index + heading[0].length;
-	const nextHeading = new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:${escapedFields})[ \\t]*:?[ \\t]*`, "im").exec(text.slice(bodyStart));
-	const body = nextHeading ? text.slice(bodyStart, bodyStart + nextHeading.index) : text.slice(bodyStart);
-	return `${inlineValue}\n${body}`
-		.split("\n")
-		.some((line) => line.replace(/^[ \\t]*(?:[-*>][ \\t]*)+/, "").trim().length > 0);
-}
-
 function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	const normalized = normalizeReviewText(input.rawText);
 	if (!normalized.trim()) return false;

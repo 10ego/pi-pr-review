@@ -7,6 +7,7 @@ import {
 	assertPackageContents,
 	assertPackageMetadata,
 	EXPECTED_PACKAGE_FILES,
+	resolveNpmPackInvocation,
 	verifyPackageContents,
 } from "../../scripts/verify-package-contents.mjs";
 
@@ -42,6 +43,69 @@ describe("npm release package policy", () => {
 	test("rejects missing required entry points", () => {
 		const files = current.package.files.filter((file) => file.path !== "extensions/index.ts");
 		assert.throws(() => assertPackageContents(files), /missing required path/);
+	});
+
+	test("invokes npm's CLI through Node on Windows and POSIX, then fails closed when it is unavailable", () => {
+		const windows = resolveNpmPackInvocation({
+			platform: "win32",
+			execPath: "C:\\node\\node.exe",
+			npmExecPath: "C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
+			exists: (candidate) => candidate.endsWith("npm-cli.js"),
+		});
+		assert.equal(windows.command, "C:\\node\\node.exe");
+		assert.deepEqual(windows.arguments, [
+			"C:\\node\\node_modules\\npm\\bin\\npm-cli.js",
+			"pack",
+			"--dry-run",
+			"--ignore-scripts",
+			"--json",
+		]);
+
+		const posix = resolveNpmPackInvocation({
+			platform: "linux",
+			execPath: "/opt/node/bin/node",
+			npmExecPath: "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+			exists: (candidate) => candidate === "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+		});
+		assert.equal(posix.command, "/opt/node/bin/node");
+		assert.equal(posix.arguments[0], "/opt/node/lib/node_modules/npm/bin/npm-cli.js");
+		assert.throws(
+			() => resolveNpmPackInvocation({ platform: "linux", execPath: "/opt/node/bin/node", npmExecPath: "", exists: () => false }),
+			/could not resolve npm-cli\.js/,
+		);
+	});
+
+	test("strictly parses every packaged TypeScript module through a real module parser", () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-duplicate-source-"));
+		try {
+			for (const filePath of current.paths) {
+				const destination = path.join(directory, filePath);
+				fs.mkdirSync(path.dirname(destination), { recursive: true });
+				fs.copyFileSync(path.join(process.cwd(), filePath), destination);
+			}
+			const probe = path.join(directory, "lib/pr-review-markdown.ts");
+			fs.appendFileSync(probe, [
+				"",
+				"/* function commentedLoaderProbe<T>() {} */",
+				"const loaderRegexProbe = /[`]/;",
+				"const loaderTemplateProbe = `function templatedLoaderProbe<T>() {}`;",
+				"function validLoaderProbe<T extends { value: string }>(value: T): Readonly<{ value: string }>;",
+				"function validLoaderProbe<T extends { value: string }>(value: T): Readonly<{ value: string }> { return value; }",
+				"",
+			].join("\n"));
+			assert.doesNotThrow(() => verifyPackageContents(directory));
+
+			fs.appendFileSync(
+				probe,
+				"function duplicateLoaderProbe<T extends { value: string }>(): void {}\nfunction duplicateLoaderProbe<T extends { value: string }>(): void {}\n",
+			);
+			assert.throws(
+				() => verifyPackageContents(directory),
+				/lib[\\/]pr-review-markdown\.ts: Identifier 'duplicateLoaderProbe' has already been declared/,
+			);
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	test("rejects unsafe package metadata and lifecycle scripts", () => {
