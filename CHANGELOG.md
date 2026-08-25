@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.7](https://github.com/10ego/pi-pr-review/compare/v1.15.6...v1.15.7) (2026-08-25)
+
+
+### Bug Fixes
+
+* **review:** close prefixed completion bypasses ([#100](https://github.com/10ego/pi-pr-review/issues/100)) ([642d04b](https://github.com/10ego/pi-pr-review/commit/642d04badeb8665e19ddfbec26db68f147316ddb))
+
 ## [1.15.6](https://github.com/10ego/pi-pr-review/compare/v1.15.5...v1.15.6) (2026-08-25)
 
 
