@@ -1145,7 +1145,7 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.succeeded, 0);
 		assert.equal(metrics.gateValid, true);
 		// A fabricated bare failure carrying counts violates the exact top-level
- 	// producer key allowlist at this boundary: untrusted, never normalized.
+		// producer key allowlist at this boundary: untrusted, never normalized.
 		const fabricated = computeGateMetrics([bare("failed", { counts: REJECTED_COUNTS(2) })]);
 		assert.deepEqual(fabricated.untrustedByReason, { forbidden_field_counts: 1 });
 		assert.equal(fabricated.succeeded, 0);
