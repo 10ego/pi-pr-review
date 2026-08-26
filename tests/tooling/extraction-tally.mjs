@@ -39,6 +39,16 @@
  * merely because publishing stayed off and no published mirror exists to
  * cross-check it against.
  *
+ * Exact top-level shapes: every record may carry only the keys its outcome/
+ * variant actually emits — common runtime identity/input/latency fields,
+ * optional effectiveModel, counts-bearing counts/provenanceRejectionReasons,
+ * published-only inlineComments/publishStatus with real publisher value
+ * domains — plus the collector's source/timestamp metadata; fabricated
+ * decorations, the not_run-only reason key, and arbitrary payloads fail
+ * closed. computeGateMetrics additionally applies outcome-aware defense-in-
+ * depth over DIRECT runs: schema-violating runs are untrusted (sample volume
+ * only) and visibly keep the gate invalid instead of normalizing favorably.
+ *
  * Usage: node tests/tooling/extraction-tally.mjs [sessionDir]
  */
 
@@ -161,6 +171,39 @@ const PRODUCER_BARE_OUTCOMES = new Set(["failed", "timeout", "aborted"]);
 // producer variants: the bare parse-rejection record (no counts/reasons) and
 // the counts-bearing rejection record (full counts + reasons + partitions).
 
+/** PublishStatus values the telemetry actually records: "posted" and "posted_degraded" are exactly the statuses for which the producer OMITS the publishStatus field. */
+const PUBLISH_STATUS_TELEMETRY_VALUES = new Set(["skipped_duplicate", "failed", "indeterminate"]);
+
+/** Collector metadata that collectExtractionEntries wraps around the producer payload; never emitted by the extension itself. */
+const COLLECTOR_METADATA_KEYS = new Set(["source", "timestamp"]);
+/** Runtime keys every eligible terminal producer record carries; effectiveModel is optional wherever the producer may emit it. */
+const COMMON_RUNTIME_KEYS = new Set(["outcome", "attemptId", "schemaVersion", "inputBytes", "elapsedMs", "effectiveModel"]);
+/** Top-level keys only counts-bearing variants add. */
+const PRODUCER_COUNTS_KEYS = new Set(["counts", "provenanceRejectionReasons"]);
+/** Publication decoration keys only the `published` decoration adds. */
+const PUBLISHED_DECORATION_KEYS = new Set(["inlineComments", "publishStatus"]);
+
+/** Exact allowed top-level key set for one terminal outcome, derived from the production emitters and the collector. */
+function allowedTopLevelKeys(outcome) {
+	const allowed = new Set(COMMON_RUNTIME_KEYS);
+	if (PRODUCER_COUNTS_OUTCOMES.has(outcome) || outcome === "rejected") {
+		for (const key of PRODUCER_COUNTS_KEYS) allowed.add(key);
+	}
+	if (outcome === "published") {
+		for (const key of PUBLISHED_DECORATION_KEYS) allowed.add(key);
+	}
+	return allowed;
+}
+
+/** First top-level key on one producer record that its outcome/variant never emits, or undefined. */
+function forbiddenTopLevelKey(entry) {
+	const allowed = allowedTopLevelKeys(entry.outcome);
+	for (const key of Object.keys(entry)) {
+		if (!allowed.has(key) && !COLLECTOR_METADATA_KEYS.has(key)) return key;
+	}
+	return undefined;
+}
+
 /** Exact required integer fields of the runtime `counts` contract, including the MANDATORY provenanceChecked denominator (its exact accepted+rejected partition is validated by the schema, not deferred to metrics). */
 const COUNTS_REQUIRED_INTEGER_FIELDS = [
 	"findingsExtracted",
@@ -267,6 +310,15 @@ function terminalRepresentativeMalformation(entry) {
 			const reasonsAllZero = Object.values(entry.provenanceRejectionReasons).every((value) => value === 0);
 			if (!countsAllZero || !reasonsAllZero) return "inconsistent_empty_counts";
 		}
+		if (entry.outcome === "published") {
+			// Decoration value domains mirror actual publisher output, not merely
+			// key names: the inline comment count is emitted only when > 0, and
+			// publishStatus is emitted only for non-posted outcomes ("posted" and
+			// "posted_degraded" are exactly the statuses for which the producer
+			// omits the field).
+			if (entry.inlineComments !== undefined && !(isNonNegativeFiniteInteger(entry.inlineComments) && entry.inlineComments >= 1)) return "inlineComments";
+			if (entry.publishStatus !== undefined && !PUBLISH_STATUS_TELEMETRY_VALUES.has(entry.publishStatus)) return "publishStatus";
+		}
 		return undefined;
 	}
 	if (PRODUCER_BARE_OUTCOMES.has(entry.outcome)) {
@@ -348,6 +400,16 @@ export function tallyRuns(entries) {
 		let mergedEvent = undefined; // authoritative metrics source for merged→published
 		let publishedEvent = undefined;
 		for (const entry of attemptEntries) {
+			// Exact top-level producer shapes: any field the producer never emits
+			// for this outcome/variant (fabricated publication decorations on
+			// non-published records, the not_run-only reason key, arbitrary
+			// payloads) fails closed before the sequence state machine runs.
+			// Collector metadata (source/timestamp) is not payload.
+			const forbiddenKey = forbiddenTopLevelKey(entry);
+			if (forbiddenKey !== undefined) {
+				invalidReason ??= `forbidden_field_${forbiddenKey}`;
+				continue;
+			}
 			if (entry.outcome === "published") {
 				// Valid only as the immediate decoration of this attempt's `merged`,
 				// and only when it mirrors every gate-affecting field of that merge.
@@ -444,16 +506,75 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * the p50). Missing, negative, nonnumeric, nonfinite, or conflicting latency
  * marks telemetry/gate invalid and cannot pass the default-on gate.
  *
- * The outcome-specific runtime schemas are enforced at tally time — counts
- * records must carry provenanceChecked, both producer partitions must hold,
- * and contradictory records are rejected as invalid attempts BEFORE admission.
- * The count/reason consistency fallbacks below therefore only defend direct
- * callers that hand pre-built run objects to this function; they remain
- * conservative (derived denominators, untrusted breakdowns) when they fire.
+ * The outcome-specific runtime schemas are enforced TWICE: at tally admission
+ * (every terminal representative; contradictions become invalid attempts) and
+ * again at this boundary for DIRECT callers via `directRunMalformation` — a
+ * run violating its outcome schema is UNTRUSTED: it stays in sample volume,
+ * is excluded from execution success and provenance aggregates, increments
+ * visible untrusted-run diagnostics, and keeps gate validity false rather
+ * than being normalized favorably to zeros. The count/reason consistency
+ * fallbacks below therefore only ever see admitted, schema-valid runs and
+ * remain conservative should they ever fire.
  */
+/**
+ * Outcome-aware defense-in-depth for DIRECT computeGateMetrics callers. Every
+ * run object handed to the metrics boundary must satisfy the same outcome-
+ * specific runtime contract the tally enforces at admission: counts-bearing
+ * merged/empty/published runs need the exact counts record (mandatory
+ * provenanceChecked, exact checked partition, exact reason partition), reasons,
+ * inputBytes, and the represented latency measurement; bare
+ * rejected/failed/timeout/aborted runs must stay bare; rejected follows its
+ * exclusive union. Violations make the run UNTRUSTED — it stays in sample
+ * volume but can never support execution success or provenance aggregates —
+ * instead of being normalized favorably to zeros. Internal tally fields
+ * (attemptEventCount, attemptElapsedMs and friends) are expected here and are
+ * not treated as payload.
+ */
+function directRunMalformation(run) {
+	if (!TERMINAL_OUTCOMES.has(run.outcome) && run.outcome !== "published") return "unknown_outcome";
+	if (!isNonNegativeFiniteInteger(run.inputBytes)) return "inputBytes";
+	if (!isNonNegativeFiniteNumber(run.attemptElapsedMs)) return "elapsed_measurement";
+	if (PRODUCER_COUNTS_OUTCOMES.has(run.outcome)) {
+		const malformation = gateFieldMalformation(run);
+		if (malformation !== undefined) return malformation;
+		if (run.outcome === "empty") {
+			const allZero = (record) => Object.values(record).every((value) => value === 0);
+			return !allZero(run.counts) || !allZero(run.provenanceRejectionReasons) ? "inconsistent_empty_counts" : undefined;
+		}
+		return undefined;
+	}
+	if (PRODUCER_BARE_OUTCOMES.has(run.outcome)) {
+		if (run.counts !== undefined) return "unexpected_counts";
+		if (run.provenanceRejectionReasons !== undefined) return "unexpected_provenanceRejectionReasons";
+		return undefined;
+	}
+	// `rejected`: exclusive union dispatch over its two real producer variants.
+	const hasCounts = run.counts !== undefined;
+	const hasReasons = run.provenanceRejectionReasons !== undefined;
+	if (!hasCounts && !hasReasons) return undefined;
+	if (!hasCounts) return "rejectedMissingCounts";
+	if (!hasReasons) return "rejectedMissingReasons";
+	return gateFieldMalformation(run);
+}
+
 export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	const total = runs.length + invalid.length;
-	const succeeded = runs.filter((run) => SUCCESS_OUTCOMES.has(run.outcome)).length;
+	// Outcome-aware boundary validation: untrusted runs remain in sample volume
+	// but are excluded from every favorable aggregate and keep the gate invalid.
+	let succeeded = 0;
+	let untrustedRuns = 0;
+	const untrustedByReason = {};
+	const admitted = [];
+	for (const run of runs) {
+		const violation = directRunMalformation(run);
+		if (violation !== undefined) {
+			untrustedRuns++;
+			untrustedByReason[violation] = (untrustedByReason[violation] ?? 0) + 1;
+			continue;
+		}
+		admitted.push(run);
+		if (SUCCESS_OUTCOMES.has(run.outcome)) succeeded++;
+	}
 	let provenanceRejected = 0;
 	let extractedTotal = 0;
 	let checkedTotal = 0;
@@ -461,7 +582,7 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	let provenanceCheckedExact = true;
 	let reasonsPartitioned = true;
 	const provenanceReasons = { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
-	for (const run of runs) {
+	for (const run of admitted) {
 		const counts = run.counts ?? {};
 		const rejectedRaw = counts.findingsRejectedProvenance;
 		const extractedRaw = counts.findingsExtracted;
@@ -514,18 +635,18 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 		provenanceReasons.locationQuotePathMismatch += parts.locationQuotePathMismatch;
 	}
 	// Latency completeness over every eligible valid attempt.
-	const latencyMeasured = runs.filter((run) => run.attemptElapsedMs !== undefined);
-	const latencyMissing = runs.filter((run) => run.attemptElapsedMissing).length;
-	const latencyConflicting = runs.filter((run) => run.attemptElapsedConflicting).length;
-	const latencyMalformed = runs.filter((run) => run.attemptElapsedMalformed).length;
-	const latencyComplete = runs.length === 0 || latencyMeasured.length === runs.length;
+	const latencyMeasured = admitted.filter((run) => run.attemptElapsedMs !== undefined);
+	const latencyMissing = admitted.filter((run) => run.attemptElapsedMissing).length;
+	const latencyConflicting = admitted.filter((run) => run.attemptElapsedConflicting).length;
+	const latencyMalformed = admitted.filter((run) => run.attemptElapsedMalformed).length;
+	const latencyComplete = admitted.length === 0 || latencyMeasured.length === admitted.length;
 	const elapsed = latencyMeasured.map((run) => run.attemptElapsedMs).sort((a, b) => a - b);
 	const p50 = elapsed.length > 0 ? elapsed[Math.floor((elapsed.length - 1) / 2)] : 0;
 	const excludedByReason = {};
 	for (const entry of excluded) excludedByReason[entry.reason ?? "unknown"] = (excludedByReason[entry.reason ?? "unknown"] ?? 0) + 1;
 	const invalidByReason = {};
 	for (const entry of invalid) invalidByReason[entry.invalidReason ?? "unknown"] = (invalidByReason[entry.invalidReason ?? "unknown"] ?? 0) + 1;
-	const gateValid = invalid.length === 0 && malformedCounts === 0 && reasonsPartitioned &&
+	const gateValid = untrustedRuns === 0 && invalid.length === 0 && malformedCounts === 0 && reasonsPartitioned &&
 		provenanceCheckedExact && latencyComplete;
 	return {
 		total,
@@ -533,11 +654,13 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 		successRate: total > 0 ? succeeded / total : 0,
 		invalidAttempts: invalid.length,
 		invalidByReason,
+		untrustedRuns,
+		untrustedByReason,
 		provenanceRejectionRate: checkedTotal > 0 ? provenanceRejected / checkedTotal : 0,
 		provenanceChecked: checkedTotal,
 		provenanceCheckedExact,
 		findingsExtracted: extractedTotal,
-		findingsMerged: runs.reduce((total, run) => total + (nonNegativeInteger(run.counts?.findingsMerged) ?? 0), 0),
+		findingsMerged: admitted.reduce((sum, run) => sum + (nonNegativeInteger(run.counts?.findingsMerged) ?? 0), 0),
 		p50ElapsedMs: p50,
 		latencyComplete,
 		latencyMeasured: latencyMeasured.length,
@@ -607,6 +730,13 @@ export function formatScoreboard(runs, metrics) {
 		lines.push(
 			`WARNING: ${metrics.invalidAttempts} attempt(s) failed the per-attempt event state machine or their outcome-specific runtime schema;`,
 			"they count against success and sample volume and keep the gate invalid.",
+			"",
+		);
+	}
+	if (metrics.untrustedRuns > 0) {
+		lines.push(
+			`WARNING: ${metrics.untrustedRuns} run(s) violate their outcome-specific runtime schema at the direct-metrics boundary (${Object.entries(metrics.untrustedByReason).map(([reason, count]) => `${reason}: ${count}`).join(", ")});`,
+			"they cannot support execution success or provenance aggregates and keep the gate invalid.",
 			"",
 		);
 	}

@@ -311,9 +311,15 @@ necessarily a cheap one; the warning names the effective model); a dedicated
 Two records, split because they occur at different lifecycle points:
 
 - **Extraction record** (`pi.appendEntry("pr-review-extraction", …)` at
-  merge time): `outcome`, `attemptId`, `findingsExtracted`,
-  `findingsMerged`, `findingsDeduped`, `findingsRejectedProvenance`,
-  `findingsDroppedOverflow`, `provenanceChecked`, `inputBytes`, `elapsedMs`.
+  merge time): every record carries `outcome`, `attemptId`, `inputBytes`,
+  `elapsedMs`, and an optional effective-model disclosure. Counts-bearing
+  variants (`merged`, `empty`, counts-bearing `rejected`, and the
+  post-publication `published` mirror) additionally carry the exact counts
+  fields — `findingsExtracted`, `findingsMerged`, `findingsDeduped`,
+  `findingsRejectedProvenance`, `findingsDroppedOverflow`, mandatory
+  `provenanceChecked` — plus `provenanceRejectionReasons`; bare parse-
+  rejection `rejected` records and `failed`/`timeout`/`aborted` carry none of
+  the count fields.
 - **Publication counts** are emitted as a **post-publication record** via
   `pi.appendEntry("pr-review-extraction", …)` at the same point the publish
   result is notified, carrying the selected inline-comment count and any
@@ -371,15 +377,52 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   Before a terminal representative enters the §9 metrics it must match the
   exact emission contract of its own outcome, derived from the production
   emitters — independently of whether a `published` mirror exists to
-  cross-check against (publishing is default-off). Every eligible terminal
-  event carries `attemptId`, `schemaVersion`, a nonnegative integer
-  `inputBytes`, and a finite nonnegative `elapsedMs`; `merged`, `empty`,
-  `rejected`, and `published` additionally carry the exact counts and
-  per-reason provenance records (an `empty` must be all-zero); `failed`,
-  `timeout`, and `aborted` never carry counts or provenance telemetry. A
-  representative violating its outcome schema becomes an invalid attempt:
-  it fails closed against execution success and sample volume and keeps the
-  gate invalid — merged-only attempts can never bypass validation.
+  cross-check against (publishing is default-off). Exact top-level keys are
+  enforced by outcome/variant: common runtime identity/input/latency fields
+  (`outcome`, `attemptId`, `schemaVersion`, `inputBytes`, `elapsedMs`) with
+  optional `effectiveModel` wherever the producer may emit it;
+  counts-bearing variants add `counts` and `provenanceRejectionReasons`;
+  `published` alone adds its real publication decoration (`inlineComments`,
+  emitted only as a count > 0, and `publishStatus`, emitted only for non-
+  posted outcomes — `skipped_duplicate`, `failed`, `indeterminate`); the
+  collector's `source`/`timestamp` are metadata, never payload; internal
+  tally latency fields exist only at the post-tally direct-metrics boundary.
+  Fabricated decorations on non-published records, the `not_run`-only
+  `reason` key, and arbitrary payloads fail closed. Every eligible terminal
+  event also carries a nonnegative integer `inputBytes` and a finite
+  nonnegative `elapsedMs`. Counts-bearing records carry the exact counts
+  record — whose `provenanceChecked` denominator is mandatory — plus the
+  exact per-reason provenance records, and the exact producer partitions are
+  enforced before admission: `provenanceChecked` must equal
+  `findingsExtracted` + `findingsRejectedProvenance` exactly, the three
+  reason counters must sum exactly to `findingsRejectedProvenance`, and an
+  `empty` must be all-zero; contradictions are never deferred to a later
+  favorable computation. `failed`, `timeout`, and `aborted` never carry
+  counts or provenance telemetry. A representative violating its outcome
+  schema becomes an invalid attempt: it fails closed against execution
+  success and sample volume and keeps the gate invalid — merged-only
+  attempts can never bypass validation.
+- **Two exclusive `rejected` producer variants.** Trace of
+  `recordOutcome` yields exactly two legitimate shapes, modeled as an
+  explicit exclusive union identical to the code: (1) the **bare parse-
+  rejection record** — oversized, malformed, fenced, or structurally
+  contract-violating extractor output — carries only the attempt identity
+  fields, `inputBytes`, `elapsedMs`, an optional effective model, and NO
+  counts or reasons; (2) the **counts-bearing rejection record** — all
+  candidates provenance-rejected, or canonical merge/publication validation
+  rejection — carries the exact complete counts schema including mandatory
+  `provenanceChecked` plus the exact reason counters and partitions.
+  One-sided, fabricated, or malformed variants invalidate the attempt. Both
+  legitimate variants remain ordinary failed extraction attempts in the
+  sample (never execution successes) and never invalidate an otherwise
+  trustworthy cohort merely because the outcome is a real rejection.
+- **Direct metric callers get the same fail-closed treatment.** The exported
+  §9 metrics function re-validates every run object it receives against the
+  same outcome-specific contracts (including tally-added latency metadata,
+  which is expected there): a schema-violating direct run is UNTRUSTED — it
+  stays in sample volume, is excluded from execution success and provenance
+  aggregates, increments visible untrusted-run diagnostics, and keeps gate
+  validity false rather than being normalized favorably to zeros.
 - **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
   eligible lane evidence keeps the `empty` outcome label but counts as
   extractor **execution** success in §9 tooling. It still claims nothing

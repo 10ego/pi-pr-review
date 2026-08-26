@@ -391,15 +391,16 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(result.invalid[0].invalidReason, "published_malformed_provenanceCheckedPartition");
 		assert.equal(computeGateMetrics([], [], result.invalid).gateValid, false);
 		// Defense-in-depth for direct callers: computeGateMetrics handed such a
-		// run object still uses the conservative derived denominator.
+		// run object marks it UNTRUSTED (sample volume only) instead of
+		// normalizing it through any later favorable computation.
 		const direct = computeGateMetrics([{
 			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(4), source: "a",
 			counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 5000,
 			attemptEventCount: 1, attemptElapsedMs: 5000, attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
 		}]);
-		assert.equal(direct.provenanceCheckedExact, false);
-		assert.equal(direct.malformedCounts, 1);
-		assert.equal(direct.provenanceChecked, 2);
+		assert.equal(direct.untrustedRuns, 1);
+		assert.deepEqual(direct.untrustedByReason, { provenanceCheckedPartition: 1 });
+		assert.equal(direct.succeeded, 0);
 		assert.equal(direct.gateValid, false);
 	});
 
@@ -963,14 +964,14 @@ describe("§9 extraction tally cohort semantics", () => {
 			assert.equal(invalid[0].invalidReason, `terminal_malformed_${field}`, `${field}=${JSON.stringify(value)}`);
 		}
 		// Fabricated gate fields the producer never emits on bare failures are
-		// malformed: they can never enter the provenance or latency denominators.
+		// forbidden at the exact top-level key layer.
 		for (const [field, value] of [
 			["counts", { ...MIRROR_COUNTS }],
 			["provenanceRejectionReasons", { ...EMPTY_REASONS }],
 		]) {
 			const { runs, invalid } = tallyRuns([{ ...base, [field]: value }]);
 			assert.equal(runs.length, 0, field);
-			assert.equal(invalid[0].invalidReason, `terminal_malformed_unexpected_${field}`, field);
+			assert.equal(invalid[0].invalidReason, `forbidden_field_${field}`, field);
 			assert.equal(computeGateMetrics(runs, [], invalid).gateValid, false, field);
 		}
 	});
@@ -1063,6 +1064,162 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.gateValid, true);
 	});
 
+	test("direct computeGateMetrics fails closed: 15 fabricated merged runs without counts/checked/reasons are untrusted", () => {
+		// The exact accepted P2 attack: plausible identity/input/latency with NO
+		// required telemetry used to normalize favorably to gateValid=true, a
+		// perfect success rate, and a 0% rejection rate.
+		const fabricated = Array.from({ length: 15 }, (_, index) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		}));
+		const metrics = computeGateMetrics(fabricated);
+		assert.equal(metrics.total, 15);
+		assert.equal(metrics.untrustedRuns, 15);
+		assert.deepEqual(metrics.untrustedByReason, { counts: 15 });
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.sufficientSample, true);
+		assert.equal(metrics.provenanceChecked, 0);
+		assert.equal(metrics.latencyMeasured, 0);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("contradictory and latency-less direct runs are untrusted per violation", () => {
+		const base = () => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		});
+		// Oversized claimed checked denominator.
+		let metrics = computeGateMetrics([{ ...base(), counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 }, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } }]);
+		assert.deepEqual(metrics.untrustedByReason, { provenanceCheckedPartition: 1 });
+		// Non-partitioning reason counters.
+		metrics = computeGateMetrics([{ ...base(), counts: { findingsExtracted: 0, findingsMerged: 0, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0, provenanceChecked: 2 }, provenanceRejectionReasons: { sourceQuoteAbsent: 5, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } }]);
+		assert.deepEqual(metrics.untrustedByReason, { provenanceReasonPartition: 1 });
+		// Missing represented latency measurement at this boundary.
+		metrics = computeGateMetrics([{
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "b", inputBytes: 900, elapsedMs: 3000,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		}]);
+		assert.deepEqual(metrics.untrustedByReason, { elapsed_measurement: 1 });
+		assert.equal(metrics.untrustedRuns, 1);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("valid direct counts-bearing runs stay trusted across all variants", () => {
+		const run = (outcome, counts, reasons) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1200,
+			attemptEventCount: 1, attemptElapsedMs: 1200,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts, provenanceRejectionReasons: reasons,
+		});
+		const metrics = computeGateMetrics([
+			run("merged", MIRROR_COUNTS, EMPTY_REASONS),
+			run("published", MIRROR_COUNTS, EMPTY_REASONS),
+			run("empty", ZERO_COUNTS, EMPTY_REASONS),
+			run("rejected", REJECTED_COUNTS(2), { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }),
+		]);
+		assert.equal(metrics.untrustedRuns, 0);
+		assert.equal(metrics.succeeded, 3); // merged + published + empty only
+		assert.equal(metrics.findingsExtracted, 2);
+		assert.equal(metrics.provenanceChecked, 4);
+		assert.equal(metrics.latencyComplete, true);
+		assert.equal(metrics.gateValid, true);
+	});
+
+	test("valid direct bare rejected/failure runs need no counts; fabricated ones are untrusted", () => {
+		const bare = (outcome, overrides = {}) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: 1, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			...overrides,
+		});
+		const metrics = computeGateMetrics([bare("rejected"), bare("failed"), bare("timeout", { effectiveModel: "provider/light" })]);
+		assert.equal(metrics.untrustedRuns, 0);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, true);
+		// A fabricated bare failure carrying counts is untrusted, never normalized.
+		const fabricated = computeGateMetrics([bare("failed", { counts: REJECTED_COUNTS(2) })]);
+		assert.deepEqual(fabricated.untrustedByReason, { unexpected_counts: 1 });
+		assert.equal(fabricated.succeeded, 0);
+		assert.equal(fabricated.gateValid, false);
+	});
+
+	test("fabricated publication decorations on non-published outcomes fail closed", () => {
+		const mergedWithComments = tallyRuns([{
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 3000, counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			inlineComments: 2,
+		}]);
+		assert.equal(mergedWithComments.runs.length, 0);
+		assert.equal(mergedWithComments.invalid[0].invalidReason, "forbidden_field_inlineComments");
+		const emptyWithStatus = tallyRuns([{
+			outcome: "empty", schemaVersion: 2, attemptId: ATTEMPT(2), source: "a",
+			inputBytes: 300, elapsedMs: 1200, counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			publishStatus: "failed",
+		}]);
+		assert.equal(emptyWithStatus.invalid[0].invalidReason, "forbidden_field_publishStatus");
+		const rejectedCountsBearingWithComments = tallyRuns([{
+			outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(3), source: "a",
+			inputBytes: 400, elapsedMs: 1500, counts: REJECTED_COUNTS(2),
+			provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
+			inlineComments: 1,
+		}]);
+		assert.equal(rejectedCountsBearingWithComments.invalid[0].invalidReason, "forbidden_field_inlineComments");
+	});
+
+	test("bare rejected rejects every fabricated field the producer never emits", () => {
+		// Counts keys belong to the union's other variant: a bare rejected record
+		// carrying only one of them fails as one-sided (covered below), so here we
+		// assert the truly forbidden arbitrary/publication/internal fields.
+		for (const [field, value] of [
+			["inlineComments", 3],
+			["publishStatus", "failed"],
+			["reason", "no_lane_evidence"],
+			["payload", { hostile: true }],
+			["attemptEventCount", 1],
+		]) {
+			const { runs, invalid } = tallyRuns([BARE_REJECTED({ [field]: value })]);
+			assert.equal(runs.length, 0, field);
+			assert.equal(invalid[0].invalidReason, `forbidden_field_${field}`, field);
+		}
+	});
+
+	test("published validates arbitrary payload keys and real decoration value domains", () => {
+		const merged = { outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", inputBytes: 900, elapsedMs: 3000, counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS };
+		const publishedBase = { outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", inputBytes: 900, elapsedMs: 3000, counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS };
+		// Valid real decoration domains pass.
+		let result = tallyRuns([merged, { ...publishedBase, inlineComments: 2, publishStatus: "skipped_duplicate" }]);
+		assert.equal(result.invalid.length, 0);
+		assert.equal(result.runs.length, 1);
+		result = tallyRuns([merged, { ...publishedBase, publishStatus: "indeterminate" }]);
+		assert.equal(result.invalid.length, 0);
+		// Arbitrary payload on the published event fails closed.
+		result = tallyRuns([merged, { ...publishedBase, payload: { hostile: true } }]);
+		assert.equal(result.invalid[0].invalidReason, "forbidden_field_payload");
+		// The not_run-only reason key is forbidden everywhere else.
+		result = tallyRuns([merged, { ...publishedBase, reason: "empty_input" }]);
+		assert.equal(result.invalid[0].invalidReason, "forbidden_field_reason");
+		// Decoration domains mirror actual publisher output:
+		// the inline comment count is emitted only when > 0.
+		for (const bad of [0, -1, 1.5, "three"]) {
+			result = tallyRuns([merged, { ...publishedBase, inlineComments: bad }]);
+			assert.equal(result.runs.length, 0, JSON.stringify(bad));
+			assert.equal(result.invalid[0].invalidReason, "terminal_malformed_inlineComments", JSON.stringify(bad));
+		}
+		// publishStatus is emitted only for non-posted outcomes.
+		for (const bad of ["posted", "posted_degraded", "", "draft", 42]) {
+			result = tallyRuns([merged, { ...publishedBase, publishStatus: bad }]);
+			assert.equal(result.runs.length, 0, JSON.stringify(bad));
+			assert.equal(result.invalid[0].invalidReason, "terminal_malformed_publishStatus", JSON.stringify(bad));
+		}
+	});
+
 	test("valid merged-only runtime records remain fully eligible", () => {
 		// Publishing is default-off, so real v2 cohorts are mostly merged-only.
 		// A complete merged-only record satisfies the exact runtime contract and
@@ -1119,21 +1276,25 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.match(text, /checked candidates\s+: 0/);
 	});
 
-	test("the scoreboard warns when computeGateMetrics directly receives contradictory runs", () => {
+	test("the scoreboard warns when computeGateMetrics directly receives schema-violating runs", () => {
 		// Admission-time schemas keep contradictory records out of tallyRuns
-		// output entirely; these warnings remain as conservative defense-in-depth
-		// for direct callers that hand pre-built run objects to the metrics.
+		// output entirely; at the direct boundary such runs are visibly reported
+		// as untrusted and cannot support success or provenance aggregates.
 		const runs = [{
 			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 1000,
 			counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0, provenanceChecked: 99 },
 			provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
-			inputBytes: 900, elapsedMs: 1000, attemptEventCount: 1, attemptElapsedMs: 1000,
+			attemptEventCount: 1, attemptElapsedMs: 1000,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
 		}];
 		const metrics = computeGateMetrics(runs);
 		const text = formatScoreboard(runs, metrics);
-		assert.match(text, /WARNING: 1 attempt\(s\) carry malformed count telemetry/);
-		assert.match(text, /per-reason counts do not partition the aggregate reject count/);
+		assert.match(text, /WARNING: 1 run\(s\) violate their outcome-specific runtime schema at the direct-metrics boundary \(provenanceCheckedPartition: 1\)/);
+		assert.match(text, /they cannot support execution success or provenance aggregates and keep the gate invalid\./);
+		assert.equal(metrics.untrustedRuns, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, false);
 	});
 
 	test("legacy runs print as context only and never enter current metrics", () => {
@@ -1277,6 +1438,25 @@ describe("§9 extraction tally cohort semantics", () => {
 			assert.equal(metrics.successRate, 1 / 3);
 			assert.equal(metrics.gateValid, false);
 			fs.rmSync(path.join(dir, "--private-tmp-eval--", "invalid.jsonl"));
+		});
+
+		test("collector source/timestamp stay accepted; future-version junk stays context-only", () => {
+			writeSession(dir, "--private-tmp-eval--", "meta.jsonl", [
+				// A future schema version with arbitrary junk fields is legacy context.
+				{ outcome: "empty", schemaVersion: 99, attemptId: ATTEMPT(9), arbitraryPayload: { x: 1 } },
+				{ outcome: "empty", schemaVersion: 2, attemptId: ATTEMPT(10), counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 300, elapsedMs: 1200 },
+			]);
+			const { entries } = collectExtractionEntries(dir);
+			const scoped = entries.filter((entry) => entry.source.endsWith("meta.jsonl"));
+			const { current, legacy } = partitionCohorts(scoped);
+			assert.equal(current.length, 1);
+			assert.equal(legacy.length, 1);
+			// Collector-added source/timestamp are metadata, never forbidden payload.
+			assert.ok(scoped.every((entry) => typeof entry.source === "string" && typeof entry.timestamp === "string"));
+			const { runs, invalid } = tallyRuns(current);
+			assert.equal(invalid.length, 0);
+			assert.equal(runs.length, 1);
+			fs.rmSync(path.join(dir, "--private-tmp-eval--", "meta.jsonl"));
 		});
 	});
 });
