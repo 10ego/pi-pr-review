@@ -647,6 +647,12 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	let duplicateRunsCollapsed = 0;
 	const untrustedByReason = {};
 	const admitted = [];
+	// Privacy-safe deterministic outcome summary owned by the metrics: counts
+	// sum EXACTLY to total (admitted unique trustworthy identities by their real
+	// outcome; duplicated identity groups and unique schema-untrusted identities
+	// as `untrusted`; invalid-array attempts as `invalid`). formatScoreboard must
+	// display these collapsed units, never raw runs multiplicity.
+	const outcomeSummary = { merged: 0, published: 0, empty: 0, rejected: 0, failed: 0, timeout: 0, aborted: 0, untrusted: 0, invalid: 0 };
 	for (const { wellFormed, runs: group } of identityGroups.values()) {
 		if (wellFormed && group.length > 1) {
 			// A duplicated identity is conservatively untrusted as a whole: it
@@ -656,6 +662,7 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 			duplicateRunsCollapsed += group.length - 1;
 			untrustedRuns++;
 			untrustedByReason.duplicate_identity = (untrustedByReason.duplicate_identity ?? 0) + 1;
+			outcomeSummary.untrusted++;
 			total++;
 			continue;
 		}
@@ -667,12 +674,15 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 			if (violation !== undefined) {
 				untrustedRuns++;
 				untrustedByReason[violation] = (untrustedByReason[violation] ?? 0) + 1;
+				outcomeSummary.untrusted++;
 				continue;
 			}
 			admitted.push(run);
+			outcomeSummary[run.outcome]++;
 			if (SUCCESS_OUTCOMES.has(run.outcome)) succeeded++;
 		}
 	}
+	outcomeSummary.invalid = invalid.length;
 	let provenanceRejected = 0;
 	let extractedTotal = 0;
 	let checkedTotal = 0;
@@ -752,6 +762,7 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 		successRate: total > 0 ? succeeded / total : 0,
 		invalidAttempts: invalid.length,
 		invalidByReason,
+		outcomeSummary,
 		untrustedRuns,
 		duplicateIdentityGroups,
 		duplicateRunsCollapsed,
@@ -856,9 +867,20 @@ export function formatScoreboard(runs, metrics) {
 			"",
 		);
 	}
-	const byOutcome = new Map();
-	for (const run of runs) byOutcome.set(run.outcome, (byOutcome.get(run.outcome) ?? 0) + 1);
-	lines.push("Outcomes (eligible attempts):", ...[...byOutcome.entries()].sort().map(([outcome, count]) => `  ${outcome.padEnd(10)} ${count}`));
+	// Outcome diagnostics come from the metrics-owned identity-collapsed trust
+	// summary (counts sum exactly to total), never from raw runs whose duplicate
+	// or untrusted multiplicity would mislead gate evaluation. Legacy fallback
+	// for callers without a summary is compatibility-only.
+	const summary = metrics.outcomeSummary;
+	let outcomeEntries;
+	if (summary) {
+		outcomeEntries = Object.entries(summary).filter(([, count]) => count > 0);
+	} else {
+		const byOutcome = new Map();
+		for (const run of runs) byOutcome.set(run.outcome, (byOutcome.get(run.outcome) ?? 0) + 1);
+		outcomeEntries = [...byOutcome.entries()];
+	}
+	lines.push("Outcomes (eligible attempts):", ...outcomeEntries.sort().map(([outcome, count]) => `  ${outcome.padEnd(10)} ${count}`));
 	return lines.join("\n");
 }
 

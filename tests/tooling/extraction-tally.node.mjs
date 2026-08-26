@@ -1462,6 +1462,90 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.gateValid, false);
 	});
 
+	test("the scoreboard derives outcomes from the identity-collapsed trust summary", () => {
+		const sumValues = (record) => Object.values(record).reduce((sum, count) => sum + count, 0);
+		// Fifteen identical copies: exactly one collapsed untrusted unit and no
+		// merged count, never the misleading raw multiplicity of fifteen merges.
+		const copy = () => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(7), source: "campaign.jsonl",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		let runs = Array.from({ length: 15 }, copy);
+		let metrics = computeGateMetrics(runs);
+		assert.equal(metrics.outcomeSummary.merged, 0);
+		assert.equal(metrics.outcomeSummary.untrusted, 1);
+		assert.equal(sumValues(metrics.outcomeSummary), metrics.total);
+		assert.equal(sumValues(metrics.outcomeSummary), 1);
+		let text = formatScoreboard(runs, metrics);
+		let outcomesSection = text.slice(text.indexOf("Outcomes (eligible attempts):"));
+		assert.match(outcomesSection, /untrusted\s+1/);
+		assert.ok(!/merged/.test(outcomesSection), "collapsed duplicates must not display their constituent outcomes");
+
+		// Conflicting duplicate outcomes collapse to one untrusted unit in any order.
+		const identity = { schemaVersion: 2, attemptId: ATTEMPT(9), source: "dup.jsonl" };
+		const latency = {
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: 1, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		};
+		const conflicting = [
+			{ ...identity, ...latency, outcome: "merged", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS },
+			{ ...identity, ...latency, outcome: "empty", counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS },
+			{ ...identity, ...latency, outcome: "failed" },
+		];
+		for (const order of [conflicting, [...conflicting].reverse()]) {
+			metrics = computeGateMetrics(order);
+			assert.deepEqual(metrics.outcomeSummary, {
+				merged: 0, published: 0, empty: 0, rejected: 0, failed: 0, timeout: 0, aborted: 0, untrusted: 1, invalid: 0,
+			});
+			assert.equal(sumValues(metrics.outcomeSummary), metrics.total);
+			text = formatScoreboard(order, metrics);
+			outcomesSection = text.slice(text.indexOf("Outcomes (eligible attempts):"));
+			assert.match(outcomesSection, /untrusted\s+1/);
+			for (const leaked of ["merged", "empty", "failed"]) {
+				assert.ok(!new RegExp(leaked).test(outcomesSection), `${leaked} must not display for a collapsed identity`);
+			}
+		}
+	});
+
+	test("mixed trusted, untrusted, duplicate, and invalid arithmetic stays coherent", () => {
+		const sumValues = (record) => Object.values(record).reduce((sum, count) => sum + count, 0);
+		const validRun = (index) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index), source: `mix-${index}.jsonl`,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		const runs = [
+			validRun(1), validRun(2), validRun(3), // three trusted unique merged attempts
+			{ ...validRun(4), inputBytes: undefined }, // schema-untrusted unique identity
+			validRun(5), { ...validRun(5) }, // one duplicated identity pair
+		];
+		const invalid = [{ outcome: "merged", attemptId: ATTEMPT(90), source: "mix-x.jsonl", invalidReason: "conflicting_terminal_sequence" }];
+		const metrics = computeGateMetrics(runs, [], invalid);
+		// total: 3 trusted + 1 untrusted unique + 1 collapsed duplicate + 1 invalid.
+		assert.equal(metrics.total, 6);
+		assert.equal(metrics.succeeded, 3);
+		assert.equal(metrics.untrustedRuns, 2);
+		assert.equal(metrics.duplicateIdentityGroups, 1);
+		assert.equal(metrics.invalidAttempts, 1);
+		assert.deepEqual(metrics.outcomeSummary, { merged: 3, published: 0, empty: 0, rejected: 0, failed: 0, timeout: 0, aborted: 0, untrusted: 2, invalid: 1 });
+		assert.equal(sumValues(metrics.outcomeSummary), metrics.total);
+		assert.equal(metrics.successRate, 3 / 6);
+		assert.equal(metrics.sufficientSample, false);
+		assert.equal(metrics.gateValid, false);
+		// The scoreboard displays the same collapsed units.
+		const text = formatScoreboard(runs, metrics);
+		let outcomesSection = text.slice(text.indexOf("Outcomes (eligible attempts):"));
+		assert.match(outcomesSection, /merged\s+3/);
+		assert.match(outcomesSection, /untrusted\s+2/);
+		assert.match(outcomesSection, /invalid\s+1/);
+	});
+
 	test("direct runs carrying producer-forbidden arbitrary fields are untrusted", () => {
 		// The exact accepted P2 attack: fifteen otherwise-perfect merged runs
 		// each carrying one arbitrary forbidden key must not produce a valid
