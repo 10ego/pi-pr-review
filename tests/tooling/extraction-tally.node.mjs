@@ -1119,7 +1119,8 @@ describe("§9 extraction tally cohort semantics", () => {
 		});
 		const metrics = computeGateMetrics([
 			run("merged", MIRROR_COUNTS, EMPTY_REASONS),
-			run("published", MIRROR_COUNTS, EMPTY_REASONS),
+			// A published decoration is a two-event merged→published sequence.
+			{ ...run("published", MIRROR_COUNTS, EMPTY_REASONS), attemptEventCount: 2 },
 			run("empty", ZERO_COUNTS, EMPTY_REASONS),
 			run("rejected", REJECTED_COUNTS(2), { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }),
 		]);
@@ -1148,6 +1149,151 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.deepEqual(fabricated.untrustedByReason, { unexpected_counts: 1 });
 		assert.equal(fabricated.succeeded, 0);
 		assert.equal(fabricated.gateValid, false);
+	});
+
+	test("direct runs with contradictory tally latency flags are untrusted", () => {
+		// The exact accepted P2 attack: a present attemptElapsedMs plus a
+		// contradictory flag used to yield a valid favorable gate.
+		const run = (overrides = {}) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			...overrides,
+		});
+		const conflicting = Array.from({ length: 15 }, (_, index) =>
+			run({ attemptId: ATTEMPT(index + 1), source: `s${index}`, attemptElapsedConflicting: true }));
+		let metrics = computeGateMetrics(conflicting);
+		assert.equal(metrics.untrustedRuns, 15);
+		assert.deepEqual(metrics.untrustedByReason, { latency_flags: 15 });
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.p50ElapsedMs, 0);
+		assert.equal(metrics.gateValid, false);
+		// Each flag must be exactly the boolean false: true, missing, and wrong types all fail.
+		for (const [flag, value] of [
+			["attemptElapsedMissing", true], ["attemptElapsedMissing", undefined], ["attemptElapsedMissing", "no"],
+			["attemptElapsedConflicting", true], ["attemptElapsedConflicting", undefined], ["attemptElapsedConflicting", 0],
+			["attemptElapsedMalformed", true], ["attemptElapsedMalformed", undefined], ["attemptElapsedMalformed", null],
+		]) {
+			metrics = computeGateMetrics([run({ [flag]: value })]);
+			assert.equal(metrics.untrustedRuns, 1, `${flag}=${JSON.stringify(value)}`);
+			assert.deepEqual(metrics.untrustedByReason, { latency_flags: 1 }, `${flag}=${JSON.stringify(value)}`);
+			assert.equal(metrics.gateValid, false, `${flag}=${JSON.stringify(value)}`);
+		}
+	});
+
+	test("direct runs need raw elapsedMs present, well-formed, and equal to the represented measurement", () => {
+		const run = (elapsedMs, overrides = {}) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			...overrides,
+		});
+		// Missing or malformed raw elapsedMs on the record itself.
+		let metrics = computeGateMetrics([run(undefined)]);
+		assert.deepEqual(metrics.untrustedByReason, { elapsedMs: 1 });
+		metrics = computeGateMetrics([run("3000")]);
+		assert.deepEqual(metrics.untrustedByReason, { elapsedMs: 1 });
+		metrics = computeGateMetrics([run(-3000)]);
+		assert.deepEqual(metrics.untrustedByReason, { elapsedMs: 1 });
+		// Divergent represented measurement (attemptElapsedMs != authoritative elapsedMs).
+		metrics = computeGateMetrics([run(3000, { attemptElapsedMs: 4000 })]);
+		assert.deepEqual(metrics.untrustedByReason, { elapsed_measurement: 1 });
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("direct runs need legitimate current-v2 tally identity fields", () => {
+		const run = (overrides = {}) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			...overrides,
+		});
+		for (const [name, overrides] of [
+			["missing schemaVersion", { schemaVersion: undefined }],
+			["future schemaVersion", { schemaVersion: 3 }],
+			["string schemaVersion", { schemaVersion: "2" }],
+			["missing attemptId", { attemptId: undefined }],
+			["empty attemptId", { attemptId: "" }],
+			["nonstring attemptId", { attemptId: 42 }],
+		]) {
+			const metrics = computeGateMetrics([run(overrides)]);
+			const reason = Object.keys(metrics.untrustedByReason)[0];
+			assert.ok(reason === "schemaVersion" || reason === "attemptId", `${name}: ${reason}`);
+			assert.equal(metrics.untrustedRuns, 1, name);
+			assert.equal(metrics.succeeded, 0, name);
+			assert.equal(metrics.gateValid, false, name);
+		}
+		// Bare outcomes get the same identity + raw latency requirements.
+		const bareFailed = {
+			outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(2), source: "a",
+			inputBytes: 512, elapsedMs: 8000,
+			attemptEventCount: 1, attemptElapsedMs: 8000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		};
+		assert.equal(computeGateMetrics([bareFailed]).gateValid, true);
+		assert.equal(computeGateMetrics([{ ...bareFailed, elapsedMs: undefined }]).untrustedByReason.elapsedMs, 1);
+		assert.equal(computeGateMetrics([{ ...bareFailed, schemaVersion: undefined }]).untrustedByReason.schemaVersion, 1);
+	});
+
+	test("direct attemptEventCount must be positive and match the valid state-machine shape", () => {
+		const base = (outcome) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		// Ordinary terminal records are exactly one event; published decoration is two.
+		assert.equal(computeGateMetrics([base("merged")]).untrustedRuns, 0);
+		assert.equal(computeGateMetrics([{ ...base("published"), attemptEventCount: 2 }]).untrustedRuns, 0);
+		for (const [name, outcome, count] of [
+			["missing", "merged", undefined],
+			["zero", "merged", 0],
+			["negative", "merged", -1],
+			["fractional", "merged", 1.5],
+			["nonnumeric", "merged", "1"],
+			["two on an ordinary terminal", "merged", 2],
+			["one on a published decoration", "published", 1],
+			["three on a published decoration", "published", 3],
+		]) {
+			const metrics = computeGateMetrics([{ ...base(outcome), attemptEventCount: count }]);
+			assert.deepEqual(metrics.untrustedByReason, { attempt_event_count: 1 }, name);
+			assert.equal(metrics.gateValid, false, name);
+		}
+	});
+
+	test("valid direct representatives exist for every outcome under the full contract", () => {
+		const run = (outcome, eventCount, extra = {}) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: eventCount, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			...extra,
+		});
+		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
+		const metrics = computeGateMetrics([
+			run("merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("rejected", 1, countsBearing),
+			run("rejected", 1),
+			run("failed", 1),
+			run("timeout", 1),
+			run("aborted", 1),
+		]);
+		assert.equal(metrics.total, 8);
+		assert.equal(metrics.untrustedRuns, 0);
+		assert.equal(metrics.succeeded, 3); // merged + published + empty only
+		assert.equal(metrics.latencyMeasured, 8);
+		assert.equal(metrics.latencyComplete, true);
+		assert.equal(metrics.gateValid, true);
 	});
 
 	test("fabricated publication decorations on non-published outcomes fail closed", () => {

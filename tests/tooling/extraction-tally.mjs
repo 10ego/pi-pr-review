@@ -518,22 +518,33 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  */
 /**
  * Outcome-aware defense-in-depth for DIRECT computeGateMetrics callers. Every
- * run object handed to the metrics boundary must satisfy the same outcome-
- * specific runtime contract the tally enforces at admission: counts-bearing
- * merged/empty/published runs need the exact counts record (mandatory
- * provenanceChecked, exact checked partition, exact reason partition), reasons,
- * inputBytes, and the represented latency measurement; bare
- * rejected/failed/timeout/aborted runs must stay bare; rejected follows its
- * exclusive union. Violations make the run UNTRUSTED — it stays in sample
- * volume but can never support execution success or provenance aggregates —
- * instead of being normalized favorably to zeros. Internal tally fields
- * (attemptEventCount, attemptElapsedMs and friends) are expected here and are
- * not treated as payload.
+ * run object handed to the metrics boundary must be a legitimate current-v2
+ * tally run: current `schemaVersion`, a nonempty string `attemptId`, valid
+ * outcome-specific runtime fields, a finite nonnegative integer `inputBytes`,
+ * a finite nonnegative raw `elapsedMs` on every outcome, and the exact self-
+ * consistent tally latency representation — finite nonnegative `attemptElapsedMs`
+ * equal to the raw authoritative measurement, with `attemptElapsedMissing`,
+ * `attemptElapsedConflicting`, and `attemptElapsedMalformed` each exactly the
+ * boolean `false`, and a positive-integer `attemptEventCount` matching the only
+ * valid state-machine shapes (1 for an ordinary terminal record, 2 for a
+ * published decoration). Counts-bearing merged/empty/published runs need the
+ * exact counts record (mandatory provenanceChecked, exact checked partition,
+ * exact reason partition); bare rejected/failed/timeout/aborted runs must stay
+ * bare; rejected follows its exclusive union. Violations make the run UNTRUSTED
+ * — it stays in sample volume but can never support execution success,
+ * provenance aggregates, or the p50 — instead of being normalized favorably to
+ * zeros. Internal tally fields are expected here and are not treated as payload.
  */
 function directRunMalformation(run) {
 	if (!TERMINAL_OUTCOMES.has(run.outcome) && run.outcome !== "published") return "unknown_outcome";
+	if (run.schemaVersion !== CURRENT_SCHEMA_VERSION) return "schemaVersion";
+	if (typeof run.attemptId !== "string" || !run.attemptId) return "attemptId";
 	if (!isNonNegativeFiniteInteger(run.inputBytes)) return "inputBytes";
-	if (!isNonNegativeFiniteNumber(run.attemptElapsedMs)) return "elapsed_measurement";
+	if (!isNonNegativeFiniteNumber(run.elapsedMs)) return "elapsedMs";
+	if (!isNonNegativeFiniteNumber(run.attemptElapsedMs) || run.attemptElapsedMs !== run.elapsedMs) return "elapsed_measurement";
+	if (run.attemptElapsedMissing !== false || run.attemptElapsedConflicting !== false || run.attemptElapsedMalformed !== false) return "latency_flags";
+	if (!isNonNegativeFiniteInteger(run.attemptEventCount) || run.attemptEventCount < 1 ||
+		(run.outcome === "published" ? run.attemptEventCount !== 2 : run.attemptEventCount !== 1)) return "attempt_event_count";
 	if (PRODUCER_COUNTS_OUTCOMES.has(run.outcome)) {
 		const malformation = gateFieldMalformation(run);
 		if (malformation !== undefined) return malformation;
