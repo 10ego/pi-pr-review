@@ -42,6 +42,11 @@ const REJECTED_COUNTS = (rejected) => ({
 	findingsDroppedOverflow: 0,
 	provenanceChecked: rejected,
 });
+/** Exact runtime-contract record for the bare parse-rejection producer variant (no counts, no reasons). */
+const BARE_REJECTED = (overrides = {}) => ({
+	outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+	inputBytes: 400, elapsedMs: 1500, ...overrides,
+});
 
 function writeSession(dir, project, file, entries) {
 	const projectDir = path.join(dir, project);
@@ -93,12 +98,15 @@ describe("§9 extraction tally cohort semantics", () => {
 			{ outcome: "empty", schemaVersion: 2, attemptId: ATTEMPT(2), source: "b", counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, inputBytes: 700, elapsedMs: 2500 },
 			{ outcome: "failed", schemaVersion: 2, attemptId: ATTEMPT(3), source: "c", inputBytes: 600, elapsedMs: 8000 },
 			{ outcome: "timeout", schemaVersion: 2, attemptId: ATTEMPT(4), source: "d", inputBytes: 600, elapsedMs: 30000 },
+			// Both real producer variants of `rejected` in one cohort.
 			{ outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(5), source: "e", counts: REJECTED_COUNTS(3), provenanceRejectionReasons: { sourceQuoteAbsent: 3, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 600, elapsedMs: 5000 },
+			// Bare parse rejection (malformed/fenced/oversized output): no counts, no reasons.
+			{ outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(6), source: "f", inputBytes: 600, elapsedMs: 4500 },
 		]);
 		const metrics = computeGateMetrics(runs);
-		assert.equal(metrics.total, 5);
+		assert.equal(metrics.total, 6);
 		assert.equal(metrics.succeeded, 2);
-		assert.equal(metrics.successRate, 0.4);
+		assert.equal(metrics.successRate, 1 / 3);
 	});
 
 	test("published terminal entries complete their own run and merge earlier outcomes", () => {
@@ -281,17 +289,27 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.p50ElapsedMs, 1500);
 	});
 
-	test("a missing provenanceChecked count falls back to the derived accepted+rejected denominator", () => {
-		const { runs } = tallyRuns([
-			{
-				outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", inputBytes: 1100, elapsedMs: 4500,
-				counts: { findingsExtracted: 6, findingsMerged: 6, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0 },
-				provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
-			},
-		]);
-		const metrics = computeGateMetrics(runs);
-		assert.equal(metrics.provenanceChecked, 8);
-		assert.equal(metrics.provenanceRejectionRate, 2 / 8);
+	test("P1 regression: 15 merged-only attempts omitting provenanceChecked fail closed", () => {
+		// Every current production counts-bearing path receives parser/merge
+		// counts carrying provenanceChecked, so a merged-only cohort omitting it
+		// contradicts the producer contract: all fifteen fail closed.
+		const entries = Array.from({ length: 15 }, (_, index) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`,
+			elapsedMs: 3000, inputBytes: 900,
+			counts: { findingsExtracted: 2, findingsMerged: 2, findingsDeduped: 0, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0 },
+			provenanceRejectionReasons: { ...EMPTY_REASONS },
+		}));
+		const { runs, invalid } = tallyRuns(entries);
+		assert.equal(runs.length, 0);
+		assert.equal(invalid.length, 15);
+		assert.ok(invalid.every((entry) => entry.invalidReason === "terminal_malformed_counts"));
+		const metrics = computeGateMetrics(runs, [], invalid);
+		assert.equal(metrics.total, 15);
+		assert.equal(metrics.invalidAttempts, 15);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.sufficientSample, true);
+		assert.equal(metrics.gateValid, false);
 	});
 
 	test("19 empty successes plus one all-rejected failure fails the provenance gate", () => {
@@ -344,66 +362,81 @@ describe("§9 extraction tally cohort semantics", () => {
 		}
 	});
 
-	test("shape-valid but semantically inconsistent counts stay runs and degrade conservatively", () => {
-		// A full-shape counts record with a wrong claimed denominator passes the
-		// outcome schema but fails metric-level exactness: the derived accepted +
-		// rejected denominator is used and the gate stays invalid.
-		const { runs } = tallyRuns([{
+	test("mismatched provenanceChecked partitions fail closed on representative and paired paths", () => {
+		// An internally shape-valid counts record whose claimed denominator does
+		// not equal accepted + rejected contradicts the producer partition and is
+		// rejected BEFORE admission — never deferred to a later computation.
+		const badCounts = { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 };
+		const reasons = { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
+		// Representative path (merged-only).
+		let result = tallyRuns([{
 			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
-			counts: { findingsExtracted: 4, findingsMerged: 4, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0, provenanceChecked: 100 },
-			provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 1, locationQuotePathMismatch: 0 },
-			inputBytes: 900, elapsedMs: 5000,
+			counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 5000,
 		}]);
-		const metrics = computeGateMetrics(runs);
-		assert.equal(metrics.malformedCounts, 1);
-		assert.equal(metrics.provenanceCheckedExact, false);
-		assert.equal(metrics.provenanceChecked, 6);
-		assert.equal(metrics.provenanceRejectionRate, 2 / 6);
-		assert.equal(metrics.gateValid, false);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_provenanceCheckedPartition");
+		// Paired path: the malformed authoritative merged side fails first.
+		result = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "a", counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 3000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(2), source: "a", counts: MIRROR_COUNTS, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 900, elapsedMs: 3000 },
+		]);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "merged_malformed_provenanceCheckedPartition");
+		// Paired path: a partition-broken published mirror fails on its own side.
+		result = tallyRuns([
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(3), source: "a", counts: MIRROR_COUNTS, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 900, elapsedMs: 3000 },
+			{ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(3), source: "a", counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 3000 },
+		]);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "published_malformed_provenanceCheckedPartition");
+		assert.equal(computeGateMetrics([], [], result.invalid).gateValid, false);
+		// Defense-in-depth for direct callers: computeGateMetrics handed such a
+		// run object still uses the conservative derived denominator.
+		const direct = computeGateMetrics([{
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(4), source: "a",
+			counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 5000,
+			attemptEventCount: 1, attemptElapsedMs: 5000, attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		}]);
+		assert.equal(direct.provenanceCheckedExact, false);
+		assert.equal(direct.malformedCounts, 1);
+		assert.equal(direct.provenanceChecked, 2);
+		assert.equal(direct.gateValid, false);
 	});
 
-	test("per-reason counts that do not partition the aggregate are never trusted", () => {
-		const { runs } = tallyRuns([
+	test("per-reason counters that do not partition the aggregate fail closed at admission", () => {
+		const { runs, invalid } = tallyRuns([
 			{
 				outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", inputBytes: 400, elapsedMs: 1500,
 				counts: REJECTED_COUNTS(2),
-				// Reasons sum to 5 but only 2 candidates were rejected: malformed.
+				// Reasons sum to 5 but only 2 candidates were rejected: the producer
+				// partition is violated before admission, never normalized later.
 				provenanceRejectionReasons: { sourceQuoteAbsent: 3, locationQuoteAbsent: 2, locationQuotePathMismatch: 0 },
 			},
 		]);
-		const metrics = computeGateMetrics(runs);
-		assert.equal(metrics.provenanceReasonsPartitioned, false);
+		assert.equal(runs.length, 0);
+		assert.equal(invalid[0].invalidReason, "terminal_malformed_provenanceReasonPartition");
+		const metrics = computeGateMetrics(runs, [], invalid);
 		assert.deepEqual(metrics.provenanceReasons, { sourceQuoteAbsent: 0, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 });
-		assert.equal(metrics.provenanceRejectionRate, 1);
+		assert.equal(metrics.gateValid, false);
 	});
 
-	test("an oversized claimed provenanceChecked denominator is never accepted", () => {
-		const { runs } = tallyRuns([
-			{
-				// accepted 1 + rejected 1 = 2 checked, but the record claims 100: the
-				// true 50% rejection rate must not dilute to 1%.
+	test("oversized or undersized claimed provenanceChecked denominators fail closed at admission", () => {
+		// accepted 1 + rejected 1 = 2 checked; any other claim (the old dilution
+		// attack checked=100, or an undersized claim) violates the producer
+		// partition and is an invalid attempt before it can touch any rate.
+		for (const [name, checked] of [["oversized", 100], ["undersized", 1]]) {
+			const { runs, invalid } = tallyRuns([{
 				outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", elapsedMs: 1000, inputBytes: 900,
-				counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 },
+				counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: checked },
 				provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
-			},
-		]);
-		const metrics = computeGateMetrics(runs);
-		assert.equal(metrics.provenanceChecked, 2);
-		assert.equal(metrics.provenanceRejectionRate, 0.5);
-		assert.equal(metrics.provenanceCheckedExact, false);
-		assert.equal(metrics.malformedCounts, 1);
-		assert.equal(metrics.gateValid, false);
-		// An undersized claim is equally malformed.
-		const undersized = tallyRuns([
-			{
-				outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(2), source: "b", elapsedMs: 1000, inputBytes: 880,
-				counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 1 },
-				provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
-			},
-		]);
-		const undersizedMetrics = computeGateMetrics(undersized.runs);
-		assert.equal(undersizedMetrics.provenanceChecked, 2);
-		assert.equal(undersizedMetrics.provenanceCheckedExact, false);
+			}]);
+			assert.equal(runs.length, 0, name);
+			assert.equal(invalid[0].invalidReason, "terminal_malformed_provenanceCheckedPartition", name);
+			const metrics = computeGateMetrics(runs, [], invalid);
+			assert.equal(metrics.total, 1, name);
+			assert.equal(metrics.succeeded, 0, name);
+			assert.equal(metrics.gateValid, false, name);
+		}
 	});
 
 	test("valid exact provenanceChecked and partitioned reason counters keep the gate valid", () => {
@@ -534,27 +567,27 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(withExcluded.excludedCount, 1);
 	});
 
-	test("merged metrics stay authoritative through published: malformed merged + favorable published fails", () => {
-		// Fifteen attempts whose MERGED telemetry is malformed (oversized claimed
-		// checked denominator) while every published mirror looks exact and
-		// favorable. The gate must stay invalid on the merged side.
-		const malformedCounts = { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 };
+	test("merged stays authoritative through publication: 15 identically partition-broken pairs fail closed", () => {
+		// Fifteen merged→published pairs whose counts are internally identical on
+		// both sides but whose claimed checked denominator contradicts accepted +
+		// rejected. Equality never legitimizes them; each attempt fails closed on
+		// its authoritative merged side before any favorable computation.
+		const badCounts = { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 1, findingsDroppedOverflow: 0, provenanceChecked: 100 };
+		const reasons = { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 };
 		const entries = [];
 		for (let index = 0; index < 15; index++) {
-			entries.push({ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: malformedCounts, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 900, elapsedMs: 3000 });
-			entries.push({ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: malformedCounts, provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }, inputBytes: 900, elapsedMs: 3000 });
+			entries.push({ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 3000 });
+			entries.push({ outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`, counts: { ...badCounts }, provenanceRejectionReasons: { ...reasons }, inputBytes: 900, elapsedMs: 3000 });
 		}
 		const { runs, invalid } = tallyRuns(entries);
-		assert.equal(invalid.length, 0);
-		assert.equal(runs.length, 15);
-		const metrics = computeGateMetrics(runs);
+		assert.equal(runs.length, 0);
+		assert.equal(invalid.length, 15);
+		assert.ok(invalid.every((entry) => entry.invalidReason === "merged_malformed_provenanceCheckedPartition"));
+		const metrics = computeGateMetrics(runs, [], invalid);
+		assert.equal(metrics.total, 15);
 		assert.equal(metrics.sufficientSample, true);
-		assert.equal(metrics.successRate, 1);
-		// The merged-authoritative counts expose the malformed denominator.
-		assert.equal(metrics.provenanceCheckedExact, false);
-		assert.equal(metrics.malformedCounts, 15);
-		assert.equal(metrics.provenanceChecked, 15 * 2);
-		assert.equal(metrics.provenanceRejectionRate, 15 / 30);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.invalidAttempts, 15);
 		assert.equal(metrics.gateValid, false);
 	});
 
@@ -571,13 +604,21 @@ describe("§9 extraction tally cohort semantics", () => {
 			provenanceRejectionReasons: { sourceQuoteAbsent: 6, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
 			inputBytes: 900, elapsedMs: 3000, ...overrides,
 		});
-		// Favorable published counts claiming the all-rejected merge actually merged findings.
-		let result = tallyRuns([base(), published({ counts: { findingsExtracted: 6, findingsMerged: 6, findingsDeduped: 0, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0, provenanceChecked: 6 } })]);
+		// Favorable published counts claiming the all-rejected merge actually
+		// merged findings: the fabricated mirror is internally partition-consistent
+		// (checked 6 = extracted 6 + rejected 0, zero reasons) yet still diverges
+		// from the authoritative merged record.
+		let result = tallyRuns([base(), published({ counts: { findingsExtracted: 6, findingsMerged: 6, findingsDeduped: 0, findingsRejectedProvenance: 0, findingsDroppedOverflow: 0, provenanceChecked: 6 }, provenanceRejectionReasons: { ...EMPTY_REASONS } })]);
 		assert.equal(result.runs.length, 0);
 		assert.equal(result.invalid[0].invalidReason, "published_divergent_counts");
-		// Favorable published reason counters erasing the rejects.
-		result = tallyRuns([base(), published({ provenanceRejectionReasons: EMPTY_REASONS })]);
+		// Favorable published reason counters rewriting (not erasing) the rejects:
+		// partition-consistent (4+2+0 = 6) yet divergent from merged.
+		result = tallyRuns([base(), published({ provenanceRejectionReasons: { sourceQuoteAbsent: 4, locationQuoteAbsent: 2, locationQuotePathMismatch: 0 } })]);
 		assert.equal(result.invalid[0].invalidReason, "published_divergent_provenanceRejectionReasons");
+		// An erasing zero mirror against six rejects violates the published side's
+		// own producer partition even before divergence is considered.
+		result = tallyRuns([base(), published({ provenanceRejectionReasons: { ...EMPTY_REASONS } })]);
+		assert.equal(result.invalid[0].invalidReason, "published_malformed_provenanceReasonPartition");
 		// Divergent inputBytes and elapsedMs.
 		result = tallyRuns([base(), published({ inputBytes: 1 })]);
 		assert.equal(result.invalid[0].invalidReason, "published_divergent_inputBytes");
@@ -874,7 +915,8 @@ describe("§9 extraction tally cohort semantics", () => {
 			provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
 		}]);
 		assert.equal(lyingReasons.runs.length, 0);
-		assert.equal(lyingReasons.invalid[0].invalidReason, "terminal_malformed_inconsistent_empty_counts");
+		// The exact producer partition (reason sum === rejected) fails first.
+		assert.equal(lyingReasons.invalid[0].invalidReason, "terminal_malformed_provenanceReasonPartition");
 	});
 
 	test("a valid emitted correct-empty record counts as execution success only", () => {
@@ -933,6 +975,94 @@ describe("§9 extraction tally cohort semantics", () => {
 		}
 	});
 
+	test("bare parse-rejection variant carries exactly identity, input, latency, optional model", () => {
+		// Real producer path (extensions/review-table.ts settlePendingExtraction):
+		// oversized/malformed/fenced/structural parse rejection invokes
+		// recordOutcome("rejected", undefined, effectiveModel) — no counts,
+		// no reasons.
+		const { runs, invalid } = tallyRuns([BARE_REJECTED()]);
+		assert.equal(invalid.length, 0);
+		assert.equal(runs.length, 1);
+		assert.equal(runs[0].outcome, "rejected");
+		// The effectiveModel decoration is part of the real emission.
+		const decorated = tallyRuns([BARE_REJECTED({ effectiveModel: "provider/light" })]);
+		assert.equal(decorated.invalid.length, 0);
+		assert.equal(decorated.runs.length, 1);
+		// A genuine rejection stays an ordinary failed extraction attempt: in the
+		// sample, never an execution success, and never gate-invalidating by itself.
+		const metrics = computeGateMetrics(decorated.runs);
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.gateValid, true);
+	});
+
+	test("one-sided rejected variants fail closed as invalid attempts", () => {
+		const base = BARE_REJECTED();
+		// Counts-bearing variant stripped of its reason counters.
+		let result = tallyRuns([{ ...base, counts: REJECTED_COUNTS(2) }]);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_rejectedMissingReasons");
+		// Bare variant fabricating reason counters without counts.
+		result = tallyRuns([{ ...base, provenanceRejectionReasons: { ...EMPTY_REASONS } }]);
+		assert.equal(result.runs.length, 0);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_rejectedMissingCounts");
+		const metrics = computeGateMetrics([], [], result.invalid);
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("counts-bearing rejected requires the exact complete counts schema and both partitions", () => {
+		const valid = () => ({
+			outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1500,
+			counts: REJECTED_COUNTS(2),
+			provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
+		});
+		// Real producer paths (all candidates provenance-rejected, or canonical
+		// merge/publication validation rejection) keep the full parser counts shape.
+		let result = tallyRuns([valid()]);
+		assert.equal(result.invalid.length, 0);
+		assert.equal(result.runs.length, 1);
+		let metrics = computeGateMetrics(result.runs);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.gateValid, true);
+		// Malformed counts shape (missing required fields).
+		result = tallyRuns([{ ...valid(), counts: { findingsExtracted: 0, findingsRejectedProvenance: 2, provenanceChecked: 2 } }]);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_counts");
+		// Mismatched checked denominator.
+		result = tallyRuns([{ ...valid(), counts: { ...REJECTED_COUNTS(2), provenanceChecked: 99 } }]);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_provenanceCheckedPartition");
+		// Non-partitioning reason counters.
+		result = tallyRuns([{ ...valid(), provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } }]);
+		assert.equal(result.invalid[0].invalidReason, "terminal_malformed_provenanceReasonPartition");
+		metrics = computeGateMetrics([], [], result.invalid);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("mixed real rejected variants stay trustworthy separate attempts in one cohort", () => {
+		const { runs, invalid } = tallyRuns([
+			BARE_REJECTED({ attemptId: ATTEMPT(1), source: "s1.jsonl" }),
+			{ outcome: "rejected", schemaVersion: 2, attemptId: ATTEMPT(2), source: "s1.jsonl", inputBytes: 400, elapsedMs: 1600, counts: REJECTED_COUNTS(3), provenanceRejectionReasons: { sourceQuoteAbsent: 3, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } },
+			{ outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(3), source: "s1.jsonl", counts: MIRROR_COUNTS, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 900, elapsedMs: 3000 },
+			{ outcome: "empty", schemaVersion: 2, attemptId: ATTEMPT(4), source: "s1.jsonl", counts: ZERO_COUNTS, provenanceRejectionReasons: { ...EMPTY_REASONS }, inputBytes: 700, elapsedMs: 2000 },
+		]);
+		assert.equal(invalid.length, 0);
+		assert.equal(runs.length, 4);
+		const metrics = computeGateMetrics(runs);
+		assert.equal(metrics.total, 4);
+		// Only merged + empty are extractor successes; both rejections stay failures.
+		assert.equal(metrics.succeeded, 2);
+		assert.equal(metrics.successRate, 0.5);
+		// Provenance aggregates come only from the two counts-bearing records
+		// (rejected 3 + merged 1); the bare variant contributes nothing it never emitted.
+		assert.equal(metrics.provenanceChecked, 4);
+		assert.equal(metrics.provenanceRejectionRate, 3 / 4);
+		// Real rejections do not invalidate an otherwise trustworthy cohort.
+		assert.equal(metrics.gateValid, true);
+	});
+
 	test("valid merged-only runtime records remain fully eligible", () => {
 		// Publishing is default-off, so real v2 cohorts are mostly merged-only.
 		// A complete merged-only record satisfies the exact runtime contract and
@@ -989,16 +1119,17 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.match(text, /checked candidates\s+: 0/);
 	});
 
-	test("the scoreboard warns about malformed counts and non-partitioning reason breakdowns", () => {
-		// Shape-valid records whose metric-level consistency fails stay runs but
-		// visibly degrade and keep the gate invalid.
-		const { runs } = tallyRuns([
-			{
-				outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a", inputBytes: 900, elapsedMs: 1000,
-				counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0, provenanceChecked: 99 },
-				provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
-			},
-		]);
+	test("the scoreboard warns when computeGateMetrics directly receives contradictory runs", () => {
+		// Admission-time schemas keep contradictory records out of tallyRuns
+		// output entirely; these warnings remain as conservative defense-in-depth
+		// for direct callers that hand pre-built run objects to the metrics.
+		const runs = [{
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			counts: { findingsExtracted: 1, findingsMerged: 1, findingsDeduped: 0, findingsRejectedProvenance: 2, findingsDroppedOverflow: 0, provenanceChecked: 99 },
+			provenanceRejectionReasons: { sourceQuoteAbsent: 1, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 },
+			inputBytes: 900, elapsedMs: 1000, attemptEventCount: 1, attemptElapsedMs: 1000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		}];
 		const metrics = computeGateMetrics(runs);
 		const text = formatScoreboard(runs, metrics);
 		assert.match(text, /WARNING: 1 attempt\(s\) carry malformed count telemetry/);

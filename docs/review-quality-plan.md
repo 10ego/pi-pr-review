@@ -394,23 +394,26 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   is not verbatim in the input), and `locationQuotePathMismatch` (the claimed
   `path` does not appear inside the verified `location_quote`). Counts only:
   no source code, quotes, paths, or private snippets are ever emitted. The
-  three counts always partition `findingsRejectedProvenance` exactly, and the
-  tooling trusts a breakdown only when every counter is a finite nonnegative
-  integer summing exactly to the aggregate — invalid or missing values are
-  untrusted and visibly block gate validity rather than being normalized.
+  three counts always partition `findingsRejectedProvenance` exactly. On
+  counts-bearing v2 records the tooling requires every counter to be a
+  finite nonnegative integer summing exactly to the aggregate at admission:
+  missing, malformed, or non-partitioning values fail closed as invalid
+  attempts rather than being normalized into a trusted breakdown.
 - **Provenance-checked denominator.** `provenanceChecked` counts every
   candidate subjected to provenance verification: accepted
   (`findingsExtracted`) **plus** rejected (`findingsRejectedProvenance`).
   `findingsExtracted` alone is accepted-only and is **not** the rejection-rate
   denominator — an all-rejected attempt reports N/N checked, never 0/0, so
   nineteen empty successes plus one all-rejected failure cannot pass the
-  provenance gate. When a `provenanceChecked` count is present it must equal
-  accepted + rejected **exactly**: an oversized claim (checked=100 for 1
-  accepted + 1 rejected) is malformed and gate-invalidating, and the
-  conservative derived accepted+rejected denominator is always used — a
-  larger claimed denominator can never dilute the true rejection rate. §9
-  tooling fails safely (deterministic derived values, visible warnings) on
-  negative or non-integer telemetry.
+  provenance gate. On every counts-bearing v2 record `provenanceChecked` is
+  **mandatory** and must equal accepted + rejected **exactly**: an oversized
+  claim (checked=100 for 1 accepted + 1 rejected) or an undersized claim
+  violates the producer partition and fails closed as an invalid attempt
+  before admission — a fabricated denominator can never dilute the true
+  rejection rate. The conservative derived accepted+rejected denominator
+  remains as defense-in-depth for direct metric callers. §9 tooling fails
+  safely (deterministic derived values, visible warnings) on negative or
+  non-integer telemetry.
 - **Latency completeness.** Every eligible current attempt must carry exactly
   one finite nonnegative `elapsedMs` terminal measurement (a legitimate 0
   counts in the p50); events of one attempt must agree. Missing, negative,

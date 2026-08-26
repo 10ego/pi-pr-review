@@ -26,13 +26,18 @@
  * outcome, derived from the production emitters (extensions/review-table.ts).
  * Every eligible terminal event carries attemptId, schemaVersion, a nonnegative
  * integer inputBytes, and a finite nonnegative elapsedMs; merged, empty,
- * rejected, and published additionally carry the exact counts and per-reason
- * provenance records (an empty must be all-zero); failed, timeout, and aborted
- * never carry counts or provenance telemetry. A terminal representative that
- * violates its outcome schema becomes an invalid attempt — it counts against
- * execution success and sample volume and keeps the gate invalid — so a
- * merged-only attempt can never bypass validation merely because publishing
- * stayed off and no published mirror exists to cross-check it against.
+ * counts-bearing rejected, and published additionally carry the exact counts
+ * record — whose provenanceChecked denominator is REQUIRED and must equal
+ * findingsExtracted + findingsRejectedProvenance exactly — plus the exact
+ * per-reason provenance records, whose three counters must sum exactly to
+ * findingsRejectedProvenance (an empty must be all-zero); failed, timeout,
+ * and aborted never carry counts or provenance telemetry, and rejected is an
+ * explicit EXCLUSIVE union of that bare variant and the counts-bearing variant.
+ * A terminal representative that violates its outcome schema becomes an invalid
+ * attempt — it counts against execution success and sample volume and keeps
+ * the gate invalid — so a merged-only attempt can never bypass validation
+ * merely because publishing stayed off and no published mirror exists to
+ * cross-check it against.
  *
  * Usage: node tests/tooling/extraction-tally.mjs [sessionDir]
  */
@@ -125,9 +130,11 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
  * the tally never picks the favorable record, it fails closed. In the valid
  * merged→published sequence, `merged` stays AUTHORITATIVE for every
  * gate-affecting field; BOTH sides must independently be schema-valid
- * against the runtime contract (counts with the exact expected integer
- * fields, exact per-reason integer counters, nonnegative integer inputBytes,
- * nonnegative finite elapsedMs) and `published` must mirror counts,
+ * against the runtime contract (counts with the exact expected integer fields
+ * including the mandatory provenanceChecked denominator and the exact
+ * accepted+rejected partition, per-reason counters partitioning the aggregate
+ * rejects exactly, nonnegative integer inputBytes, nonnegative finite
+ * elapsedMs) and `published` must mirror counts,
  * `provenanceRejectionReasons`, `inputBytes`, and `elapsedMs` exactly. Any
  * mismatch, promised-field omission, malformed value on either side, or extra
  * favorable override invalidates the attempt — equality of two identically
@@ -146,18 +153,22 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
 /** Gate-affecting fields the runtime contract promises the `published` event repeats from its `merged` attempt. */
 const PUBLISHED_MIRRORED_FIELDS = ["counts", "provenanceRejectionReasons", "inputBytes", "elapsedMs"];
 
-/** Outcomes whose producer contract ALWAYS emits the exact counts and per-reason provenance records. */
-const PRODUCER_COUNTS_OUTCOMES = new Set(["merged", "empty", "rejected", "published"]);
+/** Outcomes whose producer contract ALWAYS emits the exact counts and per-reason provenance records (with mandatory provenanceChecked and exact partitions). */
+const PRODUCER_COUNTS_OUTCOMES = new Set(["merged", "empty", "published"]);
 /** Outcomes whose producer contract NEVER emits counts or provenance telemetry (identity + input/elapsed only). */
 const PRODUCER_BARE_OUTCOMES = new Set(["failed", "timeout", "aborted"]);
+// `rejected` is modeled separately as an explicit EXCLUSIVE union of two real
+// producer variants: the bare parse-rejection record (no counts/reasons) and
+// the counts-bearing rejection record (full counts + reasons + partitions).
 
-/** Exact required integer fields of the runtime `counts` contract (provenanceChecked optional; its accepted+rejected consistency is validated by the metrics, not the schema). */
+/** Exact required integer fields of the runtime `counts` contract, including the MANDATORY provenanceChecked denominator (its exact accepted+rejected partition is validated by the schema, not deferred to metrics). */
 const COUNTS_REQUIRED_INTEGER_FIELDS = [
 	"findingsExtracted",
 	"findingsMerged",
 	"findingsDeduped",
 	"findingsRejectedProvenance",
 	"findingsDroppedOverflow",
+	"provenanceChecked",
 ];
 
 /** Exact per-check provenance rejection reason counters the runtime contract emits. */
@@ -171,30 +182,43 @@ const isNonNegativeFiniteNumber = (value) => typeof value === "number" && Number
  * must be expected, every required key must be present, nulls, arrays,
  * strings, NaN/Infinity, negatives, and fractions are all rejected.
  */
-function isExactIntegerRecord(value, requiredFields, optionalFields = []) {
+function isExactIntegerRecord(value, requiredFields) {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	for (const key of Object.keys(value)) {
-		if (!requiredFields.includes(key) && !optionalFields.includes(key)) return false;
+		if (!requiredFields.includes(key)) return false;
 		if (!isNonNegativeFiniteInteger(value[key])) return false;
 	}
 	return requiredFields.every((field) => Object.hasOwn(value, field));
 }
 
+/** Sum of the three per-check provenance rejection reason counters. */
+const provenanceReasonSum = (reasons) =>
+	reasons.sourceQuoteAbsent + reasons.locationQuoteAbsent + reasons.locationQuotePathMismatch;
+
 /**
- * Independent schema validity of one gate/runtime-contract record (the
- * authoritative `merged` event or its `published` mirror) against the exact
- * runtime contract: counts with the exact expected integer fields (the
- * optional provenanceChecked must itself be a nonnegative integer; its
- * accepted+rejected consistency stays with metric validation), exact
- * per-reason integer counters, nonnegative integer inputBytes, and
- * nonnegative finite elapsedMs. Returns the first malformed gate field, or
- * undefined when the record is schema-valid.
+ * Independent schema validity of one counts-bearing gate/runtime-contract
+ * record (the authoritative `merged` event, its `published` mirror, an `empty`,
+ * or a counts-bearing `rejected`) against the exact runtime contract: counts
+ * with the exact expected integer fields INCLUDING the mandatory
+ * provenanceChecked denominator, exact per-reason integer counters, nonnegative
+ * integer inputBytes, and nonnegative finite elapsedMs — and, before admission,
+ * the exact producer partitions: provenanceChecked === findingsExtracted +
+ * findingsRejectedProvenance, and the three reason counters summing exactly to
+ * findingsRejectedProvenance. Contradictions are never deferred to a later
+ * favorable computation. Returns the first malformed gate field, or undefined
+ * when the record is schema-valid.
  */
 function gateFieldMalformation(event) {
-	if (!isExactIntegerRecord(event.counts, COUNTS_REQUIRED_INTEGER_FIELDS, ["provenanceChecked"])) return "counts";
+	if (!isExactIntegerRecord(event.counts, COUNTS_REQUIRED_INTEGER_FIELDS)) return "counts";
 	if (!isExactIntegerRecord(event.provenanceRejectionReasons, PROVENANCE_REASON_FIELDS)) return "provenanceRejectionReasons";
 	if (!isNonNegativeFiniteInteger(event.inputBytes)) return "inputBytes";
 	if (!isNonNegativeFiniteNumber(event.elapsedMs)) return "elapsedMs";
+	if (event.counts.provenanceChecked !== event.counts.findingsExtracted + event.counts.findingsRejectedProvenance) {
+		return "provenanceCheckedPartition";
+	}
+	if (provenanceReasonSum(event.provenanceRejectionReasons) !== event.counts.findingsRejectedProvenance) {
+		return "provenanceReasonPartition";
+	}
 	return undefined;
 }
 
@@ -207,15 +231,19 @@ function gateFieldMalformation(event) {
  *    attempt identity fields (current `schemaVersion`, explicit nonempty
  *    `attemptId`), a finite nonnegative integer `inputBytes` (the assembled
  *    payload size, always present), and a finite nonnegative `elapsedMs`
- *    (always present) — including `failed`, `timeout`, and `aborted`.
- *  - `merged`, `empty`, `rejected`, and the `published` decoration always
- *    additionally carry the exact counts record (five required integer fields,
- *    optional `provenanceChecked`) and the exact three-counter
- *    `provenanceRejectionReasons` record — identical shape rules to the
- *    merged→published pair validation.
- *  - `empty` is emitted only for a schema-valid `{"findings":[]}` answer with
- *    no rejected candidates, so its counts and reason counters must all be
- *    zero; any nonzero value contradicts the producer and is malformed.
+ *    (always present).
+ *  - `merged`, `empty`, and the `published` decoration always carry the exact
+ *    counts record — including the MANDATORY `provenanceChecked` denominator —
+ *    and the exact three-counter `provenanceRejectionReasons` record, with the
+ *    exact producer partitions (checked === accepted + rejected; reasons sum
+ *    === rejected) enforced before admission.
+ *  - `rejected` is an explicit EXCLUSIVE union of two real producer variants:
+ *    the bare parse-rejection record (malformed/fenced/oversized/structural
+ *    output: no counts, no reasons, optional effectiveModel only) and the
+ *    counts-bearing rejection record (all candidates provenance-rejected, or
+ *    canonical merge/publication validation rejection: the exact complete
+ *    counts schema including `provenanceChecked` plus exact reason counters
+ *    and partitions). One-sided, fabricated, or malformed variants invalidate.
  *  - `failed`, `timeout`, and `aborted` never carry counts or provenance
  *    telemetry; presence of either contradicts the producer, so fabricated
  *    gate fields can never enter the provenance or latency denominators.
@@ -230,18 +258,29 @@ function terminalRepresentativeMalformation(entry) {
 	if (!isNonNegativeFiniteInteger(entry.inputBytes)) return "inputBytes";
 	if (!isNonNegativeFiniteNumber(entry.elapsedMs)) return "elapsedMs";
 	if (PRODUCER_COUNTS_OUTCOMES.has(entry.outcome)) {
-		if (!isExactIntegerRecord(entry.counts, COUNTS_REQUIRED_INTEGER_FIELDS, ["provenanceChecked"])) return "counts";
-		if (!isExactIntegerRecord(entry.provenanceRejectionReasons, PROVENANCE_REASON_FIELDS)) return "provenanceRejectionReasons";
+		const malformation = gateFieldMalformation(entry);
+		if (malformation !== undefined) return malformation;
 		if (entry.outcome === "empty") {
+			// The producer emits `empty` ONLY for a clean {"findings":[]} answer
+			// with no rejected candidates, so every count must be zero.
 			const countsAllZero = Object.values(entry.counts).every((value) => value === 0);
 			const reasonsAllZero = Object.values(entry.provenanceRejectionReasons).every((value) => value === 0);
 			if (!countsAllZero || !reasonsAllZero) return "inconsistent_empty_counts";
 		}
-	} else if (PRODUCER_BARE_OUTCOMES.has(entry.outcome)) {
+		return undefined;
+	}
+	if (PRODUCER_BARE_OUTCOMES.has(entry.outcome)) {
 		if (entry.counts !== undefined) return "unexpected_counts";
 		if (entry.provenanceRejectionReasons !== undefined) return "unexpected_provenanceRejectionReasons";
+		return undefined;
 	}
-	return undefined;
+	// `rejected`: exclusive union dispatch over its two real producer variants.
+	const hasCounts = entry.counts !== undefined;
+	const hasReasons = entry.provenanceRejectionReasons !== undefined;
+	if (!hasCounts && !hasReasons) return undefined; // bare parse-rejection variant
+	if (!hasCounts) return "rejectedMissingCounts"; // one-sided: reasons without counts
+	if (!hasReasons) return "rejectedMissingReasons"; // one-sided: counts without reasons
+	return gateFieldMalformation(entry); // counts-bearing variant: full schema + partitions
 }
 
 /** Structural deep equality over plain JSON-like values; exotic values never compare equal. */
@@ -405,10 +444,12 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * the p50). Missing, negative, nonnumeric, nonfinite, or conflicting latency
  * marks telemetry/gate invalid and cannot pass the default-on gate.
  *
- * Since the outcome-specific runtime schemas are enforced at tally time, every
- * run that reaches this function already carries a well-formed terminal
- * elapsedMs on each of its events; the latency checks below remain as
- * defense-in-depth over the runs array.
+ * The outcome-specific runtime schemas are enforced at tally time — counts
+ * records must carry provenanceChecked, both producer partitions must hold,
+ * and contradictory records are rejected as invalid attempts BEFORE admission.
+ * The count/reason consistency fallbacks below therefore only defend direct
+ * callers that hand pre-built run objects to this function; they remain
+ * conservative (derived denominators, untrusted breakdowns) when they fire.
  */
 export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	const total = runs.length + invalid.length;
