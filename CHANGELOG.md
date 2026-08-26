@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.8](https://github.com/10ego/pi-pr-review/compare/v1.15.7...v1.15.8) (2026-08-26)
+
+
+### Bug Fixes
+
+* **review:** harden extraction telemetry gate semantics ([#102](https://github.com/10ego/pi-pr-review/issues/102)) ([17967b7](https://github.com/10ego/pi-pr-review/commit/17967b7187660dc6ee0c204808142bb5d1b67e5d))
+
 ## [1.15.7](https://github.com/10ego/pi-pr-review/compare/v1.15.6...v1.15.7) (2026-08-25)
 
 
