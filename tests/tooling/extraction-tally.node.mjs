@@ -1110,19 +1110,19 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("valid direct counts-bearing runs stay trusted across all variants", () => {
-		const run = (outcome, counts, reasons) => ({
-			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+		const run = (index, outcome, counts, reasons) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(index), source: `s${index}`,
 			inputBytes: 400, elapsedMs: 1200,
 			attemptEventCount: 1, attemptElapsedMs: 1200,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
 			counts, provenanceRejectionReasons: reasons,
 		});
 		const metrics = computeGateMetrics([
-			run("merged", MIRROR_COUNTS, EMPTY_REASONS),
+			run(1, "merged", MIRROR_COUNTS, EMPTY_REASONS),
 			// A published decoration is a two-event merged→published sequence.
-			{ ...run("published", MIRROR_COUNTS, EMPTY_REASONS), attemptEventCount: 2 },
-			run("empty", ZERO_COUNTS, EMPTY_REASONS),
-			run("rejected", REJECTED_COUNTS(2), { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }),
+			{ ...run(2, "published", MIRROR_COUNTS, EMPTY_REASONS), attemptEventCount: 2 },
+			run(3, "empty", ZERO_COUNTS, EMPTY_REASONS),
+			run(4, "rejected", REJECTED_COUNTS(2), { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 }),
 		]);
 		assert.equal(metrics.untrustedRuns, 0);
 		assert.equal(metrics.succeeded, 3); // merged + published + empty only
@@ -1133,20 +1133,20 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("valid direct bare rejected/failure runs need no counts; fabricated ones are untrusted", () => {
-		const bare = (outcome, overrides = {}) => ({
-			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+		const bare = (index, outcome, overrides = {}) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(index), source: `s${index}`,
 			inputBytes: 400, elapsedMs: 1500,
 			attemptEventCount: 1, attemptElapsedMs: 1500,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
 			...overrides,
 		});
-		const metrics = computeGateMetrics([bare("rejected"), bare("failed"), bare("timeout", { effectiveModel: "provider/light" })]);
+		const metrics = computeGateMetrics([bare(1, "rejected"), bare(2, "failed"), bare(3, "timeout", { effectiveModel: "provider/light" })]);
 		assert.equal(metrics.untrustedRuns, 0);
 		assert.equal(metrics.succeeded, 0);
 		assert.equal(metrics.gateValid, true);
 		// A fabricated bare failure carrying counts violates the exact top-level
 		// producer key allowlist at this boundary: untrusted, never normalized.
-		const fabricated = computeGateMetrics([bare("failed", { counts: REJECTED_COUNTS(2) })]);
+		const fabricated = computeGateMetrics([bare(2, "failed", { counts: REJECTED_COUNTS(2) })]);
 		assert.deepEqual(fabricated.untrustedByReason, { forbidden_field_counts: 1 });
 		assert.equal(fabricated.succeeded, 0);
 		assert.equal(fabricated.gateValid, false);
@@ -1271,8 +1271,8 @@ describe("§9 extraction tally cohort semantics", () => {
 	});
 
 	test("valid direct representatives exist for every outcome under the full contract", () => {
-		const run = (outcome, eventCount, extra = {}) => ({
-			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+		const run = (index, outcome, eventCount, extra = {}) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(index), source: `s${index}`,
 			inputBytes: 400, elapsedMs: 1500,
 			attemptEventCount: eventCount, attemptElapsedMs: 1500,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
@@ -1280,14 +1280,14 @@ describe("§9 extraction tally cohort semantics", () => {
 		});
 		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
 		const metrics = computeGateMetrics([
-			run("merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("rejected", 1, countsBearing),
-			run("rejected", 1),
-			run("failed", 1),
-			run("timeout", 1),
-			run("aborted", 1),
+			run(1, "merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(2, "published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(3, "empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(4, "rejected", 1, countsBearing),
+			run(5, "rejected", 1),
+			run(6, "failed", 1),
+			run(7, "timeout", 1),
+			run(8, "aborted", 1),
 		]);
 		assert.equal(metrics.total, 8);
 		assert.equal(metrics.untrustedRuns, 0);
@@ -1295,6 +1295,171 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.latencyMeasured, 8);
 		assert.equal(metrics.latencyComplete, true);
 		assert.equal(metrics.gateValid, true);
+	});
+
+	test("fifteen copies of one direct run collapse to one untrusted sample", () => {
+		// The exact accepted P2 attack: fifteen copies of ONE real attempt used
+		// to masquerade as the fresh 15-attempt cohort with a perfect gate.
+		const copy = () => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(7), source: "campaign.jsonl",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		const metrics = computeGateMetrics(Array.from({ length: 15 }, copy));
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.duplicateIdentityGroups, 1);
+		assert.equal(metrics.duplicateRunsCollapsed, 14);
+		assert.equal(metrics.untrustedRuns, 1);
+		assert.deepEqual(metrics.untrustedByReason, { duplicate_identity: 1 });
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.provenanceChecked, 0);
+		assert.equal(metrics.p50ElapsedMs, 0);
+		assert.equal(metrics.latencyMeasured, 0);
+		// One collapsed sample cannot satisfy the 15-attempt minimum: the cohort
+		// stays insufficient (sufficientSample is the established total >= 15 flag).
+		assert.equal(metrics.sufficientSample, false);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("conflicting duplicate payloads and outcomes still collapse identically", () => {
+		const identity = { schemaVersion: 2, attemptId: ATTEMPT(7), source: "campaign.jsonl" };
+		const latency = {
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		};
+		// Copies disagree on outcome and counts: the whole duplicated identity is
+		// untrusted no matter which copy is picked, so none can leak favorability.
+		const metrics = computeGateMetrics([
+			{ ...identity, ...latency, outcome: "merged", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS },
+			{ ...identity, ...latency, outcome: "empty", counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS },
+			{ ...identity, ...latency, outcome: "failed" },
+			{ ...identity, ...latency, outcome: "merged", counts: REJECTED_COUNTS(9), provenanceRejectionReasons: { sourceQuoteAbsent: 9, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } },
+		]);
+		assert.equal(metrics.total, 1);
+		assert.equal(metrics.duplicateIdentityGroups, 1);
+		assert.equal(metrics.duplicateRunsCollapsed, 3);
+		assert.equal(metrics.untrustedRuns, 1);
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.provenanceChecked, 0);
+		assert.equal(metrics.findingsExtracted, 0);
+		assert.equal(metrics.latencyMeasured, 0);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("malformed and valid duplicate orders collapse to the same result", () => {
+		const identity = { schemaVersion: 2, attemptId: ATTEMPT(7), source: "campaign.jsonl" };
+		const latency = {
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+		};
+		const valid = () => ({ ...identity, ...latency, outcome: "merged", counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS });
+		const malformed = () => ({ ...identity, ...latency, outcome: "merged", counts: { findingsExtracted: 1 }, provenanceRejectionReasons: EMPTY_REASONS });
+		for (const order of [[malformed(), valid()], [valid(), malformed()]]) {
+			const metrics = computeGateMetrics(order);
+			assert.equal(metrics.total, 1);
+			assert.equal(metrics.duplicateIdentityGroups, 1);
+			assert.equal(metrics.duplicateRunsCollapsed, 1);
+			assert.equal(metrics.untrustedRuns, 1);
+			assert.equal(metrics.succeeded, 0);
+			assert.equal(metrics.gateValid, false);
+		}
+	});
+
+	test("distinct sources and distinct attemptIds remain fifteen separate attempts", () => {
+		const run = (index) => ({
+			outcome: "merged", schemaVersion: 2,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		// The same attemptId in fifteen distinct source files stays fifteen.
+		const bySource = computeGateMetrics(Array.from({ length: 15 }, (_, i) => ({ ...run(i + 1), attemptId: ATTEMPT(1), source: `run-${i + 1}.jsonl` })));
+		assert.equal(bySource.total, 15);
+		assert.equal(bySource.duplicateIdentityGroups, 0);
+		assert.equal(bySource.succeeded, 15);
+		assert.equal(bySource.sufficientSample, true);
+		assert.equal(bySource.gateValid, true);
+		// Fifteen distinct attemptIds in one source file stay fifteen.
+		const byId = computeGateMetrics(Array.from({ length: 15 }, (_, i) => ({ ...run(i + 1), attemptId: ATTEMPT(i + 1), source: "one.jsonl" })));
+		assert.equal(byId.total, 15);
+		assert.equal(byId.duplicateIdentityGroups, 0);
+		assert.equal(byId.succeeded, 15);
+		assert.equal(byId.gateValid, true);
+	});
+
+	test("mixed cohorts count unique trustworthy identities only", () => {
+		const validRun = (index) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index), source: `dup-${index}.jsonl`,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		});
+		// Two copies of identity #1 (duplicated) + fourteen unique valid attempts:
+		let metrics = computeGateMetrics([validRun(1), { ...validRun(1) }, ...Array.from({ length: 14 }, (_, i) => validRun(i + 2))]);
+		assert.equal(metrics.total, 15); // the duplicated identity collapses to one sample unit
+		assert.equal(metrics.duplicateIdentityGroups, 1);
+		assert.equal(metrics.duplicateRunsCollapsed, 1);
+		assert.equal(metrics.untrustedRuns, 1);
+		assert.equal(metrics.untrustedByReason.duplicate_identity, 1);
+		assert.equal(metrics.succeeded, 14);
+		assert.ok(Math.abs(metrics.successRate - 14 / 15) < 1e-12);
+		assert.equal(metrics.sufficientSample, true);
+		assert.equal(metrics.gateValid, false); // duplication itself keeps the gate invalid
+		// An additionally untrusted UNIQUE identity is additive, never double counted:
+		metrics = computeGateMetrics([
+			validRun(1), { ...validRun(1) },
+			...Array.from({ length: 13 }, (_, i) => validRun(i + 2)),
+			{ ...validRun(30), elapsedMs: undefined },
+		]);
+		assert.equal(metrics.total, 15); // 1 collapsed duplicate + 13 valid + 1 broken unique
+		assert.equal(metrics.untrustedRuns, 2);
+		assert.equal(metrics.untrustedByReason.duplicate_identity, 1);
+		assert.equal(metrics.untrustedByReason.elapsedMs, 1);
+		assert.equal(metrics.succeeded, 13);
+		assert.equal(metrics.gateValid, false);
+	});
+
+	test("direct runs require a nonempty collector source string", () => {
+		const base = (overrides = {}) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a.jsonl",
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			...overrides,
+		});
+		for (const bad of [undefined, "", 42]) {
+			const metrics = computeGateMetrics([base({ source: bad })]);
+			assert.deepEqual(metrics.untrustedByReason, { source: 1 }, JSON.stringify(bad));
+			assert.equal(metrics.succeeded, 0, JSON.stringify(bad));
+			assert.equal(metrics.gateValid, false, JSON.stringify(bad));
+		}
+	});
+
+	test("the scoreboard reports duplicates without exposing raw paths or attempt IDs", () => {
+		const secretSource = "/Users/someone/private/campaign.jsonl";
+		const secretAttempt = "g3-deadbeef-1234-5678";
+		const runs = Array.from({ length: 2 }, () => ({
+			outcome: "merged", schemaVersion: 2, attemptId: secretAttempt, source: secretSource,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+		}));
+		const metrics = computeGateMetrics(runs);
+		const text = formatScoreboard(runs, metrics);
+		assert.match(text, /WARNING: 1 duplicated attempt identity group\(s\) collapsed at the direct-metrics boundary \(1 redundant copy dropped\)/);
+		assert.match(text, /duplicated identities contribute no success, provenance, or latency and keep the gate invalid\./);
+		assert.ok(!text.includes(secretSource), "scoreboard must not print raw source paths");
+		assert.ok(!text.includes(secretAttempt), "scoreboard must not print raw attempt IDs");
+		assert.equal(metrics.gateValid, false);
 	});
 
 	test("direct runs carrying producer-forbidden arbitrary fields are untrusted", () => {
@@ -1374,18 +1539,18 @@ describe("§9 extraction tally cohort semantics", () => {
 		}
 		// Valid real domains stay trusted.
 		const valid = computeGateMetrics([
-			published({ inlineComments: 3 }),
-			published({ publishStatus: "indeterminate" }),
-			published(),
+			published({ attemptId: ATTEMPT(1), inlineComments: 3 }),
+			published({ attemptId: ATTEMPT(2), publishStatus: "indeterminate" }),
+			published({ attemptId: ATTEMPT(3) }),
 		]);
 		assert.equal(valid.untrustedRuns, 0);
 		assert.equal(valid.gateValid, true);
 	});
 
 	test("valid direct representatives with collector metadata and exact internal fields stay trusted", () => {
-		const run = (outcome, eventCount, extra = {}) => ({
+		const run = (index, outcome, eventCount, extra = {}) => ({
 			outcome, schemaVersion: 2,
-			attemptId: ATTEMPT(1), source: "s1.jsonl", timestamp: "2026-08-26T00:00:00.000Z",
+			attemptId: ATTEMPT(index), source: `s${index}.jsonl`, timestamp: "2026-08-26T00:00:00.000Z",
 			inputBytes: 400, elapsedMs: 1500,
 			attemptEventCount: eventCount, attemptElapsedMs: 1500,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
@@ -1394,14 +1559,14 @@ describe("§9 extraction tally cohort semantics", () => {
 		});
 		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
 		const metrics = computeGateMetrics([
-			run("merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
-			run("rejected", 1, countsBearing),
-			run("rejected", 1),
-			run("failed", 1),
-			run("timeout", 1),
-			run("aborted", 1),
+			run(1, "merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(2, "published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(3, "empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run(4, "rejected", 1, countsBearing),
+			run(5, "rejected", 1),
+			run(6, "failed", 1),
+			run(7, "timeout", 1),
+			run(8, "aborted", 1),
 		]);
 		assert.equal(metrics.total, 8);
 		assert.equal(metrics.untrustedRuns, 0);

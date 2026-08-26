@@ -416,20 +416,28 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   legitimate variants remain ordinary failed extraction attempts in the
   sample (never execution successes) and never invalidate an otherwise
   trustworthy cohort merely because the outcome is a real rejection.
-- **Direct metric callers get the same fail-closed treatment.** The exported
-  §9 metrics function re-validates every run object it receives against the
-  same outcome-specific contracts and the same outcome/variant-specific
-  top-level producer key allowlist used at tally admission — extended only by
-  collector metadata (`source`/`timestamp`) and the five known internal tally
-  fields (`attemptEventCount`, `attemptElapsedMs`, `attemptElapsedMissing`,
-  `attemptElapsedConflicting`, `attemptElapsedMalformed`), with published
-  decoration domains validated identically — so arbitrary payloads, the
-  `not_run`-only `reason` key, `invalidReason`, or fabricated decorations on
-  non-published runs cannot buy a favorable gate directly either: a schema-
-  violating direct run is UNTRUSTED — it stays in sample volume, is excluded
-  from execution success and provenance aggregates, increments visible
-  untrusted-run diagnostics, and keeps gate validity false rather than being
-  normalized favorably to zeros.
+- **Direct metric callers get the same fail-closed treatment and unique
+  attempt identity.** The exported §9 metrics function re-validates every run
+  object it receives against the same outcome-specific contracts and the same
+  outcome/variant-specific top-level producer key allowlist used at tally
+  admission — extended only by collector metadata (`source`/`timestamp`) and
+  the five known internal tally fields (`attemptEventCount`,
+  `attemptElapsedMs`, `attemptElapsedMissing`, `attemptElapsedConflicting`,
+  `attemptElapsedMalformed`), with published decoration domains validated
+  identically — so arbitrary payloads, the `not_run`-only `reason` key,
+  `invalidReason`, or fabricated decorations on non-published runs cannot buy
+  a favorable gate directly either. Every direct run must also carry a
+  nonempty collector `source`, and attempts are identified by the compound
+  `(source, attemptId)` exactly as tallyRuns does: a duplicated identity is
+  detected before favorable aggregation regardless of ordering or object
+  equality and collapses to one wholly untrusted sample-volume unit
+  (redundant copies add nothing), surfacing a privacy-safe duplicate
+  diagnostic that keeps gate validity false — one real attempt can never
+  masquerade as a fresh cohort. Any schema-violating or duplicated direct
+  run is UNTRUSTED — it stays in sample volume, is excluded from execution
+  success and provenance aggregates, increments visible untrusted-run
+  diagnostics, and keeps gate validity false rather than being normalized
+  favorably to zeros.
 - **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
   eligible lane evidence keeps the `empty` outcome label but counts as
   extractor **execution** success in §9 tooling. It still claims nothing

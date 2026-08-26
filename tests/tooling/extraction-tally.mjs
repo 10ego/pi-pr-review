@@ -514,7 +514,10 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * run violating its outcome schema is UNTRUSTED: it stays in sample volume,
  * is excluded from execution success and provenance aggregates, increments
  * visible untrusted-run diagnostics, and keeps gate validity false rather
- * than being normalized favorably to zeros. The count/reason consistency
+ * than being normalized favorably to zeros. Direct runs must additionally be
+ * unique attempts: identity is the compound (source, attemptId), and any
+ * duplicated identity collapses to one wholly untrusted sample-volume unit
+ * with a privacy-safe duplicate diagnostic. The count/reason consistency
  * fallbacks below therefore only ever see admitted, schema-valid runs and
  * remain conservative should they ever fire.
  */
@@ -569,9 +572,14 @@ function forbiddenDirectRunKey(run) {
  * — it stays in sample volume but can never support execution success,
  * provenance aggregates, or the p50 — instead of being normalized favorably to
  * zeros. Internal tally fields are expected here and are not treated as payload.
+ * Every direct run must also carry a nonempty collector `source`; attempts are
+ * identified by the compound (source, attemptId) key exactly as tallyRuns does,
+ * and a duplicated identity is collapsed to one untrusted sample-volume unit.
  */
 function directRunMalformation(run) {
 	if (!TERMINAL_OUTCOMES.has(run.outcome) && run.outcome !== "published") return "unknown_outcome";
+	if (typeof run.source !== "string" || !run.source) return "source";
+	if (typeof run.source !== "string" || !run.source) return "source";
 	if (run.schemaVersion !== CURRENT_SCHEMA_VERSION) return "schemaVersion";
 	if (typeof run.attemptId !== "string" || !run.attemptId) return "attemptId";
 	if (!isNonNegativeFiniteInteger(run.inputBytes)) return "inputBytes";
@@ -617,22 +625,53 @@ function directRunMalformation(run) {
 }
 
 export function computeGateMetrics(runs, excluded = [], invalid = []) {
-	const total = runs.length + invalid.length;
-	// Outcome-aware boundary validation: untrusted runs remain in sample volume
-	// but are excluded from every favorable aggregate and keep the gate invalid.
+	// Unique-attempt identity comes FIRST: attempts are identified by the
+	// compound (source, attemptId) key exactly as tallyRuns does, and any
+	// identity seen more than once is collapsed to a single sample-volume unit
+	// that is wholly untrusted — duplicates never add success, provenance
+	// denominator, or latency, and reordering copies cannot change results.
+	const identityGroups = new Map();
+	for (const run of runs) {
+		const source = typeof run.source === "string" && run.source ? run.source : "";
+		const attemptId = typeof run.attemptId === "string" && run.attemptId ? run.attemptId : "";
+		const wellFormed = source !== "" && attemptId !== "";
+		const key = `${source}\u0000${attemptId}`;
+		const group = identityGroups.get(key);
+		if (group) group.runs.push(run);
+		else identityGroups.set(key, { wellFormed, runs: [run] });
+	}
+	let total = invalid.length;
 	let succeeded = 0;
 	let untrustedRuns = 0;
+	let duplicateIdentityGroups = 0;
+	let duplicateRunsCollapsed = 0;
 	const untrustedByReason = {};
 	const admitted = [];
-	for (const run of runs) {
-		const violation = directRunMalformation(run);
-		if (violation !== undefined) {
+	for (const { wellFormed, runs: group } of identityGroups.values()) {
+		if (wellFormed && group.length > 1) {
+			// A duplicated identity is conservatively untrusted as a whole: it
+			// contributes at most one sample-volume unit and nothing favorable,
+			// regardless of which copy is valid, malformed, or ordered first.
+			duplicateIdentityGroups++;
+			duplicateRunsCollapsed += group.length - 1;
 			untrustedRuns++;
-			untrustedByReason[violation] = (untrustedByReason[violation] ?? 0) + 1;
+			untrustedByReason.duplicate_identity = (untrustedByReason.duplicate_identity ?? 0) + 1;
+			total++;
 			continue;
 		}
-		admitted.push(run);
-		if (SUCCESS_OUTCOMES.has(run.outcome)) succeeded++;
+		for (const run of (wellFormed ? [group[0]] : group)) {
+			// Degenerate keys (missing source or attemptId) cannot prove identity
+			// duplication; each such run fails individual validation instead.
+			const violation = directRunMalformation(run);
+			total++;
+			if (violation !== undefined) {
+				untrustedRuns++;
+				untrustedByReason[violation] = (untrustedByReason[violation] ?? 0) + 1;
+				continue;
+			}
+			admitted.push(run);
+			if (SUCCESS_OUTCOMES.has(run.outcome)) succeeded++;
+		}
 	}
 	let provenanceRejected = 0;
 	let extractedTotal = 0;
@@ -705,7 +744,7 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	for (const entry of excluded) excludedByReason[entry.reason ?? "unknown"] = (excludedByReason[entry.reason ?? "unknown"] ?? 0) + 1;
 	const invalidByReason = {};
 	for (const entry of invalid) invalidByReason[entry.invalidReason ?? "unknown"] = (invalidByReason[entry.invalidReason ?? "unknown"] ?? 0) + 1;
-	const gateValid = untrustedRuns === 0 && invalid.length === 0 && malformedCounts === 0 && reasonsPartitioned &&
+	const gateValid = untrustedRuns === 0 && duplicateIdentityGroups === 0 && invalid.length === 0 && malformedCounts === 0 && reasonsPartitioned &&
 		provenanceCheckedExact && latencyComplete;
 	return {
 		total,
@@ -714,6 +753,8 @@ export function computeGateMetrics(runs, excluded = [], invalid = []) {
 		invalidAttempts: invalid.length,
 		invalidByReason,
 		untrustedRuns,
+		duplicateIdentityGroups,
+		duplicateRunsCollapsed,
 		untrustedByReason,
 		provenanceRejectionRate: checkedTotal > 0 ? provenanceRejected / checkedTotal : 0,
 		provenanceChecked: checkedTotal,
@@ -789,6 +830,13 @@ export function formatScoreboard(runs, metrics) {
 		lines.push(
 			`WARNING: ${metrics.invalidAttempts} attempt(s) failed the per-attempt event state machine or their outcome-specific runtime schema;`,
 			"they count against success and sample volume and keep the gate invalid.",
+			"",
+		);
+	}
+	if (metrics.duplicateIdentityGroups > 0) {
+		lines.push(
+			`WARNING: ${metrics.duplicateIdentityGroups} duplicated attempt identity group(s) collapsed at the direct-metrics boundary (${metrics.duplicateRunsCollapsed} redundant cop${metrics.duplicateRunsCollapsed === 1 ? "y" : "ies"} dropped);`,
+			"duplicated identities contribute no success, provenance, or latency and keep the gate invalid.",
 			"",
 		);
 	}
