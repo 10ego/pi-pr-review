@@ -418,11 +418,18 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   trustworthy cohort merely because the outcome is a real rejection.
 - **Direct metric callers get the same fail-closed treatment.** The exported
   §9 metrics function re-validates every run object it receives against the
-  same outcome-specific contracts (including tally-added latency metadata,
-  which is expected there): a schema-violating direct run is UNTRUSTED — it
-  stays in sample volume, is excluded from execution success and provenance
-  aggregates, increments visible untrusted-run diagnostics, and keeps gate
-  validity false rather than being normalized favorably to zeros.
+  same outcome-specific contracts and the same outcome/variant-specific
+  top-level producer key allowlist used at tally admission — extended only by
+  collector metadata (`source`/`timestamp`) and the five known internal tally
+  fields (`attemptEventCount`, `attemptElapsedMs`, `attemptElapsedMissing`,
+  `attemptElapsedConflicting`, `attemptElapsedMalformed`), with published
+  decoration domains validated identically — so arbitrary payloads, the
+  `not_run`-only `reason` key, `invalidReason`, or fabricated decorations on
+  non-published runs cannot buy a favorable gate directly either: a schema-
+  violating direct run is UNTRUSTED — it stays in sample volume, is excluded
+  from execution success and provenance aggregates, increments visible
+  untrusted-run diagnostics, and keeps gate validity false rather than being
+  normalized favorably to zeros.
 - **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
   eligible lane evidence keeps the `empty` outcome label but counts as
   extractor **execution** success in §9 tooling. It still claims nothing

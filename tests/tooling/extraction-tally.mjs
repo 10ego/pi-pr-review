@@ -176,6 +176,8 @@ const PUBLISH_STATUS_TELEMETRY_VALUES = new Set(["skipped_duplicate", "failed", 
 
 /** Collector metadata that collectExtractionEntries wraps around the producer payload; never emitted by the extension itself. */
 const COLLECTOR_METADATA_KEYS = new Set(["source", "timestamp"]);
+/** Internal run metadata produced by tallyRuns itself; legitimate only at this post-tally direct-metrics boundary, never on admission-time records. */
+const TALLY_INTERNAL_KEYS = new Set(["attemptEventCount", "attemptElapsedMs", "attemptElapsedMissing", "attemptElapsedConflicting", "attemptElapsedMalformed"]);
 /** Runtime keys every eligible terminal producer record carries; effectiveModel is optional wherever the producer may emit it. */
 const COMMON_RUNTIME_KEYS = new Set(["outcome", "attemptId", "schemaVersion", "inputBytes", "elapsedMs", "effectiveModel"]);
 /** Top-level keys only counts-bearing variants add. */
@@ -517,6 +519,39 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * remain conservative should they ever fire.
  */
 /**
+ * Exact allowed top-level key set for one DIRECT metrics-boundary run: the
+ * tally-admission producer allowlist for the run's outcome/variant, extended
+ * ONLY with collector metadata and the five known internal tally fields.
+ * The rejected union chooses its counts-bearing shape from actual presence of
+ * BOTH counts and reasons — one-sided variants are forbidden at this layer.
+ */
+function allowedDirectRunKeys(run) {
+	const allowed = new Set(COMMON_RUNTIME_KEYS);
+	if (run.outcome === "rejected") {
+		if (run.counts !== undefined && run.provenanceRejectionReasons !== undefined) {
+			for (const key of PRODUCER_COUNTS_KEYS) allowed.add(key);
+		}
+	} else if (PRODUCER_COUNTS_OUTCOMES.has(run.outcome)) {
+		for (const key of PRODUCER_COUNTS_KEYS) allowed.add(key);
+	}
+	if (run.outcome === "published") {
+		for (const key of PUBLISHED_DECORATION_KEYS) allowed.add(key);
+	}
+	for (const key of COLLECTOR_METADATA_KEYS) allowed.add(key);
+	for (const key of TALLY_INTERNAL_KEYS) allowed.add(key);
+	return allowed;
+}
+
+/** First top-level key on one DIRECT run that no legitimate producer, collector, or tally path emits, or undefined. */
+function forbiddenDirectRunKey(run) {
+	const allowed = allowedDirectRunKeys(run);
+	for (const key of Object.keys(run)) {
+		if (!allowed.has(key)) return key;
+	}
+	return undefined;
+}
+
+/**
  * Outcome-aware defense-in-depth for DIRECT computeGateMetrics callers. Every
  * run object handed to the metrics boundary must be a legitimate current-v2
  * tally run: current `schemaVersion`, a nonempty string `attemptId`, valid
@@ -545,12 +580,25 @@ function directRunMalformation(run) {
 	if (run.attemptElapsedMissing !== false || run.attemptElapsedConflicting !== false || run.attemptElapsedMalformed !== false) return "latency_flags";
 	if (!isNonNegativeFiniteInteger(run.attemptEventCount) || run.attemptEventCount < 1 ||
 		(run.outcome === "published" ? run.attemptEventCount !== 2 : run.attemptEventCount !== 1)) return "attempt_event_count";
+	// Same outcome/variant-specific top-level producer key allowlist as tally
+	// admission, extended only with collector metadata and the five known
+	// internal tally fields: arbitrary payloads, the not_run-only reason key,
+	// invalidReason, fabricated publication decorations on non-published runs,
+	// and any future field under the current schema fail closed here too.
+	const forbiddenKey = forbiddenDirectRunKey(run);
+	if (forbiddenKey !== undefined) return `forbidden_field_${forbiddenKey}`;
 	if (PRODUCER_COUNTS_OUTCOMES.has(run.outcome)) {
 		const malformation = gateFieldMalformation(run);
 		if (malformation !== undefined) return malformation;
 		if (run.outcome === "empty") {
 			const allZero = (record) => Object.values(record).every((value) => value === 0);
 			return !allZero(run.counts) || !allZero(run.provenanceRejectionReasons) ? "inconsistent_empty_counts" : undefined;
+		}
+		if (run.outcome === "published") {
+			// Decoration domains are validated exactly as at tally admission: the
+			// direct boundary must not be a bypass for fabricated values.
+			if (run.inlineComments !== undefined && !(isNonNegativeFiniteInteger(run.inlineComments) && run.inlineComments >= 1)) return "inlineComments";
+			if (run.publishStatus !== undefined && !PUBLISH_STATUS_TELEMETRY_VALUES.has(run.publishStatus)) return "publishStatus";
 		}
 		return undefined;
 	}

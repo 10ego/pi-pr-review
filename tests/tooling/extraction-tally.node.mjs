@@ -1144,9 +1144,10 @@ describe("§9 extraction tally cohort semantics", () => {
 		assert.equal(metrics.untrustedRuns, 0);
 		assert.equal(metrics.succeeded, 0);
 		assert.equal(metrics.gateValid, true);
-		// A fabricated bare failure carrying counts is untrusted, never normalized.
+		// A fabricated bare failure carrying counts violates the exact top-level
+ 	// producer key allowlist at this boundary: untrusted, never normalized.
 		const fabricated = computeGateMetrics([bare("failed", { counts: REJECTED_COUNTS(2) })]);
-		assert.deepEqual(fabricated.untrustedByReason, { unexpected_counts: 1 });
+		assert.deepEqual(fabricated.untrustedByReason, { forbidden_field_counts: 1 });
 		assert.equal(fabricated.succeeded, 0);
 		assert.equal(fabricated.gateValid, false);
 	});
@@ -1275,6 +1276,120 @@ describe("§9 extraction tally cohort semantics", () => {
 			inputBytes: 400, elapsedMs: 1500,
 			attemptEventCount: eventCount, attemptElapsedMs: 1500,
 			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			...extra,
+		});
+		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
+		const metrics = computeGateMetrics([
+			run("merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS }),
+			run("rejected", 1, countsBearing),
+			run("rejected", 1),
+			run("failed", 1),
+			run("timeout", 1),
+			run("aborted", 1),
+		]);
+		assert.equal(metrics.total, 8);
+		assert.equal(metrics.untrustedRuns, 0);
+		assert.equal(metrics.succeeded, 3); // merged + published + empty only
+		assert.equal(metrics.latencyMeasured, 8);
+		assert.equal(metrics.latencyComplete, true);
+		assert.equal(metrics.gateValid, true);
+	});
+
+	test("direct runs carrying producer-forbidden arbitrary fields are untrusted", () => {
+		// The exact accepted P2 attack: fifteen otherwise-perfect merged runs
+		// each carrying one arbitrary forbidden key must not produce a valid
+		// perfect gate under the exact-shape contract.
+		const fabricated = Array.from({ length: 15 }, (_, index) => ({
+			outcome: "merged", schemaVersion: 2, attemptId: ATTEMPT(index + 1), source: `s${index}`,
+			inputBytes: 900, elapsedMs: 3000,
+			attemptEventCount: 1, attemptElapsedMs: 3000,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			payload: { hostile: true },
+		}));
+		let metrics = computeGateMetrics(fabricated);
+		assert.equal(metrics.untrustedRuns, 15);
+		assert.deepEqual(metrics.untrustedByReason, { forbidden_field_payload: 15 });
+		assert.equal(metrics.succeeded, 0);
+		assert.equal(metrics.successRate, 0);
+		assert.equal(metrics.gateValid, false);
+		// Matrix of forbidden fields across every outcome and both rejected variants.
+		const run = (outcome, eventCount, extra = {}) => ({
+			outcome, schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: eventCount, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			...extra,
+		});
+		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
+		const matrix = [
+			["merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, reason: "no_lane_evidence" }],
+			["merged", 1, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, invalidReason: "orphan_published" }],
+			["empty", 1, { counts: ZERO_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, publishStatus: "failed" }],
+			["rejected", 1, { reason: "empty_input" }],
+			["rejected", 1, { ...countsBearing, inlineComments: 1 }],
+			["failed", 1, { payload: "junk" }],
+			["timeout", 1, { reason: "no_lane_evidence" }],
+			["aborted", 1, { attemptJunk: true }],
+			["published", 2, { counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS, reason: "empty_input" }],
+		];
+		for (const [outcome, eventCount, extra] of matrix) {
+			metrics = computeGateMetrics([run(outcome, eventCount, extra)]);
+			const reason = Object.keys(metrics.untrustedByReason)[0];
+			assert.match(reason, /^forbidden_field_/, `${outcome}: ${reason}`);
+			assert.equal(metrics.untrustedRuns, 1, `${outcome}: ${reason}`);
+			assert.equal(metrics.succeeded, 0, `${outcome}: ${reason}`);
+			assert.equal(metrics.gateValid, false, `${outcome}: ${reason}`);
+		}
+	});
+
+	test("direct published decoration domains are validated exactly as at tally admission", () => {
+		const published = (overrides = {}) => ({
+			outcome: "published", schemaVersion: 2, attemptId: ATTEMPT(1), source: "a",
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: 2, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			counts: MIRROR_COUNTS, provenanceRejectionReasons: EMPTY_REASONS,
+			...overrides,
+		});
+		// Non-published runs reject publication decorations outright.
+		let metrics = computeGateMetrics([{ ...published({ outcome: "merged", attemptEventCount: 1 }), inlineComments: 2 }]);
+		assert.deepEqual(metrics.untrustedByReason, { forbidden_field_inlineComments: 1 });
+		metrics = computeGateMetrics([{ ...published({ outcome: "empty", attemptEventCount: 1 }), publishStatus: "failed" }]);
+		assert.deepEqual(metrics.untrustedByReason, { forbidden_field_publishStatus: 1 });
+		// Direct published records cannot bypass the tally's decoration domains:
+		// the inline comment count is emitted only when > 0.
+		for (const bad of [0, -1, 1.5, "three"]) {
+			metrics = computeGateMetrics([published({ inlineComments: bad })]);
+			assert.deepEqual(metrics.untrustedByReason, { inlineComments: 1 }, JSON.stringify(bad));
+			assert.equal(metrics.gateValid, false, JSON.stringify(bad));
+		}
+		// ...and publishStatus is emitted only for non-posted outcomes.
+		for (const bad of ["posted", "posted_degraded", "", "draft"]) {
+			metrics = computeGateMetrics([published({ publishStatus: bad })]);
+			assert.deepEqual(metrics.untrustedByReason, { publishStatus: 1 }, JSON.stringify(bad));
+			assert.equal(metrics.gateValid, false, JSON.stringify(bad));
+		}
+		// Valid real domains stay trusted.
+		const valid = computeGateMetrics([
+			published({ inlineComments: 3 }),
+			published({ publishStatus: "indeterminate" }),
+			published(),
+		]);
+		assert.equal(valid.untrustedRuns, 0);
+		assert.equal(valid.gateValid, true);
+	});
+
+	test("valid direct representatives with collector metadata and exact internal fields stay trusted", () => {
+		const run = (outcome, eventCount, extra = {}) => ({
+			outcome, schemaVersion: 2,
+			attemptId: ATTEMPT(1), source: "s1.jsonl", timestamp: "2026-08-26T00:00:00.000Z",
+			inputBytes: 400, elapsedMs: 1500,
+			attemptEventCount: eventCount, attemptElapsedMs: 1500,
+			attemptElapsedMissing: false, attemptElapsedConflicting: false, attemptElapsedMalformed: false,
+			effectiveModel: "provider/light",
 			...extra,
 		});
 		const countsBearing = { counts: REJECTED_COUNTS(2), provenanceRejectionReasons: { sourceQuoteAbsent: 2, locationQuoteAbsent: 0, locationQuotePathMismatch: 0 } };
