@@ -499,6 +499,235 @@ export function classifyReviewJsonObject(input: ReviewLaneCompletionInput): Revi
 	return hasText ? "partial" : "failed";
 }
 
+const LANE_LIFECYCLES = new Set<string>(["complete", "partial", "timed_out", "failed"]);
+const LANE_TIERS = new Set<string>(["light", "medium", "heavy"]);
+const LANE_ATTEMPT_KINDS = new Set<string>(["primary", "fallback", "nearest", "default"]);
+const LANE_DEADLINE_KINDS = new Set<string>(["total", "synthesis"]);
+const LANE_DEADLINE_SOURCES = new Set<string>(["default", "user", "project"]);
+
+/** Optional fields may be absent (undefined), explicitly null, or the given type. */
+const optional = (value: unknown, predicate: (value: unknown) => boolean): boolean =>
+	value === undefined || value === null || predicate(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+const isInteger = (value: unknown): value is number => Number.isInteger(value);
+const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isEnum = (allowed: Set<string>) => (value: unknown): value is string => isString(value) && allowed.has(value);
+const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+
+/** Copy an already-read optional local into a snapshot (null preserved, undefined omitted). */
+function withOptional(snapshot: Record<string, unknown>, key: string, local: unknown): void {
+	if (local !== undefined) snapshot[key] = local;
+}
+
+/**
+ * Boundary-safe lane artifact snapshot. Lane artifacts enter host state from
+ * subprocess results and session-log restores; TypeScript types are not runtime
+ * guarantees. Every field consumed downstream (degraded synthesis Markdown
+ * interpolation, approval revalidation, extraction input assembly) is read
+ * EXACTLY ONCE inside a single guarded access phase into local plain values;
+ * validation and the stored frozen snapshot are built only from those locals,
+ * so a stateful getter cannot pass validation with a good first value and then
+ * return a hostile one (Symbol, throw, different value) while it is copied or
+ * used. A malformed or throwing field drops the
+ * entire lane; valid optional null/undefined values and real fallback attempt
+ * shapes are preserved.
+ */
+function laneArtifactSnapshot(value: unknown): ReviewLaneArtifact | undefined {
+	try {
+		if (!value || typeof value !== "object") return undefined;
+		const source = value as Record<string, unknown>;
+		// --- One-read phase: every property is accessed exactly once. ---
+		const generation = source.generation;
+		const key = source.key;
+		const passId = source.passId;
+		const rawText = source.rawText;
+		const exitCode = source.exitCode;
+		const lifecycle = source.lifecycle;
+		const tier = source.tier;
+		const fallbackUsed = source.fallbackUsed;
+		const elapsedMs = source.elapsedMs;
+		const toolElapsedMs = source.toolElapsedMs;
+		const toolCallCount = source.toolCallCount;
+		const requestedPassOrdinal = source.requestedPassOrdinal;
+		const minorHygiene = source.minorHygiene;
+		const requestedModel = source.requestedModel;
+		const observedModel = source.observedModel;
+		const processSignal = source.processSignal;
+		const stopReason = source.stopReason;
+		const errorMessage = source.errorMessage;
+		const deadlineExpired = source.deadlineExpired;
+		const firstEventMs = source.firstEventMs;
+		const firstAssistantMs = source.firstAssistantMs;
+		const startOffsetMs = source.startOffsetMs;
+		const endOffsetMs = source.endOffsetMs;
+		const fallbackBudgetRejected = source.fallbackBudgetRejected;
+		const deadlineSource = source.deadlineSource;
+		const batchDeadlineMs = source.batchDeadlineMs;
+		const totalDeadlineMs = source.totalDeadlineMs;
+		const attemptsSource = source.attempts;
+		// --- Validation phase: locals only, never rereading the hostile object. ---
+		if (!isString(key) || !key) return undefined;
+		if (!isInteger(generation)) return undefined;
+		if (!isString(passId)) return undefined;
+		if (!isString(rawText)) return undefined;
+		if (!isInteger(exitCode)) return undefined;
+		if (!isEnum(LANE_LIFECYCLES)(lifecycle)) return undefined;
+		if (!isEnum(LANE_TIERS)(tier)) return undefined;
+		if (!isBoolean(fallbackUsed)) return undefined;
+		if (!isFiniteNumber(elapsedMs)) return undefined;
+		if (!isFiniteNumber(toolElapsedMs)) return undefined;
+		if (!isInteger(toolCallCount) || toolCallCount < 0) return undefined;
+		if (requestedPassOrdinal !== undefined && !isInteger(requestedPassOrdinal)) return undefined;
+		if (!optional(minorHygiene, isBoolean)) return undefined;
+		if (!optional(requestedModel, isString)) return undefined;
+		if (!optional(observedModel, isString)) return undefined;
+		if (!optional(processSignal, isString)) return undefined;
+		if (!optional(stopReason, isString)) return undefined;
+		if (!optional(errorMessage, isString)) return undefined;
+		if (!optional(deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
+		if (!optional(firstEventMs, isFiniteNumber)) return undefined;
+		if (!optional(firstAssistantMs, isFiniteNumber)) return undefined;
+		if (!optional(startOffsetMs, isFiniteNumber)) return undefined;
+		if (!optional(endOffsetMs, isFiniteNumber)) return undefined;
+		if (!optional(fallbackBudgetRejected, isBoolean)) return undefined;
+		if (!optional(deadlineSource, isEnum(LANE_DEADLINE_SOURCES))) return undefined;
+		if (!optional(batchDeadlineMs, isFiniteNumber)) return undefined;
+		if (!optional(totalDeadlineMs, isFiniteNumber)) return undefined;
+		if (!Array.isArray(attemptsSource)) return undefined;
+		const attempts = [];
+		for (const raw of attemptsSource) {
+			const attempt = attemptArtifactSnapshot(raw);
+			if (!attempt) return undefined;
+			attempts.push(attempt);
+		}
+		// --- Snapshot phase: built only from the validated locals. ---
+		const snapshot: Record<string, unknown> = {
+			generation,
+			key,
+			passId,
+			tier,
+			rawText,
+			exitCode,
+			lifecycle,
+			attempts: Object.freeze(attempts),
+			fallbackUsed,
+			elapsedMs,
+			toolElapsedMs,
+			toolCallCount,
+		};
+		withOptional(snapshot, "requestedPassOrdinal", requestedPassOrdinal);
+		withOptional(snapshot, "minorHygiene", minorHygiene);
+		withOptional(snapshot, "requestedModel", requestedModel);
+		withOptional(snapshot, "observedModel", observedModel);
+		withOptional(snapshot, "processSignal", processSignal);
+		withOptional(snapshot, "stopReason", stopReason);
+		withOptional(snapshot, "errorMessage", errorMessage);
+		withOptional(snapshot, "deadlineExpired", deadlineExpired);
+		withOptional(snapshot, "firstEventMs", firstEventMs);
+		withOptional(snapshot, "firstAssistantMs", firstAssistantMs);
+		withOptional(snapshot, "startOffsetMs", startOffsetMs);
+		withOptional(snapshot, "endOffsetMs", endOffsetMs);
+		withOptional(snapshot, "fallbackBudgetRejected", fallbackBudgetRejected);
+		withOptional(snapshot, "deadlineSource", deadlineSource);
+		withOptional(snapshot, "batchDeadlineMs", batchDeadlineMs);
+		withOptional(snapshot, "totalDeadlineMs", totalDeadlineMs);
+		return Object.freeze(snapshot) as ReviewLaneArtifact;
+	} catch {
+		// A throwing getter is a malformed artifact, never a crash at this boundary.
+		return undefined;
+	}
+}
+
+/**
+ * Same one-read safe-snapshot contract for one retained lane attempt: every
+ * property is read exactly once into locals, validated, and copied into a new
+ * frozen plain snapshot; the hostile original is never reread.
+ */
+function attemptArtifactSnapshot(value: unknown): ReviewLaneAttemptArtifact | undefined {
+	try {
+		if (!value || typeof value !== "object") return undefined;
+		const source = value as Record<string, unknown>;
+		// --- One-read phase. ---
+		const ordinal = source.ordinal;
+		const rawText = source.rawText;
+		const exitCode = source.exitCode;
+		const lifecycle = source.lifecycle;
+		const kind = source.kind;
+		const requestedModel = source.requestedModel;
+		const observedModel = source.observedModel;
+		const usedTier = source.usedTier;
+		const processSignal = source.processSignal;
+		const stopReason = source.stopReason;
+		const errorMessage = source.errorMessage;
+		const deadlineExpired = source.deadlineExpired;
+		const retryable = source.retryable;
+		const elapsedMs = source.elapsedMs;
+		const firstEventMs = source.firstEventMs;
+		const firstAssistantMs = source.firstAssistantMs;
+		const toolElapsedMs = source.toolElapsedMs;
+		const toolCallCount = source.toolCallCount;
+		const timedOut = source.timedOut;
+		const terminationGraceMs = source.terminationGraceMs;
+		const forcedTermination = source.forcedTermination;
+		const deadlineMs = source.deadlineMs;
+		const configuredDeadlineMs = source.configuredDeadlineMs;
+		// --- Validation phase (locals only). ---
+		if (!isInteger(ordinal)) return undefined;
+		if (!isString(rawText)) return undefined;
+		if (!isInteger(exitCode)) return undefined;
+		if (!isEnum(LANE_LIFECYCLES)(lifecycle)) return undefined;
+		if (kind !== undefined && !isEnum(LANE_ATTEMPT_KINDS)(kind)) return undefined;
+		if (!optional(requestedModel, isString)) return undefined;
+		if (!optional(observedModel, isString)) return undefined;
+		if (!optional(usedTier, isEnum(LANE_TIERS))) return undefined;
+		if (!optional(processSignal, isString)) return undefined;
+		if (!optional(stopReason, isString)) return undefined;
+		if (!optional(errorMessage, isString)) return undefined;
+		if (!optional(deadlineExpired, isEnum(LANE_DEADLINE_KINDS))) return undefined;
+		if (!optional(retryable, isBoolean)) return undefined;
+		if (!optional(elapsedMs, isFiniteNumber)) return undefined;
+		if (!optional(firstEventMs, isFiniteNumber)) return undefined;
+		if (!optional(firstAssistantMs, isFiniteNumber)) return undefined;
+		if (!optional(toolElapsedMs, isFiniteNumber)) return undefined;
+		if (!optional(toolCallCount, isInteger)) return undefined;
+		if (!optional(timedOut, isBoolean)) return undefined;
+		if (!optional(terminationGraceMs, isFiniteNumber)) return undefined;
+		if (!optional(forcedTermination, isBoolean)) return undefined;
+		if (!optional(deadlineMs, isFiniteNumber)) return undefined;
+		if (!optional(configuredDeadlineMs, isFiniteNumber)) return undefined;
+		// --- Snapshot phase. ---
+		const snapshot: Record<string, unknown> = {
+			ordinal,
+			rawText,
+			exitCode,
+			lifecycle,
+		};
+		withOptional(snapshot, "kind", kind);
+		withOptional(snapshot, "requestedModel", requestedModel);
+		withOptional(snapshot, "observedModel", observedModel);
+		withOptional(snapshot, "usedTier", usedTier);
+		withOptional(snapshot, "processSignal", processSignal);
+		withOptional(snapshot, "stopReason", stopReason);
+		withOptional(snapshot, "errorMessage", errorMessage);
+		withOptional(snapshot, "deadlineExpired", deadlineExpired);
+		withOptional(snapshot, "retryable", retryable);
+		withOptional(snapshot, "elapsedMs", elapsedMs);
+		withOptional(snapshot, "firstEventMs", firstEventMs);
+		withOptional(snapshot, "firstAssistantMs", firstAssistantMs);
+		withOptional(snapshot, "toolElapsedMs", toolElapsedMs);
+		withOptional(snapshot, "toolCallCount", toolCallCount);
+		withOptional(snapshot, "timedOut", timedOut);
+		withOptional(snapshot, "terminationGraceMs", terminationGraceMs);
+		withOptional(snapshot, "forcedTermination", forcedTermination);
+		withOptional(snapshot, "deadlineMs", deadlineMs);
+		withOptional(snapshot, "configuredDeadlineMs", configuredDeadlineMs);
+		return Object.freeze(snapshot) as ReviewLaneAttemptArtifact;
+	} catch {
+		// A throwing getter is a malformed attempt, never a crash at this boundary.
+		return undefined;
+	}
+}
+
 /** Invocation-scoped, host-owned artifact storage. The review coordinator owns its lifetime. */
 export class ReviewLaneArtifactRegistry {
 	private generation?: number;
@@ -537,17 +766,24 @@ export class ReviewLaneArtifactRegistry {
 	}
 
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
-		if (
-			this.generation !== generation || artifact.generation !== generation ||
-			!this.expectedLanes.has(artifact.key)
-		) return false;
-		const expected = this.expectedLanes.get(artifact.key)!;
-		if (artifact.tier !== expected.tier || !!artifact.minorHygiene !== expected.minorHygiene) return false;
-		this.artifacts.set(artifact.key, Object.freeze({
-			...artifact,
-			attempts: Object.freeze(artifact.attempts.map((attempt) => Object.freeze({ ...attempt }))),
-		}));
-		return true;
+		try {
+			// Read and validate every downstream-consumed field inside try/catch and
+			// store the safe frozen snapshot, never the hostile original.
+			const snapshot = laneArtifactSnapshot(artifact);
+			if (
+				!snapshot ||
+				this.generation !== generation || snapshot.generation !== generation ||
+				!this.expectedLanes.has(snapshot.key)
+			) return false;
+			const expected = this.expectedLanes.get(snapshot.key)!;
+			if (snapshot.tier !== expected.tier || !!snapshot.minorHygiene !== expected.minorHygiene) return false;
+			this.artifacts.set(snapshot.key, snapshot);
+			return true;
+		} catch {
+			// Malformed artifacts (including throwing getters surfaced by the copy)
+			// are rejected at this boundary; the deterministic degraded flow continues.
+			return false;
+		}
 	}
 
 	snapshot(generation: number): readonly ReviewLaneArtifact[] | undefined {

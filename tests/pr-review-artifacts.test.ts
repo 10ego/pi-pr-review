@@ -489,4 +489,207 @@ describe("invocation lane artifact retention", () => {
 		expect(registry.retain(7, artifact())).toBeFalse();
 		expect(registry.snapshot(8)).toEqual([]);
 	});
+
+	test("rejects malformed lane artifacts at the retention boundary instead of storing them", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [{ key: "call:0", tier: "heavy", minorHygiene: false }])).toBeTrue();
+		const malformed = [
+			null,
+			undefined,
+			"a string is not a lane",
+			artifact({ rawText: 12345 as unknown as string }),
+			artifact({ rawText: undefined as unknown as string }),
+			artifact({ passId: undefined as unknown as string }),
+			artifact({ key: undefined as unknown as string }),
+			artifact({ lifecycle: "finished" as ReviewLaneArtifact["lifecycle"] }),
+			artifact({ tier: "ultra" as unknown as ReviewLaneArtifact["tier"] }),
+			artifact({ generation: 1.5 as unknown as number }),
+			artifact({ exitCode: "0" as unknown as number }),
+			artifact({ fallbackUsed: "yes" as unknown as boolean }),
+			artifact({ elapsedMs: Infinity as unknown as number }),
+			artifact({ toolElapsedMs: NaN as unknown as number }),
+			artifact({ toolCallCount: -1 }),
+			// Malformed optional fields: symbols, wrong types, invalid enums.
+			artifact({ errorMessage: Symbol("kaboom") as unknown as string }),
+			artifact({ stopReason: Symbol("kaboom") as unknown as string }),
+			artifact({ processSignal: 42 as unknown as string }),
+			artifact({ requestedModel: { model: "x" } as unknown as string }),
+			artifact({ deadlineExpired: "whenever" as unknown as ReviewLaneArtifact["deadlineExpired"] }),
+			artifact({ minorHygiene: 1 as unknown as boolean }),
+			artifact({ firstEventMs: "soon" as unknown as number }),
+			artifact({ deadlineSource: "vibes" as unknown as ReviewLaneArtifact["deadlineSource"] }),
+			artifact({ attempts: "not an array" as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [null] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: 42 as unknown as string, exitCode: 0, lifecycle: "partial" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ rawText: "text but no ordinal", exitCode: 0, lifecycle: "partial" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "done" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", kind: "retry" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", usedTier: "ultra" }] as unknown as ReviewLaneArtifact["attempts"] }),
+			artifact({ attempts: [{ ordinal: 1, rawText: "text", exitCode: 0, lifecycle: "partial", errorMessage: Symbol("kaboom") }] as unknown as ReviewLaneArtifact["attempts"] }),
+			// Throwing getters must be rejected, never crash the publisher boundary.
+			{ ...artifact(), get rawText() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get attempts() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get passId() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get lifecycle() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+			{ ...artifact(), get errorMessage() { throw new Error("boom"); } } as unknown as ReviewLaneArtifact,
+		];
+		for (const lane of malformed) {
+			expect(registry.retain(7, lane as ReviewLaneArtifact)).toBeFalse();
+		}
+		expect(registry.snapshot(7)).toEqual([]);
+		// A valid artifact still retains normally afterwards.
+		expect(registry.retain(7, artifact())).toBeTrue();
+		expect(registry.snapshot(7)).toHaveLength(1);
+	});
+
+	test("stateful getters cannot pass validation and then turn hostile (one-read snapshot)", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, Array.from({ length: 7 }, (_, index) => ({
+			key: `call:${index}`, tier: "heavy" as const, minorHygiene: false,
+		})))).toBeTrue();
+		/** Install real getters on a plain artifact clone. */
+		const withGetters = (key: string, fields: Record<string, () => unknown>) => {
+			const lane: Record<string, unknown> = { ...artifact({ key }) };
+			for (const [name, getter] of Object.entries(fields)) {
+				Object.defineProperty(lane, name, { get: getter, enumerable: true, configurable: true });
+			}
+			return lane as unknown as ReviewLaneArtifact;
+		};
+		/** Stateful getter: a good first value, a hostile second value, counted reads. */
+		const flips = (good: unknown, hostile: unknown, reads: Record<string, number>, name: string) => () => {
+			reads[name] = (reads[name] ?? 0) + 1;
+			return reads[name] === 1 ? good : hostile;
+		};
+		/** Stateful getter whose second read throws instead of returning a value. */
+		const flipsThrow = (good: unknown, reads: Record<string, number>, name: string) => () => {
+			reads[name] = (reads[name] ?? 0) + 1;
+			if (reads[name] === 1) return good;
+			throw new Error("second read boom");
+		};
+		const reads: Record<string, number> = {};
+		// Good→Symbol flips: the first valid value is snapshotted safely.
+		expect(registry.retain(7, withGetters("call:0", { rawText: flips("NO FINDINGS.", Symbol("hostile"), reads, "rawText") }))).toBeTrue();
+		expect(registry.retain(7, withGetters("call:1", { errorMessage: flips("429 capacity", Symbol("hostile"), reads, "errorMessage") }))).toBeTrue();
+		expect(registry.retain(7, withGetters("call:2", { requestedModel: flips("provider/primary", Symbol("hostile"), reads, "requestedModel") }))).toBeTrue();
+		// Good→throw flip on passId: first read is valid, snapshot keeps it, the
+		// hostile second read never happens.
+		expect(registry.retain(7, withGetters("call:3", { passId: flipsThrow("correctness", reads, "passId") }))).toBeTrue();
+		// A getter that is hostile on the FIRST read drops the whole lane.
+		expect(registry.retain(7, withGetters("call:4", { lifecycle: flips(Symbol("bad-first"), "complete", reads, "lifecycleBad") }))).toBeFalse();
+		expect(registry.retain(7, withGetters("call:5", { lifecycle: () => { throw new Error("first read boom"); } }))).toBeFalse();
+		// Nested attempt fields flip good→Symbol/good→wrong-type: first values kept, one read each.
+		const attemptReads: Record<string, number> = {};
+		const attemptLane = { ...artifact({ key: "call:6" }) } as Record<string, unknown>;
+		const attempt: Record<string, unknown> = {
+			ordinal: 1,
+			kind: "fallback",
+			exitCode: 1,
+			lifecycle: "partial",
+			retryable: true,
+			elapsedMs: 20,
+			toolElapsedMs: 5,
+			toolCallCount: 1,
+		};
+		Object.defineProperty(attempt, "rawText", { get: flips("partial evidence", Symbol("hostile"), attemptReads, "rawText"), enumerable: true, configurable: true });
+		Object.defineProperty(attempt, "observedModel", { get: flips("provider/fallback", 42, attemptReads, "observedModel"), enumerable: true, configurable: true });
+		attemptLane.attempts = [attempt as never];
+		expect(registry.retain(7, attemptLane as unknown as ReviewLaneArtifact)).toBeTrue();
+		// Exactly one read per property: validation never rereads the getters and
+		// neither does the snapshot copy.
+		expect(reads.rawText).toBe(1);
+		expect(reads.errorMessage).toBe(1);
+		expect(reads.requestedModel).toBe(1);
+		expect(reads.passId).toBe(1);
+		expect(reads.lifecycleBad).toBe(1);
+		expect(attemptReads.rawText).toBe(1);
+		expect(attemptReads.observedModel).toBe(1);
+		// The stored snapshots hold the first valid values and are stable.
+		const snapshot = registry.snapshot(7)!;
+		expect(snapshot.find((lane) => lane.key === "call:0")?.rawText).toBe("NO FINDINGS.");
+		expect(snapshot.find((lane) => lane.key === "call:1")?.errorMessage).toBe("429 capacity");
+		expect(snapshot.find((lane) => lane.key === "call:2")?.requestedModel).toBe("provider/primary");
+		expect(snapshot.find((lane) => lane.key === "call:3")?.passId).toBe("correctness");
+		expect(snapshot.find((lane) => lane.key === "call:6")?.attempts[0]?.rawText).toBe("partial evidence");
+		expect(snapshot.find((lane) => lane.key === "call:6")?.attempts[0]?.observedModel).toBe("provider/fallback");
+		// Valid siblings of dropped lanes remain retained (call:4/call:5 dropped).
+		expect(snapshot.map((lane) => lane.key).sort()).toEqual(["call:0", "call:1", "call:2", "call:3", "call:6"]);
+	});
+
+	test("retains a safe frozen snapshot, not the hostile original", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false },
+			{ key: "call:1", tier: "heavy", minorHygiene: false },
+		])).toBeTrue();
+		// A full production artifact with real fallback attempt shapes retains.
+		const full = artifact({
+			fallbackUsed: true,
+			deadlineExpired: "total",
+			deadlineSource: "user",
+			requestedPassOrdinal: 3,
+			minorHygiene: undefined,
+			batchDeadlineMs: 90_000,
+			totalDeadlineMs: 180_000,
+			firstEventMs: 12.5,
+			startOffsetMs: 1.5,
+			endOffsetMs: 2.5,
+			fallbackBudgetRejected: true,
+			attempts: [
+				{
+					ordinal: 1,
+					kind: "fallback",
+					requestedModel: "provider/primary",
+					observedModel: "provider/fallback",
+					usedTier: "light",
+					rawText: "partial primary evidence",
+					exitCode: 1,
+					processSignal: "SIGKILL",
+					stopReason: "error",
+					errorMessage: "429 capacity",
+					lifecycle: "partial",
+					deadlineExpired: "synthesis",
+					retryable: true,
+					elapsedMs: 20,
+					firstEventMs: 3,
+					firstAssistantMs: 5,
+					toolElapsedMs: 5,
+					toolCallCount: 1,
+					timedOut: true,
+					terminationGraceMs: 100,
+					forcedTermination: true,
+					deadlineMs: 30_000,
+					configuredDeadlineMs: 60_000,
+				},
+				{
+					ordinal: 2,
+					rawText: "NO FINDINGS.",
+					exitCode: 0,
+					stopReason: "stop",
+					lifecycle: "complete",
+					retryable: false,
+					elapsedMs: 40,
+					toolElapsedMs: 0,
+					toolCallCount: 0,
+				},
+			],
+		} as ReviewLaneArtifact);
+		expect(registry.retain(7, full)).toBeTrue();
+		const snapshot = registry.snapshot(7)![0]!;
+		expect(snapshot.attempts).toHaveLength(2);
+		expect(snapshot.attempts[0]?.kind).toBe("fallback");
+		expect(snapshot.attempts[1]?.kind).toBeUndefined();
+		expect(Object.isFrozen(snapshot)).toBeTrue();
+		expect(Object.isFrozen(snapshot.attempts)).toBeTrue();
+		expect(Object.isFrozen(snapshot.attempts[0])).toBeTrue();
+		// The snapshot is a copy: later mutation of the original cannot poison it.
+		(full as unknown as { rawText: string }).rawText = "poisoned";
+		expect(snapshot.rawText).toBe("NO FINDINGS.");
+		// Mixed valid and malformed siblings: the malformed lane drops, the valid one stays.
+		expect(registry.retain(7, { ...artifact({ key: "call:1" }), errorMessage: Symbol("kaboom") } as unknown as ReviewLaneArtifact)).toBeFalse();
+		expect(registry.retain(7, artifact({ key: "call:1", passId: "second" }))).toBeTrue();
+		expect(registry.snapshot(7)!.map((lane) => lane.passId)).toEqual(["correctness-shard-2", "second"]);
+	});
 });

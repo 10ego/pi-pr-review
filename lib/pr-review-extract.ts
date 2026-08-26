@@ -27,6 +27,25 @@ const MAX_QUOTE_BYTES = 2 * 1024;
 
 export const EXTRACTION_ENTRY_TYPE = "pr-review-extraction";
 
+/**
+ * Telemetry semantics cohort for extraction events. Events carrying this
+ * schema version use the v2 semantics: host-authoritative eligibility
+ * (retained lane evidence + nonempty input), valid `empty` counted as
+ * extraction success, excluded `not_run` outcomes, and per-reason provenance
+ * counts. Events without it belong to the legacy cohort and must never be
+ * combined with v2 metrics (the 18-run 1.15.7 campaign mixed incompatible
+ * semantics in one denominator).
+ */
+export const EXTRACTION_TELEMETRY_SCHEMA_VERSION = 2;
+
+/** Stable exclusion reasons for a host-side decision not to run extraction. */
+export type ExtractionExclusionReason = "no_lane_evidence" | "empty_input";
+
+/** Host-authoritative eligibility decision for one degraded synthesis. */
+export type ExtractionEligibility =
+	| { eligible: true; input: ExtractionInput }
+	| { eligible: false; reason: ExtractionExclusionReason };
+
 export interface ExtractedFindingWire {
 	title: string;
 	severity: string;
@@ -42,11 +61,18 @@ export interface ExtractedFindingWire {
 }
 
 export interface ExtractionCounts {
+	/** Candidates the host ACCEPTED after provenance verification (excludes rejected candidates). */
 	findingsExtracted: number;
 	findingsMerged: number;
 	findingsDeduped: number;
 	findingsRejectedProvenance: number;
 	findingsDroppedOverflow: number;
+	/**
+	 * Every candidate subjected to provenance verification: accepted +
+	 * rejected. This is the correct provenance-rate denominator; it differs
+	 * from `findingsExtracted` whenever candidates were rejected.
+	 */
+	provenanceChecked?: number;
 }
 
 export interface ExtractionInput {
@@ -56,9 +82,21 @@ export interface ExtractionInput {
 	truncatedLanes: number;
 }
 
+/** Aggregate reason counts for host-side provenance rejections (privacy-safe: counts only). */
+export interface ProvenanceRejectionReasons {
+	/** The finding's `quote` is not a verbatim substring of the extraction input. */
+	sourceQuoteAbsent: number;
+	/** A claimed location's `location_quote` is not a verbatim substring of the input. */
+	locationQuoteAbsent: number;
+	/** The claimed `path` does not appear inside the verified `location_quote`. */
+	locationQuotePathMismatch: number;
+}
+
 export interface ParsedExtraction {
 	findings: ReviewFindingLike[];
 	counts: ExtractionCounts;
+	/** Per-check provenance rejection counts (sum equals counts.findingsRejectedProvenance). */
+	provenanceRejectionReasons: ProvenanceRejectionReasons;
 }
 
 export type ExtractionRejection =
@@ -131,10 +169,57 @@ export function buildExtractionTask(input: string): string {
 	].join("\n");
 }
 
+/** Complete, boundary-safe lane evidence snapshot used for extraction input assembly. */
+export interface SafeLaneEvidence {
+	readonly passId: string;
+	readonly lifecycle: string;
+	readonly rawText: string;
+}
+
+/**
+ * Boundary-safe snapshot of every lane field extraction consumes. Persisted or
+ * runtime lane artifacts cross trust boundaries and may carry non-string
+ * `rawText`/`passId`/`lifecycle`, missing fields, null entries, throwing
+ * getters, or STATEFUL getters that return a good value on the first read and
+ * a hostile one afterwards. Each property is therefore read EXACTLY ONCE into
+ * a local plain value inside one guarded access phase; validation and the
+ * returned snapshot are built only from those locals, so a good→Symbol or
+ * good→throw flip can never surface a hostile value or throw downstream. If
+ * any consumed field fails to read safely with the right type, the entire lane
+ * is dropped (evidence-less) — a lane whose passId or lifecycle getter is
+ * hostile never sends its rawText to the child, never throws out of
+ * message_end, and never aborts deterministic publication.
+ */
+export function safeLaneEvidence(lane: unknown): SafeLaneEvidence | undefined {
+	try {
+		if (!lane || typeof lane !== "object") return undefined;
+		const source = lane as { passId?: unknown; lifecycle?: unknown; rawText?: unknown };
+		// One-read phase: exactly one access per property.
+		const passId = source.passId;
+		const lifecycle = source.lifecycle;
+		const rawText = source.rawText;
+		if (typeof passId !== "string" || !passId) return undefined;
+		if (typeof lifecycle !== "string" || !lifecycle) return undefined;
+		if (typeof rawText !== "string") return undefined;
+		return { passId, lifecycle, rawText };
+	} catch {
+		return undefined;
+	}
+}
+
 export function buildExtractionInput(
 	rawText: string,
 	lanes: readonly ReviewLaneArtifact[],
 	maxBytes = MAX_EXTRACTION_INPUT_BYTES,
+): ExtractionInput {
+	// One read per lane property: snapshot first, assemble from the snapshots.
+	return buildExtractionInputFromSnapshots(rawText, lanes.map(safeLaneEvidence), maxBytes);
+}
+
+function buildExtractionInputFromSnapshots(
+	rawText: string,
+	snapshots: readonly (SafeLaneEvidence | undefined)[],
+	maxBytes: number,
 ): ExtractionInput {
 	const sections: string[] = [];
 	let truncatedLanes = 0;
@@ -148,7 +233,8 @@ export function buildExtractionInput(
 		}
 		return false;
 	};
-	const synthesis = rawText.trim();
+	// Boundary safety: never trust the artifact's rawText shape at this persistence/runtime boundary.
+	const synthesis = (typeof rawText === "string" ? rawText : "").trim();
 	if (synthesis) {
 		const header = "--- Review synthesis ---\n";
 		const headerBytes = Buffer.byteLength(header, "utf8");
@@ -157,7 +243,11 @@ export function buildExtractionInput(
 		sections.push(`${header}${fitted.text}`);
 		remaining -= Buffer.byteLength(sections[0]!, "utf8") + 2;
 	}
-	const usable = lanes.filter((lane) => lane.rawText.trim());
+	// Extraction consumes only complete safe lane snapshots: any lane whose
+	// rawText, passId, or lifecycle fails to read safely with the right type is
+	// dropped entirely rather than assembled with placeholder headers.
+	const usable = snapshots.filter((snapshot): snapshot is SafeLaneEvidence =>
+		!!snapshot && !!snapshot.rawText.trim());
 	let lanesAdded = 0;
 	for (const lane of usable) {
 		const header = `--- Retained lane output: ${lane.passId} (${lane.lifecycle}) ---`;
@@ -191,6 +281,36 @@ export function buildExtractionInput(
 		inputBytes: Buffer.byteLength(joined, "utf8"),
 		truncatedLanes,
 	};
+}
+
+/**
+ * Host-authoritative extraction eligibility. Model-assisted extraction may
+ * start only when the invocation has actual retained host review-lane
+ * evidence AND the assembled degraded Markdown input is nonempty after
+ * trim. Eligibility is never inferred from assistant prose: absent-synthesis
+ * sessions and same-head skip notices have no lane evidence and must not
+ * launch the child. Malformed lane artifacts (non-string rawText, null
+ * entries, throwing getters) are evidence-less and never abort the decision.
+ * The decision returns the assembled input only when eligible, so the caller
+ * never builds a second copy.
+ */
+export function decideExtractionEligibility(
+	rawText: string,
+	lanes: readonly ReviewLaneArtifact[],
+	maxBytes = MAX_EXTRACTION_INPUT_BYTES,
+): ExtractionEligibility {
+	// Boundary safety: a malformed artifact carrying non-string rawText must
+	// degrade to an empty document, never throw out of message_end.
+	const synthesis = typeof rawText === "string" ? rawText : "";
+	// Snapshot each lane exactly once and reuse the same snapshots for both the
+	// assembled document and the evidence decision — no second getter read.
+	const snapshots = lanes.map(safeLaneEvidence);
+	const input = buildExtractionInputFromSnapshots(synthesis, snapshots, maxBytes);
+	if (!input.text.trim()) return { eligible: false, reason: "empty_input" };
+	// Lane evidence requires a complete safe snapshot with nonempty retained text.
+	const hasLaneEvidence = snapshots.some((snapshot) => !!snapshot && snapshot.rawText.trim().length > 0);
+	if (!hasLaneEvidence) return { eligible: false, reason: "no_lane_evidence" };
+	return { eligible: true, input };
 }
 
 function byteLength(value: string): number {
@@ -312,6 +432,11 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 	const normalizedInput = normalizeForQuote(input);
 	const findings: ReviewFindingLike[] = [];
 	let rejectedProvenance = 0;
+	const provenanceRejectionReasons: ProvenanceRejectionReasons = {
+		sourceQuoteAbsent: 0,
+		locationQuoteAbsent: 0,
+		locationQuotePathMismatch: 0,
+	};
 	for (const raw of record.findings) {
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
 			return { ok: false, rejection: { kind: "rejected", reason: "a finding was not an object" } };
@@ -330,6 +455,7 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 		}
 		if (!verifyQuote(quote, normalizedInput)) {
 			rejectedProvenance++;
+			provenanceRejectionReasons.sourceQuoteAbsent++;
 			continue;
 		}
 		const hasLocation = wire.path !== undefined || wire.start_line !== undefined ||
@@ -341,10 +467,12 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 			const locationQuote = wire.location_quote;
 			if (typeof locationQuote !== "string" || !verifyQuote(locationQuote, normalizedInput)) {
 				rejectedProvenance++;
+				provenanceRejectionReasons.locationQuoteAbsent++;
 				continue;
 			}
 			if (typeof wire.path === "string" && !normalizeForQuote(locationQuote).includes(normalizeForQuote(wire.path))) {
 				rejectedProvenance++;
+				provenanceRejectionReasons.locationQuotePathMismatch++;
 				continue;
 			}
 		}
@@ -364,7 +492,12 @@ export function parseExtractionOutput(text: string, input: string): ExtractionPa
 				findingsDeduped: 0,
 				findingsRejectedProvenance: rejectedProvenance,
 				findingsDroppedOverflow: 0,
+				// Every candidate subjected to provenance: accepted + rejected. This
+				// is the unambiguous provenance-rate denominator (an all-rejected
+				// record must report N/N checked, not 0/0).
+				provenanceChecked: findings.length + rejectedProvenance,
 			},
+			provenanceRejectionReasons,
 		},
 	};
 }

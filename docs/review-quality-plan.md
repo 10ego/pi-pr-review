@@ -172,10 +172,14 @@ Mirrors the existing self-review subprocess plumbing
 `message_end` (final assistant text) does **not** await the child. The flow is:
 
 1. `message_end`: host builds the deterministic artifact as today. If
-   extraction is enabled and `quality !== "fully_parsed"`, it **starts** the
-   extraction subprocess and stores the promise; rendering proceeds
-   immediately with the deterministic artifact so the terminal response,
-   telemetry completion, and TUI rendering are never blocked.
+   extraction is enabled, `quality !== "fully_parsed"`, **and the
+   host-authoritative eligibility check passes** (retained lane evidence for
+   the active generation plus a nonempty assembled input; see §6), it
+   **starts** the extraction subprocess and stores the promise; rendering
+   proceeds immediately with the deterministic artifact so the terminal
+   response, telemetry completion, and TUI rendering are never blocked. An
+   ineligible invocation records an excluded `not_run` entry and never
+   spawns the child.
 2. `turn_end`: `generationsReadyForSynthesis` re-arms the synthesis cap —
    this is where extraction is awaited, **bounded by `min(synthesisMs,
    remaining total budget − termination reserve)`** via the same lease/budget
@@ -220,9 +224,11 @@ awaited stage.
 | Extraction outcome | Result |
 | --- | --- |
 | Valid findings | merged; inline notes on degraded review; verdict line unchanged unless a deterministically parsed P0/P1 exists |
-| Empty findings `{"findings":[]}` | deterministic artifact unchanged (absence of structure ≠ clean review) |
-| Timeout / child failure | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
+| Empty findings `{"findings":[]}` on **eligible** lane evidence | deterministic artifact unchanged (absence of structure ≠ clean review); **extractor execution success** for §9 metrics |
+| Every extracted finding provenance-rejected | deterministic artifact unchanged; telemetry `outcome: "rejected"` (verification failure, never a correct empty) |
+| Timeout / child failure (incl. no usable output) | deterministic artifact unchanged; telemetry `outcome: "timeout"\|"failed"` |
 | Malformed / unsafe / over-cap JSON | deterministic artifact unchanged; telemetry `outcome: "rejected"` |
+| No retained lane evidence, or empty assembled input | **never started**; excluded telemetry `outcome: "not_run"` with reason `no_lane_evidence`/`empty_input`; not an attempt |
 | Not configured / disabled | current behavior, zero new code paths taken |
 
 ## 4. Security
@@ -305,15 +311,176 @@ necessarily a cheap one; the warning names the effective model); a dedicated
 Two records, split because they occur at different lifecycle points:
 
 - **Extraction record** (`pi.appendEntry("pr-review-extraction", …)` at
-  merge time): `outcome`, `findingsExtracted`, `findingsMerged`,
-  `findingsDeduped`, `findingsRejectedProvenance`, `findingsDroppedOverflow`,
-  `inputBytes`, `elapsedMs`.
+  merge time): every record carries `outcome`, `attemptId`, `inputBytes`,
+  `elapsedMs`, and an optional effective-model disclosure. Counts-bearing
+  variants (`merged`, `empty`, counts-bearing `rejected`, and the
+  post-publication `published` mirror) additionally carry the exact counts
+  fields — `findingsExtracted`, `findingsMerged`, `findingsDeduped`,
+  `findingsRejectedProvenance`, `findingsDroppedOverflow`, mandatory
+  `provenanceChecked` — plus `provenanceRejectionReasons`; bare parse-
+  rejection `rejected` records and `failed`/`timeout`/`aborted` carry none of
+  the count fields.
 - **Publication counts** are emitted as a **post-publication record** via
   `pi.appendEntry("pr-review-extraction", …)` at the same point the publish
   result is notified, carrying the selected inline-comment count and any
   transport diagnostics from the publish result — not on the already-
   persisted cache record, and not in invocation telemetry (which finalizes in
   `message_end` before publication).
+
+**v2 telemetry semantics (schemaVersion 2 cohort).** Every extraction entry
+now carries `schemaVersion: 2`. The semantics of that cohort:
+
+- **Host-authoritative eligibility.** The child starts only when the
+  invocation retained actual host review-lane evidence for the active
+  generation and the assembled degraded Markdown input is nonempty after
+  trim. Eligibility is never inferred from assistant prose. A non-run
+  decision emits `outcome: "not_run"` with a stable `reason`
+  (`no_lane_evidence` or `empty_input`) — an excluded event that never enters
+  the success, provenance, latency, or sample-volume denominators. Malformed
+  lane artifacts (non-string `rawText`, null entries, throwing getters)
+  never cross the retention boundary and never reach extraction: they are
+  evidence-less, deterministic `not_run` decisions, never a crash that could
+  abort `message_end` or publication, and they can never start the child,
+  grant approval, or alter the deterministic degraded artifact. At the
+  retention boundary the host reads and validates **every** downstream-
+  consumed lane and attempt field inside try/catch — `rawText`, `passId`,
+  `key`, `lifecycle`, `tier`, `generation`, `errorMessage`, `stopReason`,
+  `processSignal`, `exitCode`, `deadlineExpired`, `minorHygiene`, model
+  specs, and every attempt field — and stores a new frozen **safe snapshot**,
+  never the hostile original (a Symbol `errorMessage` would otherwise throw
+  during Markdown interpolation). A malformed or throwing field drops the
+  entire lane while valid siblings remain. The extraction defense boundary
+  likewise requires a complete safe snapshot for every field it consumes: a
+  lane whose `passId` or `lifecycle` getter throws is dropped, never sent.
+- **Explicit per-attempt identity.** Every v2 event carries an `attemptId`
+  generated only from host state: the authoritative active lease generation
+  plus a fresh per-attempt random nonce (`g<generation>-<uuid>`). It is
+  privacy-safe (no PR number, model, or assistant text) and collision-safe
+  across repeated attempts sharing a generation or session and across
+  extension reloads in one session. §9 tooling correlates events strictly by
+  (source, attemptId); a later independent attempt in the same session stays
+  a separate run that an earlier success can never mask. v2 events without
+  an `attemptId` are ambiguous (attempts cannot be segmented) and are
+  displayed separately for context only — exact current-cohort metrics are
+  never claimed from them.
+- **Strict per-attempt event state machine.** §9 tooling evaluates each
+  (source, attemptId) attempt as an ordered sequence. A valid attempt is
+  exactly one terminal outcome (`merged`, `empty`, `failed`, `timeout`,
+  `rejected`, `aborted`) — or `merged` immediately followed by its `published`
+  decoration (another attempt's records may be interleaved between them). A
+  `published` without a preceding same-attempt `merged` is an orphan; any
+  conflicting or repeated terminal sequence fails closed as an invalid
+  attempt — never the favorable record. Invalid attempts count against
+  execution success and sample volume and keep gate telemetry validity
+  `INVALID`; they are never silently dropped.
+- **Outcome-specific runtime schemas on every terminal representative.**
+  Before a terminal representative enters the §9 metrics it must match the
+  exact emission contract of its own outcome, derived from the production
+  emitters — independently of whether a `published` mirror exists to
+  cross-check against (publishing is default-off). Exact top-level keys are
+  enforced by outcome/variant: common runtime identity/input/latency fields
+  (`outcome`, `attemptId`, `schemaVersion`, `inputBytes`, `elapsedMs`) with
+  optional `effectiveModel` wherever the producer may emit it;
+  counts-bearing variants add `counts` and `provenanceRejectionReasons`;
+  `published` alone adds its real publication decoration (`inlineComments`,
+  emitted only as a count > 0, and `publishStatus`, emitted only for non-
+  posted outcomes — `skipped_duplicate`, `failed`, `indeterminate`); the
+  collector's `source`/`timestamp` are metadata, never payload; internal
+  tally latency fields exist only at the post-tally direct-metrics boundary.
+  Fabricated decorations on non-published records, the `not_run`-only
+  `reason` key, and arbitrary payloads fail closed. Every eligible terminal
+  event also carries a nonnegative integer `inputBytes` and a finite
+  nonnegative `elapsedMs`. Counts-bearing records carry the exact counts
+  record — whose `provenanceChecked` denominator is mandatory — plus the
+  exact per-reason provenance records, and the exact producer partitions are
+  enforced before admission: `provenanceChecked` must equal
+  `findingsExtracted` + `findingsRejectedProvenance` exactly, the three
+  reason counters must sum exactly to `findingsRejectedProvenance`, and an
+  `empty` must be all-zero; contradictions are never deferred to a later
+  favorable computation. `failed`, `timeout`, and `aborted` never carry
+  counts or provenance telemetry. A representative violating its outcome
+  schema becomes an invalid attempt: it fails closed against execution
+  success and sample volume and keeps the gate invalid — merged-only
+  attempts can never bypass validation.
+- **Two exclusive `rejected` producer variants.** Trace of
+  `recordOutcome` yields exactly two legitimate shapes, modeled as an
+  explicit exclusive union identical to the code: (1) the **bare parse-
+  rejection record** — oversized, malformed, fenced, or structurally
+  contract-violating extractor output — carries only the attempt identity
+  fields, `inputBytes`, `elapsedMs`, an optional effective model, and NO
+  counts or reasons; (2) the **counts-bearing rejection record** — all
+  candidates provenance-rejected, or canonical merge/publication validation
+  rejection — carries the exact complete counts schema including mandatory
+  `provenanceChecked` plus the exact reason counters and partitions.
+  One-sided, fabricated, or malformed variants invalidate the attempt. Both
+  legitimate variants remain ordinary failed extraction attempts in the
+  sample (never execution successes) and never invalidate an otherwise
+  trustworthy cohort merely because the outcome is a real rejection.
+- **Direct metric callers get the same fail-closed treatment and unique
+  attempt identity.** The exported §9 metrics function re-validates every run
+  object it receives against the same outcome-specific contracts and the same
+  outcome/variant-specific top-level producer key allowlist used at tally
+  admission — extended only by collector metadata (`source`/`timestamp`) and
+  the five known internal tally fields (`attemptEventCount`,
+  `attemptElapsedMs`, `attemptElapsedMissing`, `attemptElapsedConflicting`,
+  `attemptElapsedMalformed`), with published decoration domains validated
+  identically — so arbitrary payloads, the `not_run`-only `reason` key,
+  `invalidReason`, or fabricated decorations on non-published runs cannot buy
+  a favorable gate directly either. Every direct run must also carry a
+  nonempty collector `source`, and attempts are identified by the compound
+  `(source, attemptId)` exactly as tallyRuns does: a duplicated identity is
+  detected before favorable aggregation regardless of ordering or object
+  equality and collapses to one wholly untrusted sample-volume unit
+  (redundant copies add nothing), surfacing a privacy-safe duplicate
+  diagnostic that keeps gate validity false — one real attempt can never
+  masquerade as a fresh cohort. Any schema-violating or duplicated direct
+  run is UNTRUSTED — it stays in sample volume, is excluded from execution
+  success and provenance aggregates, increments visible untrusted-run
+  diagnostics, and keeps gate validity false rather than being normalized
+  favorably to zeros.
+- **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
+  eligible lane evidence keeps the `empty` outcome label but counts as
+  extractor **execution** success in §9 tooling. It still claims nothing
+  about the review being clean: the deterministic artifact, verdict safety,
+  and approval ineligibility are unchanged. A child that produces no usable
+  output, or a record whose findings were all provenance-rejected, is a
+  failure (`failed`/`rejected`).
+- **Per-reason provenance observability.** `provenanceRejectionReasons`
+  carries aggregate counts for the three real host checks —
+  `sourceQuoteAbsent` (the finding's `quote` is not a verbatim substring of
+  the input), `locationQuoteAbsent` (a claimed location's `location_quote`
+  is not verbatim in the input), and `locationQuotePathMismatch` (the claimed
+  `path` does not appear inside the verified `location_quote`). Counts only:
+  no source code, quotes, paths, or private snippets are ever emitted. The
+  three counts always partition `findingsRejectedProvenance` exactly. On
+  counts-bearing v2 records the tooling requires every counter to be a
+  finite nonnegative integer summing exactly to the aggregate at admission:
+  missing, malformed, or non-partitioning values fail closed as invalid
+  attempts rather than being normalized into a trusted breakdown.
+- **Provenance-checked denominator.** `provenanceChecked` counts every
+  candidate subjected to provenance verification: accepted
+  (`findingsExtracted`) **plus** rejected (`findingsRejectedProvenance`).
+  `findingsExtracted` alone is accepted-only and is **not** the rejection-rate
+  denominator — an all-rejected attempt reports N/N checked, never 0/0, so
+  nineteen empty successes plus one all-rejected failure cannot pass the
+  provenance gate. On every counts-bearing v2 record `provenanceChecked` is
+  **mandatory** and must equal accepted + rejected **exactly**: an oversized
+  claim (checked=100 for 1 accepted + 1 rejected) or an undersized claim
+  violates the producer partition and fails closed as an invalid attempt
+  before admission — a fabricated denominator can never dilute the true
+  rejection rate. The conservative derived accepted+rejected denominator
+  remains as defense-in-depth for direct metric callers. §9 tooling fails
+  safely (deterministic derived values, visible warnings) on negative or
+  non-integer telemetry.
+- **Latency completeness.** Every eligible current attempt must carry exactly
+  one finite nonnegative `elapsedMs` terminal measurement (a legitimate 0
+  counts in the p50); events of one attempt must agree. Missing, negative,
+  nonnumeric, nonfinite, or conflicting latency marks the telemetry/gate
+  invalid — fifteen successful attempts with no latency can never pass the
+  overhead threshold at p50=0. Excluded `not_run` decisions need no latency.
+- **Homogeneous cohorts.** Entries without `schemaVersion: 2` are legacy and
+  are displayed separately for context; they are permanently excluded from
+  the default-on decision. No backfilling or rewriting of session logs.
 
 ## 7. Rollout
 
@@ -358,15 +525,57 @@ Two records, split because they occur at different lifecycle points:
 
 ## 9. Success criteria (Phase 2 gate)
 
-- Extraction success (valid merged output) ≥ 95% of enabled runs.
+**Cohort requirement (v2).** An 18-run real campaign against 1.15.7 (PRs
+100, 88, 81, 72, 63, 46, 48, 42, 99, 37, 52, 50, 44 plus baseline runs)
+proved the pre-v2 denominator was semantically contaminated: 3 absent-synthesis
+runs (inputBytes = 0) and 2 same-head skip notices were counted as extraction
+attempts despite no retained review-lane evidence, and 2 genuinely clean
+degraded reviews returned a correct `{"findings":[]}` that was counted as
+failure. That campaign invalidated the old mixed denominator. All §9
+metrics below therefore evaluate exactly one **homogeneous current cohort**
+(`schemaVersion: 2` events carrying an `attemptId`), which starts at 0 after
+the v2 change:
+
+- **Sample volume:** ≥ 15 real eligible current-cohort extraction attempts
+  before default-on can even be considered. Each attempt is one distinct
+  `attemptId`; multiple attempts inside one session never collapse. No
+  grandfathering, backfilling, rewriting of session logs, or cherry-picking;
+  excluded `not_run` events never satisfy sample volume. Legacy history and
+  ambiguous no-ID v2 events print separately, context only.
+
+Metrics over those eligible current-cohort attempts only:
+
+- **Gate telemetry validity first.** The scoreboard must report
+  `Gate telemetry validity : valid` before any threshold is read. The gate
+  stays INVALID while any current attempt failed the per-attempt event
+  state machine, any count or reason telemetry is malformed or
+  non-partitioning, any present `provenanceChecked` differs from accepted +
+  rejected, or any eligible attempt lacks exactly one finite nonnegative
+  `elapsedMs` measurement. Invalid attempts count against success and
+  sample volume; a fresh unambiguous cohort must accumulate.
+- **Extractor execution success** (valid merged output *or* a schema-valid
+  correct-empty answer on eligible lane evidence) ≥ 95% of eligible
+  attempts. This is deliberately distinct from "findings merged": an
+  execution success never claims the review itself is clean.
 - On degraded reviews with substantive lane evidence, ≥ 1 inline note in a
   target majority of runs where a human spot-check confirms a real finding
   existed in the Markdown.
-- Provenance rejection rate < 5% (a high rate means the prompt/schema fights
-  the models and must be fixed before any default-on).
+- Provenance rejection rate < 5% of **provenance-checked candidates**
+  (accepted + rejected — the `provenanceChecked` denominator, never the
+  accepted-only `findingsExtracted`; a high rate means the prompt/schema
+  fights the models and must be fixed before any default-on). The per-reason
+  counts (`sourceQuoteAbsent`,
+  `locationQuoteAbsent`, `locationQuotePathMismatch`) identify which host
+  check fails. (Diagnosis note: in the 1.15.7 campaign, PRs 88 and 42 each
+  had one finding rejected, but the extraction child runs `--no-session`, so
+  the raw child output is unpersisted and the exact failed check cannot be
+  recovered from retained logs — the reason counts exist precisely so the
+  fresh cohort can answer it. No prompt change is justified by that
+  evidence.)
 - No regression: full suite green; publish-safety invariants unchanged
   (degraded never APPROVEs, no false completion claims).
-- Wall-clock overhead ≤ ~20s p50 inside the synthesis window.
+- Wall-clock overhead ≤ ~20s p50 inside the synthesis window, computed over
+  eligible current-cohort attempts only.
 
 ## 10. Alternatives considered
 
