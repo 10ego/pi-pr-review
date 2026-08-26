@@ -21,6 +21,19 @@
  * incompatible outcome semantics, so the default-on decision must evaluate
  * exactly one homogeneous current cohort with >= 15 eligible real attempts.
  *
+ * Outcome-specific runtime schemas: before ANY terminal representative enters
+ * `runs`, it must independently match the exact emission contract of its own
+ * outcome, derived from the production emitters (extensions/review-table.ts).
+ * Every eligible terminal event carries attemptId, schemaVersion, a nonnegative
+ * integer inputBytes, and a finite nonnegative elapsedMs; merged, empty,
+ * rejected, and published additionally carry the exact counts and per-reason
+ * provenance records (an empty must be all-zero); failed, timeout, and aborted
+ * never carry counts or provenance telemetry. A terminal representative that
+ * violates its outcome schema becomes an invalid attempt — it counts against
+ * execution success and sample volume and keeps the gate invalid — so a
+ * merged-only attempt can never bypass validation merely because publishing
+ * stayed off and no published mirror exists to cross-check it against.
+ *
  * Usage: node tests/tooling/extraction-tally.mjs [sessionDir]
  */
 
@@ -122,11 +135,21 @@ const TERMINAL_OUTCOMES = new Set(["merged", "empty", "failed", "timeout", "reje
  * that can never replace, repair, or erase merged metrics. Invalid
  * attempts are returned separately, count against execution success and
  * sample volume in the metrics, and invalidate gate validity; they are never
- * silently dropped. `not_run` entries are excluded decision events, never part
+ * silently dropped. Independently of the event ORDER, every terminal
+ * representative must also satisfy its outcome-specific runtime emission
+ * schema (`terminalRepresentativeMalformation`): merged-only terminals are
+ * held to exactly the same contract as the merged side of a merged→published
+ * pair, so a missing published mirror (publishing is default-off) never waives
+ * validation. `not_run` entries are excluded decision events, never part
  * of an attempt sequence.
  */
 /** Gate-affecting fields the runtime contract promises the `published` event repeats from its `merged` attempt. */
 const PUBLISHED_MIRRORED_FIELDS = ["counts", "provenanceRejectionReasons", "inputBytes", "elapsedMs"];
+
+/** Outcomes whose producer contract ALWAYS emits the exact counts and per-reason provenance records. */
+const PRODUCER_COUNTS_OUTCOMES = new Set(["merged", "empty", "rejected", "published"]);
+/** Outcomes whose producer contract NEVER emits counts or provenance telemetry (identity + input/elapsed only). */
+const PRODUCER_BARE_OUTCOMES = new Set(["failed", "timeout", "aborted"]);
 
 /** Exact required integer fields of the runtime `counts` contract (provenanceChecked optional; its accepted+rejected consistency is validated by the metrics, not the schema). */
 const COUNTS_REQUIRED_INTEGER_FIELDS = [
@@ -172,6 +195,52 @@ function gateFieldMalformation(event) {
 	if (!isExactIntegerRecord(event.provenanceRejectionReasons, PROVENANCE_REASON_FIELDS)) return "provenanceRejectionReasons";
 	if (!isNonNegativeFiniteInteger(event.inputBytes)) return "inputBytes";
 	if (!isNonNegativeFiniteNumber(event.elapsedMs)) return "elapsedMs";
+	return undefined;
+}
+
+/**
+ * Outcome-specific runtime schema for a terminal representative, mirroring
+ * exactly what the production emitters in extensions/review-table.ts emit for
+ * each outcome:
+ *
+ *  - EVERY eligible terminal event (`recordOutcome`) always carries the
+ *    attempt identity fields (current `schemaVersion`, explicit nonempty
+ *    `attemptId`), a finite nonnegative integer `inputBytes` (the assembled
+ *    payload size, always present), and a finite nonnegative `elapsedMs`
+ *    (always present) — including `failed`, `timeout`, and `aborted`.
+ *  - `merged`, `empty`, `rejected`, and the `published` decoration always
+ *    additionally carry the exact counts record (five required integer fields,
+ *    optional `provenanceChecked`) and the exact three-counter
+ *    `provenanceRejectionReasons` record — identical shape rules to the
+ *    merged→published pair validation.
+ *  - `empty` is emitted only for a schema-valid `{"findings":[]}` answer with
+ *    no rejected candidates, so its counts and reason counters must all be
+ *    zero; any nonzero value contradicts the producer and is malformed.
+ *  - `failed`, `timeout`, and `aborted` never carry counts or provenance
+ *    telemetry; presence of either contradicts the producer, so fabricated
+ *    gate fields can never enter the provenance or latency denominators.
+ *
+ * Returns the first violated field name, or undefined when the record matches
+ * its own outcome's runtime emission contract. Applied to EVERY terminal
+ * representative before it enters `runs`, not only to merged→published pairs.
+ */
+function terminalRepresentativeMalformation(entry) {
+	if (entry.schemaVersion !== CURRENT_SCHEMA_VERSION) return "schemaVersion";
+	if (typeof entry.attemptId !== "string" || !entry.attemptId) return "attemptId";
+	if (!isNonNegativeFiniteInteger(entry.inputBytes)) return "inputBytes";
+	if (!isNonNegativeFiniteNumber(entry.elapsedMs)) return "elapsedMs";
+	if (PRODUCER_COUNTS_OUTCOMES.has(entry.outcome)) {
+		if (!isExactIntegerRecord(entry.counts, COUNTS_REQUIRED_INTEGER_FIELDS, ["provenanceChecked"])) return "counts";
+		if (!isExactIntegerRecord(entry.provenanceRejectionReasons, PROVENANCE_REASON_FIELDS)) return "provenanceRejectionReasons";
+		if (entry.outcome === "empty") {
+			const countsAllZero = Object.values(entry.counts).every((value) => value === 0);
+			const reasonsAllZero = Object.values(entry.provenanceRejectionReasons).every((value) => value === 0);
+			if (!countsAllZero || !reasonsAllZero) return "inconsistent_empty_counts";
+		}
+	} else if (PRODUCER_BARE_OUTCOMES.has(entry.outcome)) {
+		if (entry.counts !== undefined) return "unexpected_counts";
+		if (entry.provenanceRejectionReasons !== undefined) return "unexpected_provenanceRejectionReasons";
+	}
 	return undefined;
 }
 
@@ -271,6 +340,21 @@ export function tallyRuns(entries) {
 		const representative = terminal === "published" && mergedEvent
 			? { ...mergedEvent, outcome: "published", ...(publishedEvent?.inlineComments !== undefined ? { inlineComments: publishedEvent.inlineComments } : {}), ...(publishedEvent?.publishStatus !== undefined ? { publishStatus: publishedEvent.publishStatus } : {}) }
 			: attemptEntries.at(-1);
+		// Outcome-specific runtime schema: EVERY terminal representative must
+		// independently match the exact emission contract of its own outcome
+		// before it may enter `runs` — merged-only terminals included. A
+		// representative missing or malforming any producer-required field
+		// (counts, per-reason provenance counters, inputBytes, elapsedMs), an
+		// empty claiming nonzero findings, or a bare failure fabricating counts
+		// becomes an invalid attempt: it counts against success and sample
+		// volume and keeps the gate invalid; it is never silently dropped or
+		// counted favorably. Absence of a published mirror never waives this
+		// validation (publishing is default-off).
+		const representativeMalformation = terminalRepresentativeMalformation(representative);
+		if (representativeMalformation !== undefined) {
+			invalid.push({ ...representative, invalidReason: `terminal_malformed_${representativeMalformation}` });
+			continue;
+		}
 		// Latency completeness: every event's elapsedMs must agree on exactly one
 		// finite nonnegative measurement (legitimate 0 counts).
 		const elapsedValues = new Set();
@@ -320,6 +404,11 @@ const nonNegativeInteger = (value) => Number.isInteger(value) && value >= 0 ? va
  * finite nonnegative elapsedMs terminal measurement (legitimate 0 counts in
  * the p50). Missing, negative, nonnumeric, nonfinite, or conflicting latency
  * marks telemetry/gate invalid and cannot pass the default-on gate.
+ *
+ * Since the outcome-specific runtime schemas are enforced at tally time, every
+ * run that reaches this function already carries a well-formed terminal
+ * elapsedMs on each of its events; the latency checks below remain as
+ * defense-in-depth over the runs array.
  */
 export function computeGateMetrics(runs, excluded = [], invalid = []) {
 	const total = runs.length + invalid.length;
@@ -475,7 +564,7 @@ export function formatScoreboard(runs, metrics) {
 	}
 	if (metrics.invalidAttempts > 0) {
 		lines.push(
-			`WARNING: ${metrics.invalidAttempts} attempt(s) failed the per-attempt event state machine;`,
+			`WARNING: ${metrics.invalidAttempts} attempt(s) failed the per-attempt event state machine or their outcome-specific runtime schema;`,
 			"they count against success and sample volume and keep the gate invalid.",
 			"",
 		);

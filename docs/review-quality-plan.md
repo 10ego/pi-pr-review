@@ -367,6 +367,19 @@ now carries `schemaVersion: 2`. The semantics of that cohort:
   attempt — never the favorable record. Invalid attempts count against
   execution success and sample volume and keep gate telemetry validity
   `INVALID`; they are never silently dropped.
+- **Outcome-specific runtime schemas on every terminal representative.**
+  Before a terminal representative enters the §9 metrics it must match the
+  exact emission contract of its own outcome, derived from the production
+  emitters — independently of whether a `published` mirror exists to
+  cross-check against (publishing is default-off). Every eligible terminal
+  event carries `attemptId`, `schemaVersion`, a nonnegative integer
+  `inputBytes`, and a finite nonnegative `elapsedMs`; `merged`, `empty`,
+  `rejected`, and `published` additionally carry the exact counts and
+  per-reason provenance records (an `empty` must be all-zero); `failed`,
+  `timeout`, and `aborted` never carry counts or provenance telemetry. A
+  representative violating its outcome schema becomes an invalid attempt:
+  it fails closed against execution success and sample volume and keeps the
+  gate invalid — merged-only attempts can never bypass validation.
 - **Correct empty is success.** A schema-valid `{"findings":[]}` answer on
   eligible lane evidence keeps the `empty` outcome label but counts as
   extractor **execution** success in §9 tooling. It still claims nothing
