@@ -74,7 +74,7 @@
       "id": "data-shape-contract",
       "title": "Returned user shape no longer satisfies its API",
       "diff": "diffs/data-shape-contract.diff",
-      "diffSha256": "c6601267fc494b393cf7f825b5e80bdef44072ee2c1aa1bafc451ac3d9797d89",
+      "diffSha256": "ed864f90d71d8b4ecc117f80d2a9fed27b177954a818d1f9a9a6b80508d23cbb",
       "changedFiles": [
         "src/users.ts"
       ],
@@ -133,7 +133,7 @@
       "id": "state-cancellation-race",
       "title": "Superseded searches render cancellation as failure",
       "diff": "diffs/state-cancellation-race.diff",
-      "diffSha256": "61e161802adbc95ba4d154a974a1b2e622d24b2073397e7e03fa851e3f1801bf",
+      "diffSha256": "933ddfbd172a14f93d747e490de60ea7e63fa84137f79f8a7377152798b5700f",
       "changedFiles": [
         "src/search.ts"
       ],
@@ -193,7 +193,7 @@
       "id": "resource-listener-leak",
       "title": "Socket view loses listener ownership",
       "diff": "diffs/resource-listener-leak.diff",
-      "diffSha256": "834c845970030752014ea8ad7703874fed8510c0786686e66c8601a4fc00b95c",
+      "diffSha256": "c0c02b8d64db28352674a3de21d0abd54f6977925c5669952c6bb6968a1d4ad2",
       "changedFiles": [
         "src/socket-view.ts"
       ],
@@ -312,7 +312,7 @@
       "id": "command-injection",
       "title": "Branch input is interpolated into a shell command",
       "diff": "diffs/command-injection.diff",
-      "diffSha256": "bc171405ae2aa3a70217b0c93723e016c63b3f935b9cdbca7c893371b68279a8",
+      "diffSha256": "2bfb0c3f8065f829a565066cd0cd617975ad5375b5375b6cd547ec676b4ede55",
       "changedFiles": [
         "src/git.ts"
       ],
@@ -371,7 +371,7 @@
       "id": "algorithmic-quadratic",
       "title": "Reconciliation rebuilds IDs for every item",
       "diff": "diffs/algorithmic-quadratic.diff",
-      "diffSha256": "b4753e1425b300c26fd4221c8d49623cee3223d3deed2dc69135455bc4dde08a",
+      "diffSha256": "615fe1a3443dae7bcde3216154a375b7786c83667f3b001ce568e219cb095e20",
       "changedFiles": [
         "src/reconcile.ts"
       ],
@@ -432,7 +432,7 @@
       "id": "cross-shard-cache-contract",
       "title": "Cache return envelope is not integrated at its caller",
       "diff": "diffs/cross-shard-cache-contract.diff",
-      "diffSha256": "fedc1ae952e72c196d42319992c0affc54f4762db4f4bc25db01fdf406ce0a3c",
+      "diffSha256": "36318dfe23bd1d93d9d0d457e1394a754ca6c13e94e0529aafd9b697ea51b836",
       "changedFiles": [
         "src/cache.ts",
         "src/profile.ts"
@@ -499,7 +499,7 @@
       "id": "boundary-nonfinite-timeout",
       "title": "Timeout parsing admits non-finite numbers",
       "diff": "diffs/boundary-nonfinite-timeout.diff",
-      "diffSha256": "fdc70ce826752a66451c47babebe1cc520a99092eb29df6a994ade1bb901d171",
+      "diffSha256": "30114f2fe7b0dbc22d72486e10ed7e273ad3fd1d7ac18d55479aedc79f8dbfd3",
       "changedFiles": [
         "src/options.ts"
       ],
@@ -562,7 +562,7 @@
       "id": "clean-batched-lookup",
       "title": "Batch user lookup preserves order and missing entries",
       "diff": "diffs/clean-batched-lookup.diff",
-      "diffSha256": "0416303a92d6f9ba8460243ce0169038167cacb71418e7b66ebce05027401f95",
+      "diffSha256": "72c2c0ab8888f3c4392826acb9062aca7a732a14275c7a63cd404ea5009334a5",
       "changedFiles": [
         "src/users.ts"
       ],
@@ -574,7 +574,7 @@
       "id": "clean-finally-cleanup",
       "title": "Lock release is guaranteed with finally",
       "diff": "diffs/clean-finally-cleanup.diff",
-      "diffSha256": "be22bc00d993ecf7e686c18a26880b3f7e9fb8ce9605210bb1911f301437c6ae",
+      "diffSha256": "05c479c4e0951344ba12bb75ed53e71359006033d244145670113114516bd0ad",
       "changedFiles": [
         "src/lock.ts"
       ],

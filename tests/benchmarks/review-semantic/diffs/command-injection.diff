@@ -2,7 +2,7 @@ diff --git a/src/git.ts b/src/git.ts
 index 1111111..2222222 100644
 --- a/src/git.ts
 +++ b/src/git.ts
-@@ -14,7 +14,8 @@ import { execFile } from "node:child_process";
+@@ -14,3 +14,4 @@ import { execFile } from "node:child_process";
  export async function showBranch(branch: string) {
 -  return execFileAsync("git", ["show", branch]);
 +  const command = `git show ${branch}`;

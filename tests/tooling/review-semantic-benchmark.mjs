@@ -82,10 +82,29 @@ function resolveContainedRegular(root, relative, label) {
 	return resolved;
 }
 function parseDiffFiles(text) {
-	return [...text.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map((match) => {
+	const files = [...text.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)].map((match) => {
 		invariant(match[1] === match[2], `rename diffs are not supported in corpus: ${match[1]} -> ${match[2]}`);
 		return match[1];
 	});
+	const lines = text.split("\n"); let hunks = 0;
+	for (let index = 0; index < lines.length; index++) {
+		const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[index]);
+		if (!match) continue;
+		hunks++; let oldCount = 0, newCount = 0; index++;
+		for (; index < lines.length && !lines[index].startsWith("diff --git ") && !lines[index].startsWith("@@ "); index++) {
+			const line = lines[index];
+			if (line === "" && index === lines.length - 1) break;
+			if (line.startsWith("\\ No newline at end of file")) continue;
+			invariant(line.startsWith(" ") || line.startsWith("+") || line.startsWith("-"), `malformed unified diff line: ${line}`);
+			if (!line.startsWith("+")) oldCount++;
+			if (!line.startsWith("-")) newCount++;
+		}
+		index--;
+		const expectedOld = match[2] === undefined ? 1 : Number(match[2]), expectedNew = match[4] === undefined ? 1 : Number(match[4]);
+		invariant(oldCount === expectedOld && newCount === expectedNew, `unified diff hunk count mismatch: expected ${expectedOld}/${expectedNew}, got ${oldCount}/${newCount}`);
+	}
+	invariant(files.length > 0 && hunks >= files.length, "corpus diff must contain at least one hunk per changed file");
+	return files;
 }
 
 export function loadCorpus(file) {
@@ -134,7 +153,7 @@ export function loadCorpus(file) {
 	return { corpus: value, corpusFile, root, sha256: sha256(bytes), bytes: bytes.length };
 }
 
-function validatePlan(plan, corpusInfo) {
+export function validatePlan(plan, corpusInfo) {
 	invariant(exactKeys(plan, ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "repetitions", "entries"]), "plan schema");
 	invariant(plan.schemaVersion === 1 && plan.corpusId === corpusInfo.corpus.corpusId && plan.corpusSha256 === corpusInfo.sha256 && SHA256.test(plan.planId), "plan identity");
 	invariant(Array.isArray(plan.modes) && plan.modes.length > 0 && new Set(plan.modes).size === plan.modes.length && plan.modes.every((mode) => MODES.has(mode)), "plan modes");
@@ -153,6 +172,11 @@ function validatePlan(plan, corpusInfo) {
 	const identity = { schemaVersion: plan.schemaVersion, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, repetitions: plan.repetitions, entries: plan.entries };
 	invariant(sha256(Buffer.from(canonical(identity))) === plan.planId, "planId does not bind canonical plan");
 	return plan;
+}
+
+export function expectedModeTopology(mode) {
+	invariant(MODES.has(mode), `unknown mode ${mode}`);
+	return { passIds: [...MODE_TOPOLOGIES[mode].passIds], shardCount: 1, maxParallel: MODE_TOPOLOGIES[mode].maxParallel };
 }
 
 export function createPlan(corpusInfo, modes, repetitions) {
@@ -194,7 +218,7 @@ function validateRun(run, planEntry, bundleRoot) {
 	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
-	invariant(exactKeys(run.timing, ["parentValidationMs", "parentSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationMs) && finiteNonnegative(run.timing.parentSynthesisMs), `${label} parent timing`);
+	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
 	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "topology"]), `${label} configuration schema`);
 	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
 	const topology = run.configuration.topology, expectedTopology = MODE_TOPOLOGIES[run.mode];
@@ -205,7 +229,7 @@ function validateRun(run, planEntry, bundleRoot) {
 	for (const lane of run.lanes) {
 		invariant(exactKeys(lane, ["id", "lens", "status", "elapsedMs", "provider", "model"]), `${label} lane schema`);
 		invariant(typeof lane.id === "string" && lane.id.length > 0 && !laneIds.has(lane.id), `${label} lane id`); laneIds.add(lane.id);
-		invariant(typeof lane.lens === "string" && lane.lens.length > 0 && LANE_STATES.has(lane.status) && finiteNonnegative(lane.elapsedMs) && typeof lane.provider === "string" && lane.provider.length > 0 && typeof lane.model === "string" && lane.model.length > 0, `${label} lane metadata`);
+		invariant(typeof lane.lens === "string" && lane.lens.length > 0 && LANE_STATES.has(lane.status) && (lane.elapsedMs === null || finiteNonnegative(lane.elapsedMs)) && (lane.provider === null || typeof lane.provider === "string" && lane.provider.length > 0) && (lane.model === null || typeof lane.model === "string" && lane.model.length > 0) && (lane.status !== "complete" || lane.elapsedMs !== null && lane.provider !== null && lane.model !== null), `${label} lane metadata`);
 		invariant(PASS_LENSES[lane.id] === lane.lens, `${label} lane ${lane.id} lens`);
 	}
 	invariant(run.lanes.length === expectedTopology.passIds.length && expectedTopology.passIds.every((id) => laneIds.has(id)), `${label} required lane set`);
@@ -302,7 +326,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			findings: { total: allFindings, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
 			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length) },
-			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationP50: percentile(group.map(({ run }) => run.timing.parentValidationMs), 0.5), parentSynthesisP50: percentile(group.map(({ run }) => run.timing.parentSynthesisMs), 0.5) },
+			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
 	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
@@ -346,6 +370,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 	invariant(runs.every((run) => canonical(comparableConfiguration(run)) === configurationCanonical), "runs use incomparable provider/model/thinking/tool/version configuration");
 	const laneModels = new Map();
 	for (const run of runs) for (const lane of run.lanes) {
+		if (lane.provider === null || lane.model === null) continue;
 		const identity = `${lane.provider}\0${lane.model}`;
 		invariant(!laneModels.has(lane.id) || laneModels.get(lane.id) === identity, `lane ${lane.id} changed provider/model within the comparison`);
 		laneModels.set(lane.id, identity);

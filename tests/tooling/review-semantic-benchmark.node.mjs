@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { createPlan, loadCorpus, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { collectSessionResult, materializeOldFiles } from "./review-semantic-collect.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v1.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -36,7 +38,7 @@ function createBundle({ modes = ["balanced", "full"], repetitions = 1, mutateRun
 		const run = {
 			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
-			timing: { parentValidationMs: 10, parentSynthesisMs: 5 },
+			timing: { parentValidationSynthesisMs: 15 },
 			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", topology: { passIds: topology.passIds, shardCount: 1, maxParallel: topology.maxParallel } },
 			lanes: topology.passIds.map((id) => ({ id, lens: id, status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
 			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
@@ -167,4 +169,35 @@ test("result schemas reject extra fields, invalid latency, unsafe paths, and sym
 	}
 	const bundle = createBundle({ modes: ["balanced"] }), reference = bundle.runs[0].artifacts[0], target = path.join(bundle.root, reference.path), real = `${target}.real`; fs.renameSync(target, real); fs.symlinkSync(real, target);
 	assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /non-symlink|artifact/);
+});
+
+test("every corpus diff is syntactically applicable to its materialized base", () => {
+	const info = loadCorpus(CORPUS);
+	for (const item of info.corpus.cases) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-materialize-")), diff = path.join(info.root, item.diff);
+		materializeOldFiles(fs.readFileSync(diff, "utf8"), root);
+		const check = spawnSync("git", ["apply", "--check", diff], { cwd: root, encoding: "utf8" });
+		assert.equal(check.status, 0, `${item.id}: ${check.stderr}`);
+	}
+});
+
+test("session collection maps host lanes, telemetry, findings, and failure fallback", async () => {
+	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), entry = plan.entries[0], item = info.corpus.cases.find((candidate) => candidate.id === entry.caseId), passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], laneArtifacts = passIds.map((passId) => ({ passId, lifecycle: "complete", observedModel: "fixture/lane", startOffsetMs: 1, endOffsetMs: 11, attempts: [] })), review = { findings: [{ title: "[P2] Finding", body: "Concrete issue.", severity: "P2", code_location: { absolute_file_path: item.changedFiles[0], side: "RIGHT", line_range: { start: 1, end: 1 } } }] }, records = [
+		{ type: "custom", customType: "pr-review-completed", data: { review, rawText: "# PR Review", laneArtifacts, synthesisQuality: "fully_parsed", completeness: "complete" } },
+		{ type: "custom", customType: "pr-review-telemetry", data: { completion: "terminal_response", totalWallMs: 99, phases: { aggregateOrchestration: { elapsedMs: 17 } } } },
+	];
+	const collected = await collectSessionResult({ records, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ write: false }], parseReview: () => review });
+	assert.equal(collected.run.elapsedMs, 99); assert.equal(collected.run.timing.parentValidationSynthesisMs, 17); assert.equal(collected.run.lanes.length, 5); assert.ok(collected.run.lanes.every((lane) => lane.status === "complete" && lane.provider === "fixture" && lane.model === "lane")); assert.equal(collected.run.publication.artifact, "canonical"); assert.equal(collected.run.findings[0].location.path, item.changedFiles[0]);
+	const failed = await collectSessionResult({ records: [], entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "provider failed", ghAudit: [{ write: false }], parseReview: () => undefined });
+	assert.equal(failed.run.publication.artifact, "raw_body_only"); assert.ok(failed.run.lanes.every((lane) => lane.status === "failed" && lane.elapsedMs === null && lane.provider === null)); assert.match(failed.markdown, /provider failed/);
+});
+
+test("collector executes exactly one next entry through the read-only gh shim", () => {
+	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-collector-")), planFile = path.join(root, "plan.json"), bundle = path.join(root, "bundle"), mockPi = path.join(root, "mock-pi.mjs"), first = plan.entries[0], passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"];
+	fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
+	fs.writeFileSync(mockPi, `#!/usr/bin/env node\nimport fs from 'node:fs';import {spawnSync} from 'node:child_process';const a=process.argv.slice(2),d=a[a.indexOf('--session-dir')+1];const g=spawnSync('gh',['repo','view','--json','nameWithOwner,url'],{encoding:'utf8'});if(g.status!==0)process.exit(9);fs.mkdirSync(d,{recursive:true});const ids=${JSON.stringify(passIds)};const lanes=ids.map(passId=>({passId,lifecycle:'complete',observedModel:'fixture/lane',startOffsetMs:1,endOffsetMs:11,attempts:[]}));const records=[{type:'session',version:3,id:'s',timestamp:'2026-08-28T00:00:00Z',cwd:process.cwd()},{type:'custom',customType:'pr-review-completed',data:{review:{findings:[]},rawText:'# PR Review\\n\\nNo findings.',laneArtifacts:lanes,synthesisQuality:'fully_parsed',completeness:'complete'}},{type:'custom',customType:'pr-review-telemetry',data:{completion:'terminal_response',totalWallMs:50,phases:{aggregateOrchestration:{elapsedMs:5}}}}];fs.writeFileSync(d+'/session.jsonl',records.map(JSON.stringify).join('\\n')+'\\n');process.stdout.write('# PR Review\\n\\nNo findings.\\n');\n`, { mode: 0o700 });
+	const bun = spawnSync("which", ["bun"], { encoding: "utf8" }).stdout.trim(); assert.ok(bun);
+	const collect = spawnSync(bun, [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", bundle, "--entry", first.entryId, "--pi", mockPi, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 });
+	assert.equal(collect.status, 0, collect.stderr); const result = JSON.parse(fs.readFileSync(path.join(bundle, "runs", `${first.entryId}.json`), "utf8")); assert.equal(result.planEntryId, first.entryId); assert.equal(result.publication.artifact, "canonical"); assert.equal(result.configuration.model, "parent"); assert.equal(result.lanes.length, 5);
+	const rerun = spawnSync(bun, [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", bundle, "--entry", first.entryId, "--pi", mockPi, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 }); assert.notEqual(rerun.status, 0); assert.match(rerun.stderr, /reruns are forbidden/);
 });

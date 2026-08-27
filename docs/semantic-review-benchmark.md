@@ -5,7 +5,8 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 ## Boundaries
 
 - The checked-in planner and scorer make no model, Pi, GitHub, network, subprocess, or publication calls.
-- Real-model collection is a separate, explicitly initiated activity. Every collection must suppress publication and retain its raw lane and canonical review artifacts.
+- The separate collector runs only with the explicit `--acknowledge-real-model-run` flag. It launches Pi against a temporary local fixture repository, puts a strict read-only `gh` shim first on `PATH`, rejects every unknown or write-shaped GitHub command, and always invokes `/pr-review ... --no-comment`. It can contact the configured model providers but never contacts GitHub.
+- Every collection retains normalized and raw lane evidence plus the canonical/degraded review envelope.
 - Corpus diffs contain no expected-finding IDs, rationales, or benchmark annotations. Do not add answer clues to reviewer-visible files, prompts, titles, or diffs.
 - Results are immutable inputs. The scorer creates its report with exclusive-create semantics and rejects missing, duplicate, malformed, symlinked, path-escaping, or hash-mismatched evidence.
 - Finding count is diagnostic. Recall, false positives, completeness, fallback, and latency are evaluated separately.
@@ -50,13 +51,35 @@ The deterministic plan contains every `(mode, repetition, case)` tuple exactly o
 
 Supported modes are `balanced`, `full`, `major-only`, and `deep`.
 
+## Collect one real-model entry
+
+The collector intentionally accepts exactly one plan entry per invocation. It requires the next uncollected entry in plan order, creates results and evidence exclusively, and refuses reruns. This makes provider failures and timeouts durable observations rather than opportunities for cherry-picking.
+
+```bash
+npm run benchmark:review:collect -- \
+  --corpus tests/benchmarks/review-semantic/corpus-v1.json \
+  --plan /absolute/evidence/plan.json \
+  --bundle /absolute/evidence/bundle \
+  --entry <next-plan-entry-id> \
+  --pi "$(command -v pi)" \
+  --model <provider/parent-model> \
+  --thinking <level> \
+  --acknowledge-real-model-run
+```
+
+Pi loads this checkout's extension and prompt explicitly with normal extension/skill/context discovery disabled. Reviewer tiers still come from the user's `pr-review.json`; the bundle records the observed provider/model for every lane. The scorer rejects comparisons if the parent provider/model/thinking/tool/version changes or if a shared lane ID changes provider/model between runs.
+
+The local `gh` shim serves generic PR metadata, the pinned corpus diff, and the temporary fixture head. Reviewer-visible PR metadata never contains case IDs or expected-answer text. The collector materializes a real Git base/head repository from the diff so configured read-only repository tools can inspect the changed files. It verifies every observed `gh` command was an allowed read before committing the result.
+
+A Pi/provider failure still produces a result: required lanes without retained evidence are `failed` with null timing/model identity, publication is `raw_body_only`, and stdout/stderr stay in the lane evidence envelope. Do not delete that result or rerun the entry.
+
 ## Result bundle contract
 
 Place one JSON result per plan entry directly under `BUNDLE/runs/`. Store raw evidence elsewhere beneath `BUNDLE/` and reference it from the result. Each result is strictly schema-checked and must contain:
 
 - exact plan entry, case, mode, and repetition identity;
 - start timestamp and total wall time;
-- parent validation and synthesis time;
+- observable combined parent validation/synthesis time (the host's aggregate orchestration interval outside review and verification tools);
 - provider, model, thinking, tool policy, package version, pass IDs, shard count, and maximum parallelism;
 - every required lane's ID, lens, lifecycle (`complete`, `partial`, `timed_out`, or `failed`), elapsed time, provider, and model;
 - the exact ordinary-diff topology for the selected mode (balanced/major-only five lanes, full six lanes, or deep one lane);
@@ -84,7 +107,7 @@ Without `--gates`, the report status is `baseline_required`: metrics are valid b
 - complete, partial, timed-out, and failed lane rates;
 - canonical/degraded publication fallback rate;
 - p50/p95, mean, population standard deviation, minimum, and maximum wall time;
-- p50 parent validation and synthesis time;
+- p50 combined parent validation/synthesis time;
 - per-run matched and missed stable finding IDs.
 
 Percentiles use nearest rank over all planned runs. Failed and fallback runs stay in every denominator.

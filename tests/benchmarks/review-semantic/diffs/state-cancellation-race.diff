@@ -2,7 +2,7 @@ diff --git a/src/search.ts b/src/search.ts
 index 1111111..2222222 100644
 --- a/src/search.ts
 +++ b/src/search.ts
-@@ -20,9 +20,13 @@ export class SearchController {
+@@ -20,7 +20,11 @@ export class SearchController {
    async search(query: string) {
      this.active?.abort();
      this.active = new AbortController();
