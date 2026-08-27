@@ -388,13 +388,16 @@ function containsConcept(text, term) {
 	return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${variant}(?![\\p{L}\\p{N}_])`, "iu").test(text);
 }
 function maskEmbeddedConcepts(text, groups) {
-	let masked = text;
-	for (const term of groups.flat()) {
-		if (!/^[\p{L}\p{N}_]+$/u.test(term)) continue;
-		const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		masked = masked.replace(new RegExp(`([\\p{L}\\p{N}_])(${escaped})|(${escaped})(?=[\\p{L}\\p{N}_])`, "giu"), (match, prefix, embeddedAfter, embeddedBefore) => prefix ? `${prefix}${"¤".repeat(embeddedAfter.length)}` : "¤".repeat(embeddedBefore.length));
-	}
-	return masked;
+	const terms = groups.flat().filter((term) => /^[\p{L}\p{N}_]+$/u.test(term));
+	return text.replace(/[\p{L}\p{N}_]+/gu, (token) => {
+		let masked = token;
+		for (const term of terms) {
+			if (containsConcept(token.toLocaleLowerCase("en-US"), term)) continue;
+			const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			masked = masked.replace(new RegExp(escaped, "giu"), (embedded) => "¤".repeat(embedded.length));
+		}
+		return masked;
+	});
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;

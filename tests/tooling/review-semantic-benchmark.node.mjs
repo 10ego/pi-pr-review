@@ -128,6 +128,8 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [unrelatedCompile] }).missedExpectedIds, [expected.id]);
 	const gerund = { ...exact, title: "[P1] Escape the branch before interpolation", body: "The branch requires escaping before interpolation or arbitrary shell commands execute." };
 	assert.deepEqual(scoreRun(item, { findings: [gerund] }).matchedExpectedIds, [expected.id]);
+	const inputAlias = { ...exact, title: "[P1] Avoid shell interpolation", body: "Caller input reaches the shell and enables command injection." };
+	assert.deepEqual(scoreRun(item, { findings: [inputAlias] }).matchedExpectedIds, [expected.id]);
 	const performance = info.corpus.cases.find((candidate) => candidate.id === "algorithmic-quadratic"), performanceExpected = performance.expectedFindings[0], negatedPerformance = { title: "[P2] Mapping each item inside the filter", body: "This does not break performance; the map and includes work is acceptable rather than a quadratic defect.", severity: "P2", location: { ...performanceExpected.acceptableLocations[0] } };
 	assert.deepEqual(scoreRun(performance, { findings: [negatedPerformance] }).missedExpectedIds, [performanceExpected.id]);
 	const allConceptsNegated = { ...negatedPerformance, body: "Mapping each item inside the filter is acceptable. This is never a quadratic performance defect even though each item uses map and includes." };
