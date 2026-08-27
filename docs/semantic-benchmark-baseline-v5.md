@@ -1,8 +1,8 @@
 # Semantic benchmark baseline v5
 
-Status: **diagnostic baseline accepted as evidence; retention gate not accepted**.
+Status: **historical diagnostic evidence; corpus invalid for gates or topology retention**.
 
-This report is the first complete real-model balanced/full comparison over the versioned semantic corpus. It is intentionally not an approval of the current quality level and does not authorize a topology change by itself.
+This report is the first complete real-model balanced/full comparison over the versioned semantic corpus. Independent review later established that `clean-batched-lookup` was not clean: the patch removed the empty-input no-query behavior. The raw evidence remains immutable historical context, but v5 clean-control rates are invalid and no v5 report may authorize a topology change or baseline gate.
 
 ## Identity
 
@@ -51,25 +51,6 @@ The original derived report remains immutable evidence, but its interpretation i
 
 ## Interpretation
 
-The corrected baseline shows equal balanced/full critical, cross-file, contract, security, and correctness recall. Full improves P2 and performance/resource recall, but costs roughly 82 seconds at p50, emits findings on every clean control, and has a much higher publication-fallback rate. Balanced is faster and less noisy but has lower lane completion and one additional P2 miss. Neither mode is healthy enough to define a permissive acceptance gate:
+The recall, lifecycle, fallback, and latency observations remain useful historical diagnostics. Clean-control finding rates do not: repeated reviews correctly identified the newly introduced empty-input database call, which the v5 labels incorrectly counted as a false positive. Because clean-control validity is part of the benchmark contract, this invalidates the whole v5 cohort for gate derivation rather than merely adjusting one metric after outcomes.
 
-- only two repetitions were collected, which is weak for latency-tail policy;
-- full mode emitted findings on every clean-control run, making its observed clean-control ceiling (`1.0`) non-protective;
-- both modes had substantial partial/failed lane and fallback rates;
-- exact severity was only 63–67%, with under- and overclassification both observed.
-
-Therefore `report.json` correctly remains `baseline_required`; there is no checked-in `accepted-gates` file. This prevents a future experiment from claiming success merely by satisfying weak observed ceilings.
-
-## Provisional no-regression targets for topology experiments
-
-Until a stronger repeated baseline establishes accepted gates, #60 experiments must at minimum:
-
-1. preserve or improve each mode's P0/P1, P2, cross-file, and per-lens recall shown above;
-2. reduce, not preserve, full-mode clean-control findings and publication fallback;
-3. not reduce exact-severity or lane-complete rates;
-4. not increase duplicate rate;
-5. improve p50 without worsening p95 or standard deviation;
-6. retain every failed/timed-out row in comparisons;
-7. use the same corpus, environment fingerprint, provider/model identities, and immutable evidence contract.
-
-A candidate that cannot satisfy these relative targets is rejected even though no absolute gate has been accepted yet.
+`report.json` and `report-adjudicated.json` therefore remain `baseline_required`, and there is no accepted-gates file. Corpus v6 replaces only that defective clean-control diff by preserving the empty-input fast path. All topology retention and fresh baseline work must use v6 and fresh evidence; v5 metrics cannot serve as relative no-regression thresholds.

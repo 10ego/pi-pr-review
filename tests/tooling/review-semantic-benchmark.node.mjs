@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 
-const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v5.json");
+const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
