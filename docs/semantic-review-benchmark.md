@@ -27,7 +27,7 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 - non-finite boundary input;
 - two clean controls.
 
-Each expected finding has a stable ID, explicit target severity, allowed observed severity set, one or more acceptable diff locations, semantic concept groups, assertion-pattern alternatives, applicable lenses, a blocking classification derived from the target severity, and a cross-file flag. Recall denominators use `targetSeverity`; reordering allowed severities cannot move an opportunity between P0/P1 and P2. A finding matches only when its severity is allowed, its location overlaps an accepted range on the correct side, its title/body contains at least one term from every concept group, and it satisfies one assertion pattern from every assertion group. Explicit non-findings such as “safe,” “not an issue,” or “no finding exists” are rejected before matching. Matching uses deterministic maximum bipartite matching so result order cannot change recall.
+Each expected finding has a stable ID, explicit target severity, allowed observed severity set, one or more acceptable diff locations, semantic concept groups, assertion-pattern examples for audit/review, applicable lenses, a blocking classification derived from the target severity, and a cross-file flag. Recall denominators use `targetSeverity`; reordering allowed severities cannot move an opportunity between P0/P1 and P2. A finding matches only when its severity is allowed, its location falls on the accepted changed line or one adjacent context line on the correct side, and its title/body contains at least one term from every concept group. Matching never requires one exact wording template. Explicit non-findings such as “safe,” “not an issue,” or “no finding exists,” plus case-specific contradiction patterns, are rejected before matching. Matching uses deterministic maximum bipartite matching so result order cannot change recall.
 
 ### Adding a case
 
@@ -109,7 +109,7 @@ npm run benchmark:review -- score \
 Without `--gates`, the report status is `baseline_required`: metrics are valid but cannot accept a topology. The report also emits a configuration fingerprint binding the comparable provider/model/thinking/tool/version plus Node, Pi runtime, source, collector, and effective-config identity. The scorer reports overall and per-mode:
 
 - P0/P1, P2, per-lens, and cross-file recall;
-- clean-control case false-positive rate and unmatched finding count/rate;
+- clean-control case false-positive rate and finding count/rate; unmatched findings on seeded-defect cases are reported separately rather than mislabeled as false positives;
 - duplicate finding count/rate;
 - exact-severity rate plus underclassified/overclassified matched finding counts (recall denominators continue to use target severity);
 - complete, partial, timed-out, and failed lane rates;
@@ -142,25 +142,43 @@ Thresholds are not silently embedded in the scorer. After repeated baseline runs
         "minimumP0P1Recall": 1,
         "minimumP2Recall": 0.8,
         "minimumCrossFileRecall": 1,
+        "minimumPerLensRecall": {
+          "correctness": 0.8,
+          "correctness-contracts": 0.8,
+          "security-performance": 0.8,
+          "performance-resources": 0.8
+        },
+        "minimumExactSeverityRate": 0.8,
         "maximumCleanControlCaseFalsePositiveRate": 0.1,
         "maximumDuplicateRate": 0.1,
         "minimumLaneCompleteRate": 0.95,
-        "maximumPublicationFallbackRate": 0.05
+        "maximumPublicationFallbackRate": 0.05,
+        "maximumP50LatencyMs": 300000,
+        "maximumP95LatencyMs": 600000
       },
       "full": {
         "minimumP0P1Recall": 1,
         "minimumP2Recall": 0.8,
         "minimumCrossFileRecall": 1,
+        "minimumPerLensRecall": {
+          "correctness": 0.8,
+          "correctness-contracts": 0.8,
+          "security-performance": 0.8,
+          "performance-resources": 0.8
+        },
+        "minimumExactSeverityRate": 0.8,
         "maximumCleanControlCaseFalsePositiveRate": 0.1,
         "maximumDuplicateRate": 0.1,
         "minimumLaneCompleteRate": 0.95,
-        "maximumPublicationFallbackRate": 0.05
+        "maximumPublicationFallbackRate": 0.05,
+        "maximumP50LatencyMs": 300000,
+        "maximumP95LatencyMs": 600000
       }
     }
   }
 }
 ```
 
-Those numbers are examples, not accepted project policy. The baseline review must justify the actual values. A gate file is accepted only when it binds the current plan and configuration fingerprint, and it must define an exact threshold object for every planned mode. Each mode is evaluated independently; strong full-mode output cannot hide a balanced-mode regression in pooled metrics. Re-score with `--gates /path/to/accepted-gates.json`; a threshold failure exits nonzero.
+Those numbers are examples, not accepted project policy. The baseline review must justify the actual values. A gate file is accepted only when it binds the current plan and configuration fingerprint, and it must define an exact threshold object for every planned mode. Each mode is evaluated independently; strong full-mode output cannot hide a balanced-mode regression in pooled metrics. Re-score with both `--gates /path/to/accepted-gates.json` and `--baseline-report /path/to/accepted-baseline-report.json`; the scorer recomputes and verifies the report SHA-256 plus corpus/plan/configuration/result-count bindings before reading thresholds. A threshold failure exits nonzero.
 
 For topology tuning, derive each per-mode threshold from the bound accepted baseline, require no P0/P1 or cross-file recall loss, bound any P2 regression, reject material clean-control or duplicate increases, and evaluate p50/p95 and variance across repeated runs. An apparent latency win caused by incomplete lanes, fallback publication, missing results, a weaker model/configuration, or reduced semantic recall is not an improvement.

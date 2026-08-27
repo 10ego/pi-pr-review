@@ -304,7 +304,7 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 }
 
 function locationMatches(actual, acceptable) {
-	return actual !== null && actual.path === acceptable.path && actual.side === acceptable.side && actual.end >= acceptable.start && actual.start <= acceptable.end;
+	return actual !== null && actual.path === acceptable.path && actual.side === acceptable.side && actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
@@ -312,8 +312,7 @@ function expectedMatchesFinding(expected, finding) {
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
 	const text = rawText.toLocaleLowerCase("en-US");
-	if (!expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))))) return false;
-	return expected.assertionPatterns.every((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
+	return expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))));
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
@@ -335,13 +334,13 @@ export function scoreRun(item, run) {
 	const assignedFinding = maximumMatching(edges, expected.length), matchedFindingIndices = new Set(assignedFinding.filter((index) => index >= 0));
 	const matchedExpectedIds = expected.filter((_, index) => assignedFinding[index] >= 0).map((candidate) => candidate.id), underclassifiedExpectedIds = [], overclassifiedExpectedIds = [];
 	for (let index = 0; index < expected.length; index++) if (assignedFinding[index] >= 0) { const actual = run.findings[assignedFinding[index]].severity, target = expected[index].targetSeverity; if (SEVERITY_RANK[actual] > SEVERITY_RANK[target]) underclassifiedExpectedIds.push(expected[index].id); else if (SEVERITY_RANK[actual] < SEVERITY_RANK[target]) overclassifiedExpectedIds.push(expected[index].id); }
-	let duplicates = 0, falsePositives = 0;
+	let duplicates = 0, unmatchedFindings = 0;
 	for (let index = 0; index < run.findings.length; index++) {
 		if (matchedFindingIndices.has(index)) continue;
 		if (edges[index].some((expectedIndex) => assignedFinding[expectedIndex] >= 0)) duplicates++;
-		else falsePositives++;
+		else unmatchedFindings++;
 	}
-	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), underclassifiedExpectedIds, overclassifiedExpectedIds, duplicateFindings: duplicates, falsePositiveFindings: falsePositives, cleanControlHadFinding: item.cleanControl && run.findings.length > 0 };
+	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), underclassifiedExpectedIds, overclassifiedExpectedIds, duplicateFindings: duplicates, unmatchedFindings, falsePositiveFindings: item.cleanControl ? unmatchedFindings : 0, cleanControlHadFinding: item.cleanControl && run.findings.length > 0 };
 }
 
 function ratio(numerator, denominator) { return denominator === 0 ? null : numerator / denominator; }
@@ -370,7 +369,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		};
 		const perLens = Object.fromEntries(corpusInfo.corpus.lenses.map((lens) => [lens, select((expected) => expected.lenses.includes(lens))]));
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
-		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
+		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
 		return {
 			runs: group.length,
 			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
@@ -378,7 +377,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			crossFile: select((expected) => expected.crossFile),
 			perLens,
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
-			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
+			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), unmatched, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
 			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length) },
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
@@ -387,19 +386,22 @@ export function aggregateScores(corpusInfo, plan, runs) {
 	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
 }
 
-function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint) {
+function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint, baselineReport) {
 	if (!gates) return { status: "baseline_required", passed: false, failures: ["No accepted baseline gate file was supplied; metrics are diagnostic only."] };
 	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "baseline", "thresholds"]), "gate file schema");
 	invariant(gates.schemaVersion === 1 && gates.corpusId === corpusInfo.corpus.corpusId && gates.corpusSha256 === corpusInfo.sha256 && Number.isFinite(Date.parse(gates.acceptedAtUtc)) && typeof gates.rationale === "string" && gates.rationale.length >= 20, "gate file identity");
 	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "configurationFingerprint"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.configurationFingerprint === configurationFingerprint, "gate baseline binding");
+	invariant(baselineReport && baselineReport.sha256 === gates.baseline.reportSha256 && plain(baselineReport.value) && baselineReport.value.schemaVersion === 1 && baselineReport.value.corpusId === corpusInfo.corpus.corpusId && baselineReport.value.corpusSha256 === corpusInfo.sha256 && baselineReport.value.planId === plan.planId && baselineReport.value.configurationFingerprint === configurationFingerprint && baselineReport.value.resultCount === plan.entries.length, "gate baseline report content/hash binding");
 	invariant(exactKeys(gates.thresholds, ["modes"]) && plain(gates.thresholds.modes) && JSON.stringify(Object.keys(gates.thresholds.modes).sort()) === JSON.stringify([...plan.modes].sort()), "gate per-mode threshold partition");
-	const thresholdKeys = ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate"];
+	const thresholdKeys = ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "minimumPerLensRecall", "minimumExactSeverityRate", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate", "maximumP50LatencyMs", "maximumP95LatencyMs"];
 	const failures = [], checkMin = (label, actual, expected) => { if (actual === null || actual < expected) failures.push(`${label} ${actual ?? "n/a"} < ${expected}`); }, checkMax = (label, actual, expected) => { if (actual === null || actual > expected) failures.push(`${label} ${actual ?? "n/a"} > ${expected}`); };
 	for (const mode of plan.modes) {
 		const t = gates.thresholds.modes[mode], m = metrics.modes[mode];
 		invariant(exactKeys(t, thresholdKeys), `gate thresholds schema for ${mode}`);
-		for (const [key, value] of Object.entries(t)) invariant(typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, `gate threshold ${mode}.${key}`);
-		checkMin(`${mode} P0/P1 recall`, m.p0p1.recall, t.minimumP0P1Recall); checkMin(`${mode} P2 recall`, m.p2.recall, t.minimumP2Recall); checkMin(`${mode} cross-file recall`, m.crossFile.recall, t.minimumCrossFileRecall); checkMax(`${mode} clean-control false-positive rate`, m.cleanControls.caseFalsePositiveRate, t.maximumCleanControlCaseFalsePositiveRate); checkMax(`${mode} duplicate rate`, m.findings.duplicateRate, t.maximumDuplicateRate); checkMin(`${mode} lane complete rate`, m.lanes.completeRate, t.minimumLaneCompleteRate); checkMax(`${mode} publication fallback rate`, m.publication.fallbackRate, t.maximumPublicationFallbackRate);
+		for (const key of thresholdKeys.filter((key) => key !== "minimumPerLensRecall" && !key.endsWith("LatencyMs"))) { const value = t[key]; invariant(typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, `gate threshold ${mode}.${key}`); }
+		invariant(plain(t.minimumPerLensRecall) && JSON.stringify(Object.keys(t.minimumPerLensRecall).sort()) === JSON.stringify([...corpusInfo.corpus.lenses].sort()) && Object.values(t.minimumPerLensRecall).every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1), `gate per-lens thresholds ${mode}`);
+		for (const key of ["maximumP50LatencyMs", "maximumP95LatencyMs"]) invariant(typeof t[key] === "number" && Number.isFinite(t[key]) && t[key] >= 0, `gate threshold ${mode}.${key}`);
+		checkMin(`${mode} P0/P1 recall`, m.p0p1.recall, t.minimumP0P1Recall); checkMin(`${mode} P2 recall`, m.p2.recall, t.minimumP2Recall); checkMin(`${mode} cross-file recall`, m.crossFile.recall, t.minimumCrossFileRecall); for (const lens of corpusInfo.corpus.lenses) checkMin(`${mode} ${lens} recall`, m.perLens[lens].recall, t.minimumPerLensRecall[lens]); checkMin(`${mode} exact-severity rate`, m.findings.exactSeverityRate, t.minimumExactSeverityRate); checkMax(`${mode} clean-control false-positive rate`, m.cleanControls.caseFalsePositiveRate, t.maximumCleanControlCaseFalsePositiveRate); checkMax(`${mode} duplicate rate`, m.findings.duplicateRate, t.maximumDuplicateRate); checkMin(`${mode} lane complete rate`, m.lanes.completeRate, t.minimumLaneCompleteRate); checkMax(`${mode} publication fallback rate`, m.publication.fallbackRate, t.maximumPublicationFallbackRate); checkMax(`${mode} p50 latency`, m.latencyMs.p50, t.maximumP50LatencyMs); checkMax(`${mode} p95 latency`, m.latencyMs.p95, t.maximumP95LatencyMs);
 	}
 	return { status: failures.length === 0 ? "passed" : "failed", passed: failures.length === 0, failures };
 }
@@ -408,7 +410,7 @@ function comparableConfiguration(run) {
 	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, collectorRuntimeVersion: run.configuration.collectorRuntimeVersion, collectorRuntimeSha256: run.configuration.collectorRuntimeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
 }
 
-export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }) {
+export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, baselineReport = null }) {
 	validatePlan(plan, corpusInfo);
 	const bundleRoot = fs.realpathSync(path.resolve(resultsDirectory)), runDir = path.join(bundleRoot, "runs");
 	invariant(fs.lstatSync(runDir).isDirectory(), "result bundle requires runs/ directory");
@@ -431,7 +433,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 		invariant(!laneModels.has(lane.id) || laneModels.get(lane.id) === identity, `lane ${lane.id} changed provider/model within the comparison`);
 		laneModels.set(lane.id, identity);
 	}
-	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint);
+	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint, baselineReport);
 	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, configurationFingerprint, resultCount: runs.length, gate, metrics };
 }
 
@@ -444,7 +446,7 @@ function parseArgs(argv) {
 		invariant(/^--[a-z-]+$/.test(key ?? "") && value !== undefined && !value.startsWith("--") && options[key] === undefined, `invalid argument near ${key ?? "end"}`);
 		options[key] = value;
 	}
-	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates"]);
+	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates", "--baseline-report"]);
 	invariant(Object.keys(options).every((key) => allowed.has(key)), "unknown argument");
 	for (const required of command === "plan" ? ["--corpus", "--modes", "--repetitions", "--output"] : ["--corpus", "--plan", "--results", "--output"]) invariant(options[required] !== undefined, `missing ${required}`);
 	return { command, options };
@@ -461,8 +463,8 @@ async function main() {
 		const plan = createPlan(corpusInfo, modes, repetitions); writeExclusive(options["--output"], plan);
 		console.log(`Wrote ${plan.entries.length}-run semantic benchmark plan ${plan.planId}.`); return;
 	}
-	const plan = readJson(path.resolve(options["--plan"])).value, gates = options["--gates"] ? readJson(path.resolve(options["--gates"])).value : null;
-	const report = scoreBundle({ corpusInfo, plan, resultsDirectory: options["--results"], gates }); writeExclusive(options["--output"], report);
+	const plan = readJson(path.resolve(options["--plan"])).value, gates = options["--gates"] ? readJson(path.resolve(options["--gates"])).value : null; invariant(!gates || options["--baseline-report"], "--gates requires --baseline-report"); const baselineRead = options["--baseline-report"] ? readJson(path.resolve(options["--baseline-report"])) : null, baselineReport = baselineRead ? { sha256: sha256(baselineRead.bytes), value: baselineRead.value } : null;
+	const report = scoreBundle({ corpusInfo, plan, resultsDirectory: options["--results"], gates, baselineReport }); writeExclusive(options["--output"], report);
 	console.log(`Scored ${report.resultCount} runs; gate ${report.gate.status}.`);
 	if (report.gate.status === "failed") process.exitCode = 1;
 }

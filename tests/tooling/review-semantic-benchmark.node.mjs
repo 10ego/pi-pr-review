@@ -49,9 +49,10 @@ function createBundle({ modes = ["balanced", "full"], repetitions = 1, mutateRun
 	}
 	return { corpusInfo, plan, root, runs };
 }
+function baselineReport(bundle) { const gate = gates(bundle); return { sha256: gate.baseline.reportSha256, value: { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, planId: bundle.plan.planId, configurationFingerprint: gate.baseline.configurationFingerprint, resultCount: bundle.plan.entries.length } }; }
 function gates(bundle, overrides = {}) {
 	const configuration = { ...bundle.runs[0].configuration }; delete configuration.topology;
-	const configurationFingerprint = sha256(Buffer.from(canonical(configuration))), threshold = { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, ...overrides };
+	const configurationFingerprint = sha256(Buffer.from(canonical(configuration))), threshold = { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, minimumPerLensRecall: Object.fromEntries(bundle.corpusInfo.corpus.lenses.map((lens) => [lens, 1])), minimumExactSeverityRate: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, maximumP50LatencyMs: 1_000, maximumP95LatencyMs: 1_000, ...overrides };
 	return { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, acceptedAtUtc: "2026-08-28T00:00:00.000Z", rationale: "Accepted after repeated baseline runs on the versioned semantic corpus.", baseline: { reportSha256: "a".repeat(64), planId: bundle.plan.planId, configurationFingerprint }, thresholds: { modes: Object.fromEntries(bundle.plan.modes.map((mode) => [mode, { ...threshold }])) } };
 }
 
@@ -90,8 +91,9 @@ test("perfect immutable result bundle emits recall, lifecycle, fallback, and lat
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {
-	const bundle = createBundle({ modes: ["balanced"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle) });
+	const bundle = createBundle({ modes: ["balanced"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: baselineReport(bundle) });
 	assert.deepEqual(report.gate, { status: "passed", passed: true, failures: [] });
+	assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: { ...baselineReport(bundle), sha256: "0".repeat(64) } }), /baseline report content\/hash binding/);
 });
 
 test("semantic matching requires severity, overlapping anchor, and every concept group", () => {
@@ -103,6 +105,10 @@ test("semantic matching requires severity, overlapping anchor, and every concept
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, title: "[P1] branch shell", body: "No semantic classification." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command injection is safe and not an issue; no finding exists." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command cannot lead to injection because argv is used instead of a shell." }] }).missedExpectedIds, [expected.id]);
+});
+
+test("semantic anchors allow one adjacent hunk context line but no wider drift", () => {
+	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "data-shape-contract"), finding = findingFor(item.expectedFindings[0]); finding.location = { ...finding.location, start: finding.location.start + 1, end: finding.location.end + 1 }; assert.deepEqual(scoreRun(item, { findings: [finding] }).matchedExpectedIds, [item.expectedFindings[0].id]); finding.location = { ...finding.location, start: finding.location.start + 1, end: finding.location.end + 1 }; assert.deepEqual(scoreRun(item, { findings: [finding] }).missedExpectedIds, [item.expectedFindings[0].id]);
 });
 
 test("defect-polarity negation is not mistaken for a contradictory non-finding", () => {
@@ -135,11 +141,15 @@ test("duplicate matches and clean-control findings are reported conservatively",
 	assert.equal(metrics.findings.duplicates, 1); assert.equal(metrics.findings.falsePositives, 1); assert.equal(metrics.cleanControls.runsWithFindings, 1); assert.equal(metrics.cleanControls.caseFalsePositiveRate, 0.5);
 });
 
+test("only clean-control findings count as false positives", () => {
+	const info = loadCorpus(CORPUS), seeded = info.corpus.cases.find((item) => item.id === "command-injection"), expected = findingFor(seeded.expectedFindings[0]), extra = { title: "[P1] Secondary compile defect", body: "A separate real defect is present.", severity: "P1", location: null }, seededScore = scoreRun(seeded, { findings: [expected, extra] }), clean = info.corpus.cases.find((item) => item.cleanControl), cleanScore = scoreRun(clean, { findings: [extra] }); assert.equal(seededScore.unmatchedFindings, 1); assert.equal(seededScore.falsePositiveFindings, 0); assert.equal(cleanScore.unmatchedFindings, 1); assert.equal(cleanScore.falsePositiveFindings, 1);
+});
+
 test("incomplete lanes and fallback publication participate in metrics and fail strict gates", () => {
 	const bundle = createBundle({ modes: ["balanced"], mutateRun(run, item) {
 		if (item.id === "state-cancellation-race") { run.lanes[0].status = "timed_out"; run.publication = { artifact: "degraded", fallback: true }; }
 	} });
-	const report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle) });
+	const report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: baselineReport(bundle) });
 	assert.equal(report.metrics.overall.lanes.timed_out, 1); assert.equal(report.metrics.overall.publication.fallbackRuns, 1); assert.equal(report.gate.status, "failed");
 	assert.ok(report.gate.failures.some((failure) => failure.includes("lane complete rate"))); assert.ok(report.gate.failures.some((failure) => failure.includes("publication fallback rate")));
 });
@@ -157,7 +167,7 @@ test("mode topology, required lanes, and comparable configuration fail closed", 
 
 test("per-mode baseline gates cannot hide a balanced regression in pooled full metrics", () => {
 	const bundle = createBundle({ modes: ["balanced", "full"], mutateRun(run, item) { if (run.mode === "balanced" && item.id === "command-injection") run.findings = []; } });
-	const report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle) });
+	const report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: baselineReport(bundle) });
 	assert.equal(report.metrics.modes.full.p0p1.recall, 1); assert.ok(report.metrics.modes.balanced.p0p1.recall < 1);
 	assert.equal(report.gate.status, "failed"); assert.ok(report.gate.failures.some((failure) => failure.startsWith("balanced P0/P1 recall")));
 });
