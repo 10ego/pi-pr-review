@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 
 const MODES = new Set(["balanced", "full", "major-only", "deep"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
+const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
 const PUBLICATION_ARTIFACTS = new Set(["canonical", "degraded", "raw_body_only"]);
 const MODE_TOPOLOGIES = Object.freeze({
@@ -106,6 +107,16 @@ function parseDiffFiles(text) {
 	invariant(files.length > 0 && hunks >= files.length, "corpus diff must contain at least one hunk per changed file");
 	return files;
 }
+function changedDiffLines(text) {
+	const changed = new Map(); let file = null, oldLine = 0, newLine = 0;
+	for (const line of text.split("\n")) {
+		const fileMatch = /^diff --git a\/(.+?) b\/(.+)$/.exec(line); if (fileMatch) { file = fileMatch[1]; changed.set(file, { LEFT: new Set(), RIGHT: new Set() }); continue; }
+		const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line); if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]); continue; }
+		if (!file || line.startsWith("---") || line.startsWith("+++") || line.startsWith("index ") || line.startsWith("\\ No newline")) continue;
+		if (line.startsWith("-")) { changed.get(file).LEFT.add(oldLine); oldLine++; } else if (line.startsWith("+")) { changed.get(file).RIGHT.add(newLine); newLine++; } else if (line.startsWith(" ")) { oldLine++; newLine++; }
+	}
+	return changed;
+}
 
 export function loadCorpus(file) {
 	const corpusFile = path.resolve(file), root = path.dirname(corpusFile), { bytes, value } = readJson(corpusFile);
@@ -122,7 +133,7 @@ export function loadCorpus(file) {
 		invariant(typeof item.cleanControl === "boolean" && typeof item.crossFile === "boolean", `case ${item.id} flags`);
 		invariant(Array.isArray(item.changedFiles) && item.changedFiles.length > 0 && new Set(item.changedFiles).size === item.changedFiles.length, `case ${item.id} changedFiles`);
 		item.changedFiles.forEach((filePath) => safeRelative(filePath, `case ${item.id} changed file`));
-		const diffFile = resolveContainedRegular(root, item.diff, `case ${item.id} diff`), diffBytes = fs.readFileSync(diffFile), diffText = diffBytes.toString("utf8");
+		const diffFile = resolveContainedRegular(root, item.diff, `case ${item.id} diff`), diffBytes = fs.readFileSync(diffFile), diffText = diffBytes.toString("utf8"), changedLines = changedDiffLines(diffText);
 		invariant(SHA256.test(item.diffSha256) && sha256(diffBytes) === item.diffSha256 && Number.isSafeInteger(item.diffBytes) && item.diffBytes === diffBytes.length, `case ${item.id} diff hash/bytes`);
 		invariant(diffText.length > 0 && !diffText.includes(item.id), `case ${item.id} reviewer-visible diff leaks its benchmark id`);
 		invariant(JSON.stringify(parseDiffFiles(diffText)) === JSON.stringify(item.changedFiles), `case ${item.id} changedFiles differ from diff`);
@@ -144,7 +155,7 @@ export function loadCorpus(file) {
 			for (const location of expected.acceptableLocations) {
 				invariant(exactKeys(location, ["path", "side", "start", "end"]), `expected ${expected.id} location schema`);
 				safeRelative(location.path, `expected ${expected.id} location`);
-				invariant(item.changedFiles.includes(location.path) && (location.side === "RIGHT" || location.side === "LEFT") && Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) && location.start > 0 && location.end >= location.start, `expected ${expected.id} location`);
+				invariant(item.changedFiles.includes(location.path) && (location.side === "RIGHT" || location.side === "LEFT") && Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) && location.start > 0 && location.end >= location.start && [...changedLines.get(location.path)[location.side]].some((line) => line >= location.start && line <= location.end), `expected ${expected.id} location must overlap a changed line`);
 			}
 			if (expected.crossFile) crossFileExpected++;
 		}
@@ -321,14 +332,15 @@ export function scoreRun(item, run) {
 	const expected = item.expectedFindings;
 	const edges = run.findings.map((finding) => expected.map((candidate, index) => expectedMatchesFinding(candidate, finding) ? index : -1).filter((index) => index >= 0));
 	const assignedFinding = maximumMatching(edges, expected.length), matchedFindingIndices = new Set(assignedFinding.filter((index) => index >= 0));
-	const matchedExpectedIds = expected.filter((_, index) => assignedFinding[index] >= 0).map((candidate) => candidate.id);
+	const matchedExpectedIds = expected.filter((_, index) => assignedFinding[index] >= 0).map((candidate) => candidate.id), underclassifiedExpectedIds = [], overclassifiedExpectedIds = [];
+	for (let index = 0; index < expected.length; index++) if (assignedFinding[index] >= 0) { const actual = run.findings[assignedFinding[index]].severity, target = expected[index].targetSeverity; if (SEVERITY_RANK[actual] > SEVERITY_RANK[target]) underclassifiedExpectedIds.push(expected[index].id); else if (SEVERITY_RANK[actual] < SEVERITY_RANK[target]) overclassifiedExpectedIds.push(expected[index].id); }
 	let duplicates = 0, falsePositives = 0;
 	for (let index = 0; index < run.findings.length; index++) {
 		if (matchedFindingIndices.has(index)) continue;
 		if (edges[index].some((expectedIndex) => assignedFinding[expectedIndex] >= 0)) duplicates++;
 		else falsePositives++;
 	}
-	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), duplicateFindings: duplicates, falsePositiveFindings: falsePositives, cleanControlHadFinding: item.cleanControl && run.findings.length > 0 };
+	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), underclassifiedExpectedIds, overclassifiedExpectedIds, duplicateFindings: duplicates, falsePositiveFindings: falsePositives, cleanControlHadFinding: item.cleanControl && run.findings.length > 0 };
 }
 
 function ratio(numerator, denominator) { return denominator === 0 ? null : numerator / denominator; }
@@ -357,7 +369,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		};
 		const perLens = Object.fromEntries(corpusInfo.corpus.lenses.map((lens) => [lens, select((expected) => expected.lenses.includes(lens))]));
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
-		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
+		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
 		return {
 			runs: group.length,
 			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
@@ -365,7 +377,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			crossFile: select((expected) => expected.crossFile),
 			perLens,
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
-			findings: { total: allFindings, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
+			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
 			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length) },
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },

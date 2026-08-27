@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, materializeOldFiles } from "./review-semantic-collect.mjs";
 
-const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v3.json");
+const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v4.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -98,7 +98,7 @@ test("semantic matching requires severity, overlapping anchor, and every concept
 	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "command-injection"), expected = item.expectedFindings[0], valid = findingFor(expected);
 	const base = { findings: [valid] };
 	assert.deepEqual(scoreRun(item, base).matchedExpectedIds, [expected.id]);
-	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, severity: "P2" }] }).missedExpectedIds, [expected.id]);
+	const underclassified = scoreRun(item, { findings: [{ ...valid, severity: "P2", title: valid.title.replace("[P1]", "[P2]") }] }); assert.deepEqual(underclassified.matchedExpectedIds, [expected.id]); assert.deepEqual(underclassified.underclassifiedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, location: { ...valid.location, start: 99, end: 99 } }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, title: "[P1] branch shell", body: "No semantic classification." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command injection is safe and not an issue; no finding exists." }] }).missedExpectedIds, [expected.id]);
@@ -119,6 +119,7 @@ test("lane model admission mirrors production nearest-tier and fallback resoluti
 
 test("target severity, not allowed-severity order, owns recall denominators", () => {
 	const info = loadCorpus(CORPUS), compile = info.corpus.cases.find((item) => item.id === "compile-export-removal"), critical = findingFor(compile.expectedFindings[0]); critical.severity = "P1"; critical.title = "[P1] Restore the removed RequestOptions export"; critical.body = "The module drops the RequestOptions export while it is still imported, so TypeScript compilation fails for every consumer."; assert.deepEqual(scoreRun(compile, { findings: [critical] }).matchedExpectedIds, [compile.expectedFindings[0].id]); const notFailing = { ...critical, body: "The import is safe because TypeScript compilation does not fail and RequestOptions remains available." }, notDropped = { ...critical, body: "RequestOptions was not dropped, so the import resolves and compilation succeeds." }; assert.deepEqual(scoreRun(compile, { findings: [notFailing] }).missedExpectedIds, [compile.expectedFindings[0].id]); assert.deepEqual(scoreRun(compile, { findings: [notDropped] }).missedExpectedIds, [compile.expectedFindings[0].id]);
+	const state = info.corpus.cases.find((item) => item.id === "state-cancellation-race"), underclassified = findingFor(state.expectedFindings[0]); underclassified.severity = "P2"; underclassified.title = underclassified.title.replace("[P1]", "[P2]"); const underScore = scoreRun(state, { findings: [underclassified] }); assert.deepEqual(underScore.matchedExpectedIds, [state.expectedFindings[0].id]); assert.deepEqual(underScore.underclassifiedExpectedIds, [state.expectedFindings[0].id]);
 	const bundle = createBundle({ modes: ["balanced"] }), resource = bundle.corpusInfo.corpus.cases.find((item) => item.id === "resource-listener-leak").expectedFindings[0];
 	assert.equal(resource.targetSeverity, "P2"); assert.deepEqual(resource.allowedSeverities, ["P1", "P2"]);
 	const metrics = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.overall;

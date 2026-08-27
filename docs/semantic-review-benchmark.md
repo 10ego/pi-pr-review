@@ -13,7 +13,7 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 
 ## Corpus
 
-`tests/benchmarks/review-semantic/corpus-v3.json` pins every diff by SHA-256. Version 3 contains:
+`tests/benchmarks/review-semantic/corpus-v4.json` pins every diff by SHA-256. Version 4 contains:
 
 - compile/export contract failure;
 - returned data-shape mismatch;
@@ -32,7 +32,7 @@ Each expected finding has a stable ID, explicit target severity, allowed observe
 ### Adding a case
 
 1. Add a unified diff under `tests/benchmarks/review-semantic/diffs/`. Use ordinary filenames and code; never mention the benchmark ID or expected answer in the diff.
-2. Add the case to `corpus-v3.json`, including the exact diff SHA-256 and changed-file list.
+2. Add the case to `corpus-v4.json`, including the exact diff SHA-256 and changed-file list.
 3. For every seeded defect, define a globally unique expected ID, target and allowed severity policy, tight alternative locations, rationale, lenses, blocking flag, cross-file flag, semantic concept groups, and relationship-bearing assertion patterns. Test both valid alternative wording and an explicit negated/non-finding phrasing.
 4. Set `cleanControl: true` only when `expectedFindings` is empty.
 5. Run `npm run test:tooling`. Corpus validation independently recomputes hashes and changed paths, requires clean controls and cross-file coverage, and requires at least one seeded finding for every default heavy lens.
@@ -42,7 +42,7 @@ Each expected finding has a stable ID, explicit target severity, allowed observe
 
 ```bash
 npm run benchmark:review -- plan \
-  --corpus tests/benchmarks/review-semantic/corpus-v3.json \
+  --corpus tests/benchmarks/review-semantic/corpus-v4.json \
   --modes balanced,full \
   --repetitions 5 \
   --output /absolute/evidence/plan.json
@@ -58,7 +58,7 @@ The collector intentionally accepts exactly one plan entry per invocation. It re
 
 ```bash
 npm run benchmark:review:collect -- \
-  --corpus tests/benchmarks/review-semantic/corpus-v3.json \
+  --corpus tests/benchmarks/review-semantic/corpus-v4.json \
   --plan /absolute/evidence/plan.json \
   --bundle /absolute/evidence/bundle \
   --entry <next-plan-entry-id> \
@@ -98,7 +98,7 @@ The collector must represent failed and timed-out lanes as results, not omit or 
 
 ```bash
 npm run benchmark:review -- score \
-  --corpus tests/benchmarks/review-semantic/corpus-v3.json \
+  --corpus tests/benchmarks/review-semantic/corpus-v4.json \
   --plan /absolute/evidence/plan.json \
   --results /absolute/evidence/bundle \
   --output /absolute/evidence/report.json
@@ -109,6 +109,7 @@ Without `--gates`, the report status is `baseline_required`: metrics are valid b
 - P0/P1, P2, per-lens, and cross-file recall;
 - clean-control case false-positive rate and unmatched finding count/rate;
 - duplicate finding count/rate;
+- exact-severity rate plus underclassified/overclassified matched finding counts (recall denominators continue to use target severity);
 - complete, partial, timed-out, and failed lane rates;
 - canonical/degraded publication fallback rate;
 - p50/p95, mean, population standard deviation, minimum, and maximum wall time;
@@ -124,7 +125,7 @@ Thresholds are not silently embedded in the scorer. After repeated baseline runs
 ```json
 {
   "schemaVersion": 1,
-  "corpusId": "pi-pr-review-semantic-v3",
+  "corpusId": "pi-pr-review-semantic-v4",
   "corpusSha256": "<exact corpus SHA-256>",
   "acceptedAtUtc": "<ISO timestamp>",
   "rationale": "<why these thresholds are justified by the baseline>",

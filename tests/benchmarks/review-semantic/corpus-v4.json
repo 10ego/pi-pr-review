@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusId": "pi-pr-review-semantic-v3",
+  "corpusId": "pi-pr-review-semantic-v4",
   "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
   "lenses": [
     "correctness",
@@ -102,8 +102,8 @@
             {
               "path": "src/users.ts",
               "side": "RIGHT",
-              "start": 12,
-              "end": 12
+              "start": 11,
+              "end": 11
             }
           ],
           "rationale": "loadUser promises User with id, but returns userId, breaking type-checking and consumers.",
@@ -160,7 +160,8 @@
           "id": "lifecycle.abort-rendered-error",
           "targetSeverity": "P1",
           "allowedSeverities": [
-            "P1"
+            "P1",
+            "P2"
           ],
           "acceptableLocations": [
             {
@@ -292,14 +293,15 @@
           "id": "security.missing-tenant-scope",
           "targetSeverity": "P1",
           "allowedSeverities": [
-            "P1"
+            "P1",
+            "P2"
           ],
           "acceptableLocations": [
             {
               "path": "src/documents.ts",
               "side": "RIGHT",
-              "start": 34,
-              "end": 34
+              "start": 33,
+              "end": 33
             }
           ],
           "rationale": "An authenticated user can fetch another tenant\u2019s document by ID after tenantId is removed from the query.",
@@ -354,7 +356,8 @@
           "id": "security.branch-command-injection",
           "targetSeverity": "P1",
           "allowedSeverities": [
-            "P1"
+            "P1",
+            "P2"
           ],
           "acceptableLocations": [
             {
@@ -486,7 +489,8 @@
           "id": "integration.cache-envelope-parser",
           "targetSeverity": "P1",
           "allowedSeverities": [
-            "P1"
+            "P1",
+            "P2"
           ],
           "acceptableLocations": [
             {
@@ -626,7 +630,8 @@
           "id": "integration.sharded-registry-envelope",
           "targetSeverity": "P1",
           "allowedSeverities": [
-            "P1"
+            "P1",
+            "P2"
           ],
           "acceptableLocations": [
             {
