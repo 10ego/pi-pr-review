@@ -40,7 +40,7 @@ function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
 		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
-		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b/iu.test(after)) continue;
+		if (/^[^.!?\n]{0,30}(?:\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b|\bremoved by (?:this )?(?:change|fix|patch)\b|\bby (?:this )?(?:change|fix|patch)\b)/iu.test(after)) continue;
 		return true;
 	}
 	return false;
@@ -243,7 +243,7 @@ function validateArtifact(reference, bundleRoot, run) {
 		const raw = payload?.raw;
 		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && exactKeys(raw, ["laneArtifacts", "telemetry", "resolvedReview", "ghAudit", "auditValid", "process", "session"]), `${runLabel} lane artifact binding`);
 		invariant(Array.isArray(raw.laneArtifacts) && (raw.telemetry === null || plain(raw.telemetry)) && (raw.resolvedReview === null || plain(raw.resolvedReview)) && Array.isArray(raw.ghAudit) && typeof raw.auditValid === "boolean" && raw.auditValid === (raw.ghAudit.length > 0 && raw.ghAudit.every((record) => plain(record) && record.allowed === true && record.write === false)), `${runLabel} raw lane/audit evidence`);
-		invariant(exactKeys(raw.process, ["stdout", "stderr", "exitCode", "signal", "error"]) && typeof raw.process.stdout === "string" && typeof raw.process.stderr === "string" && (raw.process.exitCode === null || Number.isInteger(raw.process.exitCode)) && (raw.process.signal === null || typeof raw.process.signal === "string") && (raw.process.error === null || typeof raw.process.error === "string"), `${runLabel} raw process evidence`);
+		invariant(exactKeys(raw.process, ["stdout", "stderr", "exitCode", "signal", "error"], ["elapsedMs"]) && typeof raw.process.stdout === "string" && typeof raw.process.stderr === "string" && (raw.process.exitCode === null || Number.isInteger(raw.process.exitCode)) && (raw.process.signal === null || typeof raw.process.signal === "string") && (raw.process.error === null || typeof raw.process.error === "string") && (!Object.hasOwn(raw.process, "elapsedMs") || finiteNonnegative(raw.process.elapsedMs)), `${runLabel} raw process evidence`);
 		invariant(exactKeys(raw.session, ["sha256", "bytes", "recordCount", "contentBase64"]) && (raw.session.sha256 === null || SHA256.test(raw.session.sha256)) && Number.isSafeInteger(raw.session.bytes) && raw.session.bytes >= 0 && Number.isSafeInteger(raw.session.recordCount) && raw.session.recordCount >= 0 && (raw.session.bytes === 0) === (raw.session.sha256 === null) && (raw.session.contentBase64 === null) === (raw.session.bytes === 0), `${runLabel} raw session evidence`);
 		if (raw.session.contentBase64 !== null) { const sessionBytes = Buffer.from(raw.session.contentBase64, "base64"); invariant(sessionBytes.toString("base64") === raw.session.contentBase64 && sessionBytes.length === raw.session.bytes && sha256(sessionBytes) === raw.session.sha256 && sessionBytes.toString("utf8").split("\n").filter(Boolean).length === raw.session.recordCount, `${runLabel} retained session bytes`); }
 		const normalized = new Map(run.lanes.map((lane) => [lane.id, lane])), expectedRawIds = new Set();
@@ -311,7 +311,19 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		invariant(plain(raw.resolvedReview) && canonical(normalizePersistedFindings(raw.resolvedReview)) === canonical(run.findings), `${label} resolved finding binding`);
 		if (plain(data.review)) invariant(canonical(data.review) === canonical(raw.resolvedReview), `${label} persisted/resolved review binding`);
 		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane, `${run.configuration.provider}/${run.configuration.model}`)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = resolvedTierModelIdentities(effectiveConfig, tier, `${run.configuration.provider}/${run.configuration.model}`); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
-	} else invariant(raw.resolvedReview === null, `${label} failed-session binding`);
+	} else {
+		invariant(raw.resolvedReview === null && run.timing.parentValidationSynthesisMs === run.elapsedMs, `${label} failed-session binding`);
+		let latencyBound = Object.hasOwn(raw.process, "elapsedMs") && raw.process.elapsedMs === run.elapsedMs;
+		if (!latencyBound && raw.process.error === "collector-hard-timeout") {
+			const totalMs = effectiveConfig?.deadlines?.totalMs, hardTimeoutMs = Number.isSafeInteger(totalMs) ? totalMs + 30_000 : null;
+			latencyBound = hardTimeoutMs !== null && run.elapsedMs >= hardTimeoutMs - 1_000 && run.elapsedMs <= hardTimeoutMs + 10_000;
+		}
+		if (!latencyBound) {
+			const timestamps = records.map((record) => Date.parse(record?.timestamp)).filter(Number.isFinite);
+			if (timestamps.length >= 2) { const sessionSpanMs = Math.max(...timestamps) - Math.min(...timestamps); latencyBound = run.elapsedMs >= sessionSpanMs && run.elapsedMs <= sessionSpanMs + 5_000; }
+		}
+		invariant(latencyBound, `${label} retained failed-run latency binding`);
+	}
 }
 
 function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
