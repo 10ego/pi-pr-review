@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusId": "pi-pr-review-semantic-v4",
+  "corpusId": "pi-pr-review-semantic-v5",
   "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
   "lenses": [
     "correctness",
