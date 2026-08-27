@@ -548,9 +548,9 @@
     {
       "id": "boundary-nonfinite-timeout",
       "title": "Timeout parsing admits non-finite numbers",
-      "diff": "diffs/boundary-nonfinite-timeout.diff",
-      "diffSha256": "30114f2fe7b0dbc22d72486e10ed7e273ad3fd1d7ac18d55479aedc79f8dbfd3",
-      "diffBytes": 483,
+      "diff": "diffs/boundary-nonfinite-timeout-v6.diff",
+      "diffSha256": "52595005232294f24517572057579a10191e06e2483b03a5024a0df121192891",
+      "diffBytes": 547,
       "changedFiles": [
         "src/options.ts"
       ],

@@ -62,6 +62,7 @@ test("versioned corpus pins every diff, covers all heavy lenses, cross-file find
 	assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2);
 	assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.crossFile)));
 	for (const lens of info.corpus.lenses) assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.lenses.includes(lens))), lens);
+	const boundary = info.corpus.cases.find((item) => item.id === "boundary-nonfinite-timeout"), boundaryDiff = fs.readFileSync(path.join(info.root, boundary.diff), "utf8"); assert.match(boundaryDiff, /Number\.isFinite\(timeout\).*Number\.isSafeInteger\(timeout\)/); assert.doesNotMatch(boundaryDiff, /^\+.*if \(timeout <= 0\)/m);
 });
 
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
@@ -237,7 +238,7 @@ test("artifact envelopes bind lanes/findings and artifact paths must be distinct
 });
 
 test("atomic embedded artifact envelopes score without external artifact files", () => {
-	const bundle = createBundle({ modes: ["balanced"] }), runFile = path.join(bundle.root, "runs", `${bundle.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(runFile)); run.artifactPayloads = Object.fromEntries(run.artifacts.map((reference) => [reference.path, fs.readFileSync(path.join(bundle.root, reference.path)).toString("base64")])); for (const reference of run.artifacts) fs.unlinkSync(path.join(bundle.root, reference.path)); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); assert.doesNotThrow(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root })); run.artifactPayloads[run.artifacts[0].path] = Buffer.from("tampered").toString("base64"); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /artifact bytes\/hash/);
+	const bundle = createBundle({ modes: ["balanced"] }), runFile = path.join(bundle.root, "runs", `${bundle.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(runFile)); run.artifactPayloads = Object.fromEntries(run.artifacts.map((reference) => [reference.path, fs.readFileSync(path.join(bundle.root, reference.path)).toString("base64")])); for (const reference of run.artifacts) fs.unlinkSync(path.join(bundle.root, reference.path)); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); const orphanDirectory = path.join(bundle.root, ".pi-pr-review-atomic"); fs.mkdirSync(orphanDirectory); fs.writeFileSync(path.join(orphanDirectory, "interrupted.tmp"), "orphan"); assert.doesNotThrow(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root })); run.artifactPayloads[run.artifacts[0].path] = Buffer.from("tampered").toString("base64"); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /artifact bytes\/hash/);
 });
 
 test("retained session lifecycle cannot be removed behind valid artifact hashes", () => {
