@@ -113,12 +113,14 @@ Without `--gates`, the report status is `baseline_required`: metrics are valid b
 - duplicate finding count/rate;
 - exact-severity rate plus underclassified/overclassified matched finding counts (recall denominators continue to use target severity);
 - complete, partial, timed-out, and failed lane rates;
-- canonical/degraded publication fallback rate;
+- canonical/degraded publication fallback rate and the count of strictly recovered visible fallback findings;
 - p50/p95, mean, population standard deviation, minimum, and maximum wall time;
 - p50 combined parent validation/synthesis time;
 - per-run matched and missed stable finding IDs.
 
 Percentiles use nearest rank over all planned runs. Failed and fallback runs stay in every denominator.
+
+Semantic matching requires an allowed severity, a same-file anchor overlapping the expected line with one-line context tolerance (including the adjacent replacement line on the opposite diff side), non-contradictory defect polarity, and either every required concept group or a corpus-authored assertion alternative plus at least two thirds of concept groups. For a fallback publication, the scorer may recover top-level canonical finding blocks from the body that a reviewer would still see. Recovery is bounded and fail-closed: duplicate Findings sections, malformed fields/locations, fenced code, raw HTML, unsafe paths, and excessive size/count contribute no recovered candidates. Recovered findings affect semantic and false-positive metrics but never change the separately reported fallback classification.
 
 ## Accept gates only after a baseline
 
