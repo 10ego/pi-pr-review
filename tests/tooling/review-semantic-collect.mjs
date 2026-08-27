@@ -22,7 +22,7 @@ const plain = (value) => value !== null && typeof value === "object" && !Array.i
 function invariant(condition, message) { if (!condition) throw new Error(`Semantic collector refused: ${message}`); }
 function readJson(file) { const bytes = fs.readFileSync(file); return { bytes, value: JSON.parse(bytes.toString("utf8")) }; }
 function writeExclusive(file, value) {
-	const directory = path.dirname(file), stagingDirectory = path.join(path.dirname(directory), ".pi-pr-review-atomic"), content = typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`, temporary = path.join(stagingDirectory, `${path.basename(file)}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`); fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.mkdirSync(stagingDirectory, { recursive: true, mode: 0o700 });
+	const directory = path.dirname(file), stagingRoot = path.basename(directory) === "runs" ? path.dirname(directory) : directory, stagingDirectory = path.join(stagingRoot, ".pi-pr-review-atomic"), content = typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`, temporary = path.join(stagingDirectory, `${path.basename(file)}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`); fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); fs.mkdirSync(stagingDirectory, { recursive: true, mode: 0o700 });
 	let descriptor; try { descriptor = fs.openSync(temporary, "wx", 0o600); fs.writeFileSync(descriptor, content); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = undefined; fs.linkSync(temporary, file); } finally { if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch {} try { fs.unlinkSync(temporary); } catch {} try { fs.rmdirSync(stagingDirectory); } catch {} }
 }
 function removeTemp(directory) { if (!fs.existsSync(directory)) return; const unlock = (current) => { try { fs.chmodSync(current, 0o700); } catch {} for (const entry of fs.readdirSync(current, { withFileTypes: true })) { const file = path.join(current, entry.name); if (entry.isDirectory()) unlock(file); else try { fs.chmodSync(file, 0o600); } catch {} } }; unlock(directory); fs.rmSync(directory, { recursive: true, force: true }); }
@@ -113,7 +113,7 @@ function prepareIsolatedAgent(temp, parentModel) {
 	return { home, agent, effectiveConfig, configSha256: sha256(fs.readFileSync(path.join(agent, "pr-review.json"))) };
 }
 function sanitizedEnvironment(base, additions) {
-	const env = { ...base, ...additions }; for (const key of Object.keys(env)) if (/^(?:GH_|GITHUB_|GIT_|SSH_|NPM_TOKEN|NODE_OPTIONS|BUN_OPTIONS)/.test(key)) delete env[key]; return env;
+	const allowed = new Set(["LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR", "FORCE_COLOR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "__CF_USER_TEXT_ENCODING"]), env = Object.fromEntries(Object.entries(base).filter(([key]) => allowed.has(key))); return { ...env, ...additions };
 }
 function sandboxProfile(temp) {
 	invariant(process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec"), "real collection currently requires macOS sandbox-exec");
@@ -123,10 +123,6 @@ function sandboxProfile(temp) {
 function validSessionLifecycle(records, cwd) {
 	const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
 	return headers.length === 1 && headers[0].cwd === cwd && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop";
-}
-function sessionRecords(sessionDirectory) {
-	const files = fs.readdirSync(sessionDirectory).filter((name) => name.endsWith(".jsonl")); invariant(files.length === 1, `expected one session file, got ${files.length}`);
-	const file = path.join(sessionDirectory, files[0]), bytes = fs.readFileSync(file), records = bytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)); return { file, bytes, records };
 }
 function assistantText(message) { return Array.isArray(message?.content) ? message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("") : ""; }
 function normalizeFindings(review) {
@@ -188,8 +184,9 @@ async function main() {
 		const { resolveReviewDeadlines } = await import(pathToFileURL(path.join(sourceSnapshot, "lib/pr-review-deadlines.ts")).href), resolvedDeadlines = resolveReviewDeadlines(isolated.effectiveConfig.deadlines);
 		const outcome = await spawnPi("/usr/bin/sandbox-exec", sandboxArgs, { cwd: fixture.repo, env: childEnv }, resolvedDeadlines.config.totalMs + 30_000);
 		const audit = fs.readFileSync(auditFile, "utf8").split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { allowed: false, write: null, malformed: true }; } });
-		let records = [], sessionEvidence = null, lifecycleError = null;
-		if (fs.readdirSync(sessionDir).some((name) => name.endsWith(".jsonl"))) { try { const session = sessionRecords(sessionDir); records = session.records; sessionEvidence = { sha256: sha256(session.bytes), bytes: session.bytes.length, recordCount: records.length, contentBase64: session.bytes.toString("base64") }; if (!validSessionLifecycle(records, fixture.repo)) lifecycleError = "invalid host-authored Pi session lifecycle"; } catch (error) { lifecycleError = String(error); } }
+		let records = [], sessionEvidence = null, lifecycleError = null; const sessionFiles = fs.readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl")).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+		if (sessionFiles.length === 1) { const bytes = fs.readFileSync(path.join(sessionDir, sessionFiles[0])), lines = bytes.toString("utf8").split("\n").filter(Boolean); sessionEvidence = { sha256: sha256(bytes), bytes: bytes.length, recordCount: lines.length, contentBase64: bytes.toString("base64") }; try { records = lines.map((line) => JSON.parse(line)); if (!validSessionLifecycle(records, fixture.repo)) lifecycleError = "invalid host-authored Pi session lifecycle"; } catch (error) { lifecycleError = `malformed retained Pi session: ${String(error)}`; } }
+		else if (sessionFiles.length > 1) { sessionEvidence = { sha256: null, bytes: 0, recordCount: 0, contentBase64: null, files: sessionFiles.map((name) => { const bytes = fs.readFileSync(path.join(sessionDir, name)); return { name, sha256: sha256(bytes), bytes: bytes.length, contentBase64: bytes.toString("base64") }; }) }; lifecycleError = `expected one session file, got ${sessionFiles.length}`; }
 		const processOutcome = lifecycleError ? { code: outcome.code, signal: outcome.signal, error: lifecycleError } : { code: outcome.code, signal: outcome.signal, error: outcome.error }, { parsePublishableReview } = await import("../../lib/pr-review-publish.ts"), parseReview = (markdown) => parsePublishableReview(markdown).review;
 		const collected = await collectSessionResult({ records, entry, item, mode: entry.mode, parentModel: options["--model"], elapsedMs: outcome.elapsedMs, startedAtUtc, stdout: outcome.stdout, stderr: outcome.stderr, ghAudit: audit, processOutcome, sessionEvidence, parseReview });
 		const parentIdentity = providerModel(options["--model"]); invariant(parentIdentity?.provider && parentIdentity?.model, "--model must be provider/model"); collected.run.configuration = { provider: parentIdentity.provider, model: parentIdentity.model, thinking: options["--thinking"], toolPolicy: "frozen-user-tools-with-host-no-write-overrides", reviewVersion: JSON.parse(fs.readFileSync(path.join(REPOSITORY, "package.json"), "utf8")).version, piVersion, piSha256, piRuntimeSha256, nodeVersion, nodeSha256, collectorRuntimeVersion, collectorRuntimeSha256, reviewConfigSha256: isolated.configSha256, extensionSha256, promptSha256, collectorSha256, topology: expectedModeTopology(entry.mode, item) };
