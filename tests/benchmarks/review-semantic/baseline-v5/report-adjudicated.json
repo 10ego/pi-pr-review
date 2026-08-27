@@ -3,7 +3,7 @@
   "corpusId": "pi-pr-review-semantic-v5",
   "corpusSha256": "f696b34699eba9a2e2e67b07754b426ab1c2b34c4d382ac6f580ecc1b6e0c81b",
   "planId": "4bf04da24af027fd03275dcc8cd53e664d543db63f7f59e7c6715bb7c6042813",
-  "scorerSha256": "9e92284c49cbed9ac48e06273e9db6db8b3574ef4a8437145e47e26d3fde89eb",
+  "scorerSha256": "63fb870ad1e29ca1343841259ea426c7421032032973b88f83b1c0df00406f43",
   "configurationFingerprint": "2154a4bd206dd5e7079dbd7b895601350936bbf6c5085ac57230d3705d8d1155",
   "environmentFingerprint": "b57c0360881010588090448615679d9a4b8b0cca362ad431274982fda6083d9d",
   "resultCount": 48,
@@ -65,11 +65,11 @@
         "underclassified": 6,
         "overclassified": 7,
         "exactSeverityRate": 0.6486486486486487,
-        "unmatched": 52,
+        "unmatched": 53,
         "falsePositives": 13,
-        "duplicates": 1,
+        "duplicates": 0,
         "falsePositiveRate": 0.14444444444444443,
-        "duplicateRate": 0.011111111111111112
+        "duplicateRate": 0
       },
       "lanes": {
         "total": 286,
@@ -230,11 +230,11 @@
           "underclassified": 3,
           "overclassified": 4,
           "exactSeverityRate": 0.631578947368421,
-          "unmatched": 39,
+          "unmatched": 40,
           "falsePositives": 11,
-          "duplicates": 1,
+          "duplicates": 0,
           "falsePositiveRate": 0.1864406779661017,
-          "duplicateRate": 0.01694915254237288
+          "duplicateRate": 0
         },
         "lanes": {
           "total": 156,
@@ -833,8 +833,8 @@
         "missedExpectedIds": [],
         "underclassifiedExpectedIds": [],
         "overclassifiedExpectedIds": [],
-        "duplicateFindings": 1,
-        "unmatchedFindings": 3,
+        "duplicateFindings": 0,
+        "unmatchedFindings": 4,
         "falsePositiveFindings": 0,
         "cleanControlHadFinding": false
       },

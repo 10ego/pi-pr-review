@@ -35,7 +35,7 @@ const EXPLICIT_NON_FINDING = [
 	/\bpresents? no risk\b/iu,
 	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
-const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)/iu;
+const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\([^\n)]*[×*][^\n)]*\)/iu;
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
@@ -378,19 +378,25 @@ function locationMatches(actual, acceptable) {
 	// line; wider or unrelated anchors remain rejected.
 	return overlapsWithContextTolerance && (actual.side === acceptable.side || Math.abs(actual.start - acceptable.start) <= 1);
 }
+function containsConcept(text, term) {
+	const normalized = term.toLocaleLowerCase("en-US");
+	if (["quadratic", "o(n"].includes(normalized) && /\bO\([^\n)]*[×*][^\n)]*\)/iu.test(text)) return true;
+	if (!/^[\p{L}\p{N}_]+$/u.test(normalized)) return text.includes(normalized);
+	const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), suffix = normalized.endsWith("e") ? "(?:s|d|ing)?" : "(?:s|es|ed|ing|ion|ions)?";
+	return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}${suffix}(?![\\p{L}\\p{N}_])`, "iu").test(text);
+}
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
-	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
+	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
 	if (allConceptsMatched) return positiveDefect;
-	// Assertion patterns are corpus-authored semantic alternatives for valid
-	// descriptions such as "interpolates into a shell" that do not literally
-	// say "injection". Require both a pattern and most concept groups so one
-	// generic keyword cannot create a match.
-	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
-	return positiveDefect && assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
+	// The first assertion group may compensate for one genuinely missing concept
+	// group. Token-aware concepts prevent identifiers such as showBranch or
+	// userId from independently satisfying branch or id.
+	const coreAssertionMatched = expected.assertionPatterns[0].some((pattern) => new RegExp(pattern, "iu").test(rawText));
+	return positiveDefect && coreAssertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
