@@ -39,8 +39,8 @@ const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|in
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
-		if (/(?:\b(?:cannot|never|no|not|without)\b|does not|rather than (?:an? )?|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
-		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|eliminated|impossible|mitigated|not possible|prevented|safe)\b/iu.test(after)) continue;
+		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
+		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b/iu.test(after)) continue;
 		return true;
 	}
 	return false;
@@ -367,7 +367,7 @@ function expectedMatchesFinding(expected, finding) {
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
-	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(rawText);
+	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
 	if (allConceptsMatched) return positiveDefect;
 	// Assertion patterns are corpus-authored semantic alternatives for valid
 	// descriptions such as "interpolates into a shell" that do not literally
