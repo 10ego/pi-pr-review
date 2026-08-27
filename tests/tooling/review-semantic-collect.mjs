@@ -21,7 +21,10 @@ const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex"
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 function invariant(condition, message) { if (!condition) throw new Error(`Semantic collector refused: ${message}`); }
 function readJson(file) { const bytes = fs.readFileSync(file); return { bytes, value: JSON.parse(bytes.toString("utf8")) }; }
-function writeExclusive(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(file, typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 }); }
+function writeExclusive(file, value) {
+	const directory = path.dirname(file), content = typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`, temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`); fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+	let descriptor; try { descriptor = fs.openSync(temporary, "wx", 0o600); fs.writeFileSync(descriptor, content); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = undefined; fs.linkSync(temporary, file); } finally { if (descriptor !== undefined) try { fs.closeSync(descriptor); } catch {} try { fs.unlinkSync(temporary); } catch {} }
+}
 function removeTemp(directory) { if (!fs.existsSync(directory)) return; const unlock = (current) => { try { fs.chmodSync(current, 0o700); } catch {} for (const entry of fs.readdirSync(current, { withFileTypes: true })) { const file = path.join(current, entry.name); if (entry.isDirectory()) unlock(file); else try { fs.chmodSync(file, 0o600); } catch {} } }; unlock(directory); fs.rmSync(directory, { recursive: true, force: true }); }
 function parseArgs(argv) {
 	const options = {}, boolean = new Set(["--acknowledge-real-model-run"]);
