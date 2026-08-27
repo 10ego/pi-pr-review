@@ -35,7 +35,8 @@ const EXPLICIT_NON_FINDING = [
 	/\bpresents? no risk\b/iu,
 	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
-const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\([^\n)]*[×*][^\n)]*\)/iu;
+const MULTIPLICATIVE_COMPLEXITY = /\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
+const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
@@ -371,7 +372,7 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 }
 
 function locationMatches(actual, acceptable) {
-	if (actual === null || actual.path !== acceptable.path) return false;
+	if (actual === null || actual.path !== acceptable.path || !Number.isSafeInteger(actual.start) || !Number.isSafeInteger(actual.end) || actual.start <= 0 || actual.end < actual.start || actual.end - actual.start > acceptable.end - acceptable.start + 2) return false;
 	const overlapsWithContextTolerance = actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
 	// Reviewers may anchor a replacement hunk on either the removed line (LEFT)
 	// or its adjacent added line (RIGHT). Keep the cross-side tolerance to one
@@ -380,10 +381,20 @@ function locationMatches(actual, acceptable) {
 }
 function containsConcept(text, term) {
 	const normalized = term.toLocaleLowerCase("en-US");
-	if (["quadratic", "o(n"].includes(normalized) && /\bO\([^\n)]*[×*][^\n)]*\)/iu.test(text)) return true;
+	if (["quadratic", "o(n"].includes(normalized) && MULTIPLICATIVE_COMPLEXITY.test(text)) return true;
+	if (["access", "authorization", "other"].includes(normalized) && /\b(?:cross[- ]tenant|ownership)\b/iu.test(text)) return true;
 	if (!/^[\p{L}\p{N}_]+$/u.test(normalized)) return text.includes(normalized);
-	const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), suffix = normalized.endsWith("e") ? "(?:s|d|ing)?" : "(?:s|es|ed|ing|ion|ions)?";
-	return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}${suffix}(?![\\p{L}\\p{N}_])`, "iu").test(text);
+	const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), variant = normalized.endsWith("e") ? `(?:${escaped}(?:s|d)?|${escaped.slice(0, -1)}ing)` : `${escaped}(?:s|es|ed|ing|ion|ions)?`;
+	return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${variant}(?![\\p{L}\\p{N}_])`, "iu").test(text);
+}
+function maskEmbeddedConcepts(text, groups) {
+	let masked = text;
+	for (const term of groups.flat()) {
+		if (!/^[\p{L}\p{N}_]+$/u.test(term)) continue;
+		const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		masked = masked.replace(new RegExp(`([\\p{L}\\p{N}_])(${escaped})|(${escaped})(?=[\\p{L}\\p{N}_])`, "giu"), (match, prefix, embeddedAfter, embeddedBefore) => prefix ? `${prefix}${"¤".repeat(embeddedAfter.length)}` : "¤".repeat(embeddedBefore.length));
+	}
+	return masked;
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
@@ -395,7 +406,7 @@ function expectedMatchesFinding(expected, finding) {
 	// The first assertion group may compensate for one genuinely missing concept
 	// group. Token-aware concepts prevent identifiers such as showBranch or
 	// userId from independently satisfying branch or id.
-	const coreAssertionMatched = expected.assertionPatterns[0].some((pattern) => new RegExp(pattern, "iu").test(rawText));
+	const assertionText = maskEmbeddedConcepts(rawText, expected.requiredConcepts), coreAssertionMatched = expected.assertionPatterns[0].some((pattern) => new RegExp(pattern, "iu").test(assertionText));
 	return positiveDefect && coreAssertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {

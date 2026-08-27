@@ -11,8 +11,8 @@ This report is the first complete real-model balanced/full comparison over the v
 - Plan ID: `4bf04da24af027fd03275dcc8cd53e664d543db63f7f59e7c6715bb7c6042813`
 - Plan file SHA-256: `f3b790f463c467c92c834fccc8d28f03313c71cd5bd1832f2519b4e11682c51c`
 - Original report SHA-256: `eaf9a55d7b3831060cc5b7a8c80f619988261f4c7c8a87fe8b6b5ce366fab80a` (retained, superseded for interpretation)
-- Adjudicated report SHA-256: `677098d00acbd60c6f47fc52b557752dd44903e2651121d8777c186ab93f51a7`
-- Scorer SHA-256: `63fb870ad1e29ca1343841259ea426c7421032032973b88f83b1c0df00406f43`
+- Adjudicated report SHA-256: `d2671cb22c99f7238b8909553cc32166288996960196dbba940df87ffa656fe0`
+- Scorer SHA-256: `eda38c703b48357d8f8ebbaff895c602e5ea7ba5ec5f109e6f75480a5423484f`
 - Configuration fingerprint: `2154a4bd206dd5e7079dbd7b895601350936bbf6c5085ac57230d3705d8d1155`
 - Environment fingerprint: `b57c0360881010588090448615679d9a4b8b0cca362ad431274982fda6083d9d`
 - Runs: 48/48 exact plan entries, two repetitions of 12 cases in balanced and full modes
