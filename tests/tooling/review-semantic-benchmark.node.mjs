@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, materializeOldFiles } from "./review-semantic-collect.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v1.json");
@@ -108,6 +108,13 @@ test("semantic matching requires severity, overlapping anchor, and every concept
 test("defect-polarity negation is not mistaken for a contradictory non-finding", () => {
 	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "sharded-registry-contract"), expected = item.expectedFindings[0], finding = findingFor(expected); finding.body += " The payload is not parsed before JSON.parse receives the cached object.";
 	assert.deepEqual(scoreRun(item, { findings: [finding] }).matchedExpectedIds, [expected.id]);
+});
+
+test("lane model admission mirrors production nearest-tier and fallback resolution", () => {
+	const parent = "parent/orchestrator", identity = (provider, model) => ({ provider, model });
+	assert.deepEqual(resolvedTierModelIdentities({ tiers: { medium: "tier/medium" }, fallbacks: {} }, "light", parent), [identity("tier", "medium")]);
+	assert.deepEqual(resolvedTierModelIdentities({ tiers: { light: "tier/light", medium: "tier/medium", heavy: "tier/heavy" }, fallbacks: { heavy: ["backup/one:high"] } }, "heavy", parent), [identity("tier", "heavy"), identity("backup", "one")]);
+	assert.deepEqual(resolvedTierModelIdentities({ tiers: {}, fallbacks: {} }, "heavy", parent), [identity("parent", "orchestrator")]);
 });
 
 test("target severity, not allowed-severity order, owns recall denominators", () => {
