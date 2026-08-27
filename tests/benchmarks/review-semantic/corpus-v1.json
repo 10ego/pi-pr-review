@@ -23,6 +23,7 @@
       "expectedFindings": [
         {
           "id": "compile.missing-request-options",
+          "targetSeverity": "P0",
           "allowedSeverities": [
             "P0"
           ],
@@ -55,6 +56,16 @@
               "import",
               "type"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "RequestOptions.{0,100}(removed|missing|no longer exported|not exported)",
+              "(removed|missing|no longer exported|not exported).{0,100}RequestOptions"
+            ],
+            [
+              "(cannot|will not|fails? to).{0,80}(compile|type-check|resolve)",
+              "(compile|type-check|resolution).{0,80}(fail|error|break)"
+            ]
           ]
         }
       ]
@@ -72,6 +83,7 @@
       "expectedFindings": [
         {
           "id": "contract.user-id-field",
+          "targetSeverity": "P0",
           "allowedSeverities": [
             "P0"
           ],
@@ -101,6 +113,18 @@
               "return",
               "shape"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "userId.{0,100}(instead|rather|replac|missing|does not satisfy).{0,100}\\bid\\b",
+              "\\bid\\b.{0,100}(missing|replac|renam).{0,100}userId",
+              "returns?.{0,40}userId.{0,100}(\\bid\\b|User|contract)",
+              "\\bid\\b.{0,100}returns?.{0,40}userId"
+            ],
+            [
+              "(break|fail|violate|does not satisfy).{0,80}(User|type|contract|consumer)",
+              "(User|type|contract|consumer).{0,80}(break|fail|violate|mismatch)"
+            ]
           ]
         }
       ]
@@ -118,6 +142,7 @@
       "expectedFindings": [
         {
           "id": "lifecycle.abort-rendered-error",
+          "targetSeverity": "P1",
           "allowedSeverities": [
             "P1"
           ],
@@ -150,6 +175,16 @@
               "superseded",
               "stale"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(abort|cancel).{0,100}(renderError|error)",
+              "(renderError|error).{0,100}(abort|cancel)"
+            ],
+            [
+              "(stale|superseded|newer|next).{0,100}(render|overwrite|error)",
+              "(render|overwrite|error).{0,100}(stale|superseded|newer|next)"
+            ]
           ]
         }
       ]
@@ -167,6 +202,7 @@
       "expectedFindings": [
         {
           "id": "resource.message-listener-leak",
+          "targetSeverity": "P2",
           "allowedSeverities": [
             "P1",
             "P2"
@@ -201,6 +237,16 @@
               "duplicate",
               "retain"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(listener|message handler).{0,100}(cannot|not|never|fails? to).{0,50}(remove|off|unregister)",
+              "(remove|off|unregister).{0,100}(cannot|not|lost|anonymous).{0,50}(listener|handler)"
+            ],
+            [
+              "(leak|retain|duplicate|multiple).{0,100}(listener|message|view)",
+              "(listener|message|view).{0,100}(leak|retain|duplicate|multiple)"
+            ]
           ]
         }
       ]
@@ -218,6 +264,7 @@
       "expectedFindings": [
         {
           "id": "security.missing-tenant-scope",
+          "targetSeverity": "P1",
           "allowedSeverities": [
             "P1"
           ],
@@ -248,6 +295,15 @@
               "id",
               "document"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(tenantId|tenant).{0,100}(removed|missing|not filtered|not scoped|omitted)",
+              "(removed|missing|not filtered|not scoped|omitted).{0,100}(tenantId|tenant)"
+            ],
+            [
+              "(other|cross).{0,40}tenant|unauthori[sz]ed|access.{0,80}another tenant"
+            ]
           ]
         }
       ]
@@ -265,6 +321,7 @@
       "expectedFindings": [
         {
           "id": "security.branch-command-injection",
+          "targetSeverity": "P1",
           "allowedSeverities": [
             "P1"
           ],
@@ -296,6 +353,16 @@
               "escape",
               "quote"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(branch|input).{0,100}(shell|command).{0,100}(inject|escape|quote|interpolat)",
+              "(inject|escape|quote|interpolat).{0,100}(branch|input)"
+            ],
+            [
+              "(execAsync|shell).{0,100}(instead|replac|rather).{0,100}(execFile|argv)",
+              "(execFile|argv).{0,100}(replac|instead).{0,100}(execAsync|shell)"
+            ]
           ]
         }
       ]
@@ -313,6 +380,7 @@
       "expectedFindings": [
         {
           "id": "performance.quadratic-reconcile",
+          "targetSeverity": "P2",
           "allowedSeverities": [
             "P2"
           ],
@@ -345,6 +413,17 @@
               "each",
               "every"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(quadratic|O\\(n(?:\\^2|\u00b2)\\)).{0,100}(map|includes|filter)",
+              "(map|includes|filter).{0,100}(quadratic|O\\(n(?:\\^2|\u00b2)\\))"
+            ],
+            [
+              "(each|every|inside).{0,80}(filter|item).{0,80}(map|includes)",
+              "(map|includes).{0,80}(each|every|per).{0,80}(item|filter)",
+              "(map|mapping).{0,80}inside.{0,80}filter"
+            ]
           ]
         }
       ]
@@ -363,6 +442,7 @@
       "expectedFindings": [
         {
           "id": "integration.cache-envelope-parser",
+          "targetSeverity": "P1",
           "allowedSeverities": [
             "P1"
           ],
@@ -400,6 +480,17 @@
               "JSON.parse",
               "parse"
             ]
+          ],
+          "assertionPatterns": [
+            [
+              "(JSON\\.parse|parse).{0,100}(object|envelope|cached).{0,100}(value|instead)",
+              "(object|envelope|cached).{0,100}(passed|sent).{0,100}(JSON\\.parse|parse)"
+            ],
+            [
+              "cached\\.value",
+              "cached value",
+              "\\.value"
+            ]
           ]
         }
       ]
@@ -417,6 +508,7 @@
       "expectedFindings": [
         {
           "id": "boundary.nonfinite-timeout",
+          "targetSeverity": "P2",
           "allowedSeverities": [
             "P1",
             "P2"
@@ -449,6 +541,18 @@
               "guard",
               "check",
               "accept"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(NaN|Infinity|non.?finite).{0,100}(accept|pass|allow|guard|check)",
+              "(accept|pass|allow|guard|check).{0,100}(NaN|Infinity|non.?finite)"
+            ],
+            [
+              "(timeout|Number).{0,100}(finite|safe integer|validation)",
+              "(finite|safe integer|validation).{0,100}(timeout|Number)",
+              "invalid.{0,40}timeout",
+              "timeout.{0,40}(invalid|NaN|Infinity)"
             ]
           ]
         }

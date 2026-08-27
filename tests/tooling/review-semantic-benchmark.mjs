@@ -15,6 +15,19 @@ const MODES = new Set(["balanced", "full", "major-only", "deep"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
 const PUBLICATION_ARTIFACTS = new Set(["canonical", "degraded", "raw_body_only"]);
+const MODE_TOPOLOGIES = Object.freeze({
+	balanced: { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
+	full: { passIds: ["overview", "conventions-maintainability", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 6 },
+	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
+	deep: { passIds: ["deep-review"], maxParallel: 1 },
+});
+const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review" });
+const EXPLICIT_NON_FINDING = [
+	/\bno (?:issue|finding|bug|defect|problem)(?: exists| here| with this)?\b/iu,
+	/\b(?:is|are|remains?|appears?) (?:safe|correct|valid)\b/iu,
+	/\bnot (?:broken|a bug|an issue|a problem|a defect)\b/iu,
+	/\bfalse positive\b/iu,
+];
 const SHA256 = /^[0-9a-f]{64}$/;
 
 function invariant(condition, message) {
@@ -98,13 +111,14 @@ export function loadCorpus(file) {
 		invariant(item.cleanControl === (item.expectedFindings.length === 0), `case ${item.id} clean-control partition`);
 		if (item.cleanControl) cleanControls++;
 		for (const expected of item.expectedFindings) {
-			invariant(exactKeys(expected, ["id", "allowedSeverities", "acceptableLocations", "rationale", "lenses", "blocking", "crossFile", "requiredConcepts"]), `expected finding schema in ${item.id}`);
+			invariant(exactKeys(expected, ["id", "targetSeverity", "allowedSeverities", "acceptableLocations", "rationale", "lenses", "blocking", "crossFile", "requiredConcepts", "assertionPatterns"]), `expected finding schema in ${item.id}`);
 			invariant(typeof expected.id === "string" && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(expected.id) && !expectedIds.has(expected.id), `expected finding id ${expected.id}`); expectedIds.add(expected.id);
-			invariant(Array.isArray(expected.allowedSeverities) && expected.allowedSeverities.length > 0 && expected.allowedSeverities.every((severity) => SEVERITIES.has(severity)), `expected ${expected.id} severities`);
+			invariant(SEVERITIES.has(expected.targetSeverity) && Array.isArray(expected.allowedSeverities) && expected.allowedSeverities.length > 0 && new Set(expected.allowedSeverities).size === expected.allowedSeverities.length && expected.allowedSeverities.includes(expected.targetSeverity) && expected.allowedSeverities.every((severity) => SEVERITIES.has(severity)), `expected ${expected.id} severities`);
 			invariant(typeof expected.blocking === "boolean" && typeof expected.crossFile === "boolean" && typeof expected.rationale === "string" && expected.rationale.length >= 20, `expected ${expected.id} metadata`);
-			invariant(expected.blocking === expected.allowedSeverities.every((severity) => severity === "P0" || severity === "P1"), `expected ${expected.id} blocking policy`);
+			invariant(expected.blocking === (expected.targetSeverity === "P0" || expected.targetSeverity === "P1"), `expected ${expected.id} blocking policy`);
 			invariant(Array.isArray(expected.lenses) && expected.lenses.length > 0 && expected.lenses.every((lens) => value.lenses.includes(lens)), `expected ${expected.id} lenses`);
 			invariant(Array.isArray(expected.requiredConcepts) && expected.requiredConcepts.length > 0 && expected.requiredConcepts.every((group) => Array.isArray(group) && group.length > 0 && group.every((term) => typeof term === "string" && term.length > 0)), `expected ${expected.id} concepts`);
+			invariant(Array.isArray(expected.assertionPatterns) && expected.assertionPatterns.length > 0 && expected.assertionPatterns.every((group) => Array.isArray(group) && group.length > 0 && group.every((pattern) => { if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > 500) return false; try { new RegExp(pattern, "iu"); return true; } catch { return false; } })), `expected ${expected.id} assertion patterns`);
 			invariant(Array.isArray(expected.acceptableLocations) && expected.acceptableLocations.length > 0, `expected ${expected.id} locations`);
 			for (const location of expected.acceptableLocations) {
 				invariant(exactKeys(location, ["path", "side", "start", "end"]), `expected ${expected.id} location schema`);
@@ -145,20 +159,32 @@ export function createPlan(corpusInfo, modes, repetitions) {
 	invariant(Array.isArray(modes) && modes.length > 0 && new Set(modes).size === modes.length && modes.every((mode) => MODES.has(mode)), "requested modes");
 	invariant(Number.isSafeInteger(repetitions) && repetitions >= 1 && repetitions <= 100, "requested repetitions");
 	const entries = [];
-	for (const mode of modes) for (let repetition = 1; repetition <= repetitions; repetition++) for (const item of corpusInfo.corpus.cases) {
-		const key = `${corpusInfo.sha256}\0${mode}\0${repetition}\0${item.id}`;
-		entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode, repetition });
+	// Interleave modes per case and rotate the first mode across repetitions/cases.
+	// This avoids running an entire mode during one provider/time window.
+	for (let repetition = 1; repetition <= repetitions; repetition++) for (let caseIndex = 0; caseIndex < corpusInfo.corpus.cases.length; caseIndex++) {
+		const item = corpusInfo.corpus.cases[caseIndex], offset = (repetition - 1 + caseIndex) % modes.length;
+		for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
+			const mode = modes[(offset + modeIndex) % modes.length], key = `${corpusInfo.sha256}\0${mode}\0${repetition}\0${item.id}`;
+			entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode, repetition });
+		}
 	}
 	const identity = { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, repetitions, entries };
 	return { ...identity, planId: sha256(Buffer.from(canonical(identity))) };
 }
 
-function validateArtifact(reference, bundleRoot, runLabel) {
+function validateArtifact(reference, bundleRoot, run) {
+	const runLabel = `run ${run.planEntryId}`;
 	invariant(exactKeys(reference, ["kind", "path", "sha256", "bytes"]), `${runLabel} artifact schema`);
 	invariant(reference.kind === "lane-artifacts" || reference.kind === "canonical-review", `${runLabel} artifact kind`);
 	invariant(SHA256.test(reference.sha256) && Number.isSafeInteger(reference.bytes) && reference.bytes >= 0 && reference.bytes <= 100 * 1024 * 1024, `${runLabel} artifact metadata`);
 	const file = resolveContainedRegular(bundleRoot, reference.path, `${runLabel} artifact`), data = fs.readFileSync(file);
 	invariant(data.length === reference.bytes && sha256(data) === reference.sha256, `${runLabel} artifact bytes/hash`);
+	let payload; try { payload = JSON.parse(data.toString("utf8")); } catch { invariant(false, `${runLabel} artifact JSON`); }
+	if (reference.kind === "lane-artifacts") {
+		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && (typeof payload.raw === "string" ? payload.raw.length > 0 : Array.isArray(payload.raw) ? payload.raw.length > 0 : plain(payload.raw) && Object.keys(payload.raw).length > 0), `${runLabel} lane artifact binding`);
+	} else {
+		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0, `${runLabel} canonical artifact binding`);
+	}
 	return reference;
 }
 
@@ -171,15 +197,18 @@ function validateRun(run, planEntry, bundleRoot) {
 	invariant(exactKeys(run.timing, ["parentValidationMs", "parentSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationMs) && finiteNonnegative(run.timing.parentSynthesisMs), `${label} parent timing`);
 	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "topology"]), `${label} configuration schema`);
 	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
-	const topology = run.configuration.topology;
+	const topology = run.configuration.topology, expectedTopology = MODE_TOPOLOGIES[run.mode];
 	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
+	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === 1 && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
 	invariant(Array.isArray(run.lanes) && run.lanes.length > 0, `${label} lanes`);
 	const laneIds = new Set();
 	for (const lane of run.lanes) {
 		invariant(exactKeys(lane, ["id", "lens", "status", "elapsedMs", "provider", "model"]), `${label} lane schema`);
 		invariant(typeof lane.id === "string" && lane.id.length > 0 && !laneIds.has(lane.id), `${label} lane id`); laneIds.add(lane.id);
 		invariant(typeof lane.lens === "string" && lane.lens.length > 0 && LANE_STATES.has(lane.status) && finiteNonnegative(lane.elapsedMs) && typeof lane.provider === "string" && lane.provider.length > 0 && typeof lane.model === "string" && lane.model.length > 0, `${label} lane metadata`);
+		invariant(PASS_LENSES[lane.id] === lane.lens, `${label} lane ${lane.id} lens`);
 	}
+	invariant(run.lanes.length === expectedTopology.passIds.length && expectedTopology.passIds.every((id) => laneIds.has(id)), `${label} required lane set`);
 	invariant(exactKeys(run.publication, ["artifact", "fallback"]) && PUBLICATION_ARTIFACTS.has(run.publication.artifact) && typeof run.publication.fallback === "boolean" && run.publication.fallback === (run.publication.artifact !== "canonical"), `${label} publication`);
 	invariant(Array.isArray(run.findings) && run.findings.length <= 200, `${label} findings`);
 	for (const finding of run.findings) {
@@ -191,8 +220,8 @@ function validateRun(run, planEntry, bundleRoot) {
 			invariant((finding.location.side === "RIGHT" || finding.location.side === "LEFT") && Number.isSafeInteger(finding.location.start) && Number.isSafeInteger(finding.location.end) && finding.location.start > 0 && finding.location.end >= finding.location.start, `${label} finding location`);
 		}
 	}
-	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2, `${label} artifacts`);
-	run.artifacts.forEach((artifact) => validateArtifact(artifact, bundleRoot, label));
+	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2 && new Set(run.artifacts.map((item) => item.path)).size === 2, `${label} artifacts`);
+	run.artifacts.forEach((artifact) => validateArtifact(artifact, bundleRoot, run));
 	return run;
 }
 
@@ -202,8 +231,11 @@ function locationMatches(actual, acceptable) {
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const text = `${finding.title}\n${finding.body}`.toLocaleLowerCase("en-US");
-	return expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))));
+	const rawText = `${finding.title}\n${finding.body}`;
+	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText))) return false;
+	const text = rawText.toLocaleLowerCase("en-US");
+	if (!expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))))) return false;
+	return expected.assertionPatterns.every((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
@@ -239,6 +271,11 @@ function percentile(values, percentileValue) {
 	const sorted = [...values].sort((a, b) => a - b), index = Math.max(0, Math.ceil(percentileValue * sorted.length) - 1);
 	return sorted[index];
 }
+function distribution(values) {
+	if (values.length === 0) return { mean: null, standardDeviation: null, minimum: null, maximum: null };
+	const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+	return { mean, standardDeviation: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length), minimum: Math.min(...values), maximum: Math.max(...values) };
+}
 function metricPair(opportunities, matched) { return { matched, opportunities, recall: ratio(matched, opportunities) }; }
 
 export function aggregateScores(corpusInfo, plan, runs) {
@@ -257,30 +294,39 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
 		return {
 			runs: group.length,
-			p0p1: select((expected) => expected.allowedSeverities[0] === "P0" || expected.allowedSeverities[0] === "P1"),
-			p2: select((expected) => expected.allowedSeverities[0] === "P2"),
+			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
+			p2: select((expected) => expected.targetSeverity === "P2"),
 			crossFile: select((expected) => expected.crossFile),
 			perLens,
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
 			findings: { total: allFindings, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
 			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length) },
-			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), parentValidationP50: percentile(group.map(({ run }) => run.timing.parentValidationMs), 0.5), parentSynthesisP50: percentile(group.map(({ run }) => run.timing.parentSynthesisMs), 0.5) },
+			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationP50: percentile(group.map(({ run }) => run.timing.parentValidationMs), 0.5), parentSynthesisP50: percentile(group.map(({ run }) => run.timing.parentSynthesisMs), 0.5) },
 		};
 	};
 	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
 }
 
-function evaluateGates(metrics, gates, corpusInfo) {
+function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint) {
 	if (!gates) return { status: "baseline_required", passed: false, failures: ["No accepted baseline gate file was supplied; metrics are diagnostic only."] };
-	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "thresholds"]), "gate file schema");
+	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "baseline", "thresholds"]), "gate file schema");
 	invariant(gates.schemaVersion === 1 && gates.corpusId === corpusInfo.corpus.corpusId && gates.corpusSha256 === corpusInfo.sha256 && Number.isFinite(Date.parse(gates.acceptedAtUtc)) && typeof gates.rationale === "string" && gates.rationale.length >= 20, "gate file identity");
-	const t = gates.thresholds;
-	invariant(exactKeys(t, ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate"]), "gate thresholds schema");
-	for (const [key, value] of Object.entries(t)) invariant(typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, `gate threshold ${key}`);
+	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "configurationFingerprint"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.configurationFingerprint === configurationFingerprint, "gate baseline binding");
+	invariant(exactKeys(gates.thresholds, ["modes"]) && plain(gates.thresholds.modes) && JSON.stringify(Object.keys(gates.thresholds.modes).sort()) === JSON.stringify([...plan.modes].sort()), "gate per-mode threshold partition");
+	const thresholdKeys = ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate"];
 	const failures = [], checkMin = (label, actual, expected) => { if (actual === null || actual < expected) failures.push(`${label} ${actual ?? "n/a"} < ${expected}`); }, checkMax = (label, actual, expected) => { if (actual === null || actual > expected) failures.push(`${label} ${actual ?? "n/a"} > ${expected}`); };
-	checkMin("P0/P1 recall", metrics.overall.p0p1.recall, t.minimumP0P1Recall); checkMin("P2 recall", metrics.overall.p2.recall, t.minimumP2Recall); checkMin("cross-file recall", metrics.overall.crossFile.recall, t.minimumCrossFileRecall); checkMax("clean-control false-positive rate", metrics.overall.cleanControls.caseFalsePositiveRate, t.maximumCleanControlCaseFalsePositiveRate); checkMax("duplicate rate", metrics.overall.findings.duplicateRate, t.maximumDuplicateRate); checkMin("lane complete rate", metrics.overall.lanes.completeRate, t.minimumLaneCompleteRate); checkMax("publication fallback rate", metrics.overall.publication.fallbackRate, t.maximumPublicationFallbackRate);
+	for (const mode of plan.modes) {
+		const t = gates.thresholds.modes[mode], m = metrics.modes[mode];
+		invariant(exactKeys(t, thresholdKeys), `gate thresholds schema for ${mode}`);
+		for (const [key, value] of Object.entries(t)) invariant(typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1, `gate threshold ${mode}.${key}`);
+		checkMin(`${mode} P0/P1 recall`, m.p0p1.recall, t.minimumP0P1Recall); checkMin(`${mode} P2 recall`, m.p2.recall, t.minimumP2Recall); checkMin(`${mode} cross-file recall`, m.crossFile.recall, t.minimumCrossFileRecall); checkMax(`${mode} clean-control false-positive rate`, m.cleanControls.caseFalsePositiveRate, t.maximumCleanControlCaseFalsePositiveRate); checkMax(`${mode} duplicate rate`, m.findings.duplicateRate, t.maximumDuplicateRate); checkMin(`${mode} lane complete rate`, m.lanes.completeRate, t.minimumLaneCompleteRate); checkMax(`${mode} publication fallback rate`, m.publication.fallbackRate, t.maximumPublicationFallbackRate);
+	}
 	return { status: failures.length === 0 ? "passed" : "failed", passed: failures.length === 0, failures };
+}
+
+function comparableConfiguration(run) {
+	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion };
 }
 
 export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }) {
@@ -296,8 +342,16 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 		runs.push(validateRun(run, planEntry, bundleRoot));
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
-	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo);
-	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, resultCount: runs.length, gate, metrics };
+	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical));
+	invariant(runs.every((run) => canonical(comparableConfiguration(run)) === configurationCanonical), "runs use incomparable provider/model/thinking/tool/version configuration");
+	const laneModels = new Map();
+	for (const run of runs) for (const lane of run.lanes) {
+		const identity = `${lane.provider}\0${lane.model}`;
+		invariant(!laneModels.has(lane.id) || laneModels.get(lane.id) === identity, `lane ${lane.id} changed provider/model within the comparison`);
+		laneModels.set(lane.id, identity);
+	}
+	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint);
+	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, configurationFingerprint, resultCount: runs.length, gate, metrics };
 }
 
 function parseArgs(argv) {
