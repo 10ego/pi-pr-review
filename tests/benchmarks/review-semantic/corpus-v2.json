@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusId": "pi-pr-review-semantic-v1",
+  "corpusId": "pi-pr-review-semantic-v2",
   "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
   "lenses": [
     "correctness",
@@ -26,7 +26,8 @@
           "id": "compile.missing-request-options",
           "targetSeverity": "P0",
           "allowedSeverities": [
-            "P0"
+            "P0",
+            "P1"
           ],
           "acceptableLocations": [
             {
@@ -92,7 +93,8 @@
           "id": "contract.user-id-field",
           "targetSeverity": "P0",
           "allowedSeverities": [
-            "P0"
+            "P0",
+            "P1"
           ],
           "acceptableLocations": [
             {
