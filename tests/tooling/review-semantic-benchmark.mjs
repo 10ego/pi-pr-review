@@ -381,12 +381,12 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 }
 
 function locationMatches(actual, acceptable) {
-	if (actual === null || actual.path !== acceptable.path || !Number.isSafeInteger(actual.start) || !Number.isSafeInteger(actual.end) || actual.start <= 0 || actual.end < actual.start || actual.start < acceptable.start - 1 || actual.end > acceptable.end + 1) return false;
+	if (actual === null || actual.path !== acceptable.path || !["LEFT", "RIGHT"].includes(actual.side) || !Number.isSafeInteger(actual.start) || !Number.isSafeInteger(actual.end) || actual.start <= 0 || actual.end < actual.start || actual.start < acceptable.start - 1 || actual.end > acceptable.end + 1) return false;
 	const overlapsWithContextTolerance = actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
 	// Reviewers may anchor a replacement hunk on either the removed line (LEFT)
 	// or its adjacent added line (RIGHT). Keep the cross-side tolerance to one
 	// line; wider or unrelated anchors remain rejected.
-	return overlapsWithContextTolerance && (actual.side === acceptable.side || Math.abs(actual.start - acceptable.start) <= 1);
+	return overlapsWithContextTolerance;
 }
 function containsConcept(text, term) {
 	const normalized = term.toLocaleLowerCase("en-US");

@@ -475,9 +475,9 @@
     {
       "id": "cross-shard-cache-contract",
       "title": "Cache return envelope is not integrated at its caller",
-      "diff": "diffs/cross-shard-cache-contract.diff",
-      "diffSha256": "36318dfe23bd1d93d9d0d457e1394a754ca6c13e94e0529aafd9b697ea51b836",
-      "diffBytes": 752,
+      "diff": "diffs/cross-shard-cache-contract-v6.diff",
+      "diffSha256": "0055e236fc6f54a16947ac9cb707e43d0b01289675f8a263bbe24407b1ca0e7d",
+      "diffBytes": 792,
       "changedFiles": [
         "src/cache.ts",
         "src/profile.ts"
@@ -496,8 +496,8 @@
             {
               "path": "src/profile.ts",
               "side": "RIGHT",
-              "start": 19,
-              "end": 19
+              "start": 20,
+              "end": 20
             },
             {
               "path": "src/cache.ts",
