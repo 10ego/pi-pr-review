@@ -30,6 +30,8 @@ const EXPLICIT_NON_FINDING = [
 	/\bfalse positive\b/iu,
 ];
 const SHA256 = /^[0-9a-f]{64}$/;
+const SEMANTIC_FINDINGS = Symbol("semanticFindings");
+const FALLBACK_FINDING_LIMIT = 50;
 
 function invariant(condition, message) {
 	if (!condition) throw new Error(`Semantic benchmark invalid: ${message}`);
@@ -240,6 +242,26 @@ function normalizePersistedFindings(review) {
 	if (!Array.isArray(review?.findings)) return [];
 	return review.findings.map((finding) => { const location = finding?.code_location, range = location?.line_range; return { title: String(finding?.title ?? ""), body: String(finding?.body ?? ""), severity: String(finding?.severity ?? ""), location: location && typeof location.absolute_file_path === "string" && Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end) && (location.side === "RIGHT" || location.side === "LEFT") ? { path: location.absolute_file_path, side: location.side, start: range.start, end: range.end } : null }; });
 }
+function parseVisibleFallbackFindings(markdown) {
+	if (typeof markdown !== "string" || markdown.length > 2 * 1024 * 1024) return [];
+	// Fail closed rather than mistake headings inside CommonMark containers for
+	// visible findings. Fallbacks containing fenced or raw-HTML blocks remain
+	// measured as fallbacks but contribute no recovered semantic candidates.
+	if (/^ {0,3}(?:`{3,}|~{3,}|<)/mu.test(markdown)) return [];
+	const headings = [...markdown.matchAll(/^## Findings\s*$/gmu)];
+	if (headings.length !== 1) return [];
+	const findings = [], section = /(?:^|\n)## Findings\s*\n([\s\S]*?)(?=\n## (?!#)|$)/u.exec(markdown)?.[1] ?? "";
+	const candidate = /^### \[(P0|P1|P2|P3|nit)\] ([^\n]{1,300})\n([\s\S]*?)(?=^### \[|(?![\s\S]))/gmu;
+	for (const match of section.matchAll(candidate)) {
+		if (findings.length >= FALLBACK_FINDING_LIMIT) return [];
+		const severity = match[1], block = match[3], declaredSeverity = /^\*\*Severity:\*\* (P0|P1|P2|P3|nit)\s*$/mu.exec(block)?.[1], rationale = /^\*\*Rationale:\*\* ([\s\S]*?)(?=^\*\*Location:\*\*)/mu.exec(block)?.[1]?.trim(), locationText = /^\*\*Location:\*\* `([^`]+)`\s*$/mu.exec(block)?.[1], location = /^(.*):(\d+)(?:-(\d+))? (RIGHT|LEFT)$/u.exec(locationText ?? "");
+		if (declaredSeverity !== severity || !rationale || rationale.length > 20_000 || !location) continue;
+		const start = Number(location[2]), end = Number(location[3] ?? location[2]), file = location[1];
+		if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start || end > 10_000_000 || file.length === 0 || file.length > 300 || file.includes("\\") || path.posix.isAbsolute(file) || file.split("/").some((part) => part === "" || part === "." || part === "..")) continue;
+		findings.push({ title: `[${severity}] ${match[2]}`, body: rationale, severity, location: { path: file, side: location[4], start, end } });
+	}
+	return findings;
+}
 function splitModelSpec(value) { if (typeof value !== "string" || !value.includes("/")) return null; const index = value.indexOf("/"); return { provider: value.slice(0, index), model: value.slice(index + 1).replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, "") }; }
 export function resolvedTierModelIdentities(config, tier, parentModel) {
 	const order = { light: ["light", "medium", "heavy"], medium: ["medium", "heavy", "light"], heavy: ["heavy", "medium", "light"] }, specs = [], primary = config.tiers?.[tier];
@@ -300,19 +322,33 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	}
 	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2 && new Set(run.artifacts.map((item) => item.path)).size === 2, `${label} artifacts`);
 	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig);
+	const visibleFallbackFindings = run.publication.fallback ? parseVisibleFallbackFindings(reviewPayload.markdown) : [], semanticFindings = [...run.findings], seenFindings = new Set(run.findings.map(canonical));
+	for (const finding of visibleFallbackFindings) if (!seenFindings.has(canonical(finding))) { seenFindings.add(canonical(finding)); semanticFindings.push(finding); }
+	Object.defineProperty(run, SEMANTIC_FINDINGS, { value: semanticFindings, enumerable: false });
 	return run;
 }
 
 function locationMatches(actual, acceptable) {
-	return actual !== null && actual.path === acceptable.path && actual.side === acceptable.side && actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
+	if (actual === null || actual.path !== acceptable.path) return false;
+	const overlapsWithContextTolerance = actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
+	// Reviewers may anchor a replacement hunk on either the removed line (LEFT)
+	// or its adjacent added line (RIGHT). Keep the cross-side tolerance to one
+	// line; wider or unrelated anchors remain rejected.
+	return overlapsWithContextTolerance && (actual.side === acceptable.side || Math.abs(actual.start - acceptable.start) <= 1);
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
-	const text = rawText.toLocaleLowerCase("en-US");
-	return expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))));
+	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length;
+	if (matchedConcepts === conceptMatches.length) return true;
+	// Assertion patterns are corpus-authored semantic alternatives for valid
+	// descriptions such as "interpolates into a shell" that do not literally
+	// say "injection". Require both a pattern and most concept groups so one
+	// generic keyword cannot create a match.
+	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
+	return assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
@@ -328,19 +364,19 @@ function maximumMatching(edges, expectedCount) {
 	return assignedFinding;
 }
 
-export function scoreRun(item, run) {
+export function scoreRun(item, run, findings = run.findings) {
 	const expected = item.expectedFindings;
-	const edges = run.findings.map((finding) => expected.map((candidate, index) => expectedMatchesFinding(candidate, finding) ? index : -1).filter((index) => index >= 0));
+	const edges = findings.map((finding) => expected.map((candidate, index) => expectedMatchesFinding(candidate, finding) ? index : -1).filter((index) => index >= 0));
 	const assignedFinding = maximumMatching(edges, expected.length), matchedFindingIndices = new Set(assignedFinding.filter((index) => index >= 0));
 	const matchedExpectedIds = expected.filter((_, index) => assignedFinding[index] >= 0).map((candidate) => candidate.id), underclassifiedExpectedIds = [], overclassifiedExpectedIds = [];
-	for (let index = 0; index < expected.length; index++) if (assignedFinding[index] >= 0) { const actual = run.findings[assignedFinding[index]].severity, target = expected[index].targetSeverity; if (SEVERITY_RANK[actual] > SEVERITY_RANK[target]) underclassifiedExpectedIds.push(expected[index].id); else if (SEVERITY_RANK[actual] < SEVERITY_RANK[target]) overclassifiedExpectedIds.push(expected[index].id); }
+	for (let index = 0; index < expected.length; index++) if (assignedFinding[index] >= 0) { const actual = findings[assignedFinding[index]].severity, target = expected[index].targetSeverity; if (SEVERITY_RANK[actual] > SEVERITY_RANK[target]) underclassifiedExpectedIds.push(expected[index].id); else if (SEVERITY_RANK[actual] < SEVERITY_RANK[target]) overclassifiedExpectedIds.push(expected[index].id); }
 	let duplicates = 0, unmatchedFindings = 0;
-	for (let index = 0; index < run.findings.length; index++) {
+	for (let index = 0; index < findings.length; index++) {
 		if (matchedFindingIndices.has(index)) continue;
 		if (edges[index].some((expectedIndex) => assignedFinding[expectedIndex] >= 0)) duplicates++;
 		else unmatchedFindings++;
 	}
-	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), underclassifiedExpectedIds, overclassifiedExpectedIds, duplicateFindings: duplicates, unmatchedFindings, falsePositiveFindings: item.cleanControl ? unmatchedFindings : 0, cleanControlHadFinding: item.cleanControl && run.findings.length > 0 };
+	return { matchedExpectedIds, missedExpectedIds: expected.filter((candidate) => !matchedExpectedIds.includes(candidate.id)).map((candidate) => candidate.id), underclassifiedExpectedIds, overclassifiedExpectedIds, duplicateFindings: duplicates, unmatchedFindings, falsePositiveFindings: item.cleanControl ? unmatchedFindings : 0, cleanControlHadFinding: item.cleanControl && findings.length > 0 };
 }
 
 function ratio(numerator, denominator) { return denominator === 0 ? null : numerator / denominator; }
@@ -358,7 +394,7 @@ function metricPair(opportunities, matched) { return { matched, opportunities, r
 
 export function aggregateScores(corpusInfo, plan, runs) {
 	const caseById = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
-	const scores = runs.map((run) => ({ run, item: caseById.get(run.caseId), score: scoreRun(caseById.get(run.caseId), run) }));
+	const scores = runs.map((run) => { const findings = run[SEMANTIC_FINDINGS] ?? run.findings; return { run, findings, visibleFallbackFindings: Math.max(0, findings.length - run.findings.length), item: caseById.get(run.caseId), score: scoreRun(caseById.get(run.caseId), run, findings) }; });
 	const aggregateGroup = (group) => {
 		const expectedOpportunities = group.flatMap(({ item }) => item.expectedFindings);
 		const matchedIds = new Set(group.flatMap(({ run, score }) => score.matchedExpectedIds.map((id) => `${run.planEntryId}\0${id}`)));
@@ -369,7 +405,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		};
 		const perLens = Object.fromEntries(corpusInfo.corpus.lenses.map((lens) => [lens, select((expected) => expected.lenses.includes(lens))]));
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
-		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { run }) => sum + run.findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length;
+		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
 		return {
 			runs: group.length,
 			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
@@ -379,7 +415,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
 			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), unmatched, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
 			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
-			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length) },
+			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length), visibleFallbackFindings },
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
