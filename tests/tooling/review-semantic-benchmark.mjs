@@ -31,8 +31,19 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:needs?|requires?) no (?:change|fix)\b/iu,
 	/\bno changes? (?:are|is) (?:needed|required)\b/iu,
 	/\b(?:cannot|can not|could not|does not) (?:be )?(?:abused|exploited|triggered)\b/iu,
+	/\bdoes not (?:break|crash|disclose|enable|fail|inject|leak|throw)\b/iu,
+	/\b(?:breakage|exploitation|failure|injection|issue|vulnerability) (?:is|are) (?:absent|impossible|not possible)\b/iu,
 ];
 const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
+function hasPositiveDefectCue(text) {
+	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
+		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), after = text.slice(end, Math.min(text.length, end + 40));
+		if (/(?:\b(?:cannot|never|no|not|without)\b|does not)\s+[^.!?\n]{0,30}$/iu.test(before)) continue;
+		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|impossible|not possible|safe)\b/iu.test(after)) continue;
+		return true;
+	}
+	return false;
+}
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
@@ -258,15 +269,21 @@ function parseVisibleFallbackFindings(markdown) {
 	const candidate = /^### \[(P0|P1|P2|P3|nit)\] ([^\n]{1,300})\n([\s\S]*?)(?=^### \[|(?![\s\S]))/gmu;
 	for (const match of section.matchAll(candidate)) {
 		if (findings.length >= FALLBACK_FINDING_LIMIT) return [];
-		const severity = match[1], block = match[3], labels = [...block.matchAll(/^\*\*(Severity|Rationale|Location):\*\*/gmu)];
-		if (labels.length !== 3 || labels[0][1] !== "Severity" || labels[1][1] !== "Rationale" || labels[2][1] !== "Location") continue;
-		const severityMatch = /^\*\*Severity:\*\* (P0|P1|P2|P3|nit)\s*$/mu.exec(block), rationaleMatch = /^\*\*Rationale:\*\* ([\s\S]*?)(?=^\*\*Location:\*\*)/mu.exec(block), locationMatch = /^\*\*Location:\*\* `([^`]+)`\s*$/mu.exec(block);
-		if (!severityMatch || !rationaleMatch || !locationMatch || severityMatch.index !== labels[0].index || rationaleMatch.index !== labels[1].index || locationMatch.index !== labels[2].index || block.slice(locationMatch.index + locationMatch[0].length).trim() !== "") continue;
-		const declaredSeverity = severityMatch[1], rationale = rationaleMatch[1].trim(), locationText = locationMatch[1], location = /^(.*):(\d+)(?:-(\d+))? (RIGHT|LEFT)$/u.exec(locationText);
-		if (declaredSeverity !== severity || !rationale || rationale.length > 20_000 || !location) continue;
-		const start = Number(location[2]), end = Number(location[3] ?? location[2]), file = location[1];
-		if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start || end > 10_000_000 || file.length === 0 || file.length > 300 || file.includes("\\") || path.posix.isAbsolute(file) || file.split("/").some((part) => part === "" || part === "." || part === "..")) continue;
-		findings.push({ title: `[${severity}] ${match[2]}`, body: rationale, severity, location: { path: file, side: location[4], start, end } });
+		const severity = match[1], block = match[3], labels = [...block.matchAll(/^\*\*(Severity|Rationale|Location):\*\*/gmu)], expectedLabels = labels.length === 2 ? ["Severity", "Rationale"] : labels.length === 3 ? ["Severity", "Rationale", "Location"] : [];
+		if (expectedLabels.length === 0 || labels.some((label, index) => label[1] !== expectedLabels[index])) continue;
+		const severityMatch = /^\*\*Severity:\*\* (P0|P1|P2|P3|nit)\s*$/mu.exec(block), rationaleMatch = /^\*\*Rationale:\*\* ([\s\S]*?)(?=^\*\*Location:\*\*|(?![\s\S]))/mu.exec(block), locationMatch = expectedLabels.length === 3 ? /^\*\*Location:\*\* `([^`\n]+)`\s*$/mu.exec(block) : null;
+		if (!severityMatch || !rationaleMatch || severityMatch[1] !== severity || severityMatch.index !== labels[0].index || rationaleMatch.index !== labels[1].index || (expectedLabels.length === 3 && (!locationMatch || locationMatch.index !== labels[2].index || block.slice(locationMatch.index + locationMatch[0].length).trim() !== ""))) continue;
+		const rationale = rationaleMatch[1].trim();
+		if (!rationale || rationale.length > 20_000) continue;
+		let location = null;
+		if (locationMatch) {
+			const parsed = /^(.*):(\d+)(?:-(\d+))? (RIGHT|LEFT)$/u.exec(locationMatch[1]);
+			if (!parsed) continue;
+			const start = Number(parsed[2]), end = Number(parsed[3] ?? parsed[2]), file = parsed[1];
+			if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start || end > 10_000_000 || file.length === 0 || file.length > 300 || file.includes("\\") || path.posix.isAbsolute(file) || file.split("/").some((part) => part === "" || part === "." || part === "..")) continue;
+			location = { path: file, side: parsed[4], start, end };
+		}
+		findings.push({ title: `[${severity}] ${match[2]}`, body: rationale, severity, location });
 	}
 	return findings;
 }
@@ -356,7 +373,7 @@ function expectedMatchesFinding(expected, finding) {
 	// say "injection". Require both a pattern and most concept groups so one
 	// generic keyword cannot create a match.
 	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
-	return assertionMatched && DEFECT_CUE.test(rawText) && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
+	return assertionMatched && hasPositiveDefectCue(rawText) && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);

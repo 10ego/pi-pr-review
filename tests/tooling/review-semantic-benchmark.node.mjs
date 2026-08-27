@@ -118,6 +118,9 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Interpolate branch input", body: "Generic wording without a concrete consequence." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep the branch command invocation", body: "The branch command correctly uses execFile instead of execAsync and needs no change." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep branch shell interpolation", body: "This cannot be exploited and no changes are required." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "Exploitation is impossible and the invocation is acceptable." }] }).missedExpectedIds, [expected.id]);
+	const performance = info.corpus.cases.find((candidate) => candidate.id === "algorithmic-quadratic"), performanceExpected = performance.expectedFindings[0], negatedPerformance = { title: "[P2] Mapping each item inside the filter", body: "This does not break performance; the map and includes work is acceptable rather than a quadratic defect.", severity: "P2", location: { ...performanceExpected.acceptableLocations[0] } };
+	assert.deepEqual(scoreRun(performance, { findings: [negatedPerformance] }).missedExpectedIds, [performanceExpected.id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {
@@ -129,6 +132,8 @@ test("visible fallback Markdown participates in semantic recall without becoming
 	assert.equal(fencedMetric.perLens["security-performance"].recall, 0.5); assert.equal(fencedMetric.publication.visibleFallbackFindings, 0);
 	const duplicateField = fallback.replace("**Location:** `src/documents.ts:34 LEFT`", "**Location:** `src/documents.ts:34 LEFT`\n**Severity:** P2"), ambiguous = createBundle({ modes: ["deep"], mutateRun(run, item) { if (item.id === "authorization-tenant-scope") { run.findings = []; run.publication = { artifact: "raw_body_only", fallback: true }; } }, markdownForRun(run, item, original) { return item.id === "authorization-tenant-scope" ? duplicateField : original; } }), ambiguousMetric = scoreBundle({ corpusInfo: ambiguous.corpusInfo, plan: ambiguous.plan, resultsDirectory: ambiguous.root }).metrics.modes.deep;
 	assert.equal(ambiguousMetric.perLens["security-performance"].recall, 0.5); assert.equal(ambiguousMetric.publication.visibleFallbackFindings, 0);
+	const locationless = "## Findings\n\n### [P2] Speculative clean-control warning\n**Severity:** P2\n**Rationale:** This locationless concern is visible to the reviewer and must count conservatively.", locationlessBundle = createBundle({ modes: ["deep"], mutateRun(run, item) { if (item.id === "clean-batched-lookup") run.publication = { artifact: "raw_body_only", fallback: true }; }, markdownForRun(run, item, original) { return item.id === "clean-batched-lookup" ? locationless : original; } }), locationlessMetric = scoreBundle({ corpusInfo: locationlessBundle.corpusInfo, plan: locationlessBundle.plan, resultsDirectory: locationlessBundle.root }).metrics.modes.deep;
+	assert.equal(locationlessMetric.cleanControls.caseFalsePositiveRate, 0.5); assert.equal(locationlessMetric.publication.visibleFallbackFindings, 1);
 });
 
 test("defect-polarity negation is not mistaken for a contradictory non-finding", () => {
