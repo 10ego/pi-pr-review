@@ -1,0 +1,126 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { createPlan, loadCorpus, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+
+const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v1.json");
+const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
+
+function artifact(root, entryId, kind, text) {
+	const relative = `artifacts/${entryId}-${kind}.txt`, file = path.join(root, relative), bytes = Buffer.from(text);
+	fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes);
+	return { kind, path: relative, sha256: sha256(bytes), bytes: bytes.length };
+}
+function findingFor(expected) {
+	return {
+		title: `[${expected.allowedSeverities[0]}] ${expected.requiredConcepts.map((group) => group[0]).join(" ")}`,
+		body: `The changed code breaks ${expected.requiredConcepts.map((group) => group[0]).join(" and ")}.`,
+		severity: expected.allowedSeverities[0],
+		location: { ...expected.acceptableLocations[0] },
+	};
+}
+function createBundle({ modes = ["balanced", "full"], repetitions = 1, mutateRun } = {}) {
+	const corpusInfo = loadCorpus(CORPUS), plan = createPlan(corpusInfo, modes, repetitions), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-")), runDir = path.join(root, "runs"); fs.mkdirSync(runDir);
+	const cases = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
+	const runs = [];
+	for (const entry of plan.entries) {
+		const item = cases.get(entry.caseId), laneText = JSON.stringify({ caseId: item.id, lanes: ["complete"] }), reviewText = item.expectedFindings.map((expected) => expected.rationale).join("\n") || "No findings.";
+		const run = {
+			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
+			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
+			timing: { parentValidationMs: 10, parentSynthesisMs: 5 },
+			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", topology: { passIds: ["correctness", "correctness-contracts", "security-performance", "performance-resources"], shardCount: 1, maxParallel: 5 } },
+			lanes: [{ id: "correctness", lens: "correctness", status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" }],
+			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor),
+			artifacts: [artifact(root, entry.entryId, "lane-artifacts", laneText), artifact(root, entry.entryId, "canonical-review", reviewText)],
+		};
+		mutateRun?.(run, item, runs.length, root); runs.push(run); fs.writeFileSync(path.join(runDir, `${entry.entryId}.json`), `${JSON.stringify(run, null, 2)}\n`);
+	}
+	return { corpusInfo, plan, root, runs };
+}
+function gates(bundle, overrides = {}) {
+	return { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, acceptedAtUtc: "2026-08-28T00:00:00.000Z", rationale: "Accepted after repeated baseline runs on the versioned semantic corpus.", thresholds: { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, ...overrides } };
+}
+
+test("versioned corpus pins every diff, covers all heavy lenses, cross-file findings, and clean controls", () => {
+	const info = loadCorpus(CORPUS);
+	assert.equal(info.corpus.schemaVersion, 1); assert.equal(info.corpus.cases.length, 11);
+	assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2);
+	assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.crossFile)));
+	for (const lens of info.corpus.lenses) assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.lenses.includes(lens))), lens);
+});
+
+test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
+	const info = loadCorpus(CORPUS), one = createPlan(info, ["balanced", "full"], 3), two = createPlan(info, ["balanced", "full"], 3);
+	assert.deepEqual(one, two); assert.equal(one.entries.length, 66); assert.equal(new Set(one.entries.map((entry) => entry.entryId)).size, 66);
+	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 33);
+});
+
+test("perfect immutable result bundle emits recall, lifecycle, fallback, and latency metrics", () => {
+	const bundle = createBundle(), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root });
+	assert.equal(report.resultCount, 22); assert.equal(report.gate.status, "baseline_required");
+	assert.equal(report.metrics.overall.p0p1.recall, 1); assert.equal(report.metrics.overall.p2.recall, 1); assert.equal(report.metrics.overall.crossFile.recall, 1);
+	assert.equal(report.metrics.overall.cleanControls.caseFalsePositiveRate, 0); assert.equal(report.metrics.overall.findings.duplicateRate, 0);
+	assert.equal(report.metrics.overall.lanes.completeRate, 1); assert.equal(report.metrics.overall.publication.fallbackRate, 0);
+	assert.equal(report.metrics.overall.latencyMs.p50, 110); assert.equal(report.metrics.overall.latencyMs.p95, 120);
+	assert.equal(report.metrics.modes.balanced.runs, 11); assert.equal(report.metrics.modes.full.runs, 11);
+});
+
+test("accepted explicit baseline gates pass a perfect bundle", () => {
+	const bundle = createBundle({ modes: ["balanced"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle) });
+	assert.deepEqual(report.gate, { status: "passed", passed: true, failures: [] });
+});
+
+test("semantic matching requires severity, overlapping anchor, and every concept group", () => {
+	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "command-injection"), expected = item.expectedFindings[0], valid = findingFor(expected);
+	const base = { findings: [valid] };
+	assert.deepEqual(scoreRun(item, base).matchedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, severity: "P2" }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, location: { ...valid.location, start: 99, end: 99 } }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, title: "[P1] branch shell", body: "No semantic classification." }] }).missedExpectedIds, [expected.id]);
+});
+
+test("duplicate matches and clean-control findings are reported conservatively", () => {
+	const bundle = createBundle({ modes: ["balanced"], mutateRun(run, item) {
+		if (item.id === "command-injection") run.findings.push({ ...run.findings[0] });
+		if (item.cleanControl && item.id === "clean-batched-lookup") run.findings.push({ title: "[P2] Speculative note", body: "This is an unmatched finding.", severity: "P2", location: null });
+	} });
+	const metrics = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.overall;
+	assert.equal(metrics.findings.duplicates, 1); assert.equal(metrics.findings.falsePositives, 1); assert.equal(metrics.cleanControls.runsWithFindings, 1); assert.equal(metrics.cleanControls.caseFalsePositiveRate, 0.5);
+});
+
+test("incomplete lanes and fallback publication participate in metrics and fail strict gates", () => {
+	const bundle = createBundle({ modes: ["balanced"], mutateRun(run, item) {
+		if (item.id === "state-cancellation-race") { run.lanes[0].status = "timed_out"; run.publication = { artifact: "degraded", fallback: true }; }
+	} });
+	const report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle) });
+	assert.equal(report.metrics.overall.lanes.timed_out, 1); assert.equal(report.metrics.overall.publication.fallbackRuns, 1); assert.equal(report.gate.status, "failed");
+	assert.ok(report.gate.failures.some((failure) => failure.startsWith("lane complete rate"))); assert.ok(report.gate.failures.some((failure) => failure.startsWith("publication fallback rate")));
+});
+
+test("missing run, duplicate plan tuple, and artifact tampering fail closed", () => {
+	const missing = createBundle({ modes: ["balanced"] }); fs.unlinkSync(path.join(missing.root, "runs", `${missing.plan.entries[0].entryId}.json`));
+	assert.throws(() => scoreBundle({ corpusInfo: missing.corpusInfo, plan: missing.plan, resultsDirectory: missing.root }), /result bundle is incomplete/);
+	const duplicate = createBundle({ modes: ["balanced"] }), badPlan = structuredClone(duplicate.plan); badPlan.entries[1] = { ...badPlan.entries[0], entryId: "f".repeat(24) };
+	const identity = { schemaVersion: badPlan.schemaVersion, corpusId: badPlan.corpusId, corpusSha256: badPlan.corpusSha256, modes: badPlan.modes, repetitions: badPlan.repetitions, entries: badPlan.entries }; badPlan.planId = sha256(Buffer.from(canonical(identity)));
+	assert.throws(() => scoreBundle({ corpusInfo: duplicate.corpusInfo, plan: badPlan, resultsDirectory: duplicate.root }), /duplicate plan tuple/);
+	const tampered = createBundle({ modes: ["balanced"] }), first = tampered.runs[0].artifacts[0]; fs.appendFileSync(path.join(tampered.root, first.path), "tamper");
+	assert.throws(() => scoreBundle({ corpusInfo: tampered.corpusInfo, plan: tampered.plan, resultsDirectory: tampered.root }), /artifact bytes\/hash/);
+});
+
+test("result schemas reject extra fields, invalid latency, unsafe paths, and symlink artifacts", () => {
+	for (const mutate of [
+		(run) => { run.untrusted = true; },
+		(run) => { run.elapsedMs = Number.NaN; },
+		(run) => { run.findings[0].location.path = "../escape"; },
+	]) {
+		const bundle = createBundle({ modes: ["balanced"], mutateRun(run, item, index) { if (index === 0) mutate(run, item); } });
+		assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /Semantic benchmark invalid/);
+	}
+	const bundle = createBundle({ modes: ["balanced"] }), reference = bundle.runs[0].artifacts[0], target = path.join(bundle.root, reference.path), real = `${target}.real`; fs.renameSync(target, real); fs.symlinkSync(real, target);
+	assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /non-symlink|artifact/);
+});

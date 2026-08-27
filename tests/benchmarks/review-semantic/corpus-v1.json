@@ -1,0 +1,482 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "pi-pr-review-semantic-v1",
+  "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
+  "lenses": [
+    "correctness",
+    "correctness-contracts",
+    "security-performance",
+    "performance-resources"
+  ],
+  "cases": [
+    {
+      "id": "compile-export-removal",
+      "title": "Removed exported request contract",
+      "diff": "diffs/compile-export-removal.diff",
+      "diffSha256": "be33415720d5789d0d74658a4e172c8243e37603e47830444f25289ed1e17eb7",
+      "changedFiles": [
+        "src/types.ts",
+        "src/client.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "compile.missing-request-options",
+          "allowedSeverities": [
+            "P0"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/types.ts",
+              "side": "LEFT",
+              "start": 1,
+              "end": 1
+            },
+            {
+              "path": "src/client.ts",
+              "side": "RIGHT",
+              "start": 1,
+              "end": 1
+            }
+          ],
+          "rationale": "RequestOptions is still imported and used after its export is removed, so the module cannot type-check.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "RequestOptions"
+            ],
+            [
+              "export",
+              "import",
+              "type"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "data-shape-contract",
+      "title": "Returned user shape no longer satisfies its API",
+      "diff": "diffs/data-shape-contract.diff",
+      "diffSha256": "c6601267fc494b393cf7f825b5e80bdef44072ee2c1aa1bafc451ac3d9797d89",
+      "changedFiles": [
+        "src/users.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "contract.user-id-field",
+          "allowedSeverities": [
+            "P0"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/users.ts",
+              "side": "RIGHT",
+              "start": 12,
+              "end": 12
+            }
+          ],
+          "rationale": "loadUser promises User with id, but returns userId, breaking type-checking and consumers.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "userId"
+            ],
+            [
+              "id"
+            ],
+            [
+              "User",
+              "return",
+              "shape"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state-cancellation-race",
+      "title": "Superseded searches render cancellation as failure",
+      "diff": "diffs/state-cancellation-race.diff",
+      "diffSha256": "61e161802adbc95ba4d154a974a1b2e622d24b2073397e7e03fa851e3f1801bf",
+      "changedFiles": [
+        "src/search.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "lifecycle.abort-rendered-error",
+          "allowedSeverities": [
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/search.ts",
+              "side": "RIGHT",
+              "start": 23,
+              "end": 27
+            }
+          ],
+          "rationale": "Starting a new search aborts the prior request, whose catch now renders an error and can overwrite the newer request state.",
+          "lenses": [
+            "correctness"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "abort",
+              "cancel"
+            ],
+            [
+              "renderError",
+              "error"
+            ],
+            [
+              "new",
+              "next",
+              "superseded",
+              "stale"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "resource-listener-leak",
+      "title": "Socket view loses listener ownership",
+      "diff": "diffs/resource-listener-leak.diff",
+      "diffSha256": "834c845970030752014ea8ad7703874fed8510c0786686e66c8601a4fc00b95c",
+      "changedFiles": [
+        "src/socket-view.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "resource.message-listener-leak",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/socket-view.ts",
+              "side": "RIGHT",
+              "start": 14,
+              "end": 17
+            }
+          ],
+          "rationale": "The anonymous listener cannot be removed on unmount, retaining the view and duplicating messages after remount.",
+          "lenses": [
+            "performance-resources",
+            "correctness"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "listener",
+              "message"
+            ],
+            [
+              "remove",
+              "off",
+              "unmount"
+            ],
+            [
+              "leak",
+              "duplicate",
+              "retain"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "authorization-tenant-scope",
+      "title": "Document lookup drops tenant authorization",
+      "diff": "diffs/authorization-tenant-scope.diff",
+      "diffSha256": "9b46b7a8d321e28d97fd41ce3692e7f87a3761d62fe62fcac5f86a33175db84d",
+      "changedFiles": [
+        "src/documents.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "security.missing-tenant-scope",
+          "allowedSeverities": [
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/documents.ts",
+              "side": "RIGHT",
+              "start": 34,
+              "end": 34
+            }
+          ],
+          "rationale": "An authenticated user can fetch another tenant\u2019s document by ID after tenantId is removed from the query.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "tenant"
+            ],
+            [
+              "authorization",
+              "access",
+              "other"
+            ],
+            [
+              "id",
+              "document"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "command-injection",
+      "title": "Branch input is interpolated into a shell command",
+      "diff": "diffs/command-injection.diff",
+      "diffSha256": "bc171405ae2aa3a70217b0c93723e016c63b3f935b9cdbca7c893371b68279a8",
+      "changedFiles": [
+        "src/git.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "security.branch-command-injection",
+          "allowedSeverities": [
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/git.ts",
+              "side": "RIGHT",
+              "start": 16,
+              "end": 17
+            }
+          ],
+          "rationale": "A caller-controlled branch is passed through a shell command instead of execFile argv, enabling command injection.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "branch"
+            ],
+            [
+              "shell",
+              "command",
+              "exec"
+            ],
+            [
+              "inject",
+              "escape",
+              "quote"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "algorithmic-quadratic",
+      "title": "Reconciliation rebuilds IDs for every item",
+      "diff": "diffs/algorithmic-quadratic.diff",
+      "diffSha256": "b4753e1425b300c26fd4221c8d49623cee3223d3deed2dc69135455bc4dde08a",
+      "changedFiles": [
+        "src/reconcile.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "performance.quadratic-reconcile",
+          "allowedSeverities": [
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/reconcile.ts",
+              "side": "RIGHT",
+              "start": 41,
+              "end": 43
+            }
+          ],
+          "rationale": "Mapping current IDs inside the previous-items filter changes linear reconciliation into quadratic work.",
+          "lenses": [
+            "performance-resources"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "quadratic",
+              "O(n",
+              "O(N"
+            ],
+            [
+              "map",
+              "includes"
+            ],
+            [
+              "filter",
+              "each",
+              "every"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cross-shard-cache-contract",
+      "title": "Cache return envelope is not integrated at its caller",
+      "diff": "diffs/cross-shard-cache-contract.diff",
+      "diffSha256": "fedc1ae952e72c196d42319992c0affc54f4762db4f4bc25db01fdf406ce0a3c",
+      "changedFiles": [
+        "src/cache.ts",
+        "src/profile.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "integration.cache-envelope-parser",
+          "allowedSeverities": [
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/profile.ts",
+              "side": "RIGHT",
+              "start": 19,
+              "end": 19
+            },
+            {
+              "path": "src/cache.ts",
+              "side": "RIGHT",
+              "start": 6,
+              "end": 7
+            }
+          ],
+          "rationale": "Cache.get now returns an envelope, but loadProfile still passes the object itself to JSON.parse instead of cached.value.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "cache",
+              "cached"
+            ],
+            [
+              "value",
+              "envelope",
+              "object"
+            ],
+            [
+              "JSON.parse",
+              "parse"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "boundary-nonfinite-timeout",
+      "title": "Timeout parsing admits non-finite numbers",
+      "diff": "diffs/boundary-nonfinite-timeout.diff",
+      "diffSha256": "fdc70ce826752a66451c47babebe1cc520a99092eb29df6a994ade1bb901d171",
+      "changedFiles": [
+        "src/options.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "boundary.nonfinite-timeout",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/options.ts",
+              "side": "RIGHT",
+              "start": 11,
+              "end": 12
+            }
+          ],
+          "rationale": "Number accepts NaN and Infinity, and the new positive-only guard lets both invalid timeout values through.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "NaN",
+              "Infinity",
+              "non-finite",
+              "finite"
+            ],
+            [
+              "timeout"
+            ],
+            [
+              "guard",
+              "check",
+              "accept"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "clean-batched-lookup",
+      "title": "Batch user lookup preserves order and missing entries",
+      "diff": "diffs/clean-batched-lookup.diff",
+      "diffSha256": "0416303a92d6f9ba8460243ce0169038167cacb71418e7b66ebce05027401f95",
+      "changedFiles": [
+        "src/users.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": []
+    },
+    {
+      "id": "clean-finally-cleanup",
+      "title": "Lock release is guaranteed with finally",
+      "diff": "diffs/clean-finally-cleanup.diff",
+      "diffSha256": "be22bc00d993ecf7e686c18a26880b3f7e9fb8ce9605210bb1911f301437c6ae",
+      "changedFiles": [
+        "src/lock.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": []
+    }
+  ]
+}

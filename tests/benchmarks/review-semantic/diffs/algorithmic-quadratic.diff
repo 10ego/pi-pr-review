@@ -1,0 +1,11 @@
+diff --git a/src/reconcile.ts b/src/reconcile.ts
+index 1111111..2222222 100644
+--- a/src/reconcile.ts
++++ b/src/reconcile.ts
+@@ -40,8 +40,10 @@ export function removedIds(previous: Item[], current: Item[]) {
+-  const currentIds = new Set(current.map(item => item.id));
+-  return previous.filter(item => !currentIds.has(item.id)).map(item => item.id);
++  return previous
++    .filter(item => !current.map(candidate => candidate.id).includes(item.id))
++    .map(item => item.id);
+ }

@@ -1,0 +1,11 @@
+diff --git a/src/users.ts b/src/users.ts
+index 1111111..2222222 100644
+--- a/src/users.ts
++++ b/src/users.ts
+@@ -8,7 +8,7 @@ export type User = { id: string; name: string };
+ export async function loadUser(id: string): Promise<User> {
+   const row = await db.users.find(id);
+   if (!row) throw new Error("not found");
+-  return { id: row.id, name: row.display_name };
++  return { userId: row.id, name: row.display_name };
+ }

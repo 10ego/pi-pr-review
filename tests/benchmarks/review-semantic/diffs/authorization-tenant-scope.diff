@@ -1,0 +1,14 @@
+diff --git a/src/documents.ts b/src/documents.ts
+index 1111111..2222222 100644
+--- a/src/documents.ts
++++ b/src/documents.ts
+@@ -30,8 +30,7 @@ export async function getDocument(ctx: RequestContext, id: string) {
+   if (!ctx.user) throw new UnauthorizedError();
+   return db.documents.findFirst({
+     where: {
+-      id,
+-      tenantId: ctx.user.tenantId,
++      id,
+     },
+   });
+ }

@@ -1,0 +1,20 @@
+diff --git a/src/types.ts b/src/types.ts
+index 1111111..2222222 100644
+--- a/src/types.ts
++++ b/src/types.ts
+@@ -1,5 +1,4 @@
+-export interface RequestOptions { timeoutMs: number }
+ export interface ClientOptions { baseUrl: string }
+ 
+ export function normalizeClientOptions(value: ClientOptions): ClientOptions {
+   return value;
+diff --git a/src/client.ts b/src/client.ts
+index 3333333..4444444 100644
+--- a/src/client.ts
++++ b/src/client.ts
+@@ -1,4 +1,4 @@
+-import { RequestOptions } from "./types";
++import { RequestOptions, ClientOptions } from "./types";
+ 
+ export function request(path: string, options: RequestOptions) {
+   return fetch(path, { signal: AbortSignal.timeout(options.timeoutMs) });

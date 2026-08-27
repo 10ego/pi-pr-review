@@ -5,6 +5,12 @@ remaining phases. Revision 2 incorporates the PR #71 design review:
 schema alignment, lifecycle placement, egress and provenance hardening, merge
 cap, byte limits, telemetry timing, and mode-model rollout concerns).
 
+Review topology and latency changes are evaluated separately with the versioned
+seeded corpus and immutable result-bundle tooling in
+[semantic-review-benchmark.md](semantic-review-benchmark.md). Structural
+success or finding count alone is not evidence that a topology preserved
+critical-defect recall.
+
 ## 1. Problem
 
 The deterministic pipeline that turns reviewer output into a GitHub review loses
