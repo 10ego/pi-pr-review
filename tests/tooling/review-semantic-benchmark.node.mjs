@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, materializeOldFiles } from "./review-semantic-collect.mjs";
 
-const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v2.json");
+const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v3.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -118,7 +118,7 @@ test("lane model admission mirrors production nearest-tier and fallback resoluti
 });
 
 test("target severity, not allowed-severity order, owns recall denominators", () => {
-	const info = loadCorpus(CORPUS), compile = info.corpus.cases.find((item) => item.id === "compile-export-removal"), critical = findingFor(compile.expectedFindings[0]); critical.severity = "P1"; critical.title = critical.title.replace("[P0]", "[P1]"); assert.deepEqual(scoreRun(compile, { findings: [critical] }).matchedExpectedIds, [compile.expectedFindings[0].id]);
+	const info = loadCorpus(CORPUS), compile = info.corpus.cases.find((item) => item.id === "compile-export-removal"), critical = findingFor(compile.expectedFindings[0]); critical.severity = "P1"; critical.title = "[P1] Restore the removed RequestOptions export"; critical.body = "The module drops the RequestOptions export while it is still imported, so TypeScript compilation fails for every consumer."; assert.deepEqual(scoreRun(compile, { findings: [critical] }).matchedExpectedIds, [compile.expectedFindings[0].id]);
 	const bundle = createBundle({ modes: ["balanced"] }), resource = bundle.corpusInfo.corpus.cases.find((item) => item.id === "resource-listener-leak").expectedFindings[0];
 	assert.equal(resource.targetSeverity, "P2"); assert.deepEqual(resource.allowedSeverities, ["P1", "P2"]);
 	const metrics = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.overall;

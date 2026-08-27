@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "corpusId": "pi-pr-review-semantic-v2",
+  "corpusId": "pi-pr-review-semantic-v3",
   "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
   "lenses": [
     "correctness",
@@ -61,12 +61,12 @@
           ],
           "assertionPatterns": [
             [
-              "RequestOptions.{0,100}(removed|missing|no longer exported|not exported)",
-              "(removed|missing|no longer exported|not exported).{0,100}RequestOptions"
+              "RequestOptions.{0,100}(remov|miss|drop|no longer export|not export)",
+              "(remov|miss|drop|no longer export|not export).{0,100}RequestOptions"
             ],
             [
-              "(cannot|will not|fails? to).{0,80}(compile|type-check|resolve)",
-              "(compile|type-check|resolution).{0,80}(fail|error|break)"
+              "(cannot|will not|fails? to).{0,80}(compil|type-check|resolv)",
+              "(compil|type-check|resol).{0,80}(fail|error|break)"
             ]
           ],
           "contradictionPatterns": [
