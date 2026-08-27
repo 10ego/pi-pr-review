@@ -121,6 +121,8 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "Exploitation is impossible and the invocation is acceptable." }] }).missedExpectedIds, [expected.id]);
 	const performance = info.corpus.cases.find((candidate) => candidate.id === "algorithmic-quadratic"), performanceExpected = performance.expectedFindings[0], negatedPerformance = { title: "[P2] Mapping each item inside the filter", body: "This does not break performance; the map and includes work is acceptable rather than a quadratic defect.", severity: "P2", location: { ...performanceExpected.acceptableLocations[0] } };
 	assert.deepEqual(scoreRun(performance, { findings: [negatedPerformance] }).missedExpectedIds, [performanceExpected.id]);
+	const allConceptsNegated = { ...negatedPerformance, body: "Mapping each item inside the filter is acceptable. This is never a quadratic performance defect even though each item uses map and includes." };
+	assert.deepEqual(scoreRun(performance, { findings: [allConceptsNegated] }).missedExpectedIds, [performanceExpected.id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {

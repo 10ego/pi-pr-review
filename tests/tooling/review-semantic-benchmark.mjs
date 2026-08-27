@@ -35,6 +35,7 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:breakage|exploitation|failure|injection|issue|vulnerability) (?:is|are) (?:absent|impossible|not possible)\b/iu,
 ];
 const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
+const NEGATED_DEFECT_CLAIM = /\b(?:no|not|never)\b(?:\s+[^\s.!?]+){0,5}\s+\b(?:breakage|defect|failure|issue|problem|quadratic|regression|vulnerability)\b/iu;
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), after = text.slice(end, Math.min(text.length, end + 40));
@@ -366,14 +367,14 @@ function expectedMatchesFinding(expected, finding) {
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
-	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length;
-	if (matchedConcepts === conceptMatches.length) return true;
+	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length;
+	if (allConceptsMatched && !NEGATED_DEFECT_CLAIM.test(rawText)) return true;
 	// Assertion patterns are corpus-authored semantic alternatives for valid
 	// descriptions such as "interpolates into a shell" that do not literally
 	// say "injection". Require both a pattern and most concept groups so one
 	// generic keyword cannot create a match.
 	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
-	return assertionMatched && hasPositiveDefectCue(rawText) && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
+	return hasPositiveDefectCue(rawText) && (allConceptsMatched || assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3));
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
