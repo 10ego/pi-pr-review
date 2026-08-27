@@ -16,6 +16,7 @@ const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
 const PUBLICATION_ARTIFACTS = new Set(["canonical", "degraded", "raw_body_only"]);
+const GATE_INELIGIBLE_CORPORA = new Set(["pi-pr-review-semantic-v5"]);
 const MODE_TOPOLOGIES = Object.freeze({
 	balanced: { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
 	full: { passIds: ["overview", "conventions-maintainability", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 6 },
@@ -408,21 +409,21 @@ function maskEmbeddedConcepts(text, groups) {
 		return masked;
 	});
 }
-function hasContrastivePositiveDefect(text) {
-	const clauses = text.split(/\b(?:but|however|yet)\b|[.;]\s+/iu);
-	return clauses.length > 1 && clauses.slice(1).some((clause) => hasPositiveDefectCue(clause));
+function contrastivePositiveDefectClause(text) {
+	const clauses = text.split(/\b(?:but|however|yet)\b|[.;]\s+/iu).map((clause) => clause.trim()).filter(Boolean);
+	return clauses.length > 1 ? clauses.slice(1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText));
-	if (contradictory && !hasContrastivePositiveDefect(finding.body)) return false;
-	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(finding.body) : null;
+	if (contradictory && contrastiveClause === null) return false;
+	const semanticText = contradictory ? contrastiveClause : rawText, semanticBody = contradictory ? contrastiveClause : finding.body, text = semanticText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(semanticBody);
 	if (allConceptsMatched) return positiveDefect;
 	// The first assertion group may compensate for one genuinely missing concept
 	// group. Token-aware concepts prevent identifiers such as showBranch or
 	// userId from independently satisfying branch or id.
-	const assertionText = maskEmbeddedConcepts(rawText, expected.requiredConcepts), coreAssertionMatched = expected.assertionPatterns[0].some((pattern) => new RegExp(pattern, "iu").test(assertionText));
+	const assertionText = maskEmbeddedConcepts(semanticText, expected.requiredConcepts), coreAssertionMatched = expected.assertionPatterns[0].some((pattern) => new RegExp(pattern, "iu").test(assertionText));
 	return positiveDefect && coreAssertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
@@ -499,6 +500,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 
 function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {
 	if (!gates) return { status: "baseline_required", passed: false, failures: ["No accepted baseline gate file was supplied; metrics are diagnostic only."] };
+	invariant(!GATE_INELIGIBLE_CORPORA.has(corpusInfo.corpus.corpusId), `corpus ${corpusInfo.corpus.corpusId} is explicitly gate-ineligible`);
 	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "baseline", "thresholds"]), "gate file schema");
 	invariant(gates.schemaVersion === 1 && gates.corpusId === corpusInfo.corpus.corpusId && gates.corpusSha256 === corpusInfo.sha256 && Number.isFinite(Date.parse(gates.acceptedAtUtc)) && typeof gates.rationale === "string" && gates.rationale.length >= 20, "gate file identity");
 	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "environmentFingerprint", "scorerSha256"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.environmentFingerprint === environmentFingerprint && gates.baseline.scorerSha256 === SCORER_SHA256, "gate baseline binding");
