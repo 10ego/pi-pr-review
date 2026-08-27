@@ -211,8 +211,8 @@ function validateArtifact(reference, bundleRoot, run) {
 	let payload; try { payload = JSON.parse(data.toString("utf8")); } catch { invariant(false, `${runLabel} artifact JSON`); }
 	if (reference.kind === "lane-artifacts") {
 		const raw = payload?.raw;
-		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && exactKeys(raw, ["laneArtifacts", "telemetry", "ghAudit", "auditValid", "process", "session"]), `${runLabel} lane artifact binding`);
-		invariant(Array.isArray(raw.laneArtifacts) && (raw.telemetry === null || plain(raw.telemetry)) && Array.isArray(raw.ghAudit) && typeof raw.auditValid === "boolean" && raw.auditValid === (raw.ghAudit.length > 0 && raw.ghAudit.every((record) => plain(record) && record.allowed === true && record.write === false)), `${runLabel} raw lane/audit evidence`);
+		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && exactKeys(raw, ["laneArtifacts", "telemetry", "resolvedReview", "ghAudit", "auditValid", "process", "session"]), `${runLabel} lane artifact binding`);
+		invariant(Array.isArray(raw.laneArtifacts) && (raw.telemetry === null || plain(raw.telemetry)) && (raw.resolvedReview === null || plain(raw.resolvedReview)) && Array.isArray(raw.ghAudit) && typeof raw.auditValid === "boolean" && raw.auditValid === (raw.ghAudit.length > 0 && raw.ghAudit.every((record) => plain(record) && record.allowed === true && record.write === false)), `${runLabel} raw lane/audit evidence`);
 		invariant(exactKeys(raw.process, ["stdout", "stderr", "exitCode", "signal", "error"]) && typeof raw.process.stdout === "string" && typeof raw.process.stderr === "string" && (raw.process.exitCode === null || Number.isInteger(raw.process.exitCode)) && (raw.process.signal === null || typeof raw.process.signal === "string") && (raw.process.error === null || typeof raw.process.error === "string"), `${runLabel} raw process evidence`);
 		invariant(exactKeys(raw.session, ["sha256", "bytes", "recordCount", "contentBase64"]) && (raw.session.sha256 === null || SHA256.test(raw.session.sha256)) && Number.isSafeInteger(raw.session.bytes) && raw.session.bytes >= 0 && Number.isSafeInteger(raw.session.recordCount) && raw.session.recordCount >= 0 && (raw.session.bytes === 0) === (raw.session.sha256 === null) && (raw.session.contentBase64 === null) === (raw.session.bytes === 0), `${runLabel} raw session evidence`);
 		if (raw.session.contentBase64 !== null) { const sessionBytes = Buffer.from(raw.session.contentBase64, "base64"); invariant(sessionBytes.toString("base64") === raw.session.contentBase64 && sessionBytes.length === raw.session.bytes && sha256(sessionBytes) === raw.session.sha256 && sessionBytes.toString("utf8").split("\n").filter(Boolean).length === raw.session.recordCount, `${runLabel} retained session bytes`); }
@@ -229,19 +229,24 @@ function normalizePersistedFindings(review) {
 	if (!Array.isArray(review?.findings)) return [];
 	return review.findings.map((finding) => { const location = finding?.code_location, range = location?.line_range; return { title: String(finding?.title ?? ""), body: String(finding?.body ?? ""), severity: String(finding?.severity ?? ""), location: location && typeof location.absolute_file_path === "string" && Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end) && (location.side === "RIGHT" || location.side === "LEFT") ? { path: location.absolute_file_path, side: location.side, start: range.start, end: range.end } : null }; });
 }
-function validateSessionBindings(lanePayload, reviewPayload, run, label) {
+function splitModelSpec(value) { if (typeof value !== "string" || !value.includes("/")) return null; const index = value.indexOf("/"); return { provider: value.slice(0, index), model: value.slice(index + 1).replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, "") }; }
+function normalizeRawLane(lane) { const attempts = Array.isArray(lane?.attempts) ? lane.attempts : [], observed = lane?.observedModel ?? [...attempts].reverse().find((attempt) => typeof attempt?.observedModel === "string")?.observedModel, identity = splitModelSpec(observed); let elapsedMs = null; if (Number.isFinite(lane?.startOffsetMs) && Number.isFinite(lane?.endOffsetMs)) elapsedMs = Math.max(0, lane.endOffsetMs - lane.startOffsetMs); else { const timed = attempts.filter((attempt) => Number.isFinite(attempt?.elapsedMs)); if (timed.length > 0) elapsedMs = timed.reduce((sum, attempt) => sum + attempt.elapsedMs, 0); } return { id: lane?.passId, lens: String(lane?.passId ?? "").replace(/-shard-[123]$/, ""), status: ["complete", "partial", "timed_out", "failed"].includes(lane?.lifecycle) ? lane.lifecycle : "failed", elapsedMs, provider: identity?.provider ?? null, model: identity?.model ?? null }; }
+function validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig) {
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"), records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [], completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), hasRetainedLanes = run.lanes.some((lane) => lane.status !== "failed"), processFailed = raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null;
 	if (hasRetainedLanes || !processFailed) {
 		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
-		const data = completed[0].data;
+		const data = completed[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
 		invariant(plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(telemetry[0].data) === canonical(raw.telemetry) && data.rawText === reviewPayload.markdown, `${label} session artifact binding`);
+		invariant(modelChanges.length >= 1 && modelChanges.at(-1).provider === run.configuration.provider && modelChanges.at(-1).modelId === run.configuration.model && thinkingChanges.length >= 1 && thinkingChanges.at(-1).thinkingLevel === run.configuration.thinking, `${label} session parent model/thinking binding`);
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
 		invariant(run.publication.artifact === (canonicalPublication ? "canonical" : rawPublication ? "raw_body_only" : "degraded"), `${label} session publication binding`);
-		if (plain(data.review)) invariant(canonical(normalizePersistedFindings(data.review)) === canonical(run.findings), `${label} session finding binding`);
+		invariant(plain(raw.resolvedReview) && canonical(normalizePersistedFindings(raw.resolvedReview)) === canonical(run.findings), `${label} resolved finding binding`);
+		if (plain(data.review)) invariant(canonical(data.review) === canonical(raw.resolvedReview), `${label} persisted/resolved review binding`);
+		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = [effectiveConfig.tiers?.[tier], ...(Array.isArray(effectiveConfig.fallbacks?.[tier]) ? effectiveConfig.fallbacks[tier] : []), `${run.configuration.provider}/${run.configuration.model}`].map(splitModelSpec).filter(Boolean); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
 	} else invariant(completed.length === 0 && telemetry.length === 0 && run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed"), `${label} failed-session binding`);
 }
 
-function validateRun(run, planEntry, bundleRoot, item) {
+function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	const label = `run ${planEntry.entryId}`;
 	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"]), `${label} schema`);
 	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
@@ -276,7 +281,7 @@ function validateRun(run, planEntry, bundleRoot, item) {
 		}
 	}
 	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2 && new Set(run.artifacts.map((item) => item.path)).size === 2, `${label} artifacts`);
-	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label);
+	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig);
 	return run;
 }
 
@@ -388,16 +393,16 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 	validatePlan(plan, corpusInfo);
 	const bundleRoot = fs.realpathSync(path.resolve(resultsDirectory)), runDir = path.join(bundleRoot, "runs");
 	invariant(fs.lstatSync(runDir).isDirectory(), "result bundle requires runs/ directory");
-	const files = fs.readdirSync(runDir, { withFileTypes: true });
+	const files = fs.readdirSync(runDir, { withFileTypes: true }), effectiveConfigBytes = fs.readFileSync(resolveContainedRegular(bundleRoot, "effective-review-config.json", "effective review config")); let effectiveConfig; try { effectiveConfig = JSON.parse(effectiveConfigBytes.toString("utf8")); } catch { invariant(false, "effective review config JSON"); } invariant(plain(effectiveConfig), "effective review config schema");
 	invariant(files.every((entry) => entry.isFile() && entry.name.endsWith(".json")), "runs/ may contain only JSON files");
 	const entryById = new Map(plan.entries.map((entry) => [entry.entryId, entry])), caseById = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item])), seen = new Set(), runs = [];
 	for (const entry of files.sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)))) {
 		const run = readJson(path.join(runDir, entry.name)).value, planEntry = entryById.get(run?.planEntryId);
 		invariant(planEntry && !seen.has(planEntry.entryId), `unknown or duplicate plan entry in ${entry.name}`); seen.add(planEntry.entryId);
-		runs.push(validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId)));
+		runs.push(validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId), effectiveConfig));
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
-	const effectiveConfigBytes = fs.readFileSync(resolveContainedRegular(bundleRoot, "effective-review-config.json", "effective review config")); invariant(sha256(effectiveConfigBytes) === runs[0].configuration.reviewConfigSha256, "effective review config hash differs from run configuration"); let effectiveConfig; try { effectiveConfig = JSON.parse(effectiveConfigBytes.toString("utf8")); } catch { invariant(false, "effective review config JSON"); } invariant(plain(effectiveConfig), "effective review config schema");
+	invariant(sha256(effectiveConfigBytes) === runs[0].configuration.reviewConfigSha256, "effective review config hash differs from run configuration");
 	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical));
 	invariant(runs.every((run) => canonical(comparableConfiguration(run)) === configurationCanonical), "runs use incomparable provider/model/thinking/tool/version configuration");
 	const laneModels = new Map();
