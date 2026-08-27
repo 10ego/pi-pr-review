@@ -119,10 +119,14 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep the branch command invocation", body: "The branch command correctly uses execFile instead of execAsync and needs no change." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep branch shell interpolation", body: "This cannot be exploited and no changes are required." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "Exploitation is impossible and the invocation is acceptable." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch is escaped before the shell command executes, eliminating injection risk." }] }).missedExpectedIds, [expected.id]);
 	const performance = info.corpus.cases.find((candidate) => candidate.id === "algorithmic-quadratic"), performanceExpected = performance.expectedFindings[0], negatedPerformance = { title: "[P2] Mapping each item inside the filter", body: "This does not break performance; the map and includes work is acceptable rather than a quadratic defect.", severity: "P2", location: { ...performanceExpected.acceptableLocations[0] } };
 	assert.deepEqual(scoreRun(performance, { findings: [negatedPerformance] }).missedExpectedIds, [performanceExpected.id]);
 	const allConceptsNegated = { ...negatedPerformance, body: "Mapping each item inside the filter is acceptable. This is never a quadratic performance defect even though each item uses map and includes." };
 	assert.deepEqual(scoreRun(performance, { findings: [allConceptsNegated] }).missedExpectedIds, [performanceExpected.id]);
+	const boundary = info.corpus.cases.find((candidate) => candidate.id === "boundary-nonfinite-timeout"), boundaryExpected = boundary.expectedFindings[0], boundaryFinding = findingFor(boundaryExpected);
+	boundaryFinding.body = "The timeout guard does not fail for NaN and accepts the invalid non-finite value."; assert.deepEqual(scoreRun(boundary, { findings: [boundaryFinding] }).matchedExpectedIds, [boundaryExpected.id]);
+	boundaryFinding.body = "The non-finite timeout guard accepts NaN but this behavior presents no risk and is safe."; assert.deepEqual(scoreRun(boundary, { findings: [boundaryFinding] }).missedExpectedIds, [boundaryExpected.id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {

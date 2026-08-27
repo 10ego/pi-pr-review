@@ -31,16 +31,16 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:needs?|requires?) no (?:change|fix)\b/iu,
 	/\bno changes? (?:are|is) (?:needed|required)\b/iu,
 	/\b(?:cannot|can not|could not|does not) (?:be )?(?:abused|exploited|triggered)\b/iu,
-	/\bdoes not (?:break|crash|disclose|enable|fail|inject|leak|throw)\b/iu,
 	/\b(?:breakage|exploitation|failure|injection|issue|vulnerability) (?:is|are) (?:absent|impossible|not possible)\b/iu,
+	/\bpresents? no risk\b/iu,
+	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
-const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
-const NEGATED_DEFECT_CLAIM = /\b(?:no|not|never)\b(?:\s+[^\s.!?]+){0,5}\s+\b(?:breakage|defect|failure|issue|problem|quadratic|regression|vulnerability)\b/iu;
+const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)/iu;
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
-		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), after = text.slice(end, Math.min(text.length, end + 40));
-		if (/(?:\b(?:cannot|never|no|not|without)\b|does not)\s+[^.!?\n]{0,30}$/iu.test(before)) continue;
-		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|impossible|not possible|safe)\b/iu.test(after)) continue;
+		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
+		if (/(?:\b(?:cannot|never|no|not|without)\b|does not|rather than (?:an? )?|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
+		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|eliminated|impossible|mitigated|not possible|prevented|safe)\b/iu.test(after)) continue;
 		return true;
 	}
 	return false;
@@ -367,14 +367,14 @@ function expectedMatchesFinding(expected, finding) {
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
 	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
-	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length;
-	if (allConceptsMatched && !NEGATED_DEFECT_CLAIM.test(rawText)) return true;
+	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US")))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(rawText);
+	if (allConceptsMatched) return positiveDefect;
 	// Assertion patterns are corpus-authored semantic alternatives for valid
 	// descriptions such as "interpolates into a shell" that do not literally
 	// say "injection". Require both a pattern and most concept groups so one
 	// generic keyword cannot create a match.
 	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
-	return hasPositiveDefectCue(rawText) && (allConceptsMatched || assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3));
+	return positiveDefect && assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);
