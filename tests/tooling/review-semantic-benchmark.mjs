@@ -29,8 +29,10 @@ const EXPLICIT_NON_FINDING = [
 	/\bnot (?:broken|a bug|an issue|a problem|a defect)\b/iu,
 	/\bfalse positive\b/iu,
 	/\b(?:needs?|requires?) no (?:change|fix)\b/iu,
+	/\bno changes? (?:are|is) (?:needed|required)\b/iu,
+	/\b(?:cannot|can not|could not|does not) (?:be )?(?:abused|exploited|triggered)\b/iu,
 ];
-const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|cannot|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
+const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
@@ -256,7 +258,11 @@ function parseVisibleFallbackFindings(markdown) {
 	const candidate = /^### \[(P0|P1|P2|P3|nit)\] ([^\n]{1,300})\n([\s\S]*?)(?=^### \[|(?![\s\S]))/gmu;
 	for (const match of section.matchAll(candidate)) {
 		if (findings.length >= FALLBACK_FINDING_LIMIT) return [];
-		const severity = match[1], block = match[3], declaredSeverity = /^\*\*Severity:\*\* (P0|P1|P2|P3|nit)\s*$/mu.exec(block)?.[1], rationale = /^\*\*Rationale:\*\* ([\s\S]*?)(?=^\*\*Location:\*\*)/mu.exec(block)?.[1]?.trim(), locationText = /^\*\*Location:\*\* `([^`]+)`\s*$/mu.exec(block)?.[1], location = /^(.*):(\d+)(?:-(\d+))? (RIGHT|LEFT)$/u.exec(locationText ?? "");
+		const severity = match[1], block = match[3], labels = [...block.matchAll(/^\*\*(Severity|Rationale|Location):\*\*/gmu)];
+		if (labels.length !== 3 || labels[0][1] !== "Severity" || labels[1][1] !== "Rationale" || labels[2][1] !== "Location") continue;
+		const severityMatch = /^\*\*Severity:\*\* (P0|P1|P2|P3|nit)\s*$/mu.exec(block), rationaleMatch = /^\*\*Rationale:\*\* ([\s\S]*?)(?=^\*\*Location:\*\*)/mu.exec(block), locationMatch = /^\*\*Location:\*\* `([^`]+)`\s*$/mu.exec(block);
+		if (!severityMatch || !rationaleMatch || !locationMatch || severityMatch.index !== labels[0].index || rationaleMatch.index !== labels[1].index || locationMatch.index !== labels[2].index || block.slice(locationMatch.index + locationMatch[0].length).trim() !== "") continue;
+		const declaredSeverity = severityMatch[1], rationale = rationaleMatch[1].trim(), locationText = locationMatch[1], location = /^(.*):(\d+)(?:-(\d+))? (RIGHT|LEFT)$/u.exec(locationText);
 		if (declaredSeverity !== severity || !rationale || rationale.length > 20_000 || !location) continue;
 		const start = Number(location[2]), end = Number(location[3] ?? location[2]), file = location[1];
 		if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start <= 0 || end < start || end > 10_000_000 || file.length === 0 || file.length > 300 || file.includes("\\") || path.posix.isAbsolute(file) || file.split("/").some((part) => part === "" || part === "." || part === "..")) continue;

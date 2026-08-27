@@ -117,6 +117,7 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [exact] }).matchedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Interpolate branch input", body: "Generic wording without a concrete consequence." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep the branch command invocation", body: "The branch command correctly uses execFile instead of execAsync and needs no change." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep branch shell interpolation", body: "This cannot be exploited and no changes are required." }] }).missedExpectedIds, [expected.id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {
@@ -126,6 +127,8 @@ test("visible fallback Markdown participates in semantic recall without becoming
 	assert.equal(metric.perLens["security-performance"].recall, 1); assert.equal(metric.publication.fallbackRuns, 1); assert.equal(metric.publication.visibleFallbackFindings, 1);
 	const fenced = createBundle({ modes: ["deep"], mutateRun(run, item) { if (item.id === "authorization-tenant-scope") { run.findings = []; run.publication = { artifact: "raw_body_only", fallback: true }; } }, markdownForRun(run, item, original) { return item.id === "authorization-tenant-scope" ? `## Findings\n\n\`\`\`markdown\n${fallback}\n\`\`\`` : original; } }), fencedMetric = scoreBundle({ corpusInfo: fenced.corpusInfo, plan: fenced.plan, resultsDirectory: fenced.root }).metrics.modes.deep;
 	assert.equal(fencedMetric.perLens["security-performance"].recall, 0.5); assert.equal(fencedMetric.publication.visibleFallbackFindings, 0);
+	const duplicateField = fallback.replace("**Location:** `src/documents.ts:34 LEFT`", "**Location:** `src/documents.ts:34 LEFT`\n**Severity:** P2"), ambiguous = createBundle({ modes: ["deep"], mutateRun(run, item) { if (item.id === "authorization-tenant-scope") { run.findings = []; run.publication = { artifact: "raw_body_only", fallback: true }; } }, markdownForRun(run, item, original) { return item.id === "authorization-tenant-scope" ? duplicateField : original; } }), ambiguousMetric = scoreBundle({ corpusInfo: ambiguous.corpusInfo, plan: ambiguous.plan, resultsDirectory: ambiguous.root }).metrics.modes.deep;
+	assert.equal(ambiguousMetric.perLens["security-performance"].recall, 0.5); assert.equal(ambiguousMetric.publication.visibleFallbackFindings, 0);
 });
 
 test("defect-polarity negation is not mistaken for a contradictory non-finding", () => {
