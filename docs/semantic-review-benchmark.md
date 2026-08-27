@@ -13,7 +13,7 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 
 ## Corpus
 
-`tests/benchmarks/review-semantic/corpus-v2.json` pins every diff by SHA-256. Version 1 contains:
+`tests/benchmarks/review-semantic/corpus-v2.json` pins every diff by SHA-256. Version 2 contains:
 
 - compile/export contract failure;
 - returned data-shape mismatch;
