@@ -321,7 +321,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		if (plain(data.review)) invariant(canonical(data.review) === canonical(raw.resolvedReview), `${label} persisted/resolved review binding`);
 		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane, `${run.configuration.provider}/${run.configuration.model}`)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = resolvedTierModelIdentities(effectiveConfig, tier, `${run.configuration.provider}/${run.configuration.model}`); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
 	} else {
-		invariant(raw.resolvedReview === null && run.timing.parentValidationSynthesisMs === run.elapsedMs, `${label} failed-session binding`);
+		invariant(raw.resolvedReview === null && raw.telemetry === null && run.timing.parentValidationSynthesisMs === run.elapsedMs && (processFailed || !raw.auditValid || completed.length !== 1 || telemetry.length !== 1), `${label} failed-session binding`);
 		const hasProcessElapsed = Object.hasOwn(raw.process, "elapsedMs");
 		let latencyBound = hasProcessElapsed && run.elapsedMs > 0 && raw.process.elapsedMs > 0 && raw.process.elapsedMs === run.elapsedMs;
 		if (hasProcessElapsed) invariant(latencyBound, `${label} authoritative failed-run process latency binding`);
