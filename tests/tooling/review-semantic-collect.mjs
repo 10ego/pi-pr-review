@@ -139,7 +139,7 @@ function laneTiming(lane) {
 }
 function observedLane(lane, id, parentModel) {
 	const attempt = [...(Array.isArray(lane?.attempts) ? lane.attempts : [])].reverse().find((candidate) => typeof candidate?.observedModel === "string"), observed = lane?.observedModel ?? attempt?.observedModel, requested = attempt?.requestedModel ?? lane?.requestedModel ?? parentModel, requestedIdentity = providerModel(requested), identity = providerModel(observed) ?? (typeof observed === "string" && observed.length > 0 && requestedIdentity ? { provider: requestedIdentity.provider, model: observed } : null);
-	return { id, lens: id.replace(/-shard-[123]$/, ""), status: ["complete", "partial", "timed_out", "failed"].includes(lane?.lifecycle) ? lane.lifecycle : "failed", elapsedMs: laneTiming(lane), provider: identity.provider, model: identity.model };
+	return { id, lens: id.replace(/-shard-[123]$/, ""), status: ["complete", "partial", "timed_out", "failed"].includes(lane?.lifecycle) ? lane.lifecycle : "failed", elapsedMs: laneTiming(lane), provider: identity?.provider ?? null, model: identity?.model ?? null };
 }
 
 export async function collectSessionResult({ records, entry, item, mode, parentModel = "fixture/parent", elapsedMs, startedAtUtc, stdout, stderr, ghAudit, processOutcome = { code: 0, signal: null, error: null }, sessionEvidence = null, parseReview }) {
