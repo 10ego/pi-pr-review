@@ -323,6 +323,10 @@ test("collector hard timeout terminates the detached Pi process group", async ()
 	const started = Date.now(), outcome = await spawnPi(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: process.cwd(), env: process.env }, 25); assert.equal(outcome.error, "collector-hard-timeout"); assert.equal(outcome.signal, "SIGTERM"); assert.ok(Date.now() - started < 2_000);
 });
 
+test("collector cleans same-group descendants after a normal leader exit", { skip: process.platform === "win32" }, async () => {
+	const script = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'],{stdio:'ignore'});c.unref();console.log(c.pid);`; const outcome = await spawnPi(process.execPath, ["-e", script], { cwd: process.cwd(), env: process.env }, 5_000), pid = Number(outcome.stdout.trim()); assert.equal(outcome.code, 0); assert.ok(Number.isInteger(pid) && pid > 0); assert.throws(() => process.kill(pid, 0));
+});
+
 test("collector executes exactly one next entry through the read-only gh shim", { skip: process.platform !== "darwin" }, () => {
 	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-collector-")), planFile = path.join(root, "plan.json"), bundle = path.join(root, "bundle"), mockPackage = path.join(root, "mock-package"), mockPi = path.join(mockPackage, "dist", "mock-pi.mjs"), agent = path.join(root, "agent"), first = plan.entries[0], realGh = spawnSync("which", ["gh"], { encoding: "utf8" }).stdout.trim(), passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"];
 	fs.mkdirSync(agent); fs.writeFileSync(path.join(agent, "pr-review.json"), JSON.stringify({ tiers: { light: "fixture/lane", heavy: "fixture/lane" }, fallbacks: {}, thinkingLevels: {}, toolPolicies: {}, tools: [], deadlines: { totalMs: 60000 } })); fs.writeFileSync(path.join(agent, "auth.json"), JSON.stringify({ fixture: { type: "api_key", key: "fixture-key" } }));
