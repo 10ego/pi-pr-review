@@ -381,7 +381,7 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 }
 
 function locationMatches(actual, acceptable) {
-	if (actual === null || actual.path !== acceptable.path || !Number.isSafeInteger(actual.start) || !Number.isSafeInteger(actual.end) || actual.start <= 0 || actual.end < actual.start || actual.end - actual.start > acceptable.end - acceptable.start + 2) return false;
+	if (actual === null || actual.path !== acceptable.path || !Number.isSafeInteger(actual.start) || !Number.isSafeInteger(actual.end) || actual.start <= 0 || actual.end < actual.start || actual.start < acceptable.start - 1 || actual.end > acceptable.end + 1) return false;
 	const overlapsWithContextTolerance = actual.end >= acceptable.start - 1 && actual.start <= acceptable.end + 1;
 	// Reviewers may anchor a replacement hunk on either the removed line (LEFT)
 	// or its adjacent added line (RIGHT). Keep the cross-side tolerance to one
@@ -409,14 +409,16 @@ function maskEmbeddedConcepts(text, groups) {
 		return masked;
 	});
 }
-function contrastivePositiveDefectClause(text) {
-	const clauses = text.split(/\b(?:but|however|yet)\b|[.;]\s+/iu).map((clause) => clause.trim()).filter(Boolean);
-	return clauses.length > 1 ? clauses.slice(1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;
+function contrastivePositiveDefectClause(expected, finding) {
+	const clauses = [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;]\s+/iu)].map((clause) => clause.trim()).filter(Boolean);
+	let lastContradiction = -1;
+	for (let index = 0; index < clauses.length; index++) { const polarity = expandNegations(clauses[index]); if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarity)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarity))) lastContradiction = index; }
+	return lastContradiction >= 0 ? clauses.slice(lastContradiction + 1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;
 }
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(finding.body) : null;
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(expected, finding) : null;
 	if (contradictory && contrastiveClause === null) return false;
 	const semanticText = contradictory ? contrastiveClause : rawText, semanticBody = contradictory ? contrastiveClause : finding.body, text = semanticText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(semanticBody);
 	if (allConceptsMatched) return positiveDefect;

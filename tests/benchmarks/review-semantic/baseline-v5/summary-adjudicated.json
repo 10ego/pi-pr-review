@@ -2,7 +2,7 @@
   "corpusId": "pi-pr-review-semantic-v5",
   "corpusSha256": "f696b34699eba9a2e2e67b07754b426ab1c2b34c4d382ac6f580ecc1b6e0c81b",
   "planId": "4bf04da24af027fd03275dcc8cd53e664d543db63f7f59e7c6715bb7c6042813",
-  "scorerSha256": "6a4a329ebdc3a0359ca5d6c96e1a83764e419eec1c75af980a4581e4fbe5a4ff",
+  "scorerSha256": "d21abe17f4dc09d3a7ff62f11ef5ec58765140916ed75654955433b7d47c6708",
   "configurationFingerprint": "2154a4bd206dd5e7079dbd7b895601350936bbf6c5085ac57230d3705d8d1155",
   "environmentFingerprint": "b57c0360881010588090448615679d9a4b8b0cca362ad431274982fda6083d9d",
   "resultCount": 48,
