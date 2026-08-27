@@ -46,7 +46,7 @@ function hasPositiveDefectCue(text) {
 	text = expandNegations(text);
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
-		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
+		if (/(?:\b(?:addressed|addresses|cannot|eliminates|fixed|fixes|never|no|not|prevents|remediated|removes|resolved|resolves|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
 		if (/^[^.!?\n]{0,30}(?:\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b|\bremoved by (?:this )?(?:change|fix|patch)\b|\bby (?:this )?(?:change|fix|patch)\b)/iu.test(after)) continue;
 		return true;
 	}
@@ -307,7 +307,7 @@ function normalizeRawLane(lane, parentModel) { const attempts = Array.isArray(la
 function validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig) {
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"), records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [], completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), processFailed = raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, failedRun = run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed") && raw.resolvedReview === null && raw.telemetry === null;
 	if (!failedRun) {
-		invariant(!processFailed && raw.auditValid, `${label} successful run has operational failure`);
+		invariant(raw.process.exitCode === 0 && !processFailed && raw.auditValid, `${label} successful run has operational failure`);
 		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
 		const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
 		invariant(headers.length === 1 && typeof headers[0].cwd === "string" && path.isAbsolute(headers[0].cwd) && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop", `${label} retained session lifecycle`);
@@ -408,11 +408,15 @@ function maskEmbeddedConcepts(text, groups) {
 		return masked;
 	});
 }
+function hasContrastivePositiveDefect(text) {
+	const clauses = text.split(/\b(?:but|however|yet)\b|[.;]\s+/iu);
+	return clauses.length > 1 && clauses.slice(1).some((clause) => hasPositiveDefectCue(clause));
+}
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText);
-	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText))) return false;
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText));
+	if (contradictory && !hasContrastivePositiveDefect(finding.body)) return false;
 	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
 	if (allConceptsMatched) return positiveDefect;
 	// The first assertion group may compensate for one genuinely missing concept
