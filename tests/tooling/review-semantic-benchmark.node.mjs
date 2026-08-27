@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, loadCorpus, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, materializeOldFiles } from "./review-semantic-collect.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v1.json");
@@ -30,36 +30,32 @@ function createBundle({ modes = ["balanced", "full"], repetitions = 1, mutateRun
 	const cases = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
 	const runs = [];
 	for (const entry of plan.entries) {
-		const item = cases.get(entry.caseId), topologyByMode = {
-			balanced: { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
-			full: { passIds: ["overview", "conventions-maintainability", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 6 },
-			"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 }, deep: { passIds: ["deep-review"], maxParallel: 1 },
-		}, topology = topologyByMode[entry.mode];
+		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item);
 		const run = {
 			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
-			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", topology: { passIds: topology.passIds, shardCount: 1, maxParallel: topology.maxParallel } },
-			lanes: topology.passIds.map((id) => ({ id, lens: id, status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
+			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", piVersion: "0.84.3", piSha256: "1".repeat(64), reviewConfigSha256: "2".repeat(64), extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
+			lanes: topology.passIds.map((id) => ({ id, lens: id.replace(/-shard-[123]$/, ""), status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
 			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
 		};
 		mutateRun?.(run, item, runs.length, root);
 		run.artifacts = [
-			artifact(root, entry.entryId, "lane-artifacts", { schemaVersion: 1, planEntryId: entry.entryId, lanes: run.lanes, raw: { retained: true } }),
-			artifact(root, entry.entryId, "canonical-review", { schemaVersion: 1, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown: item.expectedFindings.map((expected) => expected.rationale).join("\n") || "No findings." }),
+			artifact(root, entry.entryId, "lane-artifacts", { schemaVersion: 1, planEntryId: entry.entryId, lanes: run.lanes, raw: { laneArtifacts: run.lanes.map((lane) => ({ passId: lane.id, lifecycle: lane.status })), telemetry: { fixture: true }, ghAudit: [{ allowed: true, write: false }], auditValid: true, process: { stdout: "fixture output", stderr: "", exitCode: 0, signal: null, error: null }, session: { sha256: "6".repeat(64), bytes: 100, recordCount: 3 } } }),
+			artifact(root, entry.entryId, "canonical-review", { schemaVersion: 1, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown: run.findings.map((finding) => `${finding.title}\n${finding.body}`).join("\n") || "No findings." }),
 		];
 		runs.push(run); fs.writeFileSync(path.join(runDir, `${entry.entryId}.json`), `${JSON.stringify(run, null, 2)}\n`);
 	}
 	return { corpusInfo, plan, root, runs };
 }
 function gates(bundle, overrides = {}) {
-	const configurationFingerprint = sha256(Buffer.from(canonical({ provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8" }))), threshold = { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, ...overrides };
+	const configurationFingerprint = sha256(Buffer.from(canonical({ provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", piVersion: "0.84.3", piSha256: "1".repeat(64), reviewConfigSha256: "2".repeat(64), extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64) }))), threshold = { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, ...overrides };
 	return { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, acceptedAtUtc: "2026-08-28T00:00:00.000Z", rationale: "Accepted after repeated baseline runs on the versioned semantic corpus.", baseline: { reportSha256: "a".repeat(64), planId: bundle.plan.planId, configurationFingerprint }, thresholds: { modes: Object.fromEntries(bundle.plan.modes.map((mode) => [mode, { ...threshold }])) } };
 }
 
 test("versioned corpus pins every diff, covers all heavy lenses, cross-file findings, and clean controls", () => {
 	const info = loadCorpus(CORPUS);
-	assert.equal(info.corpus.schemaVersion, 1); assert.equal(info.corpus.cases.length, 11);
+	assert.equal(info.corpus.schemaVersion, 1); assert.equal(info.corpus.cases.length, 12);
 	assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2);
 	assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.crossFile)));
 	for (const lens of info.corpus.lenses) assert.ok(info.corpus.cases.some((item) => item.expectedFindings.some((finding) => finding.lenses.includes(lens))), lens);
@@ -67,20 +63,28 @@ test("versioned corpus pins every diff, covers all heavy lenses, cross-file find
 
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
 	const info = loadCorpus(CORPUS), one = createPlan(info, ["balanced", "full"], 3), two = createPlan(info, ["balanced", "full"], 3);
-	assert.deepEqual(one, two); assert.equal(one.entries.length, 66); assert.equal(new Set(one.entries.map((entry) => entry.entryId)).size, 66);
-	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 33);
+	assert.deepEqual(one, two); assert.equal(one.entries.length, 72); assert.equal(new Set(one.entries.map((entry) => entry.entryId)).size, 72);
+	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 36);
 	assert.notEqual(one.entries[0].mode, one.entries[1].mode);
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
 });
 
+test("large multi-file corpus case exercises the production sharding thresholds", () => {
+	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "sharded-registry-contract"), balanced = expectedModeTopology("balanced", item), full = expectedModeTopology("full", item), deep = expectedModeTopology("deep", item);
+	assert.ok(item.diffBytes >= 200_000 && item.diffBytes < 400_000); assert.equal(item.changedFiles.length, 2);
+	assert.equal(balanced.shardCount, 2); assert.equal(balanced.passIds.length, 10); assert.equal(balanced.maxParallel, 10);
+	assert.equal(full.shardCount, 2); assert.equal(full.passIds.length, 12); assert.equal(full.maxParallel, 12);
+	assert.deepEqual(deep, { passIds: ["deep-review"], shardCount: 1, maxParallel: 1 });
+});
+
 test("perfect immutable result bundle emits recall, lifecycle, fallback, and latency metrics", () => {
 	const bundle = createBundle(), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root });
-	assert.equal(report.resultCount, 22); assert.equal(report.gate.status, "baseline_required");
+	assert.equal(report.resultCount, 24); assert.equal(report.gate.status, "baseline_required");
 	assert.equal(report.metrics.overall.p0p1.recall, 1); assert.equal(report.metrics.overall.p2.recall, 1); assert.equal(report.metrics.overall.crossFile.recall, 1);
 	assert.equal(report.metrics.overall.cleanControls.caseFalsePositiveRate, 0); assert.equal(report.metrics.overall.findings.duplicateRate, 0);
 	assert.equal(report.metrics.overall.lanes.completeRate, 1); assert.equal(report.metrics.overall.publication.fallbackRate, 0);
-	assert.equal(report.metrics.overall.latencyMs.p50, 110); assert.equal(report.metrics.overall.latencyMs.p95, 120); assert.ok(report.metrics.overall.latencyMs.standardDeviation > 0);
-	assert.equal(report.metrics.modes.balanced.runs, 11); assert.equal(report.metrics.modes.full.runs, 11);
+	assert.equal(report.metrics.overall.latencyMs.p50, 111); assert.equal(report.metrics.overall.latencyMs.p95, 122); assert.ok(report.metrics.overall.latencyMs.standardDeviation > 0);
+	assert.equal(report.metrics.modes.balanced.runs, 12); assert.equal(report.metrics.modes.full.runs, 12);
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {
@@ -96,13 +100,14 @@ test("semantic matching requires severity, overlapping anchor, and every concept
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, location: { ...valid.location, start: 99, end: 99 } }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, title: "[P1] branch shell", body: "No semantic classification." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command injection is safe and not an issue; no finding exists." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command cannot lead to injection because argv is used instead of a shell." }] }).missedExpectedIds, [expected.id]);
 });
 
 test("target severity, not allowed-severity order, owns recall denominators", () => {
 	const bundle = createBundle({ modes: ["balanced"] }), resource = bundle.corpusInfo.corpus.cases.find((item) => item.id === "resource-listener-leak").expectedFindings[0];
 	assert.equal(resource.targetSeverity, "P2"); assert.deepEqual(resource.allowedSeverities, ["P1", "P2"]);
 	const metrics = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.overall;
-	assert.equal(metrics.p2.opportunities, 3); assert.equal(metrics.p0p1.opportunities, 6);
+	assert.equal(metrics.p2.opportunities, 3); assert.equal(metrics.p0p1.opportunities, 7);
 });
 
 test("duplicate matches and clean-control findings are reported conservatively", () => {
@@ -176,6 +181,7 @@ test("every corpus diff is syntactically applicable to its materialized base", (
 	for (const item of info.corpus.cases) {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-materialize-")), diff = path.join(info.root, item.diff);
 		materializeOldFiles(fs.readFileSync(diff, "utf8"), root);
+		for (const changed of item.changedFiles) assert.ok(fs.readFileSync(path.join(root, changed), "utf8").trim().length > 0, `${item.id}/${changed} source context`);
 		const check = spawnSync("git", ["apply", "--check", diff], { cwd: root, encoding: "utf8" });
 		assert.equal(check.status, 0, `${item.id}: ${check.stderr}`);
 	}
@@ -186,18 +192,19 @@ test("session collection maps host lanes, telemetry, findings, and failure fallb
 		{ type: "custom", customType: "pr-review-completed", data: { review, rawText: "# PR Review", laneArtifacts, synthesisQuality: "fully_parsed", completeness: "complete" } },
 		{ type: "custom", customType: "pr-review-telemetry", data: { completion: "terminal_response", totalWallMs: 99, phases: { aggregateOrchestration: { elapsedMs: 17 } } } },
 	];
-	const collected = await collectSessionResult({ records, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ write: false }], parseReview: () => review });
+	const collected = await collectSessionResult({ records, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review });
 	assert.equal(collected.run.elapsedMs, 99); assert.equal(collected.run.timing.parentValidationSynthesisMs, 17); assert.equal(collected.run.lanes.length, 5); assert.ok(collected.run.lanes.every((lane) => lane.status === "complete" && lane.provider === "fixture" && lane.model === "lane")); assert.equal(collected.run.publication.artifact, "canonical"); assert.equal(collected.run.findings[0].location.path, item.changedFiles[0]);
-	const failed = await collectSessionResult({ records: [], entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "provider failed", ghAudit: [{ write: false }], parseReview: () => undefined });
+	const failed = await collectSessionResult({ records: [], entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "provider failed", ghAudit: [{ allowed: true, write: false }], parseReview: () => undefined });
 	assert.equal(failed.run.publication.artifact, "raw_body_only"); assert.ok(failed.run.lanes.every((lane) => lane.status === "failed" && lane.elapsedMs === null && lane.provider === null)); assert.match(failed.markdown, /provider failed/);
 });
 
-test("collector executes exactly one next entry through the read-only gh shim", () => {
-	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-collector-")), planFile = path.join(root, "plan.json"), bundle = path.join(root, "bundle"), mockPi = path.join(root, "mock-pi.mjs"), first = plan.entries[0], passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"];
+test("collector executes exactly one next entry through the read-only gh shim", { skip: process.platform !== "darwin" }, () => {
+	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-collector-")), planFile = path.join(root, "plan.json"), bundle = path.join(root, "bundle"), mockPi = path.join(root, "mock-pi.mjs"), agent = path.join(root, "agent"), first = plan.entries[0], realGh = spawnSync("which", ["gh"], { encoding: "utf8" }).stdout.trim(), passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"]; fs.mkdirSync(agent); fs.writeFileSync(path.join(agent, "pr-review.json"), JSON.stringify({ tiers: { light: "fixture/lane", heavy: "fixture/lane" }, fallbacks: {}, thinkingLevels: {}, toolPolicies: {}, tools: [], deadlines: {} })); fs.writeFileSync(path.join(agent, "auth.json"), JSON.stringify({ fixture: { type: "api_key", key: "fixture-key" } }));
 	fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
-	fs.writeFileSync(mockPi, `#!/usr/bin/env node\nimport fs from 'node:fs';import {spawnSync} from 'node:child_process';const a=process.argv.slice(2),d=a[a.indexOf('--session-dir')+1];const g=spawnSync('gh',['repo','view','--json','nameWithOwner,url'],{encoding:'utf8'});if(g.status!==0)process.exit(9);fs.mkdirSync(d,{recursive:true});const ids=${JSON.stringify(passIds)};const lanes=ids.map(passId=>({passId,lifecycle:'complete',observedModel:'fixture/lane',startOffsetMs:1,endOffsetMs:11,attempts:[]}));const records=[{type:'session',version:3,id:'s',timestamp:'2026-08-28T00:00:00Z',cwd:process.cwd()},{type:'custom',customType:'pr-review-completed',data:{review:{findings:[]},rawText:'# PR Review\\n\\nNo findings.',laneArtifacts:lanes,synthesisQuality:'fully_parsed',completeness:'complete'}},{type:'custom',customType:'pr-review-telemetry',data:{completion:'terminal_response',totalWallMs:50,phases:{aggregateOrchestration:{elapsedMs:5}}}}];fs.writeFileSync(d+'/session.jsonl',records.map(JSON.stringify).join('\\n')+'\\n');process.stdout.write('# PR Review\\n\\nNo findings.\\n');\n`, { mode: 0o700 });
+	fs.writeFileSync(mockPi, `#!/usr/bin/env node\nimport fs from 'node:fs';import {spawnSync} from 'node:child_process';const a=process.argv.slice(2);if(a.length===1&&a[0]==='--version'){console.log('0.84.3');process.exit(0)}if(process.env.GH_TOKEN||process.env.GITHUB_TOKEN||process.env.SSH_AUTH_SOCK)process.exit(7);const absoluteGh=spawnSync(${JSON.stringify(realGh)},['auth','status'],{encoding:'utf8'});if(absoluteGh.status===0)process.exit(8);const d=a[a.indexOf('--session-dir')+1],extension=a[a.indexOf('--extension')+1];try{fs.appendFileSync(extension,'tamper');process.exit(6)}catch{}const g=spawnSync('gh',['repo','view','--json','nameWithOwner,url'],{encoding:'utf8'});if(g.status!==0){console.error(JSON.stringify({status:g.status,error:g.error?.message,stderr:g.stderr}));process.exit(9)}fs.mkdirSync(d,{recursive:true});const ids=${JSON.stringify(passIds)};const lanes=ids.map(passId=>({passId,lifecycle:'complete',observedModel:'fixture/lane',startOffsetMs:1,endOffsetMs:11,attempts:[]}));const records=[{type:'session',version:3,id:'s',timestamp:'2026-08-28T00:00:00Z',cwd:process.cwd()},{type:'message',message:{role:'assistant',content:[{type:'text',text:'# PR Review'}],stopReason:'stop'}},{type:'custom',customType:'pr-review-completed',data:{review:{findings:[]},rawText:'# PR Review\\n\\nNo findings.',laneArtifacts:lanes,synthesisQuality:'fully_parsed',completeness:'complete'}},{type:'custom',customType:'pr-review-telemetry',data:{completion:'terminal_response',totalWallMs:50,phases:{aggregateOrchestration:{elapsedMs:5}}}}];fs.writeFileSync(d+'/session.jsonl',records.map(JSON.stringify).join('\\n')+'\\n');process.stdout.write('# PR Review\\n\\nNo findings.\\n');\n`, { mode: 0o700 });
 	const bun = spawnSync("which", ["bun"], { encoding: "utf8" }).stdout.trim(); assert.ok(bun);
-	const collect = spawnSync(bun, [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", bundle, "--entry", first.entryId, "--pi", mockPi, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 });
+	const piHash = sha256(fs.readFileSync(mockPi)), collectArgs = [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", bundle, "--entry", first.entryId, "--pi", mockPi, "--expected-pi-sha256", piHash, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], collectorEnv = { ...process.env, PI_CODING_AGENT_DIR: agent, GH_TOKEN: "must-be-scrubbed", SSH_AUTH_SOCK: "/tmp/must-be-scrubbed" }, collect = spawnSync(bun, collectArgs, { cwd: process.cwd(), env: collectorEnv, encoding: "utf8", timeout: 30_000 });
 	assert.equal(collect.status, 0, collect.stderr); const result = JSON.parse(fs.readFileSync(path.join(bundle, "runs", `${first.entryId}.json`), "utf8")); assert.equal(result.planEntryId, first.entryId); assert.equal(result.publication.artifact, "canonical"); assert.equal(result.configuration.model, "parent"); assert.equal(result.lanes.length, 5);
-	const rerun = spawnSync(bun, [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", bundle, "--entry", first.entryId, "--pi", mockPi, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 }); assert.notEqual(rerun.status, 0); assert.match(rerun.stderr, /reruns are forbidden/);
+	const rerun = spawnSync(bun, collectArgs, { cwd: process.cwd(), env: collectorEnv, encoding: "utf8", timeout: 30_000 }); assert.notEqual(rerun.status, 0); assert.match(rerun.stderr, /reruns are forbidden/);
+	const failedBundle = path.join(root, "failed-bundle"), failingPi = path.join(root, "failing-pi.mjs"); fs.writeFileSync(failingPi, "#!/usr/bin/env node\nif(process.argv[2]==='--version'){console.log('0.84.3');process.exit(0)}console.error('provider startup failed');process.exit(1);\n", { mode: 0o700 }); const failingHash = sha256(fs.readFileSync(failingPi)), failingArgs = [path.resolve("tests/tooling/review-semantic-collect.mjs"), "--corpus", CORPUS, "--plan", planFile, "--bundle", failedBundle, "--entry", first.entryId, "--pi", failingPi, "--expected-pi-sha256", failingHash, "--model", "fixture/parent", "--thinking", "high", "--acknowledge-real-model-run"], failure = spawnSync(bun, failingArgs, { cwd: process.cwd(), env: collectorEnv, encoding: "utf8", timeout: 30_000 }); assert.equal(failure.status, 1); const failedResult = JSON.parse(fs.readFileSync(path.join(failedBundle, "runs", `${first.entryId}.json`), "utf8")); assert.equal(failedResult.publication.artifact, "raw_body_only"); assert.ok(failedResult.lanes.every((lane) => lane.status === "failed")); const failedRerun = spawnSync(bun, failingArgs, { cwd: process.cwd(), env: collectorEnv, encoding: "utf8", timeout: 30_000 }); assert.match(failedRerun.stderr, /reruns are forbidden/);
 });

@@ -22,16 +22,17 @@ const plain = (value) => value !== null && typeof value === "object" && !Array.i
 function invariant(condition, message) { if (!condition) throw new Error(`Semantic collector refused: ${message}`); }
 function readJson(file) { const bytes = fs.readFileSync(file); return { bytes, value: JSON.parse(bytes.toString("utf8")) }; }
 function writeExclusive(file, value) { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(file, typeof value === "string" || Buffer.isBuffer(value) ? value : `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 }); }
+function removeTemp(directory) { if (!fs.existsSync(directory)) return; const unlock = (current) => { try { fs.chmodSync(current, 0o700); } catch {} for (const entry of fs.readdirSync(current, { withFileTypes: true })) { const file = path.join(current, entry.name); if (entry.isDirectory()) unlock(file); else try { fs.chmodSync(file, 0o600); } catch {} } }; unlock(directory); fs.rmSync(directory, { recursive: true, force: true }); }
 function parseArgs(argv) {
 	const options = {}, boolean = new Set(["--acknowledge-real-model-run"]);
 	for (let index = 0; index < argv.length;) {
-		const key = argv[index++]; invariant(/^--[a-z-]+$/.test(key ?? "") && options[key] === undefined, `invalid argument ${key ?? "end"}`);
+		const key = argv[index++]; invariant(/^--[a-z0-9-]+$/.test(key ?? "") && options[key] === undefined, `invalid argument ${key ?? "end"}`);
 		if (boolean.has(key)) { options[key] = true; continue; }
 		const value = argv[index++]; invariant(value !== undefined && !value.startsWith("--"), `missing value for ${key}`); options[key] = value;
 	}
-	const allowed = new Set(["--corpus", "--plan", "--bundle", "--entry", "--pi", "--model", "--thinking", "--acknowledge-real-model-run"]);
+	const allowed = new Set(["--corpus", "--plan", "--bundle", "--entry", "--pi", "--expected-pi-sha256", "--model", "--thinking", "--acknowledge-real-model-run"]);
 	invariant(Object.keys(options).every((key) => allowed.has(key)), "unknown argument");
-	for (const key of ["--corpus", "--plan", "--bundle", "--entry", "--pi", "--model", "--thinking", "--acknowledge-real-model-run"]) invariant(options[key] !== undefined, `missing ${key}`);
+	for (const key of ["--corpus", "--plan", "--bundle", "--entry", "--pi", "--expected-pi-sha256", "--model", "--thinking", "--acknowledge-real-model-run"]) invariant(options[key] !== undefined, `missing ${key}`);
 	return options;
 }
 function run(command, args, options = {}) { return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options }).trim(); }
@@ -42,14 +43,16 @@ export function materializeOldFiles(diffText, directory) {
 	const flush = () => {
 		if (!currentFile) return;
 		invariant(hunkSeen, `diff ${currentFile} has no hunks`);
-		const file = path.join(directory, currentFile); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `${oldLines.map((line) => line ?? "// Existing fixture context.").join("\n")}\n`);
+		const file = path.join(directory, currentFile); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, `${Array.from({ length: oldLines.length }, (_, index) => oldLines[index] ?? "// Existing fixture context.").join("\n")}\n`);
 	};
 	for (let index = 0; index < lines.length; index++) {
 		const fileMatch = /^diff --git a\/(.+?) b\/(.+)$/.exec(lines[index]);
 		if (fileMatch) { flush(); invariant(fileMatch[1] === fileMatch[2], "fixture renames are unsupported"); currentFile = fileMatch[1]; oldLines = []; hunkSeen = false; continue; }
-		const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[index]);
+		const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: (.*))?$/.exec(lines[index]);
 		if (!hunk) continue;
-		invariant(currentFile, "hunk before file header"); hunkSeen = true; let oldLine = Number(hunk[1]); index++;
+		invariant(currentFile, "hunk before file header"); hunkSeen = true; let oldLine = Number(hunk[1]);
+		if (hunk[5] && oldLine > 1 && oldLines[oldLine - 2] === undefined) oldLines[oldLine - 2] = hunk[5];
+		index++;
 		for (; index < lines.length && !lines[index].startsWith("diff --git ") && !lines[index].startsWith("@@ "); index++) {
 			const line = lines[index]; if (line === "" && index === lines.length - 1) break; if (line.startsWith("\\ No newline")) continue;
 			if (line.startsWith("+") && !line.startsWith("+++")) continue;
@@ -62,9 +65,9 @@ export function materializeOldFiles(diffText, directory) {
 }
 
 function createFixtureRepository(corpusInfo, item, root) {
-	const repo = path.join(root, "repo"); fs.mkdirSync(repo); git(repo, ["init", "--quiet"]);
+	const repo = path.join(root, "repo"); fs.mkdirSync(repo); git(repo, ["init", "--quiet", "--initial-branch=main"]);
 	const diffFile = path.join(corpusInfo.root, item.diff), diffText = fs.readFileSync(diffFile, "utf8"); materializeOldFiles(diffText, repo);
-	git(repo, ["add", "."]); git(repo, ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "commit", "--quiet", "-m", "base"]);
+	git(repo, ["add", "."]); git(repo, ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "commit", "--quiet", "-m", "base"]); git(repo, ["switch", "--quiet", "-c", "benchmark-change"]);
 	run("git", ["-c", "core.hooksPath=/dev/null", "apply", "--whitespace=nowarn", diffFile], { cwd: repo, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull } });
 	git(repo, ["add", "."]); git(repo, ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "commit", "--quiet", "-m", "head"]);
 	git(repo, ["remote", "add", "origin", "https://github.com/benchmark-fixture/review-corpus.git"]);
@@ -81,9 +84,39 @@ function providerModel(value) {
 	if (typeof value !== "string" || !value.includes("/")) return { provider: null, model: null };
 	const index = value.indexOf("/"); return { provider: value.slice(0, index), model: value.slice(index + 1).replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, "") };
 }
+function sourceTreeHash() {
+	const files = [];
+	for (const base of ["extensions", "lib", "prompts"]) { const walk = (directory) => { for (const entry of fs.readdirSync(directory, { withFileTypes: true })) { const file = path.join(directory, entry.name); if (entry.isDirectory()) walk(file); else if (entry.isFile()) files.push(path.relative(REPOSITORY, file).split(path.sep).join("/")); } }; walk(path.join(REPOSITORY, base)); }
+	files.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))); return sha256(Buffer.from(files.map((file) => `${sha256(fs.readFileSync(path.join(REPOSITORY, file)))}  ${file}`).join("\n") + "\n"));
+}
+function prepareSourceSnapshot(temp) {
+	const root = path.join(temp, "source"); fs.mkdirSync(root);
+	for (const name of ["extensions", "lib", "prompts"]) fs.cpSync(path.join(REPOSITORY, name), path.join(root, name), { recursive: true }); fs.copyFileSync(path.join(REPOSITORY, "package.json"), path.join(root, "package.json"));
+	const lock = (directory) => { for (const entry of fs.readdirSync(directory, { withFileTypes: true })) { const file = path.join(directory, entry.name); if (entry.isDirectory()) lock(file); else fs.chmodSync(file, 0o400); } fs.chmodSync(directory, 0o500); }; lock(root); return root;
+}
+function prepareIsolatedAgent(temp, parentModel) {
+	const sourceAgent = process.env.PI_CODING_AGENT_DIR ? path.resolve(process.env.PI_CODING_AGENT_DIR) : path.join(os.homedir(), ".pi", "agent"), sourceConfigFile = path.join(sourceAgent, "pr-review.json"), sourceAuthFile = path.join(sourceAgent, "auth.json"), sourceConfig = readJson(sourceConfigFile).value;
+	const effectiveConfig = { tiers: sourceConfig.tiers ?? {}, fallbacks: sourceConfig.fallbacks ?? {}, thinkingLevels: sourceConfig.thinkingLevels ?? {}, toolPolicies: sourceConfig.toolPolicies ?? {}, tools: sourceConfig.tools ?? [], deadlines: sourceConfig.deadlines ?? {}, autoPostReviews: false, allowStalePublish: false, allowStaleApprovals: false, approveMaxPriorityLevel: "off", verificationBaselines: {}, extractFindings: false };
+	const providers = new Set([providerModel(parentModel).provider]); for (const value of Object.values(effectiveConfig.tiers)) providers.add(providerModel(value).provider); for (const values of Object.values(effectiveConfig.fallbacks)) if (Array.isArray(values)) for (const value of values) providers.add(providerModel(value).provider); providers.delete(null);
+	const sourceAuth = readJson(sourceAuthFile).value, auth = Object.fromEntries(Object.entries(sourceAuth).filter(([provider]) => providers.has(provider))); invariant(Object.keys(auth).length === providers.size, "provider auth is missing for a configured benchmark model");
+	const home = path.join(temp, "home"), agent = path.join(home, ".pi", "agent"); fs.mkdirSync(agent, { recursive: true, mode: 0o700 }); fs.writeFileSync(path.join(agent, "settings.json"), "{}\n", { mode: 0o600 }); fs.writeFileSync(path.join(agent, "pr-review.json"), `${JSON.stringify(effectiveConfig, null, 2)}\n`, { mode: 0o600 }); fs.writeFileSync(path.join(agent, "auth.json"), `${JSON.stringify(auth)}\n`, { mode: 0o600 });
+	return { home, agent, effectiveConfig, configSha256: sha256(fs.readFileSync(path.join(agent, "pr-review.json"))) };
+}
+function sanitizedEnvironment(base, additions) {
+	const env = { ...base, ...additions }; for (const key of Object.keys(env)) if (/^(?:GH_|GITHUB_|GIT_|SSH_|NPM_TOKEN|NODE_OPTIONS|BUN_OPTIONS)/.test(key)) delete env[key]; return env;
+}
+function sandboxProfile(temp) {
+	invariant(process.platform === "darwin" && fs.existsSync("/usr/bin/sandbox-exec"), "real collection currently requires macOS sandbox-exec");
+	const file = path.join(temp, "collector.sb"), source = `(version 1)\n(deny default)\n(deny file-read* (subpath (param \"USER_HOME\")))\n(deny file-write* (subpath (param \"USER_HOME\")))\n(deny file-write* (subpath (param \"BENCH_SOURCE\")))\n(deny process-exec (literal \"/usr/bin/security\"))\n(deny mach-lookup (global-name \"com.apple.securityd\"))\n(deny mach-lookup (global-name \"com.apple.securityd.xpc\"))\n(allow file-read*)\n(allow file-write* (subpath (param \"BENCH_TEMP\")))\n(allow file-write* (literal \"/dev/null\"))\n(allow process*)\n(allow signal (target self))\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n`;
+	fs.writeFileSync(file, source, { mode: 0o500 }); return file;
+}
+function validSessionLifecycle(records, cwd) {
+	const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
+	return headers.length === 1 && headers[0].cwd === cwd && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop";
+}
 function sessionRecords(sessionDirectory) {
 	const files = fs.readdirSync(sessionDirectory).filter((name) => name.endsWith(".jsonl")); invariant(files.length === 1, `expected one session file, got ${files.length}`);
-	const file = path.join(sessionDirectory, files[0]), records = fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)); return { file, records };
+	const file = path.join(sessionDirectory, files[0]), bytes = fs.readFileSync(file), records = bytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)); return { file, bytes, records };
 }
 function assistantText(message) { return Array.isArray(message?.content) ? message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("") : ""; }
 function normalizeFindings(review) {
@@ -100,21 +133,21 @@ function laneTiming(lane) {
 }
 function observedLane(lane, id) {
 	const observed = lane?.observedModel ?? [...(Array.isArray(lane?.attempts) ? lane.attempts : [])].reverse().find((attempt) => typeof attempt?.observedModel === "string")?.observedModel, identity = providerModel(observed);
-	return { id, lens: id, status: ["complete", "partial", "timed_out", "failed"].includes(lane?.lifecycle) ? lane.lifecycle : "failed", elapsedMs: laneTiming(lane), provider: identity.provider, model: identity.model };
+	return { id, lens: id.replace(/-shard-[123]$/, ""), status: ["complete", "partial", "timed_out", "failed"].includes(lane?.lifecycle) ? lane.lifecycle : "failed", elapsedMs: laneTiming(lane), provider: identity.provider, model: identity.model };
 }
 
-export async function collectSessionResult({ records, entry, item, mode, elapsedMs, startedAtUtc, stdout, stderr, ghAudit, parseReview }) {
-	const topology = expectedModeTopology(mode), completed = [...records].reverse().find((record) => record?.type === "custom" && record.customType === "pr-review-completed")?.data, telemetry = [...records].reverse().find((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response")?.data;
+export async function collectSessionResult({ records, entry, item, mode, elapsedMs, startedAtUtc, stdout, stderr, ghAudit, processOutcome = { code: 0, signal: null, error: null }, sessionEvidence = null, parseReview }) {
+	const topology = expectedModeTopology(mode, item), completedEntries = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetryEntries = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), auditValid = ghAudit.length > 0 && ghAudit.every((record) => record?.allowed === true && record?.write === false), lifecycleValid = processOutcome.code === 0 && processOutcome.signal === null && processOutcome.error === null && completedEntries.length === 1 && telemetryEntries.length === 1, completed = lifecycleValid && auditValid ? completedEntries[0].data : undefined, telemetry = lifecycleValid && auditValid ? telemetryEntries[0].data : undefined;
 	let review, markdown = "", laneArtifacts = [];
 	if (plain(completed)) {
 		markdown = typeof completed.rawText === "string" ? completed.rawText : stdout.trim(); laneArtifacts = Array.isArray(completed.laneArtifacts) ? completed.laneArtifacts : [];
 		review = plain(completed.review) ? completed.review : parseReview(markdown);
 	}
-	const byId = new Map(laneArtifacts.map((lane) => [lane.passId, lane])), lanes = topology.passIds.map((id) => byId.has(id) ? observedLane(byId.get(id), id) : { id, lens: id, status: "failed", elapsedMs: null, provider: null, model: null });
+	const byId = new Map(laneArtifacts.map((lane) => [lane.passId, lane])), lanes = topology.passIds.map((id) => byId.has(id) ? observedLane(byId.get(id), id) : { id, lens: id.replace(/-shard-[123]$/, ""), status: "failed", elapsedMs: null, provider: null, model: null });
 	const quality = completed?.synthesisQuality, completeness = completed?.completeness, publication = quality === "fully_parsed" && completeness !== "incomplete" ? { artifact: "canonical", fallback: false } : quality === "raw" || !completed ? { artifact: "raw_body_only", fallback: true } : { artifact: "degraded", fallback: true };
 	if (!markdown.trim()) markdown = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n") || "Review process produced no canonical Markdown.";
-	const findings = normalizeFindings(review), parentTiming = Number.isFinite(telemetry?.phases?.aggregateOrchestration?.elapsedMs) ? telemetry.phases.aggregateOrchestration.elapsedMs : elapsedMs;
-	return { run: { schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode, repetition: entry.repetition, startedAtUtc, elapsedMs: Number.isFinite(telemetry?.totalWallMs) ? telemetry.totalWallMs : elapsedMs, timing: { parentValidationSynthesisMs: parentTiming }, configuration: null, lanes, publication, findings, artifacts: [] }, laneRaw: { laneArtifacts, telemetry: telemetry ?? null, ghAudit, process: { stdout, stderr } }, markdown };
+	const findings = normalizeFindings(review), parentTiming = Number.isFinite(telemetry?.phases?.aggregateOrchestration?.elapsedMs) ? telemetry.phases.aggregateOrchestration.elapsedMs : elapsedMs, session = sessionEvidence ?? { sha256: records.length > 0 ? sha256(Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n")) : null, bytes: records.length > 0 ? Buffer.byteLength(records.map((record) => JSON.stringify(record)).join("\n") + "\n") : 0, recordCount: records.length };
+	return { run: { schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode, repetition: entry.repetition, startedAtUtc, elapsedMs: Number.isFinite(telemetry?.totalWallMs) ? telemetry.totalWallMs : elapsedMs, timing: { parentValidationSynthesisMs: parentTiming }, configuration: null, lanes, publication, findings, artifacts: [] }, laneRaw: { laneArtifacts, telemetry: telemetry ?? null, ghAudit, auditValid, process: { stdout, stderr, exitCode: processOutcome.code, signal: processOutcome.signal, error: processOutcome.error }, session }, markdown, operationallyValid: lifecycleValid && auditValid };
 }
 
 async function spawnPi(pi, args, options) {
@@ -130,21 +163,25 @@ async function main() {
 	fs.mkdirSync(runsDir, { recursive: true, mode: 0o700 }); fs.mkdirSync(artifactsDir, { recursive: true, mode: 0o700 }); invariant(!fs.existsSync(resultFile), "entry was already collected; reruns are forbidden");
 	const entryIndex = plan.entries.indexOf(entry); for (let index = 0; index < entryIndex; index++) invariant(fs.existsSync(path.join(runsDir, `${plan.entries[index].entryId}.json`)), `prior plan entry ${plan.entries[index].entryId} is missing`);
 	const planCopy = path.join(bundle, "plan.json"); if (!fs.existsSync(planCopy)) writeExclusive(planCopy, planRead.bytes); else invariant(sha256(fs.readFileSync(planCopy)) === sha256(planRead.bytes), "bundle plan differs");
-	const pi = fs.realpathSync(options["--pi"]); invariant(path.isAbsolute(pi) && fs.lstatSync(pi).isFile() && (fs.lstatSync(pi).mode & 0o111) !== 0, "--pi must be an executable regular file");
-	const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-"));
+	const pi = fs.realpathSync(options["--pi"]), piBytes = fs.readFileSync(pi), piSha256 = sha256(piBytes); invariant(path.isAbsolute(pi) && fs.lstatSync(pi).isFile() && (fs.lstatSync(pi).mode & 0o111) !== 0, "--pi must be an executable regular file"); invariant(SHA256.test(options["--expected-pi-sha256"]) && options["--expected-pi-sha256"] === piSha256, "Pi binary hash differs from --expected-pi-sha256");
+	const piVersion = run(pi, ["--version"]), extensionSha256 = sourceTreeHash(), promptSha256 = sha256(fs.readFileSync(path.join(REPOSITORY, "prompts/pr-review.md"))), collectorSha256 = sha256(fs.readFileSync(fileURLToPath(import.meta.url))), temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-")));
+	let consumedWithFailure = false;
 	try {
-		const fixture = createFixtureRepository(corpusInfo, item, temp), sessionDir = path.join(temp, "sessions"), shimDir = path.join(temp, "bin"), auditFile = path.join(temp, "gh-audit.jsonl"), configFile = path.join(temp, "gh-config.json"); fs.mkdirSync(sessionDir); fs.mkdirSync(shimDir); installGhShim(shimDir); fs.writeFileSync(auditFile, "", { mode: 0o600 });
+		const fixture = createFixtureRepository(corpusInfo, item, temp), sourceSnapshot = prepareSourceSnapshot(temp), isolated = prepareIsolatedAgent(temp, options["--model"]), effectiveConfigFile = path.join(bundle, "effective-review-config.json"), effectiveConfigBytes = Buffer.from(`${JSON.stringify(isolated.effectiveConfig, null, 2)}\n`), profile = sandboxProfile(temp), sessionDir = path.join(temp, "sessions"), shimDir = path.join(temp, "bin"), auditFile = path.join(temp, "gh-audit.jsonl"), configFile = path.join(temp, "gh-config.json"); fs.mkdirSync(sessionDir); fs.mkdirSync(shimDir); if (!fs.existsSync(effectiveConfigFile)) writeExclusive(effectiveConfigFile, effectiveConfigBytes); else invariant(sha256(fs.readFileSync(effectiveConfigFile)) === sha256(effectiveConfigBytes), "effective review config changed within bundle"); installGhShim(shimDir); fs.writeFileSync(auditFile, "", { mode: 0o600 });
 		const ghConfig = { diffFile: path.join(corpusInfo.root, item.diff), login: "benchmark-reviewer", repo: { nameWithOwner: "benchmark-fixture/review-corpus", url: "https://github.com/benchmark-fixture/review-corpus" }, prView: { number: 1, title: "Update implementation", body: "Refine behavior while preserving existing contracts.", state: "OPEN", isDraft: false, author: { login: "benchmark-author", is_bot: false }, baseRefName: "main", headRefName: "benchmark-change", headRefOid: fixture.headSha, mergeable: "MERGEABLE", url: "https://github.com/benchmark-fixture/review-corpus/pull/1", files: item.changedFiles.map((file) => ({ path: file })), comments: [], reviews: [] }, pullApi: { state: "open", draft: false, merged_at: null, title: "Update implementation", head: { sha: fixture.headSha }, user: { login: "benchmark-author" } } }; fs.writeFileSync(configFile, `${JSON.stringify(ghConfig)}\n`, { mode: 0o600 });
-		const modeFlag = `--${entry.mode}`, prompt = `/pr-review 1 --no-comment ${modeFlag}`, args = ["--model", options["--model"], "--thinking", options["--thinking"], "--session-dir", sessionDir, "--no-extensions", "--extension", path.join(REPOSITORY, "extensions/index.ts"), "--no-skills", "--no-prompt-templates", "--prompt-template", path.join(REPOSITORY, "prompts/pr-review.md"), "--no-context-files", "--no-approve", "-p", prompt], startedAtUtc = new Date().toISOString();
-		const outcome = await spawnPi(pi, args, { cwd: fixture.repo, env: { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`, BENCHMARK_GH_CONFIG: configFile, BENCHMARK_GH_AUDIT: auditFile } }), audit = fs.readFileSync(auditFile, "utf8").split("\n").filter(Boolean).map(JSON.parse); invariant(audit.length > 0 && audit.every((record) => record.allowed === true && record.write === false), "gh shim observed a rejected/unknown/write command");
-		let records = []; if (fs.readdirSync(sessionDir).some((name) => name.endsWith(".jsonl"))) records = sessionRecords(sessionDir).records;
-		const { parsePublishableReview } = await import("../../lib/pr-review-publish.ts"), parseReview = (markdown) => parsePublishableReview(markdown).review;
-		const collected = await collectSessionResult({ records, entry, item, mode: entry.mode, elapsedMs: outcome.elapsedMs, startedAtUtc, stdout: outcome.stdout, stderr: outcome.stderr, ghAudit: audit, parseReview });
-		const parentIdentity = providerModel(options["--model"]); invariant(parentIdentity.provider && parentIdentity.model, "--model must be provider/model"); collected.run.configuration = { provider: parentIdentity.provider, model: parentIdentity.model, thinking: options["--thinking"], toolPolicy: "mode-contract", reviewVersion: JSON.parse(fs.readFileSync(path.join(REPOSITORY, "package.json"), "utf8")).version, topology: expectedModeTopology(entry.mode) };
+		const modeFlag = `--${entry.mode}`, prompt = `/pr-review 1 --no-comment ${modeFlag}`, piArgs = ["--model", options["--model"], "--thinking", options["--thinking"], "--session-dir", sessionDir, "--no-extensions", "--extension", path.join(sourceSnapshot, "extensions/index.ts"), "--no-skills", "--no-prompt-templates", "--prompt-template", path.join(sourceSnapshot, "prompts/pr-review.md"), "--no-context-files", "--no-approve", "-p", prompt], startedAtUtc = new Date().toISOString(), childEnv = sanitizedEnvironment(process.env, { HOME: isolated.home, PI_CODING_AGENT_DIR: isolated.agent, PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`, BENCHMARK_GH_CONFIG: configFile, BENCHMARK_GH_AUDIT: auditFile, TMPDIR: temp, TMP: temp, TEMP: temp, XDG_CONFIG_HOME: path.join(temp, "xdg-config"), XDG_CACHE_HOME: path.join(temp, "xdg-cache") }), sandboxArgs = ["-D", `USER_HOME=${os.homedir()}`, "-D", `BENCH_TEMP=${temp}`, "-D", `BENCH_SOURCE=${sourceSnapshot}`, "-f", profile, pi, ...piArgs];
+		const outcome = await spawnPi("/usr/bin/sandbox-exec", sandboxArgs, { cwd: fixture.repo, env: childEnv });
+		const audit = fs.readFileSync(auditFile, "utf8").split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { allowed: false, write: null, malformed: true }; } });
+		let records = [], sessionEvidence = null, lifecycleError = null;
+		if (fs.readdirSync(sessionDir).some((name) => name.endsWith(".jsonl"))) { try { const session = sessionRecords(sessionDir); records = session.records; sessionEvidence = { sha256: sha256(session.bytes), bytes: session.bytes.length, recordCount: records.length }; if (!validSessionLifecycle(records, fixture.repo)) lifecycleError = "invalid host-authored Pi session lifecycle"; } catch (error) { lifecycleError = String(error); } }
+		const processOutcome = lifecycleError ? { code: outcome.code, signal: outcome.signal, error: lifecycleError } : { code: outcome.code, signal: outcome.signal, error: outcome.error }, { parsePublishableReview } = await import("../../lib/pr-review-publish.ts"), parseReview = (markdown) => parsePublishableReview(markdown).review;
+		const collected = await collectSessionResult({ records, entry, item, mode: entry.mode, elapsedMs: outcome.elapsedMs, startedAtUtc, stdout: outcome.stdout, stderr: outcome.stderr, ghAudit: audit, processOutcome, sessionEvidence, parseReview });
+		const parentIdentity = providerModel(options["--model"]); invariant(parentIdentity.provider && parentIdentity.model, "--model must be provider/model"); collected.run.configuration = { provider: parentIdentity.provider, model: parentIdentity.model, thinking: options["--thinking"], toolPolicy: "frozen-user-tools-with-host-no-write-overrides", reviewVersion: JSON.parse(fs.readFileSync(path.join(REPOSITORY, "package.json"), "utf8")).version, piVersion, piSha256, reviewConfigSha256: isolated.configSha256, extensionSha256, promptSha256, collectorSha256, topology: expectedModeTopology(entry.mode, item) };
 		const lanePath = `artifacts/${entry.entryId}-lane-artifacts.json`, reviewPath = `artifacts/${entry.entryId}-canonical-review.json`, lanePayload = { schemaVersion: 1, planEntryId: entry.entryId, lanes: collected.run.lanes, raw: collected.laneRaw }, reviewPayload = { schemaVersion: 1, planEntryId: entry.entryId, publication: collected.run.publication, findings: collected.run.findings, markdown: collected.markdown }, laneBytes = Buffer.from(`${JSON.stringify(lanePayload, null, 2)}\n`), reviewBytes = Buffer.from(`${JSON.stringify(reviewPayload, null, 2)}\n`);
 		writeExclusive(path.join(bundle, lanePath), laneBytes); writeExclusive(path.join(bundle, reviewPath), reviewBytes); collected.run.artifacts = [{ kind: "lane-artifacts", path: lanePath, sha256: sha256(laneBytes), bytes: laneBytes.length }, { kind: "canonical-review", path: reviewPath, sha256: sha256(reviewBytes), bytes: reviewBytes.length }]; writeExclusive(resultFile, collected.run);
-		console.log(`Collected ${entry.entryId} (${entry.mode}/${entry.caseId}); Pi exit ${outcome.code ?? "error"}, publication suppressed.`);
-	} finally { fs.rmSync(temp, { recursive: true, force: true }); }
+		consumedWithFailure = !collected.operationallyValid; console.log(`Collected ${entry.entryId} (${entry.mode}/${entry.caseId}); Pi exit ${outcome.code ?? "error"}, publication suppressed${consumedWithFailure ? ", failed result retained" : ""}.`);
+	} finally { removeTemp(temp); }
+	if (consumedWithFailure) process.exitCode = 1;
 }
 
 const direct = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

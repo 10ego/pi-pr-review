@@ -14,6 +14,7 @@
       "title": "Removed exported request contract",
       "diff": "diffs/compile-export-removal.diff",
       "diffSha256": "be33415720d5789d0d74658a4e172c8243e37603e47830444f25289ed1e17eb7",
+      "diffBytes": 703,
       "changedFiles": [
         "src/types.ts",
         "src/client.ts"
@@ -66,6 +67,11 @@
               "(cannot|will not|fails? to).{0,80}(compile|type-check|resolve)",
               "(compile|type-check|resolution).{0,80}(fail|error|break)"
             ]
+          ],
+          "contradictionPatterns": [
+            "RequestOptions.{0,30}\\b(still|remains)\\b.{0,10}exported",
+            "(compile|type-check|resolve).{0,60}(succeed|fine|correct)",
+            "(not|never).{0,30}(missing|removed|broken)"
           ]
         }
       ]
@@ -75,6 +81,7 @@
       "title": "Returned user shape no longer satisfies its API",
       "diff": "diffs/data-shape-contract.diff",
       "diffSha256": "ed864f90d71d8b4ecc117f80d2a9fed27b177954a818d1f9a9a6b80508d23cbb",
+      "diffBytes": 425,
       "changedFiles": [
         "src/users.ts"
       ],
@@ -125,6 +132,10 @@
               "(break|fail|violate|does not satisfy).{0,80}(User|type|contract|consumer)",
               "(User|type|contract|consumer).{0,80}(break|fail|violate|mismatch)"
             ]
+          ],
+          "contradictionPatterns": [
+            "userId.{0,80}(is|remains).{0,30}(valid|expected|compatible)",
+            "(not|no).{0,30}(mismatch|break|violation|issue)"
           ]
         }
       ]
@@ -134,6 +145,7 @@
       "title": "Superseded searches render cancellation as failure",
       "diff": "diffs/state-cancellation-race.diff",
       "diffSha256": "933ddfbd172a14f93d747e490de60ea7e63fa84137f79f8a7377152798b5700f",
+      "diffBytes": 543,
       "changedFiles": [
         "src/search.ts"
       ],
@@ -185,6 +197,10 @@
               "(stale|superseded|newer|next).{0,100}(render|overwrite|error)",
               "(render|overwrite|error).{0,100}(stale|superseded|newer|next)"
             ]
+          ],
+          "contradictionPatterns": [
+            "(abort|cancel).{0,80}(ignored|not rendered|does not render)",
+            "\\b(no|not)\\b.{0,30}(race|stale|overwrite|issue)"
           ]
         }
       ]
@@ -194,6 +210,7 @@
       "title": "Socket view loses listener ownership",
       "diff": "diffs/resource-listener-leak.diff",
       "diffSha256": "c0c02b8d64db28352674a3de21d0abd54f6977925c5669952c6bb6968a1d4ad2",
+      "diffBytes": 500,
       "changedFiles": [
         "src/socket-view.ts"
       ],
@@ -247,6 +264,10 @@
               "(leak|retain|duplicate|multiple).{0,100}(listener|message|view)",
               "(listener|message|view).{0,100}(leak|retain|duplicate|multiple)"
             ]
+          ],
+          "contradictionPatterns": [
+            "(listener|handler).{0,80}(is|gets).{0,30}(removed|unregistered|cleaned)",
+            "\\b(no|not)\\b.{0,30}(leak|duplicate|retain)"
           ]
         }
       ]
@@ -256,6 +277,7 @@
       "title": "Document lookup drops tenant authorization",
       "diff": "diffs/authorization-tenant-scope.diff",
       "diffSha256": "9b46b7a8d321e28d97fd41ce3692e7f87a3761d62fe62fcac5f86a33175db84d",
+      "diffBytes": 386,
       "changedFiles": [
         "src/documents.ts"
       ],
@@ -304,6 +326,10 @@
             [
               "(other|cross).{0,40}tenant|unauthori[sz]ed|access.{0,80}another tenant"
             ]
+          ],
+          "contradictionPatterns": [
+            "(tenant|tenantId).{0,80}(still|remains).{0,30}(scoped|filtered|checked)",
+            "(cannot|can not|does not).{0,80}(cross|other|unauthori[sz]ed)"
           ]
         }
       ]
@@ -313,6 +339,7 @@
       "title": "Branch input is interpolated into a shell command",
       "diff": "diffs/command-injection.diff",
       "diffSha256": "2bfb0c3f8065f829a565066cd0cd617975ad5375b5375b6cd547ec676b4ede55",
+      "diffBytes": 342,
       "changedFiles": [
         "src/git.ts"
       ],
@@ -363,6 +390,11 @@
               "(execAsync|shell).{0,100}(instead|replac|rather).{0,100}(execFile|argv)",
               "(execFile|argv).{0,100}(replac|instead).{0,100}(execAsync|shell)"
             ]
+          ],
+          "contradictionPatterns": [
+            "(cannot|can not|does not|never).{0,100}(inject|injection)",
+            "(argv|execFile).{0,100}(used|instead|rather).{0,100}(shell|execAsync)",
+            "(not|no).{0,30}(injectable|injection|vulnerable|issue)"
           ]
         }
       ]
@@ -372,6 +404,7 @@
       "title": "Reconciliation rebuilds IDs for every item",
       "diff": "diffs/algorithmic-quadratic.diff",
       "diffSha256": "615fe1a3443dae7bcde3216154a375b7786c83667f3b001ce568e219cb095e20",
+      "diffBytes": 480,
       "changedFiles": [
         "src/reconcile.ts"
       ],
@@ -424,6 +457,10 @@
               "(map|includes).{0,80}(each|every|per).{0,80}(item|filter)",
               "(map|mapping).{0,80}inside.{0,80}filter"
             ]
+          ],
+          "contradictionPatterns": [
+            "(still|remains).{0,30}(linear|O\\\\?\\(n\\\\?\\))",
+            "(not|never|no).{0,30}(quadratic|regression|issue)"
           ]
         }
       ]
@@ -433,6 +470,7 @@
       "title": "Cache return envelope is not integrated at its caller",
       "diff": "diffs/cross-shard-cache-contract.diff",
       "diffSha256": "36318dfe23bd1d93d9d0d457e1394a754ca6c13e94e0529aafd9b697ea51b836",
+      "diffBytes": 752,
       "changedFiles": [
         "src/cache.ts",
         "src/profile.ts"
@@ -491,6 +529,10 @@
               "cached value",
               "\\.value"
             ]
+          ],
+          "contradictionPatterns": [
+            "(cached\\\\?\\.value|value).{0,80}(is|gets).{0,30}(parsed|passed)",
+            "(not|no).{0,30}(mismatch|break|issue)"
           ]
         }
       ]
@@ -500,6 +542,7 @@
       "title": "Timeout parsing admits non-finite numbers",
       "diff": "diffs/boundary-nonfinite-timeout.diff",
       "diffSha256": "30114f2fe7b0dbc22d72486e10ed7e273ad3fd1d7ac18d55479aedc79f8dbfd3",
+      "diffBytes": 483,
       "changedFiles": [
         "src/options.ts"
       ],
@@ -554,6 +597,82 @@
               "invalid.{0,40}timeout",
               "timeout.{0,40}(invalid|NaN|Infinity)"
             ]
+          ],
+          "contradictionPatterns": [
+            "(NaN|Infinity|non.?finite).{0,80}(rejected|blocked|invalidated)",
+            "(guard|check|validation).{0,80}(reject|block).{0,50}(NaN|Infinity|non.?finite)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sharded-registry-contract",
+      "title": "Versioned registry result integration",
+      "diff": "diffs/sharded-registry-contract.diff",
+      "diffSha256": "e10feba06b2e7ee1cd2187c31ff477e1c668754f62c9f17d0357c5c5b343562b",
+      "diffBytes": 357132,
+      "changedFiles": [
+        "src/registry.ts",
+        "src/resolve.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "integration.sharded-registry-envelope",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/resolve.ts",
+              "side": "RIGHT",
+              "start": 3,
+              "end": 3
+            },
+            {
+              "path": "src/registry.ts",
+              "side": "RIGHT",
+              "start": 2,
+              "end": 3
+            }
+          ],
+          "rationale": "Registry.lookup now returns a versioned envelope, but resolve still passes the object itself to JSON.parse instead of cached.payload.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "registry",
+              "cached"
+            ],
+            [
+              "payload",
+              "envelope",
+              "object"
+            ],
+            [
+              "JSON.parse",
+              "parse"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(JSON\\.parse|parse).{0,100}(object|envelope|cached).{0,100}(payload|instead)",
+              "(object|envelope|cached).{0,100}(passed|sent).{0,100}(JSON\\.parse|parse)"
+            ],
+            [
+              "cached\\.payload",
+              "cached payload",
+              "\\.payload"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(cached\\.payload|payload).{0,80}(is|gets).{0,30}(parsed|passed)",
+            "(not|no).{0,30}(mismatch|break|issue)"
           ]
         }
       ]
@@ -563,6 +682,7 @@
       "title": "Batch user lookup preserves order and missing entries",
       "diff": "diffs/clean-batched-lookup.diff",
       "diffSha256": "72c2c0ab8888f3c4392826acb9062aca7a732a14275c7a63cd404ea5009334a5",
+      "diffBytes": 459,
       "changedFiles": [
         "src/users.ts"
       ],
@@ -575,6 +695,7 @@
       "title": "Lock release is guaranteed with finally",
       "diff": "diffs/clean-finally-cleanup.diff",
       "diffSha256": "05c479c4e0951344ba12bb75ed53e71359006033d244145670113114516bd0ad",
+      "diffBytes": 333,
       "changedFiles": [
         "src/lock.ts"
       ],

@@ -5,7 +5,7 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 ## Boundaries
 
 - The checked-in planner and scorer make no model, Pi, GitHub, network, subprocess, or publication calls.
-- The separate collector runs only with the explicit `--acknowledge-real-model-run` flag. It launches Pi against a temporary local fixture repository, puts a strict read-only `gh` shim first on `PATH`, rejects every unknown or write-shaped GitHub command, and always invokes `/pr-review ... --no-comment`. It can contact the configured model providers but never contacts GitHub.
+- The separate collector runs only with the explicit `--acknowledge-real-model-run` flag. Real collection currently requires macOS `sandbox-exec`: Pi and every reviewer descendant inherit a profile that denies the user's HOME and keychain service, while an isolated HOME contains only the effective benchmark review config and the minimum configured provider credentials. GitHub/token/SSH environment variables are removed, absolute system `gh` is unauthenticated, a strict read-only `gh` shim is first on `PATH`, every unknown or write-shaped shim command is rejected, and the prompt always invokes `/pr-review ... --no-comment`. Provider network calls remain available. The configured model process can access the isolated provider credentials needed to run reviews; use dedicated provider credentials for hostile-model testing. Provider networking remains enabled, so the sandbox does not claim to prevent anonymous outbound requests to public GitHub endpoints; it prevents authenticated publication by withholding user GitHub, Git, keychain, and SSH credentials and rejects every write-shaped shim command.
 - Every collection retains normalized and raw lane evidence plus the canonical/degraded review envelope.
 - Corpus diffs contain no expected-finding IDs, rationales, or benchmark annotations. Do not add answer clues to reviewer-visible files, prompts, titles, or diffs.
 - Results are immutable inputs. The scorer creates its report with exclusive-create semantics and rejects missing, duplicate, malformed, symlinked, path-escaping, or hash-mismatched evidence.
@@ -23,6 +23,7 @@ The seeded semantic benchmark measures whether review topology changes preserve 
 - shell-command injection;
 - quadratic reconciliation regression;
 - cross-file cache/caller integration failure;
+- a 200–400 KB two-file registry/caller contract failure that deterministically exercises two-shard balanced and full topology;
 - non-finite boundary input;
 - two clean controls.
 
@@ -62,16 +63,17 @@ npm run benchmark:review:collect -- \
   --bundle /absolute/evidence/bundle \
   --entry <next-plan-entry-id> \
   --pi "$(command -v pi)" \
+  --expected-pi-sha256 "$(shasum -a 256 "$(command -v pi)" | awk '{print $1}')" \
   --model <provider/parent-model> \
   --thinking <level> \
   --acknowledge-real-model-run
 ```
 
-Pi loads this checkout's extension and prompt explicitly with normal extension/skill/context discovery disabled. Reviewer tiers still come from the user's `pr-review.json`; the bundle records the observed provider/model for every lane. The scorer rejects comparisons if the parent provider/model/thinking/tool/version changes or if a shared lane ID changes provider/model between runs.
+The collector verifies the exact Pi executable hash and version, then loads this checkout's extension and prompt explicitly with normal extension/skill/context discovery disabled. It records the Pi hash/version, a full extension/lib/prompt source-tree hash, prompt hash, collector hash, and effective review-config hash. Reviewer tiers, fallbacks, thinking, tool policies, tools, and deadlines come from the user's `pr-review.json`; posting, extraction, stale approval, and verification are force-disabled in the isolated effective copy. The bundle records the observed provider/model for every retained lane. The scorer rejects comparisons if any pinned executable/source/config identity changes or if a shared lane ID changes observed provider/model between runs.
 
 The local `gh` shim serves generic PR metadata, the pinned corpus diff, and the temporary fixture head. Reviewer-visible PR metadata never contains case IDs or expected-answer text. The collector materializes a real Git base/head repository from the diff so configured read-only repository tools can inspect the changed files. It verifies every observed `gh` command was an allowed read before committing the result.
 
-A Pi/provider failure still produces a result: required lanes without retained evidence are `failed` with null timing/model identity, publication is `raw_body_only`, and stdout/stderr stay in the lane evidence envelope. Do not delete that result or rerun the entry.
+Once Pi launch is attempted, a Pi/provider failure, invalid session lifecycle, rejected GitHub command, or missing audit still produces and exclusively commits a result: required lanes without retained evidence are `failed` with null timing/model identity, publication is `raw_body_only`, and process/session/audit evidence stays in the lane envelope. The command exits nonzero after retaining that result. Do not delete it or rerun the entry.
 
 ## Result bundle contract
 
@@ -80,14 +82,14 @@ Place one JSON result per plan entry directly under `BUNDLE/runs/`. Store raw ev
 - exact plan entry, case, mode, and repetition identity;
 - start timestamp and total wall time;
 - observable combined parent validation/synthesis time (the host's aggregate orchestration interval outside review and verification tools);
-- provider, model, thinking, tool policy, package version, pass IDs, shard count, and maximum parallelism;
+- provider, model, thinking, tool policy, package version, Pi version/hash, effective review-config hash, source-tree/prompt/collector hashes, pass IDs, shard count, and maximum parallelism;
 - every required lane's ID, lens, lifecycle (`complete`, `partial`, `timed_out`, or `failed`), elapsed time, provider, and model;
 - the exact ordinary-diff topology for the selected mode (balanced/major-only five lanes, full six lanes, or deep one lane);
 - publication artifact class (`canonical`, `degraded`, or `raw_body_only`) and fallback flag;
 - normalized findings with title, body, severity, and optional diff location;
 - exactly two distinct immutable JSON evidence references: `lane-artifacts` and `canonical-review`, each with a bundle-relative path, byte count, and SHA-256. The lane envelope repeats the exact normalized lane array plus nonempty raw evidence; the canonical envelope repeats the exact publication classification and findings plus nonempty Markdown. The scorer compares those envelopes to the structured run, so unrelated hash-valid files cannot impersonate evidence.
 
-The collector must represent failed and timed-out lanes as results, not omit or rerun them. The scorer requires the complete mode-specific lane set and computes completeness over that set; omitted lanes are invalid rather than disappearing from the denominator. All runs must share the same orchestrator provider/model/thinking/tool/version configuration, and every shared lane ID must retain one provider/model identity across modes. Keep all raw bundles for failed gates. Never place provider credentials, prompts containing secrets, repository secrets, or unrelated session data in a bundle.
+The collector must represent failed and timed-out lanes as results, not omit or rerun them. The scorer derives the expected mode-specific lane set from each pinned diff's byte size and changed-file count (including expanded shard IDs) and computes completeness over that set; omitted lanes are invalid rather than disappearing from the denominator. All runs must share the same orchestrator provider/model/thinking/tool/version configuration, and every shared lane ID must retain one provider/model identity across modes. Keep all raw bundles for failed gates. Never place provider credentials, prompts containing secrets, repository secrets, or unrelated session data in a bundle.
 
 ## Score a complete bundle
 

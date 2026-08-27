@@ -116,28 +116,30 @@ export function loadCorpus(file) {
 	const ids = new Set(), expectedIds = new Set();
 	let cleanControls = 0, crossFileExpected = 0;
 	for (const item of value.cases) {
-		invariant(exactKeys(item, ["id", "title", "diff", "diffSha256", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
+		invariant(exactKeys(item, ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
 		invariant(typeof item.id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id) && !ids.has(item.id), `case id ${item.id}`); ids.add(item.id);
 		invariant(typeof item.title === "string" && item.title.length >= 8 && item.title.length <= 120, `case ${item.id} title`);
 		invariant(typeof item.cleanControl === "boolean" && typeof item.crossFile === "boolean", `case ${item.id} flags`);
 		invariant(Array.isArray(item.changedFiles) && item.changedFiles.length > 0 && new Set(item.changedFiles).size === item.changedFiles.length, `case ${item.id} changedFiles`);
 		item.changedFiles.forEach((filePath) => safeRelative(filePath, `case ${item.id} changed file`));
 		const diffFile = resolveContainedRegular(root, item.diff, `case ${item.id} diff`), diffBytes = fs.readFileSync(diffFile), diffText = diffBytes.toString("utf8");
-		invariant(SHA256.test(item.diffSha256) && sha256(diffBytes) === item.diffSha256, `case ${item.id} diff hash`);
+		invariant(SHA256.test(item.diffSha256) && sha256(diffBytes) === item.diffSha256 && Number.isSafeInteger(item.diffBytes) && item.diffBytes === diffBytes.length, `case ${item.id} diff hash/bytes`);
 		invariant(diffText.length > 0 && !diffText.includes(item.id), `case ${item.id} reviewer-visible diff leaks its benchmark id`);
 		invariant(JSON.stringify(parseDiffFiles(diffText)) === JSON.stringify(item.changedFiles), `case ${item.id} changedFiles differ from diff`);
 		invariant(Array.isArray(item.expectedFindings), `case ${item.id} expectedFindings`);
 		invariant(item.cleanControl === (item.expectedFindings.length === 0), `case ${item.id} clean-control partition`);
 		if (item.cleanControl) cleanControls++;
 		for (const expected of item.expectedFindings) {
-			invariant(exactKeys(expected, ["id", "targetSeverity", "allowedSeverities", "acceptableLocations", "rationale", "lenses", "blocking", "crossFile", "requiredConcepts", "assertionPatterns"]), `expected finding schema in ${item.id}`);
+			invariant(exactKeys(expected, ["id", "targetSeverity", "allowedSeverities", "acceptableLocations", "rationale", "lenses", "blocking", "crossFile", "requiredConcepts", "assertionPatterns", "contradictionPatterns"]), `expected finding schema in ${item.id}`);
 			invariant(typeof expected.id === "string" && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(expected.id) && !expectedIds.has(expected.id), `expected finding id ${expected.id}`); expectedIds.add(expected.id);
 			invariant(SEVERITIES.has(expected.targetSeverity) && Array.isArray(expected.allowedSeverities) && expected.allowedSeverities.length > 0 && new Set(expected.allowedSeverities).size === expected.allowedSeverities.length && expected.allowedSeverities.includes(expected.targetSeverity) && expected.allowedSeverities.every((severity) => SEVERITIES.has(severity)), `expected ${expected.id} severities`);
 			invariant(typeof expected.blocking === "boolean" && typeof expected.crossFile === "boolean" && typeof expected.rationale === "string" && expected.rationale.length >= 20, `expected ${expected.id} metadata`);
 			invariant(expected.blocking === (expected.targetSeverity === "P0" || expected.targetSeverity === "P1"), `expected ${expected.id} blocking policy`);
 			invariant(Array.isArray(expected.lenses) && expected.lenses.length > 0 && expected.lenses.every((lens) => value.lenses.includes(lens)), `expected ${expected.id} lenses`);
 			invariant(Array.isArray(expected.requiredConcepts) && expected.requiredConcepts.length > 0 && expected.requiredConcepts.every((group) => Array.isArray(group) && group.length > 0 && group.every((term) => typeof term === "string" && term.length > 0)), `expected ${expected.id} concepts`);
-			invariant(Array.isArray(expected.assertionPatterns) && expected.assertionPatterns.length > 0 && expected.assertionPatterns.every((group) => Array.isArray(group) && group.length > 0 && group.every((pattern) => { if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > 500) return false; try { new RegExp(pattern, "iu"); return true; } catch { return false; } })), `expected ${expected.id} assertion patterns`);
+			const validPattern = (pattern) => { if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > 500) return false; try { new RegExp(pattern, "iu"); return true; } catch { return false; } };
+			invariant(Array.isArray(expected.assertionPatterns) && expected.assertionPatterns.length > 0 && expected.assertionPatterns.every((group) => Array.isArray(group) && group.length > 0 && group.every(validPattern)), `expected ${expected.id} assertion patterns`);
+			invariant(Array.isArray(expected.contradictionPatterns) && expected.contradictionPatterns.length > 0 && expected.contradictionPatterns.every(validPattern), `expected ${expected.id} contradiction patterns`);
 			invariant(Array.isArray(expected.acceptableLocations) && expected.acceptableLocations.length > 0, `expected ${expected.id} locations`);
 			for (const location of expected.acceptableLocations) {
 				invariant(exactKeys(location, ["path", "side", "start", "end"]), `expected ${expected.id} location schema`);
@@ -174,9 +176,12 @@ export function validatePlan(plan, corpusInfo) {
 	return plan;
 }
 
-export function expectedModeTopology(mode) {
+export function expectedModeTopology(mode, item) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
-	return { passIds: [...MODE_TOPOLOGIES[mode].passIds], shardCount: 1, maxParallel: MODE_TOPOLOGIES[mode].maxParallel };
+	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
+	const base = MODE_TOPOLOGIES[mode], shardCount = mode === "deep" ? 1 : item.diffBytes >= 400_000 && item.changedFiles.length >= 3 ? 3 : item.diffBytes >= 200_000 && item.changedFiles.length >= 2 ? 2 : 1;
+	const passIds = shardCount === 1 ? [...base.passIds] : base.passIds.flatMap((id) => Array.from({ length: shardCount }, (_, index) => `${id}-shard-${index + 1}`));
+	return { passIds, shardCount, maxParallel: base.maxParallel * shardCount };
 }
 
 export function createPlan(corpusInfo, modes, repetitions) {
@@ -205,32 +210,41 @@ function validateArtifact(reference, bundleRoot, run) {
 	invariant(data.length === reference.bytes && sha256(data) === reference.sha256, `${runLabel} artifact bytes/hash`);
 	let payload; try { payload = JSON.parse(data.toString("utf8")); } catch { invariant(false, `${runLabel} artifact JSON`); }
 	if (reference.kind === "lane-artifacts") {
-		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && (typeof payload.raw === "string" ? payload.raw.length > 0 : Array.isArray(payload.raw) ? payload.raw.length > 0 : plain(payload.raw) && Object.keys(payload.raw).length > 0), `${runLabel} lane artifact binding`);
+		const raw = payload?.raw;
+		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "lanes", "raw"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.lanes) === canonical(run.lanes) && exactKeys(raw, ["laneArtifacts", "telemetry", "ghAudit", "auditValid", "process", "session"]), `${runLabel} lane artifact binding`);
+		invariant(Array.isArray(raw.laneArtifacts) && (raw.telemetry === null || plain(raw.telemetry)) && Array.isArray(raw.ghAudit) && typeof raw.auditValid === "boolean" && raw.auditValid === (raw.ghAudit.length > 0 && raw.ghAudit.every((record) => plain(record) && record.allowed === true && record.write === false)), `${runLabel} raw lane/audit evidence`);
+		invariant(exactKeys(raw.process, ["stdout", "stderr", "exitCode", "signal", "error"]) && typeof raw.process.stdout === "string" && typeof raw.process.stderr === "string" && (raw.process.exitCode === null || Number.isInteger(raw.process.exitCode)) && (raw.process.signal === null || typeof raw.process.signal === "string") && (raw.process.error === null || typeof raw.process.error === "string"), `${runLabel} raw process evidence`);
+		invariant(exactKeys(raw.session, ["sha256", "bytes", "recordCount"]) && (raw.session.sha256 === null || SHA256.test(raw.session.sha256)) && Number.isSafeInteger(raw.session.bytes) && raw.session.bytes >= 0 && Number.isSafeInteger(raw.session.recordCount) && raw.session.recordCount >= 0 && (raw.session.bytes === 0) === (raw.session.sha256 === null), `${runLabel} raw session evidence`);
+		const normalized = new Map(run.lanes.map((lane) => [lane.id, lane]));
+		for (const lane of raw.laneArtifacts) { const target = normalized.get(lane?.passId); invariant(target && lane.lifecycle === target.status, `${runLabel} raw lane lifecycle binding`); }
+		invariant(raw.laneArtifacts.length > 0 || raw.process.stdout.length > 0 || raw.process.stderr.length > 0 || raw.session.bytes > 0, `${runLabel} raw evidence is empty`);
 	} else {
-		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0, `${runLabel} canonical artifact binding`);
+		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0 && run.findings.every((finding) => payload.markdown.includes(finding.title)), `${runLabel} canonical artifact binding`);
 	}
 	return reference;
 }
 
-function validateRun(run, planEntry, bundleRoot) {
+function validateRun(run, planEntry, bundleRoot, item) {
 	const label = `run ${planEntry.entryId}`;
 	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"]), `${label} schema`);
 	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
 	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
-	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "topology"]), `${label} configuration schema`);
-	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
-	const topology = run.configuration.topology, expectedTopology = MODE_TOPOLOGIES[run.mode];
+	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "piSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256", "topology"]), `${label} configuration schema`);
+	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
+	for (const key of ["piSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256"]) invariant(typeof run.configuration[key] === "string" && SHA256.test(run.configuration[key]), `${label} configuration ${key}`);
+	const topology = run.configuration.topology, expectedTopology = expectedModeTopology(run.mode, item);
 	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
-	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === 1 && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
+	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === expectedTopology.shardCount && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
 	invariant(Array.isArray(run.lanes) && run.lanes.length > 0, `${label} lanes`);
 	const laneIds = new Set();
 	for (const lane of run.lanes) {
 		invariant(exactKeys(lane, ["id", "lens", "status", "elapsedMs", "provider", "model"]), `${label} lane schema`);
 		invariant(typeof lane.id === "string" && lane.id.length > 0 && !laneIds.has(lane.id), `${label} lane id`); laneIds.add(lane.id);
 		invariant(typeof lane.lens === "string" && lane.lens.length > 0 && LANE_STATES.has(lane.status) && (lane.elapsedMs === null || finiteNonnegative(lane.elapsedMs)) && (lane.provider === null || typeof lane.provider === "string" && lane.provider.length > 0) && (lane.model === null || typeof lane.model === "string" && lane.model.length > 0) && (lane.status !== "complete" || lane.elapsedMs !== null && lane.provider !== null && lane.model !== null), `${label} lane metadata`);
-		invariant(PASS_LENSES[lane.id] === lane.lens, `${label} lane ${lane.id} lens`);
+		const basePassId = lane.id.replace(/-shard-[123]$/, "");
+		invariant(PASS_LENSES[basePassId] === lane.lens, `${label} lane ${lane.id} lens`);
 	}
 	invariant(run.lanes.length === expectedTopology.passIds.length && expectedTopology.passIds.every((id) => laneIds.has(id)), `${label} required lane set`);
 	invariant(exactKeys(run.publication, ["artifact", "fallback"]) && PUBLICATION_ARTIFACTS.has(run.publication.artifact) && typeof run.publication.fallback === "boolean" && run.publication.fallback === (run.publication.artifact !== "canonical"), `${label} publication`);
@@ -256,7 +270,7 @@ function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
 	const rawText = `${finding.title}\n${finding.body}`;
-	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText))) return false;
+	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
 	const text = rawText.toLocaleLowerCase("en-US");
 	if (!expected.requiredConcepts.every((group) => group.some((term) => text.includes(term.toLocaleLowerCase("en-US"))))) return false;
 	return expected.assertionPatterns.every((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
@@ -350,7 +364,7 @@ function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprin
 }
 
 function comparableConfiguration(run) {
-	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion };
+	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
 }
 
 export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }) {
@@ -359,11 +373,11 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 	invariant(fs.lstatSync(runDir).isDirectory(), "result bundle requires runs/ directory");
 	const files = fs.readdirSync(runDir, { withFileTypes: true });
 	invariant(files.every((entry) => entry.isFile() && entry.name.endsWith(".json")), "runs/ may contain only JSON files");
-	const entryById = new Map(plan.entries.map((entry) => [entry.entryId, entry])), seen = new Set(), runs = [];
+	const entryById = new Map(plan.entries.map((entry) => [entry.entryId, entry])), caseById = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item])), seen = new Set(), runs = [];
 	for (const entry of files.sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)))) {
 		const run = readJson(path.join(runDir, entry.name)).value, planEntry = entryById.get(run?.planEntryId);
 		invariant(planEntry && !seen.has(planEntry.entryId), `unknown or duplicate plan entry in ${entry.name}`); seen.add(planEntry.entryId);
-		runs.push(validateRun(run, planEntry, bundleRoot));
+		runs.push(validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId)));
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
 	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical));
