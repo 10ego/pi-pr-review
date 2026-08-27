@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "313da74629edb692f24ce0b6",
+  "caseId": "data-shape-contract",
+  "mode": "full",
+  "repetition": 1,
+  "startedAtUtc": "2026-08-27T09:01:10.844Z",
+  "elapsedMs": 272535.82,
+  "timing": {
+    "parentValidationSynthesisMs": 242872.717
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 9286.717541694641,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 20551.20704269409,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 7611.344167709351,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 17202.58879184723,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 10777.149540901184,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "partial",
+      "elapsedMs": 8880.596415519714,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P0] Return the declared `id` field instead of `userId`",
+      "body": "The changed line returns an object that cannot satisfy the declared return type. `User` requires `id: string` and has no `userId` property, so under standard TypeScript type-checking this file fails to compile regardless of configuration: missing required property `id` (TS2741) and excess property `userId` on the literal (TS2353) — missing-property errors are unconditional, not strictness-dependent. Even if type errors were bypassed by a transpile-only pipeline, every successful `loadUser` call would return a shape violating its exported contract, leaving `user.id` `undefined` for all consumers. This also contradicts the PR's stated intent of \"preserving existing contracts.\" Fix by restoring `id: row.id`, or — if the rename is intentional — updating `export type User` (and any consumers) in the same change.",
+      "severity": "P0",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 11
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/313da74629edb692f24ce0b6-lane-artifacts.json",
+      "sha256": "07fd53d581c1ee344c07e506cecbe2477ed6610b61fb59878d4a64cc9f6f958c",
+      "bytes": 197399
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/313da74629edb692f24ce0b6-canonical-review.json",
+      "sha256": "71e496e63dfcddf20ae93b0a3aff2f9c308064b34291c1620eb49ae07f57b248",
+      "bytes": 4402
+    }
+  ]
+}

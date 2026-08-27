@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "b05b72ca64e7b08cf37257e0",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Define or import `execAsync` — it is referenced but declared nowhere",
+      "body": "The added line calls `execAsync(command)`, but the module imports only `execFile` from `node:child_process`, and a repository-wide search confirms `execAsync` has no declaration, import, or ambient type anywhere (this is the repo's only file). TypeScript compilation fails with `TS2304: Cannot find name 'execAsync'`, and any emitted call to `showBranch` rejects with a `ReferenceError` before a child process ever starts. The fix must wire up the helper (import `exec` and promisify it, or restore the `execFile`-based array form per the injection finding below).",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P1] Pass the branch as an argv element instead of interpolating it into a shell command",
+      "body": "`` const command = `git show ${branch}` `` moves from spawn-without-shell (`execFile` with an argument array) to shell interpretation of the interpolated value. Git refnames may legally contain `;`, `&`, `|`, `$`, and backticks, and the `branch: string` parameter is not validated as a ref at all — a value like `main;id` produces `git show main;id`, executing `id` after the intended command; richer payloads can use `${IFS}` to bypass the no-space refname rule. Even benign names containing `$`, backticks, or quotes break the lookup via substitution/splitting. Restore the argument-array form (`execFile`/promisified `execFile`) so the branch is passed as a single argv element.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 15
+      }
+    },
+    {
+      "title": "[P3] Shell indirection changes the error contract for missing executables",
+      "body": "Once `execAsync` is wired to `child_process.exec`, a missing `git` on POSIX rejects with shell exit code `127` and shell-generated stderr, whereas the previous direct spawn rejects with `code: \"ENOENT\"`. No callers exist in this repo yet, so impact is unverified, but any future caller keying on the existing error shape will see a different contract.",
+      "severity": "P3",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P3] Add regression coverage for the changed execution path",
+      "body": "The PR changes how the git subprocess is invoked and how errors surface, but the repository has no tests (and no test infrastructure) covering `showBranch`, so the new command construction and its failure modes cannot be verified. A small test covering a normal branch name and a metacharacter-containing name would lock in the safe form.",
+      "severity": "P3",
+      "location": null
+    },
+    {
+      "title": "[nit] Remove the now-unused `execFile` import",
+      "body": "Removing the `execFileAsync` call orphans `import { execFile } from \"node:child_process\";` — nothing at head references it. Whichever executor the fix adopts, update the import to match (and note the import line sits just outside the diff hunk, so this is summary-placed).",
+      "severity": "nit",
+      "location": null
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites `showBranch` in `src/git.ts` to build a shell command string — `` `git show ${branch}` `` — and execute it via `execAsync`, replacing the previous `execFileAsync(\"git\", [\"show\", branch])` argument-array invocation. Despite the stated intent to \"preserve existing contracts,\" the change breaks the module outright and introduces a command-injection regression.\n\nTwo blocking defects: the newly called `execAsync` is declared/imported nowhere, and interpolating `branch` into a shell command string replaces spawn-without-shell semantics with shell interpretation of attacker-controllable metacharacters. Both were independently corroborated by all applicable lenses and by direct source inspection (the repo's only tracked file is `src/git.ts`; no ambient declarations exist).\n\n## Verification\n\nVerification was skipped: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned `enabled: false`), so there is no trusted baseline to run. Note that baseline execution runs PR code unsandboxed (POSIX-group supervision only) and requires an explicit user opt-in; use an external sandbox/container wrapper for untrusted PRs if you enable it.\n\n## Findings\n\n### [P1] Define or import `execAsync` — it is referenced but declared nowhere\n**Severity:** P1\n**Rationale:** The added line calls `execAsync(command)`, but the module imports only `execFile` from `node:child_process`, and a repository-wide search confirms `execAsync` has no declaration, import, or ambient type anywhere (this is the repo's only file). TypeScript compilation fails with `TS2304: Cannot find name 'execAsync'`, and any emitted call to `showBranch` rejects with a `ReferenceError` before a child process ever starts. The fix must wire up the helper (import `exec` and promisify it, or restore the `execFile`-based array form per the injection finding below).\n**Location:** `src/git.ts:16 RIGHT`\n\n### [P1] Pass the branch as an argv element instead of interpolating it into a shell command\n**Severity:** P1\n**Rationale:** `` const command = `git show ${branch}` `` moves from spawn-without-shell (`execFile` with an argument array) to shell interpretation of the interpolated value. Git refnames may legally contain `;`, `&`, `|`, `$`, and backticks, and the `branch: string` parameter is not validated as a ref at all — a value like `main;id` produces `git show main;id`, executing `id` after the intended command; richer payloads can use `${IFS}` to bypass the no-space refname rule. Even benign names containing `$`, backticks, or quotes break the lookup via substitution/splitting. Restore the argument-array form (`execFile`/promisified `execFile`) so the branch is passed as a single argv element.\n**Location:** `src/git.ts:15 RIGHT`\n\n### [P3] Shell indirection changes the error contract for missing executables\n**Severity:** P3\n**Rationale:** Once `execAsync` is wired to `child_process.exec`, a missing `git` on POSIX rejects with shell exit code `127` and shell-generated stderr, whereas the previous direct spawn rejects with `code: \"ENOENT\"`. No callers exist in this repo yet, so impact is unverified, but any future caller keying on the existing error shape will see a different contract.\n**Location:** `src/git.ts:16 RIGHT`\n\n### [P3] Add regression coverage for the changed execution path\n**Severity:** P3\n**Rationale:** The PR changes how the git subprocess is invoked and how errors surface, but the repository has no tests (and no test infrastructure) covering `showBranch`, so the new command construction and its failure modes cannot be verified. A small test covering a normal branch name and a metacharacter-containing name would lock in the safe form.\n### [nit] Remove the now-unused `execFile` import\n**Severity:** nit\n**Rationale:** Removing the `execFileAsync` call orphans `import { execFile } from \"node:child_process\";` — nothing at head references it. Whichever executor the fix adopts, update the import to match (and note the import line sits just outside the diff hunk, so this is summary-placed).\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- The change is narrowly scoped to a single function, which makes the required fix (restoring the argument-array invocation and wiring the helper correctly) small and low-risk.\n- **Correctness:** blocking — undefined `execAsync` plus shell-interpolated branch; every current call path fails, and once executable, the command string is injectable.\n- **Security:** command-injection regression from array-args to shell string; treat `branch` as untrusted input and never place it in shell source.\n- **Performance:** no resource/performance regressions identified by the dedicated lane; `exec` and `execFile` share equivalent buffering behavior for this use."
+}

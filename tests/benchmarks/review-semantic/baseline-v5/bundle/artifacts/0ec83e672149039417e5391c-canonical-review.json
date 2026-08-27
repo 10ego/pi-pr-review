@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "0ec83e672149039417e5391c",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Return early for an empty `ids` array to preserve the old no-query fast path",
+      "body": "Previously `loadUsers([])` evaluated `Promise.all([])`, which always resolved to `[]` without touching the database. The new code unconditionally executes `db.users.findMany({ where: { id: { in: [] } } })`, so an empty request now incurs a pointless database round trip and gains a new failure mode: it can reject during a database outage, and some ORM adapters reject or mishandle an empty `in` list (generating invalid `IN ()` SQL). Adding `if (ids.length === 0) return [];` before the query restores the previous guaranteed-resolving empty-input behavior.",
+      "severity": "P2",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 24,
+        "end": 24
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites `loadUsers` in `src/users.ts` to replace N parallel per-id `db.users.find` calls with a single `db.users.findMany({ where: { id: { in: uniqueIds } } })` query. Input ids are deduplicated via `new Set`, results are indexed in a `Map` keyed by `row.id`, and the return value is reconstructed with `ids.map(id => byId.get(id) ?? null)`, preserving input order, length, and duplicate entries while yielding `null` for ids with no matching row.\n\nThe change is a clear net improvement — it collapses N database round trips into one while keeping the result-shape contract (positional alignment with the input array) intact. The only confirmed issue is a lost fast path for empty input; no correctness, security, or resource problems were substantiated.\n\n## Verification\n\nVerification was disabled: no user-level `verificationBaselines` profile is configured for this repository, so no trusted baseline ran. Note that when enabled, verification executes PR code without a filesystem or network sandbox (lifecycle supervision covers only the original POSIX process group; a deliberate `setsid` escape can survive it) — use an external sandbox or container wrapper for untrusted PRs.\n\n## Findings\n\n### [P2] Return early for an empty `ids` array to preserve the old no-query fast path\n**Severity:** P2\n**Rationale:** Previously `loadUsers([])` evaluated `Promise.all([])`, which always resolved to `[]` without touching the database. The new code unconditionally executes `db.users.findMany({ where: { id: { in: [] } } })`, so an empty request now incurs a pointless database round trip and gains a new failure mode: it can reject during a database outage, and some ORM adapters reject or mishandle an empty `in` list (generating invalid `IN ()` SQL). Adding `if (ids.length === 0) return [];` before the query restores the previous guaranteed-resolving empty-input behavior.\n**Location:** `src/users.ts:24-24 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Reduces database round trips from N parallel queries to a single `findMany`, and deduplicates ids so repeated ids cost nothing extra.\n- Result reconstruction via `ids.map(id => byId.get(id) ?? null)` correctly preserves input ordering, array length, and duplicate positions, keeping the positional contract of the previous `Promise.all` implementation.\n- **Correctness:** two heavy-lane candidates were investigated and dropped as unsubstantiated: input-array mutation during the await (no such caller exists in this repo) and `undefined`→`null` normalization for missing users (depends on an unverifiable external `db.users.find` contract; `?? null` matches the common ORM `null` convention).\n- **Security:** no injection, authorization, or trust-boundary concerns introduced; ids flow only into a parameterized `where: { id: { in: [...] } }` clause.\n- **Performance:** the N-to-1 query consolidation is sound; `Map` construction and lookup are linear and proportionate to the result size."
+}

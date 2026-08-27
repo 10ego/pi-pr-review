@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "d7f7444a87a98dbb259ce6d4",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Restore precomputed ID lookup — remapping `current` per element is O(n·m)",
+      "body": "`current.map(candidate => candidate.id)` now executes inside the `.filter()` predicate, so for `n = previous.length` and `m = current.length` the function performs `n·m` ID reads plus `n` throwaway `m`-element array allocations, versus the removed version's O(n+m) time with one O(m) `Set`. For a reconcile-style function over, say, 10,000×10,000 items this is ~100M comparisons and 10,000 intermediate arrays — significant latency and GC pressure on the synchronous path. The repository contains no callers or tests establishing that inputs are always small. Hoist the ID collection once (ideally back into a `Set` for O(1) membership).",
+      "severity": "P2",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 42,
+        "end": 42
+      }
+    },
+    {
+      "title": "[P3] Inline nested `map().includes()` obscures the membership-test intent",
+      "body": "The doubly-nested inline expression reads as a transformation chain rather than what it is — a membership test against the set of current IDs. The removed named intermediate (`currentIds`) made the predicate's meaning and expected lookup cost immediately clear to readers.",
+      "severity": "P3",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 42,
+        "end": 42
+      }
+    },
+    {
+      "title": "[P3] Changed function has no test coverage",
+      "body": "`removedIds` is the only real code in the file and this rewrite touches its entire body, yet the repository has no tests for it, so equivalence (empty inputs, overlapping IDs, duplicates, IDs absent from `current`) is unverified by anything executable. Adding a small unit test would pin the contract this PR claims to preserve.",
+      "severity": "P3",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 43
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites the body of `removedIds` in `src/reconcile.ts`, replacing a precomputed `Set` of current IDs with an inline `current.map(candidate => candidate.id).includes(item.id)` membership test inside the `.filter()` predicate. The returned value pipeline (filter → map to IDs) is unchanged.\n\nOutput behavior is provably equivalent: `Set.prototype.has` and `Array.prototype.includes` both use SameValueZero equality, so results match for all inputs, including empty arrays, duplicate IDs, `NaN`, and `-0`. The regression is purely operational — the rewrite re-maps and linearly rescans the entire `current` array once per element of `previous`.\n\n## Verification\n\nVerification was skipped: no user-level `verificationBaselines` profiles are configured (`action: list` returned `enabled: false`), so no trusted baseline ran. Disclosure: had one run, it would execute PR code without a filesystem or network sandbox, with supervision limited to the original POSIX process group; an external sandbox/container wrapper is recommended for untrusted PRs. Candidate validation was instead performed source-side against the full diff and the complete `src/reconcile.ts`.\n\n## Findings\n\n### [P2] Restore precomputed ID lookup — remapping `current` per element is O(n·m)\n**Severity:** P2\n**Rationale:** `current.map(candidate => candidate.id)` now executes inside the `.filter()` predicate, so for `n = previous.length` and `m = current.length` the function performs `n·m` ID reads plus `n` throwaway `m`-element array allocations, versus the removed version's O(n+m) time with one O(m) `Set`. For a reconcile-style function over, say, 10,000×10,000 items this is ~100M comparisons and 10,000 intermediate arrays — significant latency and GC pressure on the synchronous path. The repository contains no callers or tests establishing that inputs are always small. Hoist the ID collection once (ideally back into a `Set` for O(1) membership).\n**Location:** `src/reconcile.ts:42 RIGHT`\n\n### [P3] Inline nested `map().includes()` obscures the membership-test intent\n**Severity:** P3\n**Rationale:** The doubly-nested inline expression reads as a transformation chain rather than what it is — a membership test against the set of current IDs. The removed named intermediate (`currentIds`) made the predicate's meaning and expected lookup cost immediately clear to readers.\n**Location:** `src/reconcile.ts:42 RIGHT`\n\n### [P3] Changed function has no test coverage\n**Severity:** P3\n**Rationale:** `removedIds` is the only real code in the file and this rewrite touches its entire body, yet the repository has no tests for it, so equivalence (empty inputs, overlapping IDs, duplicates, IDs absent from `current`) is unverified by anything executable. Adding a small unit test would pin the contract this PR claims to preserve.\n**Location:** `src/reconcile.ts:41-43 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Output semantics are genuinely preserved (SameValueZero parity between `Set.has` and `includes`), matching the PR's stated intent of \"preserving existing contracts\".\n- The change is narrowly scoped to one function and easy to reason about.\n\n**Notes:** correctness — behavior equivalent, no functional defect introduced; security — no new exposure (the function is a pure data transformation with no caller evidence of attacker-controlled input); performance — the O(n·m) regression above is the one substantive issue and is non-blocking."
+}

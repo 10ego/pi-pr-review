@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "ad6f36fc3dea3bd511d14e0f",
+  "caseId": "resource-listener-leak",
+  "mode": "full",
+  "repetition": 1,
+  "startedAtUtc": "2026-08-27T09:24:42.154Z",
+  "elapsedMs": 256684.464,
+  "timing": {
+    "parentValidationSynthesisMs": 221776.231
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 11079.894624710083,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 33616.20383358002,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 28762.60137462616,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 28982.363291740417,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 34901.4171667099,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 29156.417958259583,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore message-listener removal in `unmount`",
+      "body": "Triggered by any `mount(socket)` → `unmount()` cycle followed by further socket activity. The new `mount()` registers an anonymous closure (`socket.on(\"message\", message => this.render(message))`) whose reference is never kept, and the new `unmount()` only does `this.socket = undefined` — the previous `this.socket?.off(\"message\", this.onMessage)` deregistration is gone. Since `off()` requires the exact handler reference, the listener can no longer be detached at all. Consequences: an unmounted view keeps rendering on every subsequent `\"message\"` event; repeated mount/unmount cycles accumulate one closure per mount and amplify each message into multiple `render` calls; and any socket that outlives the view retains the view and its closure, preventing garbage collection. Restore the stored-handler pattern (or equivalent) so `unmount()` can actually detach the listener.",
+      "severity": "P1",
+      "location": {
+        "path": "src/socket-view.ts",
+        "side": "RIGHT",
+        "start": 14,
+        "end": 18
+      }
+    },
+    {
+      "title": "[P3] Add listener-lifecycle regression coverage with the fix",
+      "body": "The repository contains no tests (and no test infrastructure) for `SocketView`, and this PR changes exactly the behavior most in need of protection — listener registration/detachment. When fixing the P1 above, add a regression test that emits a `\"message\"` event after `unmount()` and asserts rendering no longer occurs. Rated P3 rather than higher because the absence of any test setup is a pre-existing repo-wide condition, not something this PR introduced.",
+      "severity": "P3",
+      "location": null
+    },
+    {
+      "title": "[nit] Confirm the intended contract for an unreferenced `SocketView`",
+      "body": "A source-wide search finds no callers of `SocketView` outside `src/socket-view.ts` itself, so no in-repo usage validates whether weakening `unmount()` was intentional. Worth confirming the intended lifecycle contract before merge, since the PR description claims existing contracts are preserved.",
+      "severity": "nit",
+      "location": null
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/ad6f36fc3dea3bd511d14e0f-lane-artifacts.json",
+      "sha256": "ef891616911e15e2f036a18f4f0d1b6147abdb963eca2c6a33725436a4d13d4d",
+      "bytes": 206718
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/ad6f36fc3dea3bd511d14e0f-canonical-review.json",
+      "sha256": "79d5f0e08d5fc8790ae8a927d6864d28cb4d15c66072f765c87490da88f457e0",
+      "bytes": 7412
+    }
+  ]
+}

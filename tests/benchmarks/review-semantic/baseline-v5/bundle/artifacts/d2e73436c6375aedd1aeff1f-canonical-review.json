@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "d2e73436c6375aedd1aeff1f",
+  "publication": {
+    "artifact": "raw_body_only",
+    "fallback": true
+  },
+  "findings": [],
+  "markdown": "Validation complete: `RequestOptions` is now declared nowhere in the repository — `src/client.ts:1` imports it and `request()` uses it as its parameter type, so every typecheck fails unconditionally. That upgrades the merged P1 candidates to a blocking P0. `ClientOptions` is imported but never referenced, and no `noUnusedLocals`/eslint config exists to make it a hard error, so it stays P3. No other issues substantiated; temp diff removed."
+}

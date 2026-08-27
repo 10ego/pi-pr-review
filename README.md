@@ -323,7 +323,7 @@ bun test
 npm run test:tooling
 ```
 
-Review-topology changes must also use the versioned seeded semantic benchmark. Its deterministic planner and scorer report P0/P1, P2, per-lens, and cross-file recall alongside clean-control false positives, duplicates, lane completeness, fallback rates, variance, and p50/p95 latency. They never invoke models, GitHub, or publication themselves; the separately acknowledged collector runs real provider reviews against local fixture repositories through a read-only GitHub shim. See [docs/semantic-review-benchmark.md](docs/semantic-review-benchmark.md) for corpus, collector, and immutable result-bundle contracts.
+Review-topology changes must also use the versioned seeded semantic benchmark. Its deterministic planner and scorer report P0/P1, P2, per-lens, and cross-file recall alongside clean-control false positives, duplicates, lane completeness, fallback rates, variance, and p50/p95 latency. They never invoke models, GitHub, or publication themselves; the separately acknowledged collector runs real provider reviews against local fixture repositories through a read-only GitHub shim. See [docs/semantic-review-benchmark.md](docs/semantic-review-benchmark.md) for corpus, collector, and immutable result-bundle contracts, and [docs/semantic-benchmark-baseline-v5.md](docs/semantic-benchmark-baseline-v5.md) for the first complete diagnostic baseline.
 
 The package consists of the `/pr-review` prompt, tiered subagent and rendering extensions, and supporting libraries under `lib/`. To use only the prompt template:
 

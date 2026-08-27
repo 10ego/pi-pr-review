@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "55c650111c32b52c57bca3d0",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Chunk large ID batches to respect backend IN-clause parameter limits",
+      "body": "Triggered when `ids` contains more distinct values than the database backend's per-statement bind-parameter limit (e.g. SQL Server's 2,100 parameters, SQLite's ~999 default, PostgreSQL's 65,535). The old implementation issued one single-parameter query per id, so it never exceeded a per-statement limit; the new single `findMany` at `src/users.ts:23` expands the full deduplicated list into one statement's parameter list, so an oversized batch fails the entire request where the previous code (slowly) succeeded. For a helper accepting an unbounded `ids: string[]`, chunking the list (e.g. into batches of a few hundred) or capping batch size preserves the batching win without the new failure mode.",
+      "severity": "P2",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 23
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites `loadUsers` in `src/users.ts` from an N+1 pattern (`Promise.all(ids.map(id => db.users.find(id)))`) into a single batched query: it dedupes the input ids with a `Set`, issues one `db.users.findMany({ where: { id: { in: uniqueIds } } })`, indexes the returned rows by id in a `Map`, and reassembles the result with `ids.map(id => byId.get(id) ?? null)`. The result array preserves the caller-visible contract of one entry per input id in input order, with `null` for ids that have no row.\n\nThe reassembly logic is correct for the common cases: ordering and duplicate positions are preserved, deduplication avoids redundant lookups, and the `?? null` fallback keeps a null-for-missing sentinel consistent with typical ORM `find` semantics. The only substantive concern introduced by the change is scalability of the single `IN` clause for very large inputs.\n\n## Verification\n\nVerification was not run: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned `enabled: false`), so there was no applicable trusted baseline to select. Note that baseline execution runs PR code unsandboxed (no filesystem/network sandbox; supervision signals only the original POSIX process group, so a deliberate `setsid` escape can survive it) — an external sandbox/container wrapper is recommended for untrusted PRs if verification is enabled later.\n\n## Findings\n\n### [P2] Chunk large ID batches to respect backend IN-clause parameter limits\n**Severity:** P2\n**Rationale:** Triggered when `ids` contains more distinct values than the database backend's per-statement bind-parameter limit (e.g. SQL Server's 2,100 parameters, SQLite's ~999 default, PostgreSQL's 65,535). The old implementation issued one single-parameter query per id, so it never exceeded a per-statement limit; the new single `findMany` at `src/users.ts:23` expands the full deduplicated list into one statement's parameter list, so an oversized batch fails the entire request where the previous code (slowly) succeeded. For a helper accepting an unbounded `ids: string[]`, chunking the list (e.g. into batches of a few hundred) or capping batch size preserves the batching win without the new failure mode.\n**Location:** `src/users.ts:23 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- **Correctness:** the Map-based reassembly genuinely preserves the caller-visible ordering, duplicate positions, and one-result-per-input-id contract of the old `Promise.all` version; the deduplication is a real improvement.\n- **Performance:** consolidates N round trips into one query — the classic N+1 fix, done idiomatically.\n- **Security:** no injection, scope-broadening, or trust-boundary concerns; `ids` flows only into a parameterized `in` filter. No security findings.\n- **Note (non-blocking, unverifiable here):** if the underlying `db.users.find` used `undefined` rather than `null` as its missing-row sentinel, `?? null` would change that contract; the repo contains no `db` module to check, and mainstream ORMs return `null`, so this is treated as contract-preserving per the PR's stated intent."
+}

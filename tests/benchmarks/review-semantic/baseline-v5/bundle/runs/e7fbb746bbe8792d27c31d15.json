@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "e7fbb746bbe8792d27c31d15",
+  "caseId": "authorization-tenant-scope",
+  "mode": "balanced",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T11:53:45.529Z",
+  "elapsedMs": 176563.369,
+  "timing": {
+    "parentValidationSynthesisMs": 134323.348
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 5
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 10058.19387435913,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 14248.151000022888,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 42235.92300033569,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 35267.67470741272,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 12848.709750175476,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore tenant scoping in the document lookup",
+      "body": "Any authenticated user of tenant A can pass a document `id` belonging to tenant B and `findFirst({ where: { id } })` will return that tenant's document instead of `null`. The remaining `ctx.user` check enforces authentication only — ownership is no longer enforced anywhere (after this diff, `tenantId` appears nowhere in `src/`). The removed predicate `tenantId: ctx.user.tenantId` is directly in the diff, so the regression is introduced by this PR and enables cross-tenant reads (IDOR) under realistic inputs. Restore the predicate inside the `where` clause.",
+      "severity": "P1",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 33,
+        "end": 33
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/e7fbb746bbe8792d27c31d15-lane-artifacts.json",
+      "sha256": "9b1f615986c3eb640612ce99129b220d9a740a3eca11ce299f86e9732171a354",
+      "bytes": 158234
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/e7fbb746bbe8792d27c31d15-canonical-review.json",
+      "sha256": "2ea77725e7498856dd92e2002500d5f1b34439194d605592761da36c36e38486",
+      "bytes": 4185
+    }
+  ]
+}

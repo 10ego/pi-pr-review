@@ -1,0 +1,41 @@
+{
+  "tiers": {
+    "light": "openai-codex/gpt-5.6-luna",
+    "medium": "openai-codex/gpt-5.6-terra",
+    "heavy": "openai-codex/gpt-5.6-sol"
+  },
+  "fallbacks": {},
+  "thinkingLevels": {
+    "medium": "high",
+    "heavy": "xhigh",
+    "light": "medium"
+  },
+  "toolPolicies": {},
+  "tools": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls"
+  ],
+  "deadlines": {
+    "attemptMs": {
+      "light": 180000,
+      "medium": 360000,
+      "heavy": 480000
+    },
+    "fallbackAttemptMs": 180000,
+    "batchMs": 840000,
+    "synthesisMs": 60000,
+    "totalMs": 1200000,
+    "terminationGraceMs": 5000,
+    "cleanupReserveMs": 5000,
+    "minimumFallbackMs": 30000
+  },
+  "autoPostReviews": false,
+  "allowStalePublish": false,
+  "allowStaleApprovals": false,
+  "approveMaxPriorityLevel": "off",
+  "verificationBaselines": {},
+  "extractFindings": false
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "3e178068d8fcfea010033ac5",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Parse `cached.value` instead of the `{ value, stale }` wrapper",
+      "body": "Requires any cache hit. `Cache.get` now returns `{ value: string; stale: boolean } | null` (`src/cache.ts:5-6`), so on a hit `cached` is a truthy object and `src/profile.ts:19` executes `JSON.parse(cached)` with a non-string. This is a TypeScript type error, and in emitted JavaScript `JSON.parse` coerces the object to `\"[object Object]\"` and throws `SyntaxError`, so `loadProfile` rejects instead of returning the cached profile. Fix: `if (cached) return JSON.parse(cached.value);`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    },
+    {
+      "title": "[P3] Confirm intended: new `stale` flag has no consumer",
+      "body": "The new `stale` metadata returned by `readWithMetadata` (`src/cache.ts:5-6`) is read by nothing — `loadProfile` is the only caller of `cache.get` and ignores it, so stale entries are served exactly like fresh ones. If refresh-on-stale handling is planned for a follow-up, fine; otherwise the flag is dead surface on this contract.",
+      "severity": "P3",
+      "location": {
+        "path": "src/cache.ts",
+        "side": "RIGHT",
+        "start": 5,
+        "end": 6
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR changes `Cache.get` in `src/cache.ts` to return staleness metadata: instead of `Promise<string | null>` backed by `store.read(key)`, it now returns `Promise<{ value: string; stale: boolean } | null>` backed by `store.readWithMetadata(key)`. The cache-miss representation (`null`) is preserved, and `loadProfile` in `src/profile.ts` is re-touched but its logic is textually unchanged.\n\nThe intent — surfacing staleness while preserving contracts — is reasonable, but the return-type change breaks the only caller: `loadProfile` still passes the cache result directly to `JSON.parse`, which now receives an `{ value, stale }` object on every cache hit. That contract break is blocking; the rest of the change is sound.\n\n## Verification\n\nSkipped — no user-level `verificationBaselines` are configured, so `pr_review_verify` (`action: list`) reported verification disabled and no baseline was run. Note: baseline execution runs PR code unsandboxed (supervision covers only the original POSIX process group); an external sandbox/container wrapper is recommended for untrusted PRs if verification is enabled later. Findings above were validated directly against the diff and the head checkout instead.\n\n## Findings\n\n### [P1] Parse `cached.value` instead of the `{ value, stale }` wrapper\n**Severity:** P1\n**Rationale:** Requires any cache hit. `Cache.get` now returns `{ value: string; stale: boolean } | null` (`src/cache.ts:5-6`), so on a hit `cached` is a truthy object and `src/profile.ts:19` executes `JSON.parse(cached)` with a non-string. This is a TypeScript type error, and in emitted JavaScript `JSON.parse` coerces the object to `\"[object Object]\"` and throws `SyntaxError`, so `loadProfile` rejects instead of returning the cached profile. Fix: `if (cached) return JSON.parse(cached.value);`.\n**Location:** `src/profile.ts:19-19 RIGHT`\n\n### [P3] Confirm intended: new `stale` flag has no consumer\n**Severity:** P3\n**Rationale:** The new `stale` metadata returned by `readWithMetadata` (`src/cache.ts:5-6`) is read by nothing — `loadProfile` is the only caller of `cache.get` and ignores it, so stale entries are served exactly like fresh ones. If refresh-on-stale handling is planned for a follow-up, fine; otherwise the flag is dead surface on this contract.\n**Location:** `src/cache.ts:5-6 RIGHT`\n\n## Lane completeness\n\nThe `conventions-maintainability` pass failed on first dispatch (transient upstream server overload); it was rerun individually with the same tier and tool policy and completed successfully, so its evidence is included. All requested lanes completed.\n\n## Strengths and notes\n\n- Small, focused diff; the miss contract (`null`) and the async API shape are preserved.\n- The new return type honestly declares the richer `readWithMetadata` result rather than hiding it.\n- **Correctness:** one blocking defect — the P1 cache-hit break above; `overall_correctness` is \"patch is incorrect\" until `cached.value` is parsed. No provable stale-refresh regression was found (no `store` implementation exists to compare old vs. new stale semantics).\n- **Security:** no security regressions in the changed code.\n- **Performance:** no resource, allocation, or I/O regressions introduced."
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "313da74629edb692f24ce0b6",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P0] Return the declared `id` field instead of `userId`",
+      "body": "The changed line returns an object that cannot satisfy the declared return type. `User` requires `id: string` and has no `userId` property, so under standard TypeScript type-checking this file fails to compile regardless of configuration: missing required property `id` (TS2741) and excess property `userId` on the literal (TS2353) — missing-property errors are unconditional, not strictness-dependent. Even if type errors were bypassed by a transpile-only pipeline, every successful `loadUser` call would return a shape violating its exported contract, leaving `user.id` `undefined` for all consumers. This also contradicts the PR's stated intent of \"preserving existing contracts.\" Fix by restoring `id: row.id`, or — if the rename is intentional — updating `export type User` (and any consumers) in the same change.",
+      "severity": "P0",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 11
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis one-line PR changes `loadUser` in `src/users.ts` to return `{ userId: row.id, name: row.display_name }` instead of `{ id: row.id, name: row.display_name }`. The PR description says it refines behavior \"while preserving existing contracts,\" but the exported type contract is left untouched.\n\nThat creates a direct contradiction: `export type User = { id: string; name: string };` and the declared return type `Promise<User>` still require `id`, while the returned object literal now provides `userId` and omits `id`. The lookup, not-found error path, and display-name mapping are otherwise unchanged.\n\n## Verification\n\nVerification was not run: `pr_review_verify` discovery reported verification is disabled because no user-level `verificationBaselines` are configured, so no baseline name was applicable. Note that baseline execution runs PR code unsandboxed (network/filesystem access is not restricted; lifecycle supervision only signals the original POSIX process group), which is one reason it requires an explicit user-level opt-in. Findings below were instead validated by direct source reads of `src/users.ts` (the repository contains exactly this one file; no other callers or tests exist).\n\n## Findings\n\n### [P0] Return the declared `id` field instead of `userId`\n**Severity:** P0\n**Rationale:** The changed line returns an object that cannot satisfy the declared return type. `User` requires `id: string` and has no `userId` property, so under standard TypeScript type-checking this file fails to compile regardless of configuration: missing required property `id` (TS2741) and excess property `userId` on the literal (TS2353) — missing-property errors are unconditional, not strictness-dependent. Even if type errors were bypassed by a transpile-only pipeline, every successful `loadUser` call would return a shape violating its exported contract, leaving `user.id` `undefined` for all consumers. This also contradicts the PR's stated intent of \"preserving existing contracts.\" Fix by restoring `id: row.id`, or — if the rename is intentional — updating `export type User` (and any consumers) in the same change.\n**Location:** `src/users.ts:11 RIGHT`\n\n## Lane completeness\n\nFive of six requested lanes completed: `overview`, `conventions-maintainability`, `correctness`, `correctness-contracts`, and `security-performance`. The `performance-resources` lane returned `partial` twice (initial batch and a same-policy rerun) with retained raw evidence \"NO FINDINGS\"; it was covered inline — a single object-key rename adds no allocations, I/O, unbounded work, or ownership/cleanup change, so no performance/resource finding exists.\n\n## Strengths and notes\n\n- Minimal, focused diff with clean separation of the lookup, error, and mapping concerns already in place; the not-found guard and `display_name` mapping are preserved.\n- Correctness (state/concurrency), security, and performance lanes found no additional issues in the changed lines.\n\nAll requested lanes completed or were covered inline; one P0 blocking finding remains."
+}

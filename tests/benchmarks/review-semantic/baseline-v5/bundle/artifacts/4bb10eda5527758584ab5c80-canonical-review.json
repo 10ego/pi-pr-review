@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "4bb10eda5527758584ab5c80",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Ignore abort errors from superseded searches",
+      "body": "Every call to `search()` aborts the previous request via `this.active?.abort()` (line 21) and issues a new one with a fresh signal. When the API honors `AbortSignal` (the standard contract implied by passing the signal), the superseded request's promise rejects with an `AbortError`, and the new catch block now calls `this.renderError(error)` for it. Expected cancellation therefore renders as a failure whenever a user triggers a second search before the first completes — flashing an error state that may also overwrite the newer search's UI depending on settlement order. Guard the catch, e.g. return early when `this.active.signal.aborted` or `error.name === 'AbortError'`.",
+      "severity": "P2",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 26,
+        "end": 27
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nPR #1 updates `SearchController.search` in `src/search.ts` to wrap the API call and result rendering in a `try/catch`, routing failures through `this.renderError(error)` instead of letting rejections propagate. The existing request-supersession flow (`this.active?.abort()` + fresh `AbortController` per call) is unchanged, and the success path behaves identically to before.\n\nThis is a reasonable hardening of an otherwise unguarded `await`, but the new catch treats *every* rejection as a renderable error — including the `AbortError` rejections this controller itself produces whenever a newer search supersedes an in-flight one. That leaves one real, non-blocking correctness edge case (below). No blocking defects were found.\n\n## Verification\n\nVerification did not run: it is disabled because no user-level `verificationBaselines` profiles are configured (`pr_review_verify` list returned `enabled: false`, no baselines). Disclosure: baseline execution would run PR code unsandboxed (filesystem/network) with lifecycle supervision limited to the original POSIX process group; use an external sandbox or container wrapper for untrusted PRs.\n\n## Findings\n\n### [P2] Ignore abort errors from superseded searches\n**Severity:** P2\n**Rationale:** Every call to `search()` aborts the previous request via `this.active?.abort()` (line 21) and issues a new one with a fresh signal. When the API honors `AbortSignal` (the standard contract implied by passing the signal), the superseded request's promise rejects with an `AbortError`, and the new catch block now calls `this.renderError(error)` for it. Expected cancellation therefore renders as a failure whenever a user triggers a second search before the first completes — flashing an error state that may also overwrite the newer search's UI depending on settlement order. Guard the catch, e.g. return early when `this.active.signal.aborted` or `error.name === 'AbortError'`.\n**Location:** `src/search.ts:26-27 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Preserves the existing cancel-on-new-search behavior and keeps the success path (`render`) unchanged.\n- Adds explicit failure handling instead of leaving API rejections unhandled.\n\nCorrectness: one P2 edge case above; otherwise logic is sound. Security: no concerns in the changed lines. Performance: no regressions.\n\nNotes: `search()` previously returned a rejected promise on API failure and now resolves after rendering the error. No callers of `search()` exist in the repository to be affected, and routing errors to `renderError` looks intentional — but if external consumers rely on the rejection, consider rethrowing after rendering."
+}

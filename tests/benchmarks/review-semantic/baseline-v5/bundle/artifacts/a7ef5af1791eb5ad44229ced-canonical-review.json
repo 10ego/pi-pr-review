@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "a7ef5af1791eb5ad44229ced",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P0] Restore the `RequestOptions` export deleted from types.ts",
+      "body": "This PR deletes `export interface RequestOptions { timeoutMs: number }` from `src/types.ts`, but `src/client.ts:1` still does `import { RequestOptions, ClientOptions } from \"./types\";` and `src/client.ts:3` still types the parameter as `options: RequestOptions` (then reads `options.timeoutMs`). A repository-wide grep confirms no other module declares or exports `RequestOptions`, so any TypeScript compile or type-check that includes `client.ts` fails with `TS2305: Module './types' has no exported member 'RequestOptions'` — a guaranteed build break independent of input. Either restore the interface/export in `src/types.ts` or retarget the import and the parameter type to wherever the type is meant to live now.",
+      "severity": "P0",
+      "location": {
+        "path": "src/types.ts",
+        "side": "LEFT",
+        "start": 1,
+        "end": 1
+      }
+    },
+    {
+      "title": "[nit] Drop the unused `ClientOptions` import",
+      "body": "The rewritten import at `src/client.ts:1` adds `ClientOptions`, but nothing in `client.ts` references it — the file only uses `RequestOptions`. Unless a follow-up change in this PR is meant to consume it, remove it to keep the import list accurate (most lint configs flag this).",
+      "severity": "nit",
+      "location": {
+        "path": "src/client.ts",
+        "side": "RIGHT",
+        "start": 1,
+        "end": 1
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR trims `src/types.ts` by deleting the `RequestOptions` interface (which carried `timeoutMs: number`) and touches `src/client.ts` to import `ClientOptions` alongside `RequestOptions`. The stated intent is to \"refine behavior while preserving existing contracts.\"\n\nIn practice the opposite happens: the only definition of `RequestOptions` is removed while `client.ts` still imports it and types its `request(path, options)` parameter with it, so the module graph no longer type-checks. The runtime body of `request` is otherwise unchanged.\n\n## Verification\n\nVerification was skipped: `pr_review_verify` discovered no configured user-level verification baselines (verification is disabled). Note that baseline execution, when enabled, runs PR code unsandboxed and supervises only the original POSIX process group; an external sandbox/container wrapper is recommended for untrusted PRs. Validation was instead performed by direct source inspection of both changed files and a repository-wide grep for the affected symbols.\n\n## Findings\n\n### [P0] Restore the `RequestOptions` export deleted from types.ts\n**Severity:** P0\n**Rationale:** This PR deletes `export interface RequestOptions { timeoutMs: number }` from `src/types.ts`, but `src/client.ts:1` still does `import { RequestOptions, ClientOptions } from \"./types\";` and `src/client.ts:3` still types the parameter as `options: RequestOptions` (then reads `options.timeoutMs`). A repository-wide grep confirms no other module declares or exports `RequestOptions`, so any TypeScript compile or type-check that includes `client.ts` fails with `TS2305: Module './types' has no exported member 'RequestOptions'` — a guaranteed build break independent of input. Either restore the interface/export in `src/types.ts` or retarget the import and the parameter type to wherever the type is meant to live now.\n**Location:** `src/types.ts:1 LEFT`\n\n### [nit] Drop the unused `ClientOptions` import\n**Severity:** nit\n**Rationale:** The rewritten import at `src/client.ts:1` adds `ClientOptions`, but nothing in `client.ts` references it — the file only uses `RequestOptions`. Unless a follow-up change in this PR is meant to consume it, remove it to keep the import list accurate (most lint configs flag this).\n**Location:** `src/client.ts:1 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Small, focused diff confined to the type and client modules, with the runtime behavior of `request` deliberately left intact.\n- Correctness: broken import/export contract — `client.ts` cannot compile against the post-PR `types.ts` (P0 above).\n- Security: no security regressions introduced by the changed lines.\n- Performance: no performance or resource concerns; the change is type-surface only."
+}

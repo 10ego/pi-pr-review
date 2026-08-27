@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "5192c5cfa6c2b077a506dfa9",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Update `loadProfile` to parse `cached.value` after the cache return-type change",
+      "body": "`src/cache.ts:5-6` changes `get()` to return `{ value: string; stale: boolean } | null`, but the caller in `src/profile.ts:19` still executes `JSON.parse(cached)` on the whole object. `JSON.parse` requires a string: in a transpile-only build, every non-null profile cache hit coerces the object to `\"[object Object]\"` and throws a `SyntaxError`; under `tsc` type-checking it is a compile error. Fix the caller, e.g. `return JSON.parse(cached.value);`, and decide whether `cached.stale` should influence the hit (the flag is currently read by no one).",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    }
+  ],
+  "markdown": "No `tsconfig.json` or `package.json` exists — only `src/` — so there's no evidence of a `tsc` gate; the break manifests as a runtime `SyntaxError` on cache hits (P1, blocking) rather than a provable P0 compile failure. Validation is complete: the P1 candidate is confirmed against source, all other lenses are clean, and the temp diff is removed.\n\n# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR changes `Cache.get` to return freshness metadata: the signature goes from `Promise<string | null>` to `Promise<{ value: string; stale: boolean } | null>`, backed by `this.store.readWithMetadata(key)` instead of `this.store.read(key)`. `src/profile.ts` re-touches its cache-hit line without adapting it.\n\nDespite the PR description (\"preserving existing contracts\"), the return contract of `get()` did change, and its only caller, `loadProfile()`, still consumes the result as a string. That mismatch breaks every non-null cache hit, so the patch cannot merge as-is.\n\n## Verification\n\nSkipped — verification is disabled: no user-level `verificationBaselines` profiles are configured for this repository. (Baseline execution runs unsandboxed PR code and requires an explicit user-level opt-in; none exists.)\n\n## Findings\n\n### [P1] Update `loadProfile` to parse `cached.value` after the cache return-type change\n**Severity:** P1\n**Rationale:** `src/cache.ts:5-6` changes `get()` to return `{ value: string; stale: boolean } | null`, but the caller in `src/profile.ts:19` still executes `JSON.parse(cached)` on the whole object. `JSON.parse` requires a string: in a transpile-only build, every non-null profile cache hit coerces the object to `\"[object Object]\"` and throws a `SyntaxError`; under `tsc` type-checking it is a compile error. Fix the caller, e.g. `return JSON.parse(cached.value);`, and decide whether `cached.stale` should influence the hit (the flag is currently read by no one).\n**Location:** `src/profile.ts:19 RIGHT`\n\n## Lane completeness\n\nThe `correctness` and `performance-resources` lanes first returned `partial`; both preserved raw \"NO FINDINGS\" evidence. `correctness` completed cleanly on rerun (NO FINDINGS). `performance-resources` was partial again on rerun with the same raw output, so I covered that lens inline: the diff introduces no loops, allocations, I/O changes, or resource-ownership changes — no findings. All other lanes completed.\n\n## Strengths and notes\n\n- Exposing cache freshness metadata is a reasonable capability, and the async shape and nullability contract are preserved.\n- Correctness: the P1 above is the only defect; the fix is a one-line caller update (plus a `stale` policy decision).\n- Security: no security regressions in the changed lines; the `JSON.parse` trust surface is unchanged once the caller reads `cached.value`.\n- Performance: no performance or resource concerns introduced."
+}

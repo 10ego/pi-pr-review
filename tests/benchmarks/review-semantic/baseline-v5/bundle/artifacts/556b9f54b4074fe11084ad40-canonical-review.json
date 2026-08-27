@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "556b9f54b4074fe11084ad40",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Return the required `id` property instead of `userId`",
+      "body": "`loadUser` is declared to return `Promise<User>`, and `export type User = { id: string; name: string }` requires an `id` field (`src/users.ts:7`). The changed return line produces `{ userId: row.id, name: row.display_name }`, so the object no longer satisfies the declared type: under `tsc` this is a compile error (missing required property `id`, excess property `userId`), and in transpile-only or plain-JS consumers every `user.id` access resolves to `undefined` at runtime for any successfully loaded user. Any caller keyed on `User.id` — comparisons, lookups, serialization — silently breaks. Renaming the key back to `id` (or, if a rename is truly intended, updating the `User` type and all consumers in the same change) restores the contract the PR claims to preserve.",
+      "severity": "P1",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 11
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis one-line PR modifies `loadUser` in `src/users.ts` so the returned object now uses the key `userId` instead of `id`, while the DB lookup, missing-user error path, and `name` mapping stay unchanged. The PR describes itself as \"refine behavior while preserving existing contracts,\" but the new key directly violates the declared `User` contract, so the stated intent is not preserved. The lookup/error behavior itself is sound; the defect is confined to the returned shape.\n\n## Verification\nVerification was skipped: no user-level `verificationBaselines` are configured (`pr_review_verify` reported verification disabled), so no trusted baseline was applicable. Note that when enabled, such baselines execute PR code unsandboxed (lifecycle supervision covers only the original POSIX process group); an external sandbox/container wrapper is recommended for untrusted PRs. All findings below are validated directly against the diff and source instead.\n\n## Findings\n\n### [P1] Return the required `id` property instead of `userId`\n**Severity:** P1\n**Rationale:** `loadUser` is declared to return `Promise<User>`, and `export type User = { id: string; name: string }` requires an `id` field (`src/users.ts:7`). The changed return line produces `{ userId: row.id, name: row.display_name }`, so the object no longer satisfies the declared type: under `tsc` this is a compile error (missing required property `id`, excess property `userId`), and in transpile-only or plain-JS consumers every `user.id` access resolves to `undefined` at runtime for any successfully loaded user. Any caller keyed on `User.id` — comparisons, lookups, serialization — silently breaks. Renaming the key back to `id` (or, if a rename is truly intended, updating the `User` type and all consumers in the same change) restores the contract the PR claims to preserve.\n**Location:** `src/users.ts:11-11 RIGHT`\n\n## Lane completeness\nThe `correctness` and `security-performance` lanes initially returned `partial` status with NO FINDINGS raw evidence; both were rerun individually with the same tier and tool policy and completed with NO FINDINGS. All requested lanes completed.\n\n## Strengths and notes\n- Small, focused diff; the DB lookup and missing-user error path are correctly preserved.\n- Correctness: one confirmed blocking contract violation (`userId` vs required `id`); no state/concurrency issues found.\n- Security: no injection, auth, or data-exposure concerns introduced by the change.\n- Performance: no resource, allocation, or scalability regressions."
+}

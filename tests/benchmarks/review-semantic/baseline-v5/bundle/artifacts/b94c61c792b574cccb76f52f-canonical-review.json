@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "b94c61c792b574cccb76f52f",
+  "publication": {
+    "artifact": "raw_body_only",
+    "fallback": true
+  },
+  "findings": [],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR fixes lock lifecycle management in `src/lock.ts`. Previously, `withLock` acquired a lock via `await locks.acquire(key)` and then did `return work();` — returning the promise without awaiting it and never releasing the lock, so the acquired lock leaked even on the success path.\n\nThe change wraps the work in `try { return await work(); } finally { release(); }`, so the lock is held for the full duration of the work and always released when the promise settles, on both success and rejection, while preserving the generic return-value contract. The change is small, well-scoped, and correct.\n\n## Verification\n\nVerification was not run: no user-level `verificationBaselines` profiles are configured, so `pr_review_verify` is disabled. Note that baseline execution runs PR code unsandboxed (lifecycle supervision covers only the original POSIX process group); an external sandbox/container wrapper is recommended for untrusted PRs if verification is enabled later.\n\n## Findings\n\nNo findings.\n\n## Lane completeness\n\nAll requested lanes completed. The `security-performance` lane initially returned `partial`; its raw evidence showed no findings, and a rerun of that single pass completed cleanly, also with no findings.\n\n## Strengths and notes\n\n- Guarantees lock release on both the success and failure paths, fixing a real resource leak where the lock was never released.\n- Awaiting `work()` before returning ensures the lock is held for the full critical section rather than being decoupled from the caller's promise chain.\n- Preserves the existing generic `withLock<T>` return contract; no caller-visible behavior change beyond correct release timing.\n\n**Correctness:** patch is correct — the try/finally pattern is the canonical lock-wrapper idiom. **Security:** no security-relevant changes. **Performance:** removes a lock-leak/regression risk rather than introducing contention."
+}

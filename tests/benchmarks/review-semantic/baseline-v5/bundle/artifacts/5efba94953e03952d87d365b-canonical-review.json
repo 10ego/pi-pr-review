@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "5efba94953e03952d87d365b",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Reject NaN, Infinity, fractional, and unsafe timeout values",
+      "body": "`Number(value)` returns `NaN` for any non-numeric string, and `NaN <= 0` evaluates to `false`, so the validation passes and `NaN` is returned as a timeout (`src/options.ts:11-12`). The same hole admits `\"Infinity\"` and `\"1e309\"` (→ `Infinity`), `\"1.5\"` (→ 1.5), and `\"9007199254740993\"` (unsafe integer). The removed `!Number.isSafeInteger(timeout)` guard previously rejected every one of these with `\"invalid timeout\"`. A validation function whose entire purpose is to reject bad input now silently accepts it, and the poison values propagate: `NaN` defeats all downstream numeric comparisons, and Node's `setTimeout` coerces `NaN`/`Infinity` delays to 1 ms, making deadlines fire immediately instead of the configuration error surfacing. Restore a guard equivalent to `Number.isSafeInteger(timeout) && timeout > 0` (or `Number.isFinite` plus an integer check).",
+      "severity": "P1",
+      "location": {
+        "path": "src/options.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 12
+      }
+    },
+    {
+      "title": "[P2] Preserve base-10 parseInt semantics for accepted input forms",
+      "body": "`Number()` accepts and reinterprets string forms that `Number.parseInt(value, 10)` did not (`src/options.ts:11`): `\"0x10\"` now returns 16 (previously threw, since radix-10 parsing yields 0), `\"1e3\"` now returns 1000 (previously 1, because `parseInt` stopped at `e`), `\"1.5\"` now returns 1.5 (previously 1), and `\"12ms\"` now returns `NaN` (previously 12). Even after restoring a safe-integer guard, these interpretation changes remain and contradict the PR's stated goal of \"preserving existing contracts\". Either keep `Number.parseInt(value, 10)` for identical accepted-input semantics, or deliberately document the new accepted grammar (whole-string numeric, including exponent/hex forms).",
+      "severity": "P2",
+      "location": {
+        "path": "src/options.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 11
+      }
+    },
+    {
+      "title": "[P3] Add tests covering the changed parsing contract",
+      "body": "`parseTimeout` is exported but has no tests (and no current callers) in the repository, so the rewritten validation has no executable specification. A small table-driven test over `undefined`, valid positive integers, zero/negative, non-numeric strings, non-finite strings (`\"Infinity\"`, `\"1e309\"`), fractional, and prefix-garbage inputs (`\"12ms\"`) would have caught the P1 regression and would lock the intended contract for future changes.",
+      "severity": "P3",
+      "location": {
+        "path": "src/options.ts",
+        "side": "RIGHT",
+        "start": 11,
+        "end": 12
+      }
+    }
+  ],
+  "markdown": "All candidates are now validated against source. The changed lines are `src/options.ts:11-12` (RIGHT side); the function is exported with no other callers or tests in the repo. Merging the six lanes' overlapping candidates yields three confirmed findings: the dropped `Number.isSafeInteger` guard (reported by five lanes), the `Number` vs `parseInt` semantics change, and the missing test coverage.\n\n# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis PR rewrites timeout parsing in `src/options.ts`: `Number.parseInt(value, 10)` plus a `Number.isSafeInteger` guard is replaced by `Number(value)` with only a `timeout <= 0` check. The PR description claims to \"refine behavior while preserving existing contracts.\"\n\nThe intent is plausible — `Number()` evaluates the whole string instead of silently accepting a numeric prefix — but the implementation breaks the function's core contract. The `<= 0` comparison cannot reject `NaN`, `Infinity`, fractional, or unsafe-integer results, so invalid inputs that previously threw are now returned as valid timeouts. A secondary semantics change (`Number` accepting hex/exponent/decimal forms that base-10 `parseInt` did not) also contradicts the stated \"preserving existing contracts\" goal.\n\n## Verification\nVerification was skipped: the discovery call (`action: list`) reported verification is disabled because no user-level `verificationBaselines` are configured, so no baseline was selected or run. Note that baseline execution runs PR code unsandboxed (filesystem/network) with supervision limited to the original POSIX process group; an external sandbox or container wrapper is recommended for untrusted PRs when verification is enabled.\n\n## Findings\n\n### [P1] Reject NaN, Infinity, fractional, and unsafe timeout values\n**Severity:** P1\n**Rationale:** `Number(value)` returns `NaN` for any non-numeric string, and `NaN <= 0` evaluates to `false`, so the validation passes and `NaN` is returned as a timeout (`src/options.ts:11-12`). The same hole admits `\"Infinity\"` and `\"1e309\"` (→ `Infinity`), `\"1.5\"` (→ 1.5), and `\"9007199254740993\"` (unsafe integer). The removed `!Number.isSafeInteger(timeout)` guard previously rejected every one of these with `\"invalid timeout\"`. A validation function whose entire purpose is to reject bad input now silently accepts it, and the poison values propagate: `NaN` defeats all downstream numeric comparisons, and Node's `setTimeout` coerces `NaN`/`Infinity` delays to 1 ms, making deadlines fire immediately instead of the configuration error surfacing. Restore a guard equivalent to `Number.isSafeInteger(timeout) && timeout > 0` (or `Number.isFinite` plus an integer check).\n**Location:** `src/options.ts:11-12 RIGHT\n\n### [P2] Preserve base-10 parseInt semantics for accepted input forms\n**Severity:** P2\n**Rationale:** `Number()` accepts and reinterprets string forms that `Number.parseInt(value, 10)` did not (`src/options.ts:11`): `\"0x10\"` now returns 16 (previously threw, since radix-10 parsing yields 0), `\"1e3\"` now returns 1000 (previously 1, because `parseInt` stopped at `e`), `\"1.5\"` now returns 1.5 (previously 1), and `\"12ms\"` now returns `NaN` (previously 12). Even after restoring a safe-integer guard, these interpretation changes remain and contradict the PR's stated goal of \"preserving existing contracts\". Either keep `Number.parseInt(value, 10)` for identical accepted-input semantics, or deliberately document the new accepted grammar (whole-string numeric, including exponent/hex forms).\n**Location:** `src/options.ts:11 RIGHT`\n\n### [P3] Add tests covering the changed parsing contract\n**Severity:** P3\n**Rationale:** `parseTimeout` is exported but has no tests (and no current callers) in the repository, so the rewritten validation has no executable specification. A small table-driven test over `undefined`, valid positive integers, zero/negative, non-numeric strings, non-finite strings (`\"Infinity\"`, `\"1e309\"`), fractional, and prefix-garbage inputs (`\"12ms\"`) would have caught the P1 regression and would lock the intended contract for future changes.\n**Location:** `src/options.ts:11-12 RIGHT`\n\n## Lane completeness\nAll requested lanes completed.\n\n## Strengths and notes\n- Preserves the existing `undefined` default of 5000 ms and the zero/negative rejection.\n- Evaluating the full input string rather than a numeric prefix is a reasonable hardening goal — it is only the guard removal that makes it unsound.\n- **Correctness:** invalid timeout strings now yield `NaN`/`Infinity`/fractional return values instead of throws (P1 above).\n- **Security:** if timeout values originate from user/attacker-controlled configuration, non-finite values can effectively disable deadline enforcement instead of being rejected.\n- **Performance:** `NaN`/`Infinity` delays are coerced by `setTimeout` to ~1 ms, which can turn retry or polling waits into tight loops."
+}

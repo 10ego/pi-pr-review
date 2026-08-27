@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "f5916c78d6c0f689cfcce9b6",
+  "caseId": "compile-export-removal",
+  "mode": "full",
+  "repetition": 1,
+  "startedAtUtc": "2026-08-27T08:53:42.737Z",
+  "elapsedMs": 446455.645,
+  "timing": {
+    "parentValidationSynthesisMs": 387719.587
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 12298.520167350769,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 21417.103958129883,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 18224.45787525177,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 42591.10383319855,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 13910.48133468628,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "partial",
+      "elapsedMs": 14524.346041679382,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P0] Restore the `RequestOptions` export removed from types.ts",
+      "body": "`src/client.ts` line 1 imports `RequestOptions` from `\"./types\"`, and `request(path: string, options: RequestOptions)` on line 3 still uses it, but this PR deletes the only declaration of that interface from `src/types.ts`. Since the repository contains no other modules or ambient declarations, every TypeScript compilation/type-check fails with TS2305 (\"Module './types' has no exported member 'RequestOptions'\"), regardless of input. This directly contradicts the PR's stated goal of preserving existing contracts. Either restore the export or complete the migration end-to-end — note that simply swapping to `ClientOptions` would also fail because `request()` reads `options.timeoutMs`, which `ClientOptions` does not define.",
+      "severity": "P0",
+      "location": {
+        "path": "src/types.ts",
+        "side": "LEFT",
+        "start": 1,
+        "end": 1
+      }
+    },
+    {
+      "title": "[nit] Drop the unused `ClientOptions` import in client.ts",
+      "body": "The import added on line 1 of `src/client.ts` is never referenced anywhere in the file. It is dead code as written (and would trip `noUnusedLocals` or unused-import lint rules in stricter setups). If it is groundwork for an intended signature change, that change is not in this diff; otherwise remove it.",
+      "severity": "nit",
+      "location": {
+        "path": "src/client.ts",
+        "side": "RIGHT",
+        "start": 1,
+        "end": 1
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/f5916c78d6c0f689cfcce9b6-lane-artifacts.json",
+      "sha256": "2c71e8ea3b9839c94df3a9debbf0c747bfd62d34ebd7761f2e36e6a014e0df65",
+      "bytes": 230477
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/f5916c78d6c0f689cfcce9b6-canonical-review.json",
+      "sha256": "16f44b355a19bb56f127c7438546b810bd05577d8cdeb68141cec4044591a3fa",
+      "bytes": 5789
+    }
+  ]
+}

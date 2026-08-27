@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "e7fbb746bbe8792d27c31d15",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore tenant scoping in the document lookup",
+      "body": "Any authenticated user of tenant A can pass a document `id` belonging to tenant B and `findFirst({ where: { id } })` will return that tenant's document instead of `null`. The remaining `ctx.user` check enforces authentication only — ownership is no longer enforced anywhere (after this diff, `tenantId` appears nowhere in `src/`). The removed predicate `tenantId: ctx.user.tenantId` is directly in the diff, so the regression is introduced by this PR and enables cross-tenant reads (IDOR) under realistic inputs. Restore the predicate inside the `where` clause.",
+      "severity": "P1",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 33,
+        "end": 33
+      }
+    }
+  ],
+  "markdown": "Validation complete. The current file confirms the hunk numbering exactly: `      id,` sits at new line 33, and `tenantId` no longer appears anywhere in `src/` — the base query scoped by `id` + `ctx.user.tenantId`, the head query scopes by `id` alone, and `ctx.user` is now used only for the null check (authentication), not tenant ownership. Both heavy lanes' duplicate P1 candidates merge into one confirmed finding; the overview pass reported no minor candidates, and the correctness/performance lanes found nothing. Diff lease removed.\n\n# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR modifies `getDocument` in `src/documents.ts` by removing the `tenantId: ctx.user.tenantId` predicate from the `db.documents.findFirst` `where` clause, leaving the lookup scoped by document `id` only. The authentication guard (`if (!ctx.user) throw new UnauthorizedError()`) and the `id` filter are unchanged.\n\nDespite the PR description (\"preserving existing contracts\"), this changes the lookup's contract from tenant-scoped to global: the base query enforced that a returned document belonged to the caller's tenant, the head query does not. That is a cross-tenant data-exposure regression, so the change cannot merge as-is.\n\n## Verification\n\nVerification was disabled: no user-level `verificationBaselines` profiles are configured, so no trusted baseline ran (`pr_review_verify` list returned none applicable). Note: baseline execution would have run this PR's code unsandboxed (POSIX process-group supervision only, no filesystem/network sandbox); an external sandbox/container wrapper is recommended for untrusted PRs. This did not reduce review coverage — all five lanes ran and the finding was validated directly against source.\n\n## Findings\n\n### [P1] Restore tenant scoping in the document lookup\n**Severity:** P1\n**Rationale:** Any authenticated user of tenant A can pass a document `id` belonging to tenant B and `findFirst({ where: { id } })` will return that tenant's document instead of `null`. The remaining `ctx.user` check enforces authentication only — ownership is no longer enforced anywhere (after this diff, `tenantId` appears nowhere in `src/`). The removed predicate `tenantId: ctx.user.tenantId` is directly in the diff, so the regression is introduced by this PR and enables cross-tenant reads (IDOR) under realistic inputs. Restore the predicate inside the `where` clause.\n**Location:** `src/documents.ts:33-33 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- The change is minimal and localized, and the existing authentication guard is preserved.\n- **Correctness:** no state/ordering/concurrency defects found beyond the scoping issue; note that `ctx.user.tenantId` becomes unused by this function once scoping is restored in name only — the field must be actively restored, not just referenced.\n- **Security:** the single blocking issue above is an authorization/tenant-isolation break; no injection, secret-exposure, or other security regressions found in the changed lines.\n- **Performance:** no resource, I/O, or query-plan regressions identified by the dedicated lane."
+}

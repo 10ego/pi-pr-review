@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "a9f6c2e0e28c58316773f818",
+  "caseId": "sharded-registry-contract",
+  "mode": "full",
+  "repetition": 1,
+  "startedAtUtc": "2026-08-27T10:21:48.871Z",
+  "elapsedMs": 630729.09,
+  "timing": {
+    "parentValidationSynthesisMs": 399153.673
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview-shard-1",
+        "overview-shard-2",
+        "conventions-maintainability-shard-1",
+        "conventions-maintainability-shard-2",
+        "correctness-shard-1",
+        "correctness-shard-2",
+        "correctness-contracts-shard-1",
+        "correctness-contracts-shard-2",
+        "security-performance-shard-1",
+        "security-performance-shard-2",
+        "performance-resources-shard-1",
+        "performance-resources-shard-2"
+      ],
+      "shardCount": 2,
+      "maxParallel": 12
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview-shard-1",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 18195.321040153503,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "overview-shard-2",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 11486.167832374573,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability-shard-1",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 22210.094124794006,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "conventions-maintainability-shard-2",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 16306.013415336609,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness-shard-1",
+      "lens": "correctness",
+      "status": "partial",
+      "elapsedMs": 37599.517457962036,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-shard-2",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 37804.29462432861,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts-shard-1",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 160326.08308410645,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts-shard-2",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 54446.41358375549,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance-shard-1",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 96482.3855419159,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance-shard-2",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 107260.74425029755,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources-shard-1",
+      "lens": "performance-resources",
+      "status": "partial",
+      "elapsedMs": 93396.52362537384,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources-shard-2",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 49928.060916900635,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Update resolve() for Registry.lookup's versioned return shape",
+      "body": "`Registry.lookup` now returns `{ payload: string; revision: number } | null` (`src/registry.ts:2-3`), but `src/resolve.ts:3` still does `if (cached) return JSON.parse(cached);`. On any cache hit the truthy envelope object is coerced to `\"[object Object]\"` and `JSON.parse` throws `SyntaxError` — every previously-working cached lookup path now fails instead of returning data, and the throw happens before the `remote.resolve` fallback. Under TypeScript this is also a type error (`JSON.parse` requires `string`). Fix by unwrapping the payload, e.g. `JSON.parse(cached.payload)`, or by keeping `lookup`'s string contract.",
+      "severity": "P1",
+      "location": {
+        "path": "src/resolve.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P2] Store implementing only read() no longer works with lookup",
+      "body": "The diff swaps `this.store.read(key)` for `this.store.readVersioned(key)` in `Registry.lookup` (`src/registry.ts:3`). The repo contains no store definition or adapter providing `readVersioned`, so any store wired in with the previously sufficient `read(key)` interface now fails every lookup with `TypeError: this.store.readVersioned is not a function`. Either provide a versioned store/adapter in this PR or keep a `read`-based fallback.",
+      "severity": "P2",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P2] Remove ~4,400 duplicated filler comment lines",
+      "body": "`src/registry.ts:4-2203` and `src/resolve.ts:4-2203` add ~2,200 identical numbered \"compatibility note\" comments each (~350 KB, growing each module ~1,500×). They carry no information, bury the real behavioral change at the top of each file (which is how a breaking contract edit hides inside a \"preserve contracts\" PR), and inflate every compile/lint/IDE/checkout scan and any comment-preserving build output. Worth confirming this padding is accidental (e.g. a codegen artifact) rather than intentional.",
+      "severity": "P2",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 4,
+        "end": 6
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/a9f6c2e0e28c58316773f818-lane-artifacts.json",
+      "sha256": "67caaba04728e6ecad21fd1b8ca2bfaba2bccc5a29b9257800833e312ca6ecef",
+      "bytes": 342202
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/a9f6c2e0e28c58316773f818-canonical-review.json",
+      "sha256": "12707d725d421d2ccdc97d35165842989e435492e1f2392bbfc2360e877f289e",
+      "bytes": 6856
+    }
+  ]
+}

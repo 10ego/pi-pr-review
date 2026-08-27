@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "cef38e23fe8e6235fa6e850f",
+  "caseId": "clean-batched-lookup",
+  "mode": "full",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T13:09:24.891Z",
+  "elapsedMs": 712088.702,
+  "timing": {
+    "parentValidationSynthesisMs": 363379.383
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 10742.907833099365,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 20542.673042297363,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "partial",
+      "elapsedMs": 129222.95254135132,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 225736.29154109955,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 32624.19837474823,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 99527.6654996872,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P3] Short-circuit empty input before querying",
+      "body": "Previously `loadUsers([])` resolved to `[]` via `Promise.all([])` without touching the database. The new code unconditionally awaits `findMany({ where: { id: { in: [] } } })`, adding a wasted round trip for an inherently empty result, and on adapters that reject empty `IN` lists (or when the database is unavailable) a call that always succeeded can now reject. A trivial guard restores the old behavior: `if (ids.length === 0) return [];`",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 22,
+        "end": 23
+      }
+    },
+    {
+      "title": "[P3] Confirm `null` is the intended not-found sentinel",
+      "body": "The old implementation returned each `db.users.find(id)` result verbatim; `byId.get(id) ?? null` now normalizes missing rows to `null`. If this adapter's `find` resolves `undefined` for unknown ids, callers distinguishing `undefined` from `null` (e.g. strict `=== undefined` checks) see a changed return contract, despite the PR description stating existing contracts are preserved. `db` is not declared anywhere in this repo (pre-existing), so the previous sentinel cannot be confirmed from source — worth verifying against the actual adapter, or mapping to whatever `find` used to return.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 25,
+        "end": 25
+      }
+    },
+    {
+      "title": "[P3] Confirm the adapter handles large `in` lists",
+      "body": "The change goes from N single-parameter queries to one statement with one bind parameter per unique id, and `ids` is unbounded. Many adapters cap parameters per statement (SQLite ~999 by default, SQL Server 2100); above the cap the single `findMany` fails outright where the per-id version did not. If large input lists are realistic, chunk `uniqueIds` into batches and merge the resulting maps.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 23
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/cef38e23fe8e6235fa6e850f-lane-artifacts.json",
+      "sha256": "3f9c93b39b494fdd3c6cc9c09e0cd4efac648ab76ccba580564c140f1543e267",
+      "bytes": 285594
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/cef38e23fe8e6235fa6e850f-canonical-review.json",
+      "sha256": "8c158bf55daf1839e6709c06869eeb456c812c41f7c19cd36072339c883f2c60",
+      "bytes": 6765
+    }
+  ]
+}

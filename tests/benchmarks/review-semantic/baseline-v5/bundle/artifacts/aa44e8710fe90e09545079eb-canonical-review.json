@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "aa44e8710fe90e09545079eb",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Restore linear-time membership check in removedIds",
+      "body": "The new code evaluates `current.map(candidate => candidate.id).includes(item.id)` inside the `previous.filter(...)` callback (`src/reconcile.ts:41`), rebuilding and linearly scanning an `m`-element array for each of the `n` previous items — O(n×m) time and `n` temporary array allocations, versus the previous O(n+m) `Set`-based lookup this diff removed. Output is identical, but large reconciliations (e.g. disjoint 20k-element inputs) go from milliseconds to seconds of latency and heavy GC pressure. Restoring the precomputed `currentIds` set (or a `Set` built once before the filter) keeps the refactor's shape while preserving linear behavior.",
+      "severity": "P2",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 41
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\nThis PR refactors `removedIds` in `src/reconcile.ts` by replacing the precomputed `Set` of current IDs with an inline `current.map(...).includes(...)` membership check inside the `filter` callback. The returned IDs and filtering semantics are unchanged, so the \"preserving existing contracts\" claim in the description holds for output behavior.\n\nThe only substantiated issue is an algorithmic regression introduced by the rewrite: the membership lookup is now recomputed per element, degrading reconciliation from linear to quadratic time.\n\n## Verification\nVerification was not run: `pr_review_verify` discovery returned no configured user-level baselines (`enabled: false`). Note that when enabled, baselines execute PR code unsandboxed (supervision covers only the original POSIX process group); an external sandbox or container wrapper is recommended for untrusted PRs.\n\n## Findings\n\n### [P2] Restore linear-time membership check in removedIds\n**Severity:** P2\n**Rationale:** The new code evaluates `current.map(candidate => candidate.id).includes(item.id)` inside the `previous.filter(...)` callback (`src/reconcile.ts:41`), rebuilding and linearly scanning an `m`-element array for each of the `n` previous items — O(n×m) time and `n` temporary array allocations, versus the previous O(n+m) `Set`-based lookup this diff removed. Output is identical, but large reconciliations (e.g. disjoint 20k-element inputs) go from milliseconds to seconds of latency and heavy GC pressure. Restoring the precomputed `currentIds` set (or a `Set` built once before the filter) keeps the refactor's shape while preserving linear behavior.\n**Location:** `src/reconcile.ts:41 RIGHT`\n\n## Lane completeness\nAll requested lanes completed.\n\n## Strengths and notes\n- Output contract is fully preserved: the returned removed-ID sequence is byte-for-byte equivalent to the previous implementation, so existing callers and tests are unaffected.\n- The multi-line chained form is readable and idiomatic.\n\nNotes: correctness — semantics unchanged, no state/concurrency/contract defects found; security — no concerns in the changed lines; performance — the P2 quadratic-membership regression above is the one real cost of this rewrite."
+}

