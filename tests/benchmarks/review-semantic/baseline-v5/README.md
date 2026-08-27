@@ -8,7 +8,7 @@ Immutable 48-run diagnostic baseline for `pi-pr-review-semantic-v5`.
 - `bundle/artifacts/`: retained session/lane/process/audit and review envelopes.
 - `report.json`: original strict scorer output; SHA-256 `eaf9a55d7b3831060cc5b7a8c80f619988261f4c7c8a87fe8b6b5ce366fab80a`, retained but superseded for interpretation.
 - `summary.json`: original report identity and per-mode summary.
-- `report-adjudicated.json`: corrected scorer output over the same immutable evidence; SHA-256 `74327260868dfcf60a1d38fde35b24567a0e19783b270b4f8a36af7922875076`, bound to scorer SHA-256 `91ee7021eb9d4a08407344e1b08dc6d48588a5749258eef34b58dd6ea0d843b7`.
-- `summary-adjudicated.json`: corrected report identity and per-mode summary; SHA-256 `be3ed66de12326f5bf0b3ff20fc6e8a583582054f699374a41eb1091e833a030`.
+- `report-adjudicated.json`: corrected scorer output over the same immutable evidence; SHA-256 `b734e6f179c2939e10e56ff9eca983119ce2cf4be5669e3e5ab79475e3af6d92`, bound to scorer SHA-256 `d68a65b6592e37798c1cf0090a0e7d1e9a306510fde4fdf574277bde544746ac`.
+- `summary-adjudicated.json`: corrected report identity and per-mode summary; SHA-256 `06cf4b866a9016bc86c9489e629b32d563aab940e843c4159d0018ccc3f91ce3`.
 
 Both reports are diagnostic and deliberately have `gate.status = "baseline_required"`. No accepted gate was derived from this weak two-repetition baseline. The adjudicated report is authoritative for interpretation; the original demonstrates the preserved correction chain. See `docs/semantic-benchmark-baseline-v5.md`.
