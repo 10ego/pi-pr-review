@@ -72,7 +72,9 @@
           "contradictionPatterns": [
             "RequestOptions\\s+(?:is\\s+)?(?:still\\s+)?exported",
             "(?:compiles?|type-checks?|resolves?)\\s+(?:successfully|correctly|fine)",
-            "\\bnot\\s+(?:missing|removed|broken)\\b"
+            "\\bnot\\s+(?:missing|removed|broken)\\b",
+            "RequestOptions.{0,50}\\b(?:was|is|has)\\s+not\\s+(?:remov|drop|miss)",
+            "\\b(?:compil\\w*|type-check\\w*|resol\\w*)\\s+(?:does|do|did|will|can)\\s+not\\s+(?:fail|break|error)"
           ]
         }
       ]
