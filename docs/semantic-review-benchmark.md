@@ -106,7 +106,7 @@ npm run benchmark:review -- score \
   --output /absolute/evidence/report.json
 ```
 
-Without `--gates`, the report status is `baseline_required`: metrics are valid but cannot accept a topology. The report also emits a configuration fingerprint binding the comparable provider/model/thinking/tool/version plus Node, Pi runtime, source, collector, and effective-config identity. The scorer reports overall and per-mode:
+Without `--gates`, the report status is `baseline_required`: metrics are valid but cannot accept a topology. The report emits both a full configuration fingerprint (including extension/prompt source) and a stable environment fingerprint (models, thinking, tool policy, Pi/Node/Bun, effective config, and collector). Gates bind the environment fingerprint so reviewed topology source changes remain comparable rather than impossible. The scorer reports overall and per-mode:
 
 - P0/P1, P2, per-lens, and cross-file recall;
 - clean-control case false-positive rate and finding count/rate; unmatched findings on seeded-defect cases are reported separately rather than mislabeled as false positives;
@@ -134,7 +134,7 @@ Thresholds are not silently embedded in the scorer. After repeated baseline runs
   "baseline": {
     "reportSha256": "<accepted report SHA-256>",
     "planId": "<exact repeated comparison plan ID>",
-    "configurationFingerprint": "<accepted configuration fingerprint>"
+    "environmentFingerprint": "<accepted environment fingerprint>"
   },
   "thresholds": {
     "modes": {
@@ -179,6 +179,6 @@ Thresholds are not silently embedded in the scorer. After repeated baseline runs
 }
 ```
 
-Those numbers are examples, not accepted project policy. The baseline review must justify the actual values. A gate file is accepted only when it binds the current plan and configuration fingerprint, and it must define an exact threshold object for every planned mode. Each mode is evaluated independently; strong full-mode output cannot hide a balanced-mode regression in pooled metrics. Re-score with both `--gates /path/to/accepted-gates.json` and `--baseline-report /path/to/accepted-baseline-report.json`; the scorer recomputes and verifies the report SHA-256 plus corpus/plan/configuration/result-count bindings before reading thresholds. A threshold failure exits nonzero.
+Those numbers are examples, not accepted project policy. The baseline review must justify the actual values. A gate file is accepted only when it binds the current plan and environment fingerprint, and it must define an exact threshold object for every planned mode. Each mode is evaluated independently; strong full-mode output cannot hide a balanced-mode regression in pooled metrics. Re-score with both `--gates /path/to/accepted-gates.json` and `--baseline-report /path/to/accepted-baseline-report.json`; the scorer recomputes and verifies the report SHA-256 plus corpus/plan/environment/result-count bindings before reading thresholds. A threshold failure exits nonzero.
 
 For topology tuning, derive each per-mode threshold from the bound accepted baseline, require no P0/P1 or cross-file recall loss, bound any P2 regression, reject material clean-control or duplicate increases, and evaluate p50/p95 and variance across repeated runs. An apparent latency win caused by incomplete lanes, fallback publication, missing results, a weaker model/configuration, or reduced semantic recall is not an improvement.

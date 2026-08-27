@@ -386,12 +386,12 @@ export function aggregateScores(corpusInfo, plan, runs) {
 	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
 }
 
-function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint, baselineReport) {
+function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {
 	if (!gates) return { status: "baseline_required", passed: false, failures: ["No accepted baseline gate file was supplied; metrics are diagnostic only."] };
 	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "baseline", "thresholds"]), "gate file schema");
 	invariant(gates.schemaVersion === 1 && gates.corpusId === corpusInfo.corpus.corpusId && gates.corpusSha256 === corpusInfo.sha256 && Number.isFinite(Date.parse(gates.acceptedAtUtc)) && typeof gates.rationale === "string" && gates.rationale.length >= 20, "gate file identity");
-	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "configurationFingerprint"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.configurationFingerprint === configurationFingerprint, "gate baseline binding");
-	invariant(baselineReport && baselineReport.sha256 === gates.baseline.reportSha256 && plain(baselineReport.value) && baselineReport.value.schemaVersion === 1 && baselineReport.value.corpusId === corpusInfo.corpus.corpusId && baselineReport.value.corpusSha256 === corpusInfo.sha256 && baselineReport.value.planId === plan.planId && baselineReport.value.configurationFingerprint === configurationFingerprint && baselineReport.value.resultCount === plan.entries.length, "gate baseline report content/hash binding");
+	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "environmentFingerprint"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.environmentFingerprint === environmentFingerprint, "gate baseline binding");
+	invariant(baselineReport && baselineReport.sha256 === gates.baseline.reportSha256 && plain(baselineReport.value) && baselineReport.value.schemaVersion === 1 && baselineReport.value.corpusId === corpusInfo.corpus.corpusId && baselineReport.value.corpusSha256 === corpusInfo.sha256 && baselineReport.value.planId === plan.planId && baselineReport.value.environmentFingerprint === environmentFingerprint && baselineReport.value.resultCount === plan.entries.length, "gate baseline report content/hash binding");
 	invariant(exactKeys(gates.thresholds, ["modes"]) && plain(gates.thresholds.modes) && JSON.stringify(Object.keys(gates.thresholds.modes).sort()) === JSON.stringify([...plan.modes].sort()), "gate per-mode threshold partition");
 	const thresholdKeys = ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "minimumPerLensRecall", "minimumExactSeverityRate", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate", "maximumP50LatencyMs", "maximumP95LatencyMs"];
 	const failures = [], checkMin = (label, actual, expected) => { if (actual === null || actual < expected) failures.push(`${label} ${actual ?? "n/a"} < ${expected}`); }, checkMax = (label, actual, expected) => { if (actual === null || actual > expected) failures.push(`${label} ${actual ?? "n/a"} > ${expected}`); };
@@ -409,6 +409,9 @@ function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprin
 function comparableConfiguration(run) {
 	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, collectorRuntimeVersion: run.configuration.collectorRuntimeVersion, collectorRuntimeSha256: run.configuration.collectorRuntimeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
 }
+function comparableEnvironment(run) {
+	const configuration = comparableConfiguration(run); delete configuration.extensionSha256; delete configuration.promptSha256; return configuration;
+}
 
 export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, baselineReport = null }) {
 	validatePlan(plan, corpusInfo);
@@ -424,7 +427,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
 	invariant(sha256(effectiveConfigBytes) === runs[0].configuration.reviewConfigSha256, "effective review config hash differs from run configuration");
-	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical));
+	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical)), environmentCanonical = canonical(comparableEnvironment(runs[0])), environmentFingerprint = sha256(Buffer.from(environmentCanonical));
 	invariant(runs.every((run) => canonical(comparableConfiguration(run)) === configurationCanonical), "runs use incomparable provider/model/thinking/tool/version configuration");
 	const laneModels = new Map();
 	for (const run of runs) for (const lane of run.lanes) {
@@ -433,8 +436,8 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 		invariant(!laneModels.has(lane.id) || laneModels.get(lane.id) === identity, `lane ${lane.id} changed provider/model within the comparison`);
 		laneModels.set(lane.id, identity);
 	}
-	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprint, baselineReport);
-	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, configurationFingerprint, resultCount: runs.length, gate, metrics };
+	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport);
+	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
 }
 
 function parseArgs(argv) {
