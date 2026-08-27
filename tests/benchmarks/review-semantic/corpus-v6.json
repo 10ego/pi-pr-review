@@ -343,9 +343,9 @@
     {
       "id": "command-injection",
       "title": "Branch input is interpolated into a shell command",
-      "diff": "diffs/command-injection.diff",
-      "diffSha256": "2bfb0c3f8065f829a565066cd0cd617975ad5375b5375b6cd547ec676b4ede55",
-      "diffBytes": 342,
+      "diff": "diffs/command-injection-v6.diff",
+      "diffSha256": "ff53414bc6d20ca8ee15f7f1df2ab200504afb618cdff06f9dbb0777f9d2332e",
+      "diffBytes": 469,
       "changedFiles": [
         "src/git.ts"
       ],
@@ -363,8 +363,8 @@
             {
               "path": "src/git.ts",
               "side": "RIGHT",
-              "start": 16,
-              "end": 17
+              "start": 7,
+              "end": 8
             }
           ],
           "rationale": "A caller-controlled branch is passed through a shell command instead of execFile argv, enabling command injection.",
@@ -690,8 +690,8 @@
       "id": "clean-batched-lookup",
       "title": "Batch user lookup preserves order and missing entries",
       "diff": "diffs/clean-batched-lookup-v6.diff",
-      "diffSha256": "057791ee8067f1c4f48f73176ed897fef57cebba14657e0068aaa7f6d2a3a422",
-      "diffBytes": 495,
+      "diffSha256": "2b6b5e7b80db8aef513104e4d0ac407ad8095c5625011235dacb48b83a8da722",
+      "diffBytes": 556,
       "changedFiles": [
         "src/users.ts"
       ],

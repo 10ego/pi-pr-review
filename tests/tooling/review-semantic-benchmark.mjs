@@ -239,12 +239,14 @@ export function createPlan(corpusInfo, modes, repetitions) {
 	return { ...identity, planId: sha256(Buffer.from(canonical(identity))) };
 }
 
-function validateArtifact(reference, bundleRoot, run) {
+function validateArtifact(reference, bundleRoot, run, embeddedArtifacts = null) {
 	const runLabel = `run ${run.planEntryId}`;
 	invariant(exactKeys(reference, ["kind", "path", "sha256", "bytes"]), `${runLabel} artifact schema`);
 	invariant(reference.kind === "lane-artifacts" || reference.kind === "canonical-review", `${runLabel} artifact kind`);
 	invariant(SHA256.test(reference.sha256) && Number.isSafeInteger(reference.bytes) && reference.bytes >= 0 && reference.bytes <= 100 * 1024 * 1024, `${runLabel} artifact metadata`);
-	const file = resolveContainedRegular(bundleRoot, reference.path, `${runLabel} artifact`), data = fs.readFileSync(file);
+	let data;
+	if (embeddedArtifacts !== null) { const encoded = embeddedArtifacts[reference.path]; invariant(typeof encoded === "string", `${runLabel} embedded artifact is missing`); data = Buffer.from(encoded, "base64"); invariant(data.toString("base64") === encoded, `${runLabel} embedded artifact encoding`); }
+	else { const file = resolveContainedRegular(bundleRoot, reference.path, `${runLabel} artifact`); data = fs.readFileSync(file); }
 	invariant(data.length === reference.bytes && sha256(data) === reference.sha256, `${runLabel} artifact bytes/hash`);
 	let payload; try { payload = JSON.parse(data.toString("utf8")); } catch { invariant(false, `${runLabel} artifact JSON`); }
 	if (reference.kind === "lane-artifacts") {
@@ -340,7 +342,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 
 function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	const label = `run ${planEntry.entryId}`;
-	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"]), `${label} schema`);
+	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"], ["artifactPayloads"]), `${label} schema`);
 	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
@@ -373,7 +375,9 @@ function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 		}
 	}
 	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2 && new Set(run.artifacts.map((item) => item.path)).size === 2, `${label} artifacts`);
-	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig);
+	const embeddedArtifacts = Object.hasOwn(run, "artifactPayloads") ? run.artifactPayloads : null;
+	if (embeddedArtifacts !== null) invariant(plain(embeddedArtifacts) && JSON.stringify(Object.keys(embeddedArtifacts).sort()) === JSON.stringify(run.artifacts.map((item) => item.path).sort()) && Object.values(embeddedArtifacts).every((value) => typeof value === "string"), `${label} embedded artifact partition`);
+	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run, embeddedArtifacts)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig);
 	const visibleFallbackFindings = run.publication.fallback ? parseVisibleFallbackFindings(reviewPayload.markdown) : [], semanticFindings = [...run.findings], seenFindings = new Set(run.findings.map(canonical));
 	for (const finding of visibleFallbackFindings) if (!seenFindings.has(canonical(finding))) { seenFindings.add(canonical(finding)); semanticFindings.push(finding); }
 	Object.defineProperty(run, SEMANTIC_FINDINGS, { value: semanticFindings, enumerable: false });
@@ -410,7 +414,7 @@ function maskEmbeddedConcepts(text, groups) {
 	});
 }
 function contrastivePositiveDefectClause(expected, finding) {
-	const clauses = [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;]\s+/iu)].map((clause) => clause.trim()).filter(Boolean);
+	const clauses = [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;!?]\s+|\n+/iu)].map((clause) => clause.trim()).filter(Boolean);
 	let lastContradiction = -1;
 	for (let index = 0; index < clauses.length; index++) { const polarity = expandNegations(clauses[index]); if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarity)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarity))) lastContradiction = index; }
 	return lastContradiction >= 0 ? clauses.slice(lastContradiction + 1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;

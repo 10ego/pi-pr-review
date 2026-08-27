@@ -2,11 +2,12 @@ diff --git a/src/users.ts b/src/users.ts
 index 1111111..2222222 100644
 --- a/src/users.ts
 +++ b/src/users.ts
-@@ -22,2 +22,6 @@ export async function loadUsers(ids: string[]) {
+@@ -22,2 +22,7 @@ export async function loadUsers(ids: string[]) {
 -  return Promise.all(ids.map(id => db.users.find(id)));
-+  if (ids.length === 0) return [];
-+  const uniqueIds = [...new Set(ids)];
++  const requestedIds = [...ids];
++  if (requestedIds.length === 0) return [];
++  const uniqueIds = [...new Set(requestedIds)];
 +  const rows = await db.users.findMany({ where: { id: { in: uniqueIds } } });
 +  const byId = new Map(rows.map(row => [row.id, row]));
-+  return ids.map(id => byId.get(id) ?? null);
++  return requestedIds.map(id => byId.get(id) ?? null);
  }
