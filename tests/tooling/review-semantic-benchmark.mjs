@@ -37,7 +37,12 @@ const EXPLICIT_NON_FINDING = [
 ];
 const MULTIPLICATIVE_COMPLEXITY = /\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
 const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
+function expandNegations(text) {
+	const replacements = { "can't": "cannot", "can’t": "cannot", "couldn't": "could not", "couldn’t": "could not", "doesn't": "does not", "doesn’t": "does not", "isn't": "is not", "isn’t": "is not", "aren't": "are not", "aren’t": "are not", "wasn't": "was not", "wasn’t": "was not", "weren't": "were not", "weren’t": "were not", "won't": "will not", "won’t": "will not" };
+	return text.replace(/\b(?:can[’']t|couldn[’']t|doesn[’']t|isn[’']t|aren[’']t|wasn[’']t|weren[’']t|won[’']t)\b/giu, (match) => replacements[match.toLocaleLowerCase("en-US")]);
+}
 function hasPositiveDefectCue(text) {
+	text = expandNegations(text);
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
 		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
@@ -390,6 +395,7 @@ function containsConcept(text, term) {
 function maskEmbeddedConcepts(text, groups) {
 	const terms = groups.flat().filter((term) => /^[\p{L}\p{N}_]+$/u.test(term));
 	return text.replace(/[\p{L}\p{N}_]+/gu, (token) => {
+		if ((token.includes("_") || /\p{Ll}\p{Lu}/u.test(token)) && !terms.some((term) => containsConcept(token.toLocaleLowerCase("en-US"), term))) return "¤".repeat(token.length);
 		let masked = token;
 		for (const term of terms) {
 			if (containsConcept(token.toLocaleLowerCase("en-US"), term)) continue;
@@ -402,8 +408,8 @@ function maskEmbeddedConcepts(text, groups) {
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`;
-	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(rawText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(rawText))) return false;
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText);
+	if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText))) return false;
 	const text = rawText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(finding.body);
 	if (allConceptsMatched) return positiveDefect;
 	// The first assertion group may compensate for one genuinely missing concept
