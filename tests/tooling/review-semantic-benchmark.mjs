@@ -34,6 +34,7 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:cannot|can not|could not|does not) (?:be )?(?:abused|exploited|triggered)\b/iu,
 	/\b(?:breakage|exploitation|failure|injection|issue|vulnerability) (?:is|are) (?:absent|impossible|not possible)\b/iu,
 	/\bpresents? no risk\b/iu,
+	/\b(?:bug|defect|issue|risk|vulnerability|command injection) (?:is|was|were|has been|have been) (?:addressed|eliminated|fixed|mitigated|removed|resolved)\b/iu,
 	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
 const MULTIPLICATIVE_COMPLEXITY = /\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;

@@ -126,6 +126,7 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch is safely escaped and quoted, so injection has been fixed." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The fix removes arbitrary command execution." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch shell command injection vulnerability was removed by this fix." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch shell command injection vulnerability is removed." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch shell command injection isn't a vulnerability and can't be exploited." }] }).missedExpectedIds, [expected.id]);
 	const unrelatedCompile = { ...exact, title: "[P1] execAsync is undefined", body: "showBranch fails because the command helper is missing; this is separate from the injection finding." };
 	assert.deepEqual(scoreRun(item, { findings: [unrelatedCompile] }).missedExpectedIds, [expected.id]);
