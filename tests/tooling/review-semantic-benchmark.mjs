@@ -39,13 +39,14 @@ const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|in
 function hasPositiveDefectCue(text) {
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
-		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
+		if (/(?:\b(?:addressed|cannot|fixed|never|no|not|remediated|resolved|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
 		if (/^[^.!?\n]{0,30}\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b/iu.test(after)) continue;
 		return true;
 	}
 	return false;
 }
 const SHA256 = /^[0-9a-f]{64}$/;
+export const SCORER_SHA256 = sha256(fs.readFileSync(new URL(import.meta.url)));
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
 
@@ -301,8 +302,9 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 	if (!failedRun) {
 		invariant(!processFailed && raw.auditValid, `${label} successful run has operational failure`);
 		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
-		const data = completed[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
-		invariant(plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(telemetry[0].data) === canonical(raw.telemetry) && data.rawText === reviewPayload.markdown, `${label} session artifact binding`);
+		const data = completed[0].data, terminalTelemetry = telemetry[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
+		invariant(plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && data.rawText === reviewPayload.markdown, `${label} session artifact binding`);
+		invariant(finiteNonnegative(terminalTelemetry?.totalWallMs) && terminalTelemetry.totalWallMs === run.elapsedMs && finiteNonnegative(terminalTelemetry?.phases?.aggregateOrchestration?.elapsedMs) && terminalTelemetry.phases.aggregateOrchestration.elapsedMs === run.timing.parentValidationSynthesisMs, `${label} retained latency binding`);
 		invariant(modelChanges.length >= 1 && modelChanges.at(-1).provider === run.configuration.provider && modelChanges.at(-1).modelId === run.configuration.model && thinkingChanges.length >= 1 && thinkingChanges.at(-1).thinkingLevel === run.configuration.thinking, `${label} session parent model/thinking binding`);
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
 		invariant(run.publication.artifact === (canonicalPublication ? "canonical" : rawPublication ? "raw_body_only" : "degraded"), `${label} session publication binding`);
@@ -452,8 +454,8 @@ function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint,
 	if (!gates) return { status: "baseline_required", passed: false, failures: ["No accepted baseline gate file was supplied; metrics are diagnostic only."] };
 	invariant(exactKeys(gates, ["schemaVersion", "corpusId", "corpusSha256", "acceptedAtUtc", "rationale", "baseline", "thresholds"]), "gate file schema");
 	invariant(gates.schemaVersion === 1 && gates.corpusId === corpusInfo.corpus.corpusId && gates.corpusSha256 === corpusInfo.sha256 && Number.isFinite(Date.parse(gates.acceptedAtUtc)) && typeof gates.rationale === "string" && gates.rationale.length >= 20, "gate file identity");
-	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "environmentFingerprint"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.environmentFingerprint === environmentFingerprint, "gate baseline binding");
-	invariant(baselineReport && baselineReport.sha256 === gates.baseline.reportSha256 && plain(baselineReport.value) && baselineReport.value.schemaVersion === 1 && baselineReport.value.corpusId === corpusInfo.corpus.corpusId && baselineReport.value.corpusSha256 === corpusInfo.sha256 && baselineReport.value.planId === plan.planId && baselineReport.value.environmentFingerprint === environmentFingerprint && baselineReport.value.resultCount === plan.entries.length, "gate baseline report content/hash binding");
+	invariant(exactKeys(gates.baseline, ["reportSha256", "planId", "environmentFingerprint", "scorerSha256"]) && SHA256.test(gates.baseline.reportSha256) && gates.baseline.planId === plan.planId && gates.baseline.environmentFingerprint === environmentFingerprint && gates.baseline.scorerSha256 === SCORER_SHA256, "gate baseline binding");
+	invariant(baselineReport && baselineReport.sha256 === gates.baseline.reportSha256 && plain(baselineReport.value) && baselineReport.value.schemaVersion === 1 && baselineReport.value.corpusId === corpusInfo.corpus.corpusId && baselineReport.value.corpusSha256 === corpusInfo.sha256 && baselineReport.value.planId === plan.planId && baselineReport.value.environmentFingerprint === environmentFingerprint && baselineReport.value.scorerSha256 === SCORER_SHA256 && baselineReport.value.resultCount === plan.entries.length, "gate baseline report content/hash binding");
 	invariant(exactKeys(gates.thresholds, ["modes"]) && plain(gates.thresholds.modes) && JSON.stringify(Object.keys(gates.thresholds.modes).sort()) === JSON.stringify([...plan.modes].sort()), "gate per-mode threshold partition");
 	const thresholdKeys = ["minimumP0P1Recall", "minimumP2Recall", "minimumCrossFileRecall", "minimumPerLensRecall", "minimumExactSeverityRate", "maximumCleanControlCaseFalsePositiveRate", "maximumDuplicateRate", "minimumLaneCompleteRate", "maximumPublicationFallbackRate", "maximumP50LatencyMs", "maximumP95LatencyMs"];
 	const failures = [], checkMin = (label, actual, expected) => { if (actual === null || actual < expected) failures.push(`${label} ${actual ?? "n/a"} < ${expected}`); }, checkMax = (label, actual, expected) => { if (actual === null || actual > expected) failures.push(`${label} ${actual ?? "n/a"} > ${expected}`); };
@@ -499,7 +501,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 		laneModels.set(lane.id, identity);
 	}
 	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport);
-	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
+	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, scorerSha256: SCORER_SHA256, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
 }
 
 function parseArgs(argv) {

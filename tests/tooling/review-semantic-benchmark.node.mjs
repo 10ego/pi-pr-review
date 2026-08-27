@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v5.json");
@@ -49,11 +49,11 @@ function createBundle({ modes = ["balanced", "full"], repetitions = 1, mutateRun
 	}
 	return { corpusInfo, plan, root, runs };
 }
-function baselineReport(bundle) { const gate = gates(bundle); return { sha256: gate.baseline.reportSha256, value: { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, planId: bundle.plan.planId, environmentFingerprint: gate.baseline.environmentFingerprint, resultCount: bundle.plan.entries.length } }; }
+function baselineReport(bundle) { const gate = gates(bundle); return { sha256: gate.baseline.reportSha256, value: { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, planId: bundle.plan.planId, scorerSha256: SCORER_SHA256, environmentFingerprint: gate.baseline.environmentFingerprint, resultCount: bundle.plan.entries.length } }; }
 function gates(bundle, overrides = {}) {
 	const configuration = { ...bundle.runs[0].configuration }; delete configuration.topology; delete configuration.extensionSha256; delete configuration.promptSha256;
 	const environmentFingerprint = sha256(Buffer.from(canonical(configuration))), threshold = { minimumP0P1Recall: 1, minimumP2Recall: 1, minimumCrossFileRecall: 1, minimumPerLensRecall: Object.fromEntries(bundle.corpusInfo.corpus.lenses.map((lens) => [lens, 1])), minimumExactSeverityRate: 1, maximumCleanControlCaseFalsePositiveRate: 0, maximumDuplicateRate: 0, minimumLaneCompleteRate: 1, maximumPublicationFallbackRate: 0, maximumP50LatencyMs: 1_000, maximumP95LatencyMs: 1_000, ...overrides };
-	return { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, acceptedAtUtc: "2026-08-28T00:00:00.000Z", rationale: "Accepted after repeated baseline runs on the versioned semantic corpus.", baseline: { reportSha256: "a".repeat(64), planId: bundle.plan.planId, environmentFingerprint }, thresholds: { modes: Object.fromEntries(bundle.plan.modes.map((mode) => [mode, { ...threshold }])) } };
+	return { schemaVersion: 1, corpusId: bundle.corpusInfo.corpus.corpusId, corpusSha256: bundle.corpusInfo.sha256, acceptedAtUtc: "2026-08-28T00:00:00.000Z", rationale: "Accepted after repeated baseline runs on the versioned semantic corpus.", baseline: { reportSha256: "a".repeat(64), planId: bundle.plan.planId, environmentFingerprint, scorerSha256: SCORER_SHA256 }, thresholds: { modes: Object.fromEntries(bundle.plan.modes.map((mode) => [mode, { ...threshold }])) } };
 }
 
 test("versioned corpus pins every diff, covers all heavy lenses, cross-file findings, and clean controls", () => {
@@ -94,6 +94,7 @@ test("accepted explicit baseline gates pass a perfect bundle", () => {
 	const bundle = createBundle({ modes: ["balanced"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: baselineReport(bundle) });
 	assert.deepEqual(report.gate, { status: "passed", passed: true, failures: [] });
 	assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: gates(bundle), baselineReport: { ...baselineReport(bundle), sha256: "0".repeat(64) } }), /baseline report content\/hash binding/);
+	const wrongScorer = gates(bundle); wrongScorer.baseline.scorerSha256 = "0".repeat(64); assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root, gates: wrongScorer, baselineReport: baselineReport(bundle) }), /gate baseline binding/);
 });
 
 test("semantic matching requires severity, overlapping anchor, and every concept group", () => {
@@ -121,6 +122,7 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "Exploitation is impossible and the invocation is acceptable." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch is escaped before the shell command executes, eliminating injection risk." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The branch is safely escaped and quoted, so injection has been fixed." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Branch shell command injection", body: "The fix removes arbitrary command execution." }] }).missedExpectedIds, [expected.id]);
 	const performance = info.corpus.cases.find((candidate) => candidate.id === "algorithmic-quadratic"), performanceExpected = performance.expectedFindings[0], negatedPerformance = { title: "[P2] Mapping each item inside the filter", body: "This does not break performance; the map and includes work is acceptable rather than a quadratic defect.", severity: "P2", location: { ...performanceExpected.acceptableLocations[0] } };
 	assert.deepEqual(scoreRun(performance, { findings: [negatedPerformance] }).missedExpectedIds, [performanceExpected.id]);
 	const allConceptsNegated = { ...negatedPerformance, body: "Mapping each item inside the filter is acceptable. This is never a quadratic performance defect even though each item uses map and includes." };
@@ -238,6 +240,8 @@ test("result schemas reject extra fields, invalid latency, unsafe paths, and sym
 	}
 	const bundle = createBundle({ modes: ["balanced"] }), reference = bundle.runs[0].artifacts[0], target = path.join(bundle.root, reference.path), real = `${target}.real`; fs.renameSync(target, real); fs.symlinkSync(real, target);
 	assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /non-symlink|artifact/);
+	const latency = createBundle({ modes: ["balanced"] }), latencyFile = path.join(latency.root, "runs", `${latency.plan.entries[0].entryId}.json`), latencyRun = JSON.parse(fs.readFileSync(latencyFile)); latencyRun.elapsedMs = 0; latencyRun.timing.parentValidationSynthesisMs = 0; fs.writeFileSync(latencyFile, `${JSON.stringify(latencyRun, null, 2)}\n`);
+	assert.throws(() => scoreBundle({ corpusInfo: latency.corpusInfo, plan: latency.plan, resultsDirectory: latency.root }), /retained latency binding/);
 });
 
 test("every corpus diff is syntactically applicable to its materialized base", () => {
