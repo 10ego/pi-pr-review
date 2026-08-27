@@ -28,7 +28,9 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:is|are|remains?|appears?) (?:safe|correct|valid)\b/iu,
 	/\bnot (?:broken|a bug|an issue|a problem|a defect)\b/iu,
 	/\bfalse positive\b/iu,
+	/\b(?:needs?|requires?) no (?:change|fix)\b/iu,
 ];
+const DEFECT_CUE = /\b(?:arbitrary|attack|breaks?|broken|cannot|crash(?:es)?|defect|disclos(?:e|es|ure)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|inject(?:ion)?|leak|missing|removed|throws?|unauthori[sz]ed|vulnerab(?:le|ility))\b/iu;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
@@ -348,7 +350,7 @@ function expectedMatchesFinding(expected, finding) {
 	// say "injection". Require both a pattern and most concept groups so one
 	// generic keyword cannot create a match.
 	const assertionMatched = expected.assertionPatterns.some((group) => group.some((pattern) => new RegExp(pattern, "iu").test(rawText)));
-	return assertionMatched && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
+	return assertionMatched && DEFECT_CUE.test(rawText) && matchedConcepts >= Math.ceil(conceptMatches.length * 2 / 3);
 }
 function maximumMatching(edges, expectedCount) {
 	const assignedFinding = Array(expectedCount).fill(-1);

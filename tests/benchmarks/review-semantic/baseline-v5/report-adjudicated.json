@@ -59,16 +59,16 @@
         "caseFalsePositiveRate": 0.75
       },
       "findings": {
-        "total": 91,
+        "total": 90,
         "matched": 37,
         "underclassified": 6,
         "overclassified": 7,
         "exactSeverityRate": 0.6486486486486487,
-        "unmatched": 50,
+        "unmatched": 52,
         "falsePositives": 13,
-        "duplicates": 4,
-        "falsePositiveRate": 0.14285714285714285,
-        "duplicateRate": 0.04395604395604396
+        "duplicates": 1,
+        "falsePositiveRate": 0.14444444444444443,
+        "duplicateRate": 0.011111111111111112
       },
       "lanes": {
         "total": 286,
@@ -84,7 +84,7 @@
       "publication": {
         "fallbackRuns": 24,
         "fallbackRate": 0.5,
-        "visibleFallbackFindings": 8
+        "visibleFallbackFindings": 7
       },
       "latencyMs": {
         "p50": 266000.615,
@@ -142,16 +142,16 @@
           "caseFalsePositiveRate": 0.5
         },
         "findings": {
-          "total": 32,
+          "total": 31,
           "matched": 18,
           "underclassified": 3,
           "overclassified": 3,
           "exactSeverityRate": 0.6666666666666666,
           "unmatched": 13,
           "falsePositives": 2,
-          "duplicates": 1,
-          "falsePositiveRate": 0.0625,
-          "duplicateRate": 0.03125
+          "duplicates": 0,
+          "falsePositiveRate": 0.06451612903225806,
+          "duplicateRate": 0
         },
         "lanes": {
           "total": 130,
@@ -167,7 +167,7 @@
         "publication": {
           "fallbackRuns": 9,
           "fallbackRate": 0.375,
-          "visibleFallbackFindings": 7
+          "visibleFallbackFindings": 6
         },
         "latencyMs": {
           "p50": 221970.421,
@@ -229,11 +229,11 @@
           "underclassified": 3,
           "overclassified": 4,
           "exactSeverityRate": 0.631578947368421,
-          "unmatched": 37,
+          "unmatched": 39,
           "falsePositives": 11,
-          "duplicates": 3,
+          "duplicates": 1,
           "falsePositiveRate": 0.1864406779661017,
-          "duplicateRate": 0.05084745762711865
+          "duplicateRate": 0.01694915254237288
         },
         "lanes": {
           "total": 156,
@@ -502,8 +502,8 @@
         "overclassifiedExpectedIds": [
           "boundary.nonfinite-timeout"
         ],
-        "duplicateFindings": 1,
-        "unmatchedFindings": 1,
+        "duplicateFindings": 0,
+        "unmatchedFindings": 2,
         "falsePositiveFindings": 0,
         "cleanControlHadFinding": false
       },
@@ -538,8 +538,8 @@
         "overclassifiedExpectedIds": [
           "boundary.nonfinite-timeout"
         ],
-        "duplicateFindings": 1,
-        "unmatchedFindings": 0,
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
         "falsePositiveFindings": 0,
         "cleanControlHadFinding": false
       },
@@ -605,7 +605,7 @@
         "underclassifiedExpectedIds": [],
         "overclassifiedExpectedIds": [],
         "duplicateFindings": 0,
-        "unmatchedFindings": 1,
+        "unmatchedFindings": 0,
         "falsePositiveFindings": 0,
         "cleanControlHadFinding": false
       },
@@ -864,8 +864,8 @@
         "overclassifiedExpectedIds": [
           "boundary.nonfinite-timeout"
         ],
-        "duplicateFindings": 1,
-        "unmatchedFindings": 0,
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
         "falsePositiveFindings": 0,
         "cleanControlHadFinding": false
       },

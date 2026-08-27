@@ -116,6 +116,7 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "command-injection"), expected = item.expectedFindings[0], exact = { title: "[P1] Do not interpolate the branch into a shell command string", body: "Shell metacharacters in the branch are interpreted and yield arbitrary command execution.", severity: "P1", location: { path: "src/git.ts", side: "RIGHT", start: 15, end: 16 } };
 	assert.deepEqual(scoreRun(item, { findings: [exact] }).matchedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Interpolate branch input", body: "Generic wording without a concrete consequence." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...exact, title: "[P1] Keep the branch command invocation", body: "The branch command correctly uses execFile instead of execAsync and needs no change." }] }).missedExpectedIds, [expected.id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {

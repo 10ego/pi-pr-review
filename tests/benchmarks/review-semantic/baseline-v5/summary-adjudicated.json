@@ -58,16 +58,16 @@
         "caseFalsePositiveRate": 0.5
       },
       "findings": {
-        "total": 32,
+        "total": 31,
         "matched": 18,
         "underclassified": 3,
         "overclassified": 3,
         "exactSeverityRate": 0.6666666666666666,
         "unmatched": 13,
         "falsePositives": 2,
-        "duplicates": 1,
-        "falsePositiveRate": 0.0625,
-        "duplicateRate": 0.03125
+        "duplicates": 0,
+        "falsePositiveRate": 0.06451612903225806,
+        "duplicateRate": 0
       },
       "lanes": {
         "total": 130,
@@ -83,7 +83,7 @@
       "publication": {
         "fallbackRuns": 9,
         "fallbackRate": 0.375,
-        "visibleFallbackFindings": 7
+        "visibleFallbackFindings": 6
       },
       "latencyMs": {
         "p50": 221970.421,
@@ -145,11 +145,11 @@
         "underclassified": 3,
         "overclassified": 4,
         "exactSeverityRate": 0.631578947368421,
-        "unmatched": 37,
+        "unmatched": 39,
         "falsePositives": 11,
-        "duplicates": 3,
+        "duplicates": 1,
         "falsePositiveRate": 0.1864406779661017,
-        "duplicateRate": 0.05084745762711865
+        "duplicateRate": 0.01694915254237288
       },
       "lanes": {
         "total": 156,

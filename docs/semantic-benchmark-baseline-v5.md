@@ -11,7 +11,7 @@ This report is the first complete real-model balanced/full comparison over the v
 - Plan ID: `4bf04da24af027fd03275dcc8cd53e664d543db63f7f59e7c6715bb7c6042813`
 - Plan file SHA-256: `f3b790f463c467c92c834fccc8d28f03313c71cd5bd1832f2519b4e11682c51c`
 - Original report SHA-256: `eaf9a55d7b3831060cc5b7a8c80f619988261f4c7c8a87fe8b6b5ce366fab80a` (retained, superseded for interpretation)
-- Adjudicated report SHA-256: `d8a5af06cfa30b6c2875302f7285c6733404175b7f3df2659182c075f4539c65`
+- Adjudicated report SHA-256: `62dd89d5b86e44d9bb754389694c10c803c0f23e01c9b675c1a2e652bfa034af`
 - Configuration fingerprint: `2154a4bd206dd5e7079dbd7b895601350936bbf6c5085ac57230d3705d8d1155`
 - Environment fingerprint: `b57c0360881010588090448615679d9a4b8b0cca362ad431274982fda6083d9d`
 - Runs: 48/48 exact plan entries, two repetitions of 12 cases in balanced and full modes
@@ -35,10 +35,10 @@ The complete immutable evidence is under `tests/benchmarks/review-semantic/basel
 | Performance/resource recall | 75% | 100% |
 | Clean controls with findings | 50% | 100% |
 | Exact-severity rate | 66.67% | 63.16% |
-| Duplicate finding rate | 3.13% | 5.08% |
+| Duplicate finding rate | 0% | 1.69% |
 | Complete lane rate | 74.62% | 87.82% |
 | Publication fallback rate | 37.5% | 62.5% |
-| Visible findings recovered from fallback Markdown | 7 | 1 |
+| Visible findings recovered from fallback Markdown | 6 | 1 |
 | p50 wall time | 221.97 s | 303.68 s |
 | p95 wall time | 1229.99 s | 697.09 s |
 | Wall-time std. deviation | 284.56 s | 151.38 s |
