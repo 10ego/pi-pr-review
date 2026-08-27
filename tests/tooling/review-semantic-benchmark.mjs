@@ -313,14 +313,14 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane, `${run.configuration.provider}/${run.configuration.model}`)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = resolvedTierModelIdentities(effectiveConfig, tier, `${run.configuration.provider}/${run.configuration.model}`); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
 	} else {
 		invariant(raw.resolvedReview === null && run.timing.parentValidationSynthesisMs === run.elapsedMs, `${label} failed-session binding`);
-		let latencyBound = Object.hasOwn(raw.process, "elapsedMs") && raw.process.elapsedMs === run.elapsedMs;
+		let latencyBound = run.elapsedMs > 0 && Object.hasOwn(raw.process, "elapsedMs") && raw.process.elapsedMs > 0 && raw.process.elapsedMs === run.elapsedMs;
 		if (!latencyBound && raw.process.error === "collector-hard-timeout") {
 			const totalMs = effectiveConfig?.deadlines?.totalMs, hardTimeoutMs = Number.isSafeInteger(totalMs) ? totalMs + 30_000 : null;
 			latencyBound = hardTimeoutMs !== null && run.elapsedMs >= hardTimeoutMs - 1_000 && run.elapsedMs <= hardTimeoutMs + 10_000;
 		}
 		if (!latencyBound) {
 			const timestamps = records.map((record) => Date.parse(record?.timestamp)).filter(Number.isFinite);
-			if (timestamps.length >= 2) { const sessionSpanMs = Math.max(...timestamps) - Math.min(...timestamps); latencyBound = run.elapsedMs >= sessionSpanMs && run.elapsedMs <= sessionSpanMs + 5_000; }
+			if (timestamps.length >= 2) { const sessionSpanMs = Math.max(...timestamps) - Math.min(...timestamps); latencyBound = sessionSpanMs > 0 && run.elapsedMs > 0 && run.elapsedMs >= sessionSpanMs && run.elapsedMs <= sessionSpanMs + 5_000; }
 		}
 		invariant(latencyBound, `${label} retained failed-run latency binding`);
 	}
