@@ -223,7 +223,22 @@ function validateArtifact(reference, bundleRoot, run) {
 	} else {
 		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0 && run.findings.every((finding) => payload.markdown.includes(finding.title)), `${runLabel} canonical artifact binding`);
 	}
-	return reference;
+	return payload;
+}
+function normalizePersistedFindings(review) {
+	if (!Array.isArray(review?.findings)) return [];
+	return review.findings.map((finding) => { const location = finding?.code_location, range = location?.line_range; return { title: String(finding?.title ?? ""), body: String(finding?.body ?? ""), severity: String(finding?.severity ?? ""), location: location && typeof location.absolute_file_path === "string" && Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end) && (location.side === "RIGHT" || location.side === "LEFT") ? { path: location.absolute_file_path, side: location.side, start: range.start, end: range.end } : null }; });
+}
+function validateSessionBindings(lanePayload, reviewPayload, run, label) {
+	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"), records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [], completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), hasRetainedLanes = run.lanes.some((lane) => lane.status !== "failed"), processFailed = raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null;
+	if (hasRetainedLanes || !processFailed) {
+		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
+		const data = completed[0].data;
+		invariant(plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(telemetry[0].data) === canonical(raw.telemetry) && data.rawText === reviewPayload.markdown, `${label} session artifact binding`);
+		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
+		invariant(run.publication.artifact === (canonicalPublication ? "canonical" : rawPublication ? "raw_body_only" : "degraded"), `${label} session publication binding`);
+		if (plain(data.review)) invariant(canonical(normalizePersistedFindings(data.review)) === canonical(run.findings), `${label} session finding binding`);
+	} else invariant(completed.length === 0 && telemetry.length === 0 && run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed"), `${label} failed-session binding`);
 }
 
 function validateRun(run, planEntry, bundleRoot, item) {
@@ -233,9 +248,9 @@ function validateRun(run, planEntry, bundleRoot, item) {
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
 	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
-	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "piSha256", "piRuntimeSha256", "nodeVersion", "nodeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256", "topology"]), `${label} configuration schema`);
-	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "nodeVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
-	for (const key of ["piSha256", "piRuntimeSha256", "nodeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256"]) invariant(typeof run.configuration[key] === "string" && SHA256.test(run.configuration[key]), `${label} configuration ${key}`);
+	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "piSha256", "piRuntimeSha256", "nodeVersion", "nodeSha256", "collectorRuntimeVersion", "collectorRuntimeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256", "topology"]), `${label} configuration schema`);
+	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "nodeVersion", "collectorRuntimeVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
+	for (const key of ["piSha256", "piRuntimeSha256", "nodeSha256", "collectorRuntimeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256"]) invariant(typeof run.configuration[key] === "string" && SHA256.test(run.configuration[key]), `${label} configuration ${key}`);
 	const topology = run.configuration.topology, expectedTopology = expectedModeTopology(run.mode, item);
 	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
 	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === expectedTopology.shardCount && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
@@ -249,7 +264,7 @@ function validateRun(run, planEntry, bundleRoot, item) {
 		invariant(PASS_LENSES[basePassId] === lane.lens, `${label} lane ${lane.id} lens`);
 	}
 	invariant(run.lanes.length === expectedTopology.passIds.length && expectedTopology.passIds.every((id) => laneIds.has(id)), `${label} required lane set`);
-	invariant(exactKeys(run.publication, ["artifact", "fallback"]) && PUBLICATION_ARTIFACTS.has(run.publication.artifact) && typeof run.publication.fallback === "boolean" && run.publication.fallback === (run.publication.artifact !== "canonical"), `${label} publication`);
+	invariant(exactKeys(run.publication, ["artifact", "fallback"]) && PUBLICATION_ARTIFACTS.has(run.publication.artifact) && typeof run.publication.fallback === "boolean" && run.publication.fallback === (run.publication.artifact !== "canonical") && (run.publication.artifact !== "canonical" || run.lanes.every((lane) => lane.status === "complete")), `${label} publication`);
 	invariant(Array.isArray(run.findings) && run.findings.length <= 200, `${label} findings`);
 	for (const finding of run.findings) {
 		invariant(exactKeys(finding, ["title", "body", "severity", "location"]), `${label} finding schema`);
@@ -261,7 +276,7 @@ function validateRun(run, planEntry, bundleRoot, item) {
 		}
 	}
 	invariant(Array.isArray(run.artifacts) && run.artifacts.length === 2 && new Set(run.artifacts.map((item) => item.kind)).size === 2 && new Set(run.artifacts.map((item) => item.path)).size === 2, `${label} artifacts`);
-	run.artifacts.forEach((artifact) => validateArtifact(artifact, bundleRoot, run));
+	const payloads = run.artifacts.map((artifact) => [artifact.kind, validateArtifact(artifact, bundleRoot, run)]), lanePayload = payloads.find(([kind]) => kind === "lane-artifacts")[1], reviewPayload = payloads.find(([kind]) => kind === "canonical-review")[1]; validateSessionBindings(lanePayload, reviewPayload, run, label);
 	return run;
 }
 
@@ -366,7 +381,7 @@ function evaluateGates(metrics, gates, corpusInfo, plan, configurationFingerprin
 }
 
 function comparableConfiguration(run) {
-	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
+	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, collectorRuntimeVersion: run.configuration.collectorRuntimeVersion, collectorRuntimeSha256: run.configuration.collectorRuntimeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
 }
 
 export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }) {
@@ -382,6 +397,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null }
 		runs.push(validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId)));
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
+	const effectiveConfigBytes = fs.readFileSync(resolveContainedRegular(bundleRoot, "effective-review-config.json", "effective review config")); invariant(sha256(effectiveConfigBytes) === runs[0].configuration.reviewConfigSha256, "effective review config hash differs from run configuration"); let effectiveConfig; try { effectiveConfig = JSON.parse(effectiveConfigBytes.toString("utf8")); } catch { invariant(false, "effective review config JSON"); } invariant(plain(effectiveConfig), "effective review config schema");
 	const configuration = comparableConfiguration(runs[0]), configurationCanonical = canonical(configuration), configurationFingerprint = sha256(Buffer.from(configurationCanonical));
 	invariant(runs.every((run) => canonical(comparableConfiguration(run)) === configurationCanonical), "runs use incomparable provider/model/thinking/tool/version configuration");
 	const laneModels = new Map();

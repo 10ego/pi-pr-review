@@ -2,7 +2,7 @@ diff --git a/src/registry.ts b/src/registry.ts
 index 1111111..2222222 100644
 --- a/src/registry.ts
 +++ b/src/registry.ts
-@@ -1,4 +1,2204 @@
+@@ -1,5 +1,2205 @@
  export class Registry {
 -  async lookup(key: string): Promise<string | null> {
 -    return this.store.read(key);
@@ -2208,6 +2208,7 @@ index 1111111..2222222 100644
 +  // Registry compatibility note 2197: behavior remains externally documented.
 +  // Registry compatibility note 2198: behavior remains externally documented.
 +  // Registry compatibility note 2199: behavior remains externally documented.
+  }
  }
 diff --git a/src/resolve.ts b/src/resolve.ts
 index 3333333..4444444 100644

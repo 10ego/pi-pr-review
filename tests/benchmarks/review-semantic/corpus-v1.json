@@ -609,8 +609,8 @@
       "id": "sharded-registry-contract",
       "title": "Versioned registry result integration",
       "diff": "diffs/sharded-registry-contract.diff",
-      "diffSha256": "e10feba06b2e7ee1cd2187c31ff477e1c668754f62c9f17d0357c5c5b343562b",
-      "diffBytes": 357132,
+      "diffSha256": "152b56845367c8f0a38d1453e23f152bf2f3227e555f838eea8b95bb7b29724e",
+      "diffBytes": 357136,
       "changedFiles": [
         "src/registry.ts",
         "src/resolve.ts"
