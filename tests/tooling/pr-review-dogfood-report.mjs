@@ -8,6 +8,8 @@ const LIFECYCLES = ["complete", "partial", "timed_out", "failed"];
 function invariant(condition, message) { if (!condition) throw new Error(`Dogfood report invalid: ${message}`); }
 function verdict(text) {
 	if (typeof text !== "string") return null;
+	const trimmed = text.trim(), fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i), jsonText = fenced?.[1] ?? trimmed;
+	try { const parsed = JSON.parse(jsonText); if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string") return parsed.verdict; } catch {}
 	const match = text.match(/^\*\*Verdict:\*\*\s*([^\n]+)/mi);
 	return match?.[1]?.trim() ?? null;
 }
