@@ -350,9 +350,9 @@ describe("review tool execution gate", () => {
 
 	test("routes oversized complete diffs through the same file-backed reviewers", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-backed-")), child = path.join(root, "child.mjs"), diffFile = path.join(root, "diff.patch");
-		const block = (name: string, marker: string) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${marker}${"x".repeat(105_000)}`].join("\n");
+		const block = (name: string, marker: string) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1,1100 @@", `-${marker}`, ...Array.from({ length: 1_100 }, (_, index) => `+${marker}${index}:${"x".repeat(90)}`)].join("\n");
 		const diffText = `${block("a.ts", "a")}\n${block("b.ts", "b")}`; writeFileSync(diffFile, diffText);
-		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>{const i=process.argv.indexOf("--tools"),safe=i>=0&&process.argv[i+1]==="read,grep,find,ls"&&!process.argv.includes("bash");console.log(JSON.stringify({type:"tool_execution_start",toolCallId:"read-diff",toolName:"read",args:{path:${JSON.stringify(diffFile)}}}));console.log(JSON.stringify({type:"tool_execution_end",toolCallId:"read-diff",toolName:"read",isError:false}));process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:n<100000&&safe?"NO FINDINGS.":"UNSAFE_OR_OVERSIZED"}]}}))});`);
+		writeFileSync(child, `let input="";process.stdin.on("data",b=>input+=b);process.stdin.on("end",()=>{const i=process.argv.indexOf("--tools"),safe=i>=0&&process.argv[i+1]==="read,grep,find,ls"&&!process.argv.includes("bash");const ranges=[...input.matchAll(/^- offset (\\d+), limit (\\d+)$/gm)];for(const [_,offset,limit] of ranges){const id="read-"+offset;console.log(JSON.stringify({type:"tool_execution_start",toolCallId:id,toolName:"read",args:{path:${JSON.stringify(diffFile)},offset:Number(offset),limit:Number(limit)}}));console.log(JSON.stringify({type:"tool_execution_end",toolCallId:id,toolName:"read",isError:false}))}process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:Buffer.byteLength(input)<100000&&safe&&ranges.length>1?"NO FINDINGS.":"UNSAFE_OR_OVERSIZED"}]}}))});`);
 		const originalScript = process.argv[1];
 		try {
 			const h = harness(); h.ctx.cwd = root;
@@ -368,7 +368,7 @@ describe("review tool execution gate", () => {
 
 	test("keeps a file-backed reviewer partial until it successfully accesses the complete diff", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-access-")), child = path.join(root, "child.mjs"), diff = path.join(root, "diff.patch");
-		writeFileSync(diff, ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1 @@", "-a", `+${"x".repeat(200_000)}`].join("\n"));
+		writeFileSync(diff, ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1,2200 @@", "-a", ...Array.from({ length: 2_200 }, (_, index) => `+${index}:${"x".repeat(90)}`)].join("\n"));
 		writeFileSync(child, `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}})));`);
 		const originalScript = process.argv[1];
 		try {
@@ -376,7 +376,7 @@ describe("review tool execution gate", () => {
 			const result = await h.tools.get("review_subagents").execute("no-file-access", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details.lifecycleCounts).toEqual({ complete: 0, partial: 3, timed_out: 0, failed: 0 });
-			expect(result.details.results.every((lane: any) => lane.errorMessage === "File-backed complete diff was not accessed through read or grep.")).toBeTrue();
+			expect(result.details.results.every((lane: any) => lane.errorMessage === "File-backed complete diff was not fully read through every host-required range.")).toBeTrue();
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.every((lane) => lane.lifecycle === "partial")).toBeTrue();
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
@@ -405,7 +405,7 @@ describe("review tool execution gate", () => {
 		try {
 			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			const result = await h.tools.get("review_subagents").execute("unsafe-manifest", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
-			expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("manifest is unsafe or exceeds deterministic bounds"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
+			expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("manifest or bounded read plan is unsafe or exceeds deterministic bounds"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, usesLegacyShardedTopology } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
@@ -36,7 +36,7 @@ function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], repetitio
 			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
-			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.16.0", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
+			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.16", topologyGeneration: "fixed-v1", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
 			lanes: topology.passIds.map((id) => ({ id, lens: id.replace(/-shard-[123]$/, ""), status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
 			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
 		};
@@ -72,13 +72,6 @@ test("plan is deterministic and spans the same corpus for every mode and repetit
 	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 36);
 	assert.notEqual(one.entries[0].mode, one.entries[1].mode);
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
-});
-
-test("topology generation changes after the final sharded release", () => {
-	assert.equal(usesLegacyShardedTopology("1.15.15"), true);
-	assert.equal(usesLegacyShardedTopology("1.15.16"), false);
-	assert.equal(usesLegacyShardedTopology("1.16.0"), false);
-	assert.equal(usesLegacyShardedTopology("invalid"), false);
 });
 
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {

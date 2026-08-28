@@ -127,6 +127,8 @@ const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
 const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const MAX_EMBEDDED_REVIEW_CONTEXT_BYTES = 200_000;
+const MAX_FILE_BACKED_READ_BYTES = 40 * 1024;
+const MAX_FILE_BACKED_READ_LINES = 1_000;
 
 interface FixedReviewPass {
 	readonly id: string;
@@ -484,7 +486,7 @@ function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene =
 		"",
 		minorHygiene
 			? fileBacked
-				? "This is a bounded minor-hygiene scan. Use only read or grep to inspect the supplied file-backed diff, report at most three direct, substantiated P3/nit observations, do not deep-audit the repository or report P0-P2 defects, and do not inflate severity. The dedicated heavy reviewers cover P0-P2."
+				? "This is a bounded minor-hygiene scan. Read every host-required range of the supplied file-backed diff (grep is optional for navigation), report at most three direct, substantiated P3/nit observations, do not deep-audit the repository or report P0-P2 defects, and do not inflate severity. The dedicated heavy reviewers cover P0-P2."
 				: "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
 			: majorOnly
 				? "This is major-only mode. Within the assigned objective, report only substantiated P0, P1, or P2 defects. Do not spend review time on P3/nit style, naming, documentation, or low-impact observations, and never inflate a minor issue's severity to include it."
@@ -836,6 +838,11 @@ export function runReviewSubprocess(
 	});
 }
 
+interface FileBackedReadRange {
+	readonly offset: number;
+	readonly limit: number;
+}
+
 interface SubagentPassRequest {
 	id?: string;
 	tier: Tier;
@@ -854,6 +861,7 @@ interface SubagentPassRequest {
 	toolNames?: readonly string[];
 	fileBackedContext?: boolean;
 	fileBackedContextPath?: string;
+	fileBackedRequiredReads?: readonly FileBackedReadRange[];
 }
 
 interface ModelAttemptReport {
@@ -989,7 +997,8 @@ async function runSubagentAttempt(
 		pass.focusPublisher?.publish({ type: "attempt_started", attempt: attemptOrdinal, model: attempt.spec });
 		const invocation = getPiInvocation(args);
 		let fileBackedAccessObserved = false;
-		const pendingFileBackedAccess = new Set<string>();
+		const completedFileBackedReads = new Set<string>();
+		const pendingFileBackedReads = new Map<string, string>();
 		const result = await runReviewSubprocess(
 			invocation.command,
 			invocation.args,
@@ -1001,20 +1010,24 @@ async function runSubagentAttempt(
 				for (const normalized of normalizeReviewFocusJsonEvent(event)) {
 					pass.focusPublisher?.publish(normalized);
 				}
-				if (pass.fileBackedContextPath && event && typeof event === "object") {
+				if (pass.fileBackedContextPath && pass.fileBackedRequiredReads && event && typeof event === "object") {
 					const record = event as { type?: unknown; toolCallId?: unknown; toolName?: unknown; args?: unknown; isError?: unknown };
 					if (record.type === "tool_execution_start" && typeof record.toolCallId === "string" &&
-						(record.toolName === "read" || record.toolName === "grep") && record.args && typeof record.args === "object") {
+						record.toolName === "read" && record.args && typeof record.args === "object") {
 						try {
-							const target = (record.args as { path?: unknown }).path;
-							if (typeof target === "string" && path.resolve(ctx.cwd, target) === pass.fileBackedContextPath) {
-								pendingFileBackedAccess.add(record.toolCallId);
+							const args = record.args as { path?: unknown; offset?: unknown; limit?: unknown };
+							const target = args.path;
+							const key = `${String(args.offset)}:${String(args.limit)}`;
+							if (typeof target === "string" && path.resolve(ctx.cwd, target) === pass.fileBackedContextPath &&
+								pass.fileBackedRequiredReads.some((range) => key === `${range.offset}:${range.limit}`)) {
+								pendingFileBackedReads.set(record.toolCallId, key);
 							}
-						} catch { /* malformed event arguments never establish file access */ }
+						} catch { /* malformed event arguments never establish file coverage */ }
 					}
-					if (record.type === "tool_execution_end" && typeof record.toolCallId === "string" &&
-						pendingFileBackedAccess.delete(record.toolCallId) && record.isError !== true) {
-						fileBackedAccessObserved = true;
+					if (record.type === "tool_execution_end" && typeof record.toolCallId === "string") {
+						const key = pendingFileBackedReads.get(record.toolCallId);
+						pendingFileBackedReads.delete(record.toolCallId);
+						if (key && record.isError !== true) completedFileBackedReads.add(key);
 					}
 				}
 			},
@@ -1024,6 +1037,8 @@ async function runSubagentAttempt(
 				cleanupReserveMs: budget.config.cleanupReserveMs,
 			} : undefined,
 		);
+		fileBackedAccessObserved = !!pass.fileBackedRequiredReads?.length &&
+			pass.fileBackedRequiredReads.every((range) => completedFileBackedReads.has(`${range.offset}:${range.limit}`));
 		result.fileBackedAccessObserved = fileBackedAccessObserved;
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt, deadlineMs };
 	} catch (e) {
@@ -1250,7 +1265,7 @@ async function runSubagentPass(
 			: classifyReviewLane(completionInput);
 		if (lifecycle === "complete" && pass.fileBackedContext && result.fileBackedAccessObserved !== true) {
 			lifecycle = "partial";
-			result.errorMessage = "File-backed complete diff was not accessed through read or grep.";
+			result.errorMessage = "File-backed complete diff was not fully read through every host-required range.";
 		}
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
@@ -1855,16 +1870,34 @@ export default function registerPrReviewSubagents(
 					? headers : undefined;
 			};
 			const headers = fileBacked ? exactHeaderManifest(diffText!) : undefined;
-			if (fileBacked && !headers) {
+			const boundedReadRanges = (text: string): FileBackedReadRange[] | undefined => {
+				const lines = text.split("\n");
+				const ranges: FileBackedReadRange[] = [];
+				let offset = 1, limit = 0, bytes = 0;
+				for (let index = 0; index < lines.length; index++) {
+					const lineBytes = Buffer.byteLength(lines[index]!, "utf8") + (index + 1 < lines.length ? 1 : 0);
+					if (lineBytes > MAX_FILE_BACKED_READ_BYTES) return undefined;
+					if (limit > 0 && (limit >= MAX_FILE_BACKED_READ_LINES || bytes + lineBytes > MAX_FILE_BACKED_READ_BYTES)) {
+						ranges.push({ offset, limit }); offset += limit; limit = 0; bytes = 0;
+					}
+					limit++; bytes += lineBytes;
+				}
+				if (limit > 0) ranges.push({ offset, limit });
+				return ranges.length > 0 && ranges.length <= 2_000 ? ranges : undefined;
+			};
+			const requiredReads = fileBacked ? boundedReadRanges(diffText!) : undefined;
+			if (fileBacked && (!headers || !requiredReads)) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: complete file-backed diff manifest is unsafe or exceeds deterministic bounds." }],
+					content: [{ type: "text", text: "Review batch context failed: complete file-backed diff manifest or bounded read plan is unsafe or exceeds deterministic bounds." }],
 					isError: true,
 					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};
 			}
 			const fileInstructions = fileBacked ? [
 				"--- File-backed complete diff ---",
-				`The complete captured unified diff is at ${JSON.stringify(loadedContext.contextFile)}. Use only the host-enforced read-only tools (read, grep, find, ls) to inspect it. Review the complete diff under this reviewer objective; the host does not create shard reviewers.`,
+				`The complete captured unified diff is at ${JSON.stringify(loadedContext.contextFile)}. Review the complete diff under this reviewer objective; the host does not create shard reviewers.`,
+				"To establish complete coverage, successfully call read with this exact path and every exact offset/limit pair below. Other tools or partial reads do not satisfy completion:",
+				...requiredReads!.map((range) => `- offset ${range.offset}, limit ${range.limit}`),
 				"Changed-file manifest:",
 				...headers!,
 			].join("\n") : undefined;
@@ -1885,7 +1918,7 @@ export default function registerPrReviewSubagents(
 					majorOnly,
 					minorHygiene: minorHygiene && fixed.id === "overview",
 					fileBackedContext: fileBacked,
-					...(fileBacked ? { fileBackedContextPath: loadedContext.contextFile } : {}),
+					...(fileBacked ? { fileBackedContextPath: loadedContext.contextFile, fileBackedRequiredReads: requiredReads } : {}),
 				};
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
