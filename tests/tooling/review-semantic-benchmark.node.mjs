@@ -248,12 +248,12 @@ test("atomic embedded artifact envelopes score without external artifact files",
 
 test("privacy sanitizer handles partitioned sessions without rewriting opaque bindings", () => {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-sanitize-")), runs = path.join(root, "runs"), entryId = "entry", artifactPath = "artifacts/lane.json"; fs.mkdirSync(runs);
-	const sessionBytes = Buffer.from(`${JSON.stringify({ type: "session", version: 3, cwd: "/Users/ey/project", user: "ey" })}\n`), sessionRecord = { sha256: sha256(sessionBytes), bytes: sessionBytes.length, recordCount: 1, contentBase64: sessionBytes.toString("base64") };
+	const sessionBytes = Buffer.from(`${JSON.stringify({ type: "session", version: 3, cwd: "/Users/ey/project", user: "ey" })}\n`), sessionRecord = { name: "session-000.jsonl", sourceNameSha256: "a".repeat(64), sha256: sha256(sessionBytes), bytes: sessionBytes.length, contentBase64: sessionBytes.toString("base64") };
 	const payload = { schemaVersion: 1, planEntryId: entryId, raw: { owner: "ey", session: { sha256: null, bytes: 0, recordCount: 0, contentBase64: null, files: [sessionRecord] } } }, payloadBytes = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`), reference = { kind: "lane-artifacts", path: artifactPath, sha256: sha256(payloadBytes), bytes: payloadBytes.length };
 	const runFile = path.join(runs, "row.json"), run = { planEntryId: entryId, note: "/Users/ey/project", artifacts: [reference], artifactPayloads: { [artifactPath]: payloadBytes.toString("base64") } }; fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`);
 	assert.equal(sanitizeBundle(root, "ey"), 1);
 	const sanitizedRun = JSON.parse(fs.readFileSync(runFile, "utf8")), encoded = sanitizedRun.artifactPayloads[artifactPath], sanitizedPayloadBytes = Buffer.from(encoded, "base64"), sanitizedPayload = JSON.parse(sanitizedPayloadBytes.toString("utf8")), sanitizedSession = Buffer.from(sanitizedPayload.raw.session.files[0].contentBase64, "base64").toString("utf8");
-	assert.equal(sha256(sanitizedPayloadBytes), sanitizedRun.artifacts[0].sha256); assert.equal(sanitizedPayloadBytes.length, sanitizedRun.artifacts[0].bytes); assert.match(sanitizedRun.note, /reviewer/); assert.doesNotMatch(sanitizedSession, /\/Users\/ey|\"ey\"/); assert.match(sanitizedSession, /reviewer/); assert.deepEqual(fs.readdirSync(runs), ["row.json"]);
+	assert.equal(sha256(sanitizedPayloadBytes), sanitizedRun.artifacts[0].sha256); assert.equal(sanitizedPayloadBytes.length, sanitizedRun.artifacts[0].bytes); assert.match(sanitizedRun.note, /reviewer/); assert.doesNotMatch(sanitizedSession, /\/Users\/ey|\"ey\"/); assert.match(sanitizedSession, /reviewer/); assert.equal(Object.hasOwn(sanitizedPayload.raw.session.files[0], "recordCount"), false); assert.deepEqual(fs.readdirSync(runs), ["row.json"]);
 });
 
 test("retained session lifecycle cannot be removed behind valid artifact hashes", () => {

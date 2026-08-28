@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 import { buildDogfoodReport } from "./pr-review-dogfood-report.mjs";
 
-function session(records) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-dogfood-report-")), file = path.join(root, "session.jsonl"); fs.writeFileSync(file, `${records.map(JSON.stringify).join("\n")}\n`); return file; }
+const tempRoots = [];
+function session(records) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-dogfood-report-")), file = path.join(root, "session.jsonl"); tempRoots.push(root); fs.writeFileSync(file, `${records.map(JSON.stringify).join("\n")}\n`); return file; }
+test.after(() => { for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 const raw = "# PR Review\n\n**Verdict:** approve", canonical = "# PR Review\n\n**Verdict:** Comment — incomplete lanes";
 const records = [
 	{ type: "session", version: 3 },

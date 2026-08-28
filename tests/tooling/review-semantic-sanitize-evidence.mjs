@@ -26,7 +26,7 @@ function sanitizeSession(bytes, entryId, accountName) {
 function sanitizedSessionRecord(record, entryId, accountName) {
 	if (!record || typeof record !== "object" || typeof record.contentBase64 !== "string") return record;
 	const sanitized = sanitizeSession(Buffer.from(record.contentBase64, "base64"), entryId, accountName);
-	return { ...record, sha256: sha256(sanitized), bytes: sanitized.length, recordCount: sanitized.toString("utf8").split("\n").filter(Boolean).length, contentBase64: sanitized.toString("base64") };
+	return { ...record, sha256: sha256(sanitized), bytes: sanitized.length, ...(Object.hasOwn(record, "recordCount") ? { recordCount: sanitized.toString("utf8").split("\n").filter(Boolean).length } : {}), contentBase64: sanitized.toString("base64") };
 }
 function replaceAtomic(file, bytes) {
 	const temporary = `${file}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
