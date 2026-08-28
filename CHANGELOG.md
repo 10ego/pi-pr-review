@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.9](https://github.com/10ego/pi-pr-review/compare/v1.15.8...v1.15.9) (2026-08-28)
+
+
+### Tests
+
+* **review:** add seeded semantic quality benchmark ([#104](https://github.com/10ego/pi-pr-review/issues/104)) ([ed06cd1](https://github.com/10ego/pi-pr-review/commit/ed06cd15c0f9358dadf95c6fa3768810b7923eca)), closes [#59](https://github.com/10ego/pi-pr-review/issues/59)
+
 ## [1.15.8](https://github.com/10ego/pi-pr-review/compare/v1.15.7...v1.15.8) (2026-08-26)
 
 
