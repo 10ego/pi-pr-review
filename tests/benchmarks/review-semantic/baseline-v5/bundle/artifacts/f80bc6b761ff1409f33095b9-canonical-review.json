@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "f80bc6b761ff1409f33095b9",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Parse `cached.value` instead of the metadata object",
+      "body": "`Cache.get()` now returns `{ value: string; stale: boolean } | null` (`src/cache.ts:5-6`), but `loadProfile` still passes the whole result to `JSON.parse` at `src/profile.ts:19`. TypeScript rejects this argument (`JSON.parse` expects `string`); if type checking is bypassed, every cache hit coerces the object to `\"[object Object]\"` and throws a `SyntaxError` instead of returning the profile. Fix: `JSON.parse(cached.value)` (and handle `stale` per intent). This is the only caller of `cache.get`, so nothing else needs the migration.",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    },
+    {
+      "title": "[P3] `stale` flag is fetched but never consumed — confirm intended handling",
+      "body": "The new `readWithMetadata` contract exposes `stale: true` entries, but the only caller (`loadProfile`, `src/profile.ts:19-21`) checks only existence. If stale entries are meant to trigger an API refresh or be distrusted (e.g. revoked or outdated profile state), that edge case is currently unhandled. Confirm whether serving stale-while-revalidate behavior is intended; if so, a brief comment would help.",
+      "severity": "P3",
+      "location": {
+        "path": "src/cache.ts",
+        "side": "RIGHT",
+        "start": 5,
+        "end": 6
+      }
+    },
+    {
+      "title": "[P3] Add regression coverage for the changed cache result contract",
+      "body": "The changed `{ value, stale }` return shape has no test coverage — the repository has no test tooling at all, and a cache-hit test through `loadProfile` would have caught the P1 above. Standing up minimal coverage for the cache-hit path would prevent future contract drift from silently reaching callers.",
+      "severity": "P3",
+      "location": {
+        "path": "src/cache.ts",
+        "side": "RIGHT",
+        "start": 5,
+        "end": 6
+      }
+    },
+    {
+      "title": "[nit] Drop the no-op delete/re-add of the `if (cached)` line",
+      "body": "The removed and re-added `if (cached) return JSON.parse(cached);` lines are byte-identical, adding diff/history noise without changing behavior. If the edit was meant to update this line for the new contract, that update is missing (see the P1 above).",
+      "severity": "nit",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR changes `Cache.get()` to return a metadata object — `{ value: string; stale: boolean } | null` — via `store.readWithMetadata(key)` instead of the raw cached string, while re-adding the `if (cached)` line in `loadProfile` unchanged. The stated intent is to \"refine behavior while preserving existing contracts.\"\n\nHowever, the return-type change does alter the contract, and the only caller (`src/profile.ts`) was not updated for it. `JSON.parse(cached)` now receives the metadata object rather than a string, which is a TypeScript type error and a runtime crash on every cache hit. The new `stale` flag is also never consulted.\n\n## Verification\n\nVerification was disabled: no user-level `verificationBaselines` are configured, so no baseline ran (no applicable name returned by discovery). Note that when enabled, verification executes PR code unsandboxed and is not full process-tree containment; use an external sandbox for untrusted PRs.\n\n## Findings\n\n### [P1] Parse `cached.value` instead of the metadata object\n**Severity:** P1\n**Rationale:** `Cache.get()` now returns `{ value: string; stale: boolean } | null` (`src/cache.ts:5-6`), but `loadProfile` still passes the whole result to `JSON.parse` at `src/profile.ts:19`. TypeScript rejects this argument (`JSON.parse` expects `string`); if type checking is bypassed, every cache hit coerces the object to `\"[object Object]\"` and throws a `SyntaxError` instead of returning the profile. Fix: `JSON.parse(cached.value)` (and handle `stale` per intent). This is the only caller of `cache.get`, so nothing else needs the migration.\n**Location:** `src/profile.ts:19 RIGHT`\n\n### [P3] `stale` flag is fetched but never consumed — confirm intended handling\n**Severity:** P3\n**Rationale:** The new `readWithMetadata` contract exposes `stale: true` entries, but the only caller (`loadProfile`, `src/profile.ts:19-21`) checks only existence. If stale entries are meant to trigger an API refresh or be distrusted (e.g. revoked or outdated profile state), that edge case is currently unhandled. Confirm whether serving stale-while-revalidate behavior is intended; if so, a brief comment would help.\n**Location:** `src/cache.ts:5-6 RIGHT`\n\n### [P3] Add regression coverage for the changed cache result contract\n**Severity:** P3\n**Rationale:** The changed `{ value, stale }` return shape has no test coverage — the repository has no test tooling at all, and a cache-hit test through `loadProfile` would have caught the P1 above. Standing up minimal coverage for the cache-hit path would prevent future contract drift from silently reaching callers.\n**Location:** `src/cache.ts:5-6 RIGHT`\n\n### [nit] Drop the no-op delete/re-add of the `if (cached)` line\n**Severity:** nit\n**Rationale:** The removed and re-added `if (cached) return JSON.parse(cached);` lines are byte-identical, adding diff/history noise without changing behavior. If the edit was meant to update this line for the new contract, that update is missing (see the P1 above).\n**Location:** `src/profile.ts:19 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Centralizes metadata retrieval behind the cache abstraction, keeping the cache-miss fallback path intact.\n- **Correctness:** blocking P1 — every cache hit in `loadProfile` throws after this change; patch is incorrect until the caller reads `cached.value`.\n- **Security:** no injection, secret-exposure, or trust-boundary regressions beyond the staleness question noted above.\n- **Performance:** no resource, allocation, or I/O regressions introduced."
+}

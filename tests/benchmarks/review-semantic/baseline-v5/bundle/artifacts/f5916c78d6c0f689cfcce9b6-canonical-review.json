@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "f5916c78d6c0f689cfcce9b6",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P0] Restore the `RequestOptions` export removed from types.ts",
+      "body": "`src/client.ts` line 1 imports `RequestOptions` from `\"./types\"`, and `request(path: string, options: RequestOptions)` on line 3 still uses it, but this PR deletes the only declaration of that interface from `src/types.ts`. Since the repository contains no other modules or ambient declarations, every TypeScript compilation/type-check fails with TS2305 (\"Module './types' has no exported member 'RequestOptions'\"), regardless of input. This directly contradicts the PR's stated goal of preserving existing contracts. Either restore the export or complete the migration end-to-end — note that simply swapping to `ClientOptions` would also fail because `request()` reads `options.timeoutMs`, which `ClientOptions` does not define.",
+      "severity": "P0",
+      "location": {
+        "path": "src/types.ts",
+        "side": "LEFT",
+        "start": 1,
+        "end": 1
+      }
+    },
+    {
+      "title": "[nit] Drop the unused `ClientOptions` import in client.ts",
+      "body": "The import added on line 1 of `src/client.ts` is never referenced anywhere in the file. It is dead code as written (and would trip `noUnusedLocals` or unused-import lint rules in stricter setups). If it is groundwork for an intended signature change, that change is not in this diff; otherwise remove it.",
+      "severity": "nit",
+      "location": {
+        "path": "src/client.ts",
+        "side": "RIGHT",
+        "start": 1,
+        "end": 1
+      }
+    }
+  ],
+  "markdown": "All candidates validated against source: `src/types.ts` at head exports only `ClientOptions`/`normalizeClientOptions`, while `src/client.ts:1` still imports `RequestOptions` and `request()` still types its parameter with it — a guaranteed TypeScript module-contract failure introduced by this diff. `ClientOptions` is imported but never referenced.\n\n# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis PR removes the exported `RequestOptions` interface from `src/types.ts` while leaving `ClientOptions` and `normalizeClientOptions` intact, and updates the import line in `src/client.ts` to pull in both `RequestOptions` and `ClientOptions`. The `request()` function itself is unchanged and still declares its `options` parameter as `RequestOptions`, reading `options.timeoutMs` for the abort timeout.\n\nThe PR describes itself as \"refining behavior while preserving existing contracts,\" but the net effect is the opposite on the type level: the module graph is left broken. `client.ts` imports a named export that `./types` no longer provides, so any TypeScript type-check of this code fails. If the intent was to migrate `request()` onto `ClientOptions`, the migration is half-finished — and `ClientOptions` has no `timeoutMs` field, so a straight swap would not type-check either.\n\n## Verification\nVerification did not run: no user-level verification baselines are configured, so trusted baseline execution is disabled (it would execute PR code without a filesystem/network sandbox; a container wrapper would be recommended for untrusted PRs if ever enabled). The review therefore relied on static analysis: the complete diff plus direct reads of both changed files and a full repository file listing (the repo contains only these two files — no tsconfig, package.json, tests, or CI).\n\n## Findings\n\n### [P0] Restore the `RequestOptions` export removed from types.ts\n**Severity:** P0\n**Rationale:** `src/client.ts` line 1 imports `RequestOptions` from `\"./types\"`, and `request(path: string, options: RequestOptions)` on line 3 still uses it, but this PR deletes the only declaration of that interface from `src/types.ts`. Since the repository contains no other modules or ambient declarations, every TypeScript compilation/type-check fails with TS2305 (\"Module './types' has no exported member 'RequestOptions'\"), regardless of input. This directly contradicts the PR's stated goal of preserving existing contracts. Either restore the export or complete the migration end-to-end — note that simply swapping to `ClientOptions` would also fail because `request()` reads `options.timeoutMs`, which `ClientOptions` does not define.\n**Location:** `src/types.ts:1 LEFT`\n\n### [nit] Drop the unused `ClientOptions` import in client.ts\n**Severity:** nit\n**Rationale:** The import added on line 1 of `src/client.ts` is never referenced anywhere in the file. It is dead code as written (and would trip `noUnusedLocals` or unused-import lint rules in stricter setups). If it is groundwork for an intended signature change, that change is not in this diff; otherwise remove it.\n**Location:** `src/client.ts:1 RIGHT`\n\n## Lane completeness\nThe `performance-resources` pass returned `partial` twice (initial batch and rerun); its retained raw evidence was `NO FINDINGS`, and I covered the lane inline: the diff only removes a type-only export and edits a type import, introducing no runtime behavior, allocation, I/O, or resource-ownership change. The other five requested lanes (overview, conventions-maintainability, correctness, correctness-contracts, security-performance) completed.\n\n## Strengths and notes\n- The diff is small and scoped, and it correctly preserves `ClientOptions` and `normalizeClientOptions` untouched.\n- The runtime behavior of `request()` — including the `AbortSignal.timeout(options.timeoutMs)` cancellation path — is unchanged.\n- Correctness: broken import/export contract (P0 above). Security: no security regressions introduced. Performance: no runtime or resource changes introduced."
+}

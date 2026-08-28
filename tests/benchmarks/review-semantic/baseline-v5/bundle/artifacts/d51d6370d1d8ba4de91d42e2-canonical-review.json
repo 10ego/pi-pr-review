@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "d51d6370d1d8ba4de91d42e2",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Parse the versioned record's payload, not the record object",
+      "body": "On every cache hit, `lookup` now returns a truthy `{ payload, revision }` object, but `src/resolve.ts:3` still executes `JSON.parse(cached)`. `JSON.parse` coerces the object to `\"[object Object]\"` and throws a `SyntaxError`, so cached resolution always fails instead of returning the parsed payload. Fix with `JSON.parse(cached.payload)` (or preserve the old string contract, as the PR description claims).",
+      "severity": "P1",
+      "location": {
+        "path": "src/resolve.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P1] Do not call the undefined `store.readVersioned` method",
+      "body": "`src/registry.ts:3` now calls `this.store.readVersioned(key)`, but `readVersioned` has no definition anywhere in the repository or the diff — the base branch used `store.read(key)`. Any store satisfying the pre-PR contract lacks this method, so every lookup rejects with `TypeError: this.store.readVersioned is not a function`. The store interface/implementation must be updated in the same change.",
+      "severity": "P1",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P2] Remove the ~2,200 duplicated filler comments per file",
+      "body": "Both files grow from 5 to 2,205 lines, with `src/registry.ts:4-2203` (and `src/resolve.ts:4-2203`) consisting entirely of near-identical \"compatibility note NNNN: behavior remains externally documented\" comments inside the method body. They bury the substantive two-line change, add ~178KB of dead weight per file to every checkout/linter/compiler scan, and create massive review and churn noise. If generated, exclude them from the commit rather than committing the artifact.",
+      "severity": "P2",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 4,
+        "end": 2203
+      }
+    },
+    {
+      "title": "[P3] Add coverage for the changed versioned lookup path",
+      "body": "The PR changes the central cache-read contract (new result shape, new store method) with no test coverage for either the cache-hit or cache-miss path; the repository currently has no tests at all. The P1 `JSON.parse` break is exactly what a regression test on `resolve()` would have caught. Even minimal coverage of the versioned record would protect this contract.",
+      "severity": "P3",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 2,
+        "end": 3
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites `Registry.lookup` in `src/registry.ts` to return a versioned record — `Promise<{ payload: string; revision: number } | null>` — delegating to `this.store.readVersioned(key)` instead of `this.store.read(key)`. `src/resolve.ts` is textually almost unchanged. Despite the PR description (\"preserving existing contracts\"), the return-shape change breaks the only caller, and the new store method has no definition anywhere. The bulk of the 357KB diff is ~2,200 near-identical filler comments per file (\"compatibility note NNNN\"), with the substantive edits confined to the first few lines of each file.\n\nTwo blocking defects follow directly from the contract change: `resolve()` still passes the versioned object to `JSON.parse`, so every cache hit throws; and `readVersioned` does not exist in this repository, so any store satisfying the pre-PR `read()` shape rejects with a `TypeError`.\n\n## Verification\n\nNo verification baseline ran: `pr_review_verify` (action `list`) reported verification disabled because no user-level `verificationBaselines` are configured, so no baseline name was selectable. Note that when enabled, verification executes PR code unsandboxed (only the original POSIX process group is supervised; a deliberate `setsid` escape survives it) — use an external sandbox/container wrapper for untrusted PRs. Validation was instead source-grounded: I read the diff heads/tails, compared `git show main:...` base versions, and grepped the repository for `readVersioned`/`lookup` references (only the two changed files exist).\n\n## Findings\n\n### [P1] Parse the versioned record's payload, not the record object\n**Severity:** P1\n**Rationale:** On every cache hit, `lookup` now returns a truthy `{ payload, revision }` object, but `src/resolve.ts:3` still executes `JSON.parse(cached)`. `JSON.parse` coerces the object to `\"[object Object]\"` and throws a `SyntaxError`, so cached resolution always fails instead of returning the parsed payload. Fix with `JSON.parse(cached.payload)` (or preserve the old string contract, as the PR description claims).\n**Location:** `src/resolve.ts:3 RIGHT`\n\n### [P1] Do not call the undefined `store.readVersioned` method\n**Severity:** P1\n**Rationale:** `src/registry.ts:3` now calls `this.store.readVersioned(key)`, but `readVersioned` has no definition anywhere in the repository or the diff — the base branch used `store.read(key)`. Any store satisfying the pre-PR contract lacks this method, so every lookup rejects with `TypeError: this.store.readVersioned is not a function`. The store interface/implementation must be updated in the same change.\n**Location:** `src/registry.ts:3 RIGHT`\n\n### [P2] Remove the ~2,200 duplicated filler comments per file\n**Severity:** P2\n**Rationale:** Both files grow from 5 to 2,205 lines, with `src/registry.ts:4-2203` (and `src/resolve.ts:4-2203`) consisting entirely of near-identical \"compatibility note NNNN: behavior remains externally documented\" comments inside the method body. They bury the substantive two-line change, add ~178KB of dead weight per file to every checkout/linter/compiler scan, and create massive review and churn noise. If generated, exclude them from the commit rather than committing the artifact.\n**Location:** `src/registry.ts:4-2203 RIGHT`\n\n### [P3] Add coverage for the changed versioned lookup path\n**Severity:** P3\n**Rationale:** The PR changes the central cache-read contract (new result shape, new store method) with no test coverage for either the cache-hit or cache-miss path; the repository currently has no tests at all. The P1 `JSON.parse` break is exactly what a regression test on `resolve()` would have caught. Even minimal coverage of the versioned record would protect this contract.\n**Location:** `src/registry.ts:2-3 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. 12 lanes dispatched (6 passes × 2 shards); 9 completed on first run. Three lanes returned `partial` (`correctness` shard 2, `security-performance` shard 1, `performance-resources` shard 1) with raw NO FINDINGS evidence preserved; each was rerun with `review_subagent` at the same tier and tool policy — the correctness and performance reruns completed with NO FINDINGS, and the security rerun again reported `partial` status but emitted complete raw NO FINDINGS output, corroborated inline (the changed lines introduce no new parsing of untrusted input, secrets, network/process access, or trust-boundary change).\n\n## Strengths and notes\n\n- The versioned return type makes the intended registry API shape explicit, which is a reasonable direction if callers are migrated with it.\n- The remote-resolution fallback in `resolve.ts` is preserved, and the substantive delta is small and easy to isolate once the filler comments are ignored.\n- Correctness: both P1s block merge — the caller break and the missing store method must be resolved together (update `resolve.ts` to use `cached.payload` and add/declare `readVersioned` on the store, or revert the contract change).\n- Security: no security regressions introduced by the changed lines.\n- Performance: no runtime performance regression beyond the dead-weight comment volume noted in the P2 finding."
+}

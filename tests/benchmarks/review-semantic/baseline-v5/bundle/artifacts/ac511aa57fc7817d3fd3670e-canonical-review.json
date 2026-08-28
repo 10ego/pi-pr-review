@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "ac511aa57fc7817d3fd3670e",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P2] Skip errors from aborted, superseded searches in the catch block",
+      "body": "`search()` aborts the previous in-flight request via `this.active?.abort()` (src/search.ts:21) before starting a new one. Under the `AbortController`/fetch contract this rejects the superseded call's awaited promise with an `AbortError`, and the new catch block unconditionally calls `renderError` for it. Any typeahead-style usage (two overlapping searches) therefore renders a spurious error for a request the controller itself cancelled — a transient error flash over the UI while the newer request is pending, and, if a superseded request's rejection is delivered after the newest result renders, an error state that clobbers the fresh result. Expected aborts should be ignored, e.g. `if (error?.name === 'AbortError') return;` or a `this.active.signal.aborted` guard before rendering.",
+      "severity": "P2",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 26,
+        "end": 27
+      }
+    },
+    {
+      "title": "[P2] `renderError` is invoked but defined nowhere in the repository",
+      "body": "The PR introduces the only reference to `this.renderError` (src/search.ts:27), but no declaration, assignment, or base class exists anywhere in the repository (the repo contains only this file, and `SearchController` declares just `search`). If this class is the complete definition, the new error path itself throws `TypeError: this.renderError is not a function` on the first API failure, replacing the original error with a crash in the handler. The sibling members `api`, `render`, and `active` are also undeclared in this file, so if those are provided externally, confirm `renderError` is too — otherwise the diff needs to include the method.",
+      "severity": "P2",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 27,
+        "end": 27
+      }
+    },
+    {
+      "title": "[P3] `search()` now resolves instead of rejecting after rendering an error — confirm intended",
+      "body": "Previously an API rejection propagated to callers of `search()`; after this change the method always resolves with `undefined` once the error is rendered (src/search.ts:23-28). This is a reasonable pattern for a UI controller, but it changes the async method's observable contract despite the PR stating existing contracts are preserved. No callers exist in this repository to substantiate breakage, so this is only a worth-confirming note: verify nothing awaits `search()` expecting to catch failures.",
+      "severity": "P3",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 26,
+        "end": 28
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR adds error handling to `SearchController.search` in `src/search.ts`: the awaited `this.api.search(query, this.active.signal)` call and the subsequent `this.render(result)` are now wrapped in `try`/`catch`, and any rejection is routed to `this.renderError(error)`. The abort-supersede flow (`this.active?.abort()` before starting a new request) and the success path are otherwise unchanged, matching the stated intent of refining behavior without altering the request contract.\n\nThe approach is sound in outline — centralizing failure rendering is a genuine improvement over letting rejections escape unhandled — but the catch block does not distinguish deliberately aborted (superseded) requests from genuine failures, and the newly referenced `renderError` has no definition anywhere in this repository. Neither rises to a blocking defect, but both should be addressed before this pattern is relied upon.\n\n## Verification\n\nVerification did not run: no user-level `verificationBaselines` profiles are configured (`pr_review_verify` list returned `enabled: false`, zero applicable names), so there was no trusted baseline to select. Note that baseline execution runs PR code unsandboxed (supervision signals only the original POSIX process group) and is disabled absent an explicit opt-in; nothing was substituted in its place.\n\n## Findings\n\n### [P2] Skip errors from aborted, superseded searches in the catch block\n**Severity:** P2\n**Rationale:** `search()` aborts the previous in-flight request via `this.active?.abort()` (src/search.ts:21) before starting a new one. Under the `AbortController`/fetch contract this rejects the superseded call's awaited promise with an `AbortError`, and the new catch block unconditionally calls `renderError` for it. Any typeahead-style usage (two overlapping searches) therefore renders a spurious error for a request the controller itself cancelled — a transient error flash over the UI while the newer request is pending, and, if a superseded request's rejection is delivered after the newest result renders, an error state that clobbers the fresh result. Expected aborts should be ignored, e.g. `if (error?.name === 'AbortError') return;` or a `this.active.signal.aborted` guard before rendering.\n**Location:** `src/search.ts:26-27 RIGHT`\n\n### [P2] `renderError` is invoked but defined nowhere in the repository\n**Severity:** P2\n**Rationale:** The PR introduces the only reference to `this.renderError` (src/search.ts:27), but no declaration, assignment, or base class exists anywhere in the repository (the repo contains only this file, and `SearchController` declares just `search`). If this class is the complete definition, the new error path itself throws `TypeError: this.renderError is not a function` on the first API failure, replacing the original error with a crash in the handler. The sibling members `api`, `render`, and `active` are also undeclared in this file, so if those are provided externally, confirm `renderError` is too — otherwise the diff needs to include the method.\n**Location:** `src/search.ts:27 RIGHT`\n\n### [P3] `search()` now resolves instead of rejecting after rendering an error — confirm intended\n**Severity:** P3\n**Rationale:** Previously an API rejection propagated to callers of `search()`; after this change the method always resolves with `undefined` once the error is rendered (src/search.ts:23-28). This is a reasonable pattern for a UI controller, but it changes the async method's observable contract despite the PR stating existing contracts are preserved. No callers exist in this repository to substantiate breakage, so this is only a worth-confirming note: verify nothing awaits `search()` expecting to catch failures.\n**Location:** `src/search.ts:26-28 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. The `performance-resources` lane initially returned `partial`; it was rerun to completion with the same tier and tool policy, and its single P3 candidate (duplicate of the superseded-search finding above) was merged into that finding.\n\n## Strengths and notes\n\n- Adds explicit failure handling without changing the request setup, abort flow, or success path — a narrowly scoped change.\n- Routing errors through a dedicated `renderError` keeps UI error behavior centralized rather than scattered.\n- **Correctness:** the two P2s above — the missing `AbortError` guard and the undefined `renderError` — are the only substantive defects; both are non-blocking.\n- **Security:** no substantiated issues; the lanes' concern about rendering raw error objects was dropped as speculative since `renderError` has no visible implementation to evaluate.\n- **Performance:** no resource or scalability regressions introduced; the only perf-relevant note is the avoidable error-render cycle per superseded search, folded into the first finding."
+}

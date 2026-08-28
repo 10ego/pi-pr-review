@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "7c5871ec828251ab82ebf007",
+  "caseId": "cross-shard-cache-contract",
+  "mode": "balanced",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T12:21:46.584Z",
+  "elapsedMs": 221970.421,
+  "timing": {
+    "parentValidationSynthesisMs": 148079.849
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 5
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 10005.749625205994,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 26126.86074924469,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 50739.83537483215,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 18758.94833278656,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "partial",
+      "elapsedMs": 25515.200958251953,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Unwrap cache metadata before JSON.parse in loadProfile",
+      "body": "On every cache hit, `cached` is now an object of shape `{ value: string; stale: boolean }` rather than a JSON string, so `JSON.parse(cached)` stringifies it to `\"[object Object]\"` and throws a `SyntaxError` — breaking every cached profile load after the first. It is also a type error under the new `Cache.get` return signature (`JSON.parse` accepts `string`). The fix is to parse `cached.value` and handle `stale` as intended. Evidence: `src/cache.ts:5-7` (`get` now returns `readWithMetadata`'s metadata object) vs. the unchanged consumer at `src/profile.ts:18-19`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/7c5871ec828251ab82ebf007-lane-artifacts.json",
+      "sha256": "b5700a29e4b4ea54bf7c13898c84c7f5407bcb520447a94ac93eed493ae00b10",
+      "bytes": 172215
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/7c5871ec828251ab82ebf007-canonical-review.json",
+      "sha256": "00f7669922351bc98c685b8adf18e7fe9c7ac01f9e6ea143961774bfd9612c3b",
+      "bytes": 3724
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "5dccd76844d793e275010484",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore tenant scoping in getDocument query",
+      "body": "Any authenticated user can now retrieve another tenant's document simply by supplying its ID. The removed line `tenantId: ctx.user.tenantId,` was the only tenant isolation on this query; the surviving filter `where: { id }` (`src/documents.ts:33`, in `getDocument`) performs an ID-only lookup, so `db.documents.findFirst` will match and return documents belonging to other tenants. This is a cross-tenant authorization bypass / data-exposure regression that bites under realistic inputs (any enumerable or leaked document ID) and directly contradicts the PR's stated intent of preserving existing contracts. Restore the tenant filter, e.g. `where: { id, tenantId: ctx.user.tenantId }`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 33,
+        "end": 33
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis PR modifies `getDocument` in `src/documents.ts` by removing `tenantId: ctx.user.tenantId` from the `db.documents.findFirst` where clause, leaving the lookup filtered only by `id`. The authentication check (`if (!ctx.user) throw new UnauthorizedError()`) is retained.\n\nDespite the PR description claiming to \"preserve existing contracts,\" this change breaks the tenant-scoping contract of the document fetch: document access is no longer isolated per tenant. The single confirmed finding below is a blocking cross-tenant authorization regression.\n\n## Verification\nVerification was skipped: no user-level `verificationBaselines` are configured (`action: list` returned `enabled: false`), so there was no applicable trusted baseline to run. Note that baseline execution runs PR code unsandboxed (lifecycle supervision signals only the original POSIX process group; a deliberate `setsid`/session escape can survive it) — use an external sandbox or container wrapper when enabling verification for untrusted PRs.\n\n## Findings\n\n### [P1] Restore tenant scoping in getDocument query\n**Severity:** P1\n**Rationale:** Any authenticated user can now retrieve another tenant's document simply by supplying its ID. The removed line `tenantId: ctx.user.tenantId,` was the only tenant isolation on this query; the surviving filter `where: { id }` (`src/documents.ts:33`, in `getDocument`) performs an ID-only lookup, so `db.documents.findFirst` will match and return documents belonging to other tenants. This is a cross-tenant authorization bypass / data-exposure regression that bites under realistic inputs (any enumerable or leaked document ID) and directly contradicts the PR's stated intent of preserving existing contracts. Restore the tenant filter, e.g. `where: { id, tenantId: ctx.user.tenantId }`.\n**Location:** `src/documents.ts:33 RIGHT`\n\n## Lane completeness\nThe `conventions-maintainability`, `correctness`, and `performance-resources` lanes returned `partial` status (raw evidence: `NO FINDINGS`). Each was rerun with `review_subagent` under the same tool policy and returned identical raw evidence, and the orchestrator covered all three inline against the diff and surrounding file — no convention files exist, the one-line where-clause edit introduces no lifecycle/concurrency or resource concerns, and no additional findings were identified. `overview`, `correctness-contracts`, and `security-performance` completed fully.\n\n## Strengths and notes\n- The authentication guard (`if (!ctx.user) throw new UnauthorizedError()`) is preserved, and the change is minimal and easy to revert.\n- Correctness: no state, ordering, async, or contract-compatibility issues beyond the tenant-scoping regression above.\n- Security: the tenant-isolation removal is the sole security finding and is blocking.\n- Performance: no regressions — the query remains a single indexed `findFirst`; removing a filter does not introduce leaks or unbounded work."
+}

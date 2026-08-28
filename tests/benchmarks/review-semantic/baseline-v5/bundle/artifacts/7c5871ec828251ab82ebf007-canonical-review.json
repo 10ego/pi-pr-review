@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "7c5871ec828251ab82ebf007",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Unwrap cache metadata before JSON.parse in loadProfile",
+      "body": "On every cache hit, `cached` is now an object of shape `{ value: string; stale: boolean }` rather than a JSON string, so `JSON.parse(cached)` stringifies it to `\"[object Object]\"` and throws a `SyntaxError` — breaking every cached profile load after the first. It is also a type error under the new `Cache.get` return signature (`JSON.parse` accepts `string`). The fix is to parse `cached.value` and handle `stale` as intended. Evidence: `src/cache.ts:5-7` (`get` now returns `readWithMetadata`'s metadata object) vs. the unchanged consumer at `src/profile.ts:18-19`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis PR changes `Cache.get` in `src/cache.ts` to return value metadata — `Promise<{ value: string; stale: boolean } | null>` — by delegating to `this.store.readWithMetadata(key)` instead of `this.store.read(key)`. The miss path stays nullable, preserving the \"null on missing key\" behavior.\n\nHowever, the caller in `src/profile.ts` was not adapted to the new shape: `loadProfile` still feeds the `Cache.get` result straight into `JSON.parse`. Despite the PR's stated intent to \"preserve existing contracts,\" this change breaks the existing consumer, so the patch cannot be merged as-is.\n\n## Verification\nVerification was not run: no user-level `verificationBaselines` are configured, so `pr_review_verify` reported verification as disabled. (Note: baseline execution runs PR code unsandboxed — it is only enabled when a trusted user-level profile explicitly acknowledges that risk; a sandbox/container wrapper is recommended for untrusted PRs.) The finding below was instead confirmed by direct source inspection at the PR head.\n\n## Findings\n\n### [P1] Unwrap cache metadata before JSON.parse in loadProfile\n**Severity:** P1\n**Rationale:** On every cache hit, `cached` is now an object of shape `{ value: string; stale: boolean }` rather than a JSON string, so `JSON.parse(cached)` stringifies it to `\"[object Object]\"` and throws a `SyntaxError` — breaking every cached profile load after the first. It is also a type error under the new `Cache.get` return signature (`JSON.parse` accepts `string`). The fix is to parse `cached.value` and handle `stale` as intended. Evidence: `src/cache.ts:5-7` (`get` now returns `readWithMetadata`'s metadata object) vs. the unchanged consumer at `src/profile.ts:18-19`.\n**Location:** `src/profile.ts:19 RIGHT`\n\n## Lane completeness\nThe `performance-resources` lane initially returned `partial`; its raw evidence (no findings) was preserved and the pass was rerun with the same tool policy (`configured`), completing with no findings. All other requested lanes (`overview`, `correctness`, `correctness-contracts`, `security-performance`) completed on the first dispatch.\n\n## Strengths and notes\n- Adds stale-state metadata at the cache boundary, which is a reasonable design for serving slightly stale entries.\n- Keeps the missing-cache behavior nullable, so the miss path in `loadProfile` continues to work unchanged.\n- Correctness: only the cache-hit consumer break above; no state/lifecycle or ordering defects found.\n- Security: no injection, secrets, or trust-boundary issues introduced.\n- Performance: no resource leaks, algorithmic regressions, or unbounded work introduced."
+}

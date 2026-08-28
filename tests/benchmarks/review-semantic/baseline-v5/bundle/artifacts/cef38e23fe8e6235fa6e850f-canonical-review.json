@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "cef38e23fe8e6235fa6e850f",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P3] Short-circuit empty input before querying",
+      "body": "Previously `loadUsers([])` resolved to `[]` via `Promise.all([])` without touching the database. The new code unconditionally awaits `findMany({ where: { id: { in: [] } } })`, adding a wasted round trip for an inherently empty result, and on adapters that reject empty `IN` lists (or when the database is unavailable) a call that always succeeded can now reject. A trivial guard restores the old behavior: `if (ids.length === 0) return [];`",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 22,
+        "end": 23
+      }
+    },
+    {
+      "title": "[P3] Confirm `null` is the intended not-found sentinel",
+      "body": "The old implementation returned each `db.users.find(id)` result verbatim; `byId.get(id) ?? null` now normalizes missing rows to `null`. If this adapter's `find` resolves `undefined` for unknown ids, callers distinguishing `undefined` from `null` (e.g. strict `=== undefined` checks) see a changed return contract, despite the PR description stating existing contracts are preserved. `db` is not declared anywhere in this repo (pre-existing), so the previous sentinel cannot be confirmed from source — worth verifying against the actual adapter, or mapping to whatever `find` used to return.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 25,
+        "end": 25
+      }
+    },
+    {
+      "title": "[P3] Confirm the adapter handles large `in` lists",
+      "body": "The change goes from N single-parameter queries to one statement with one bind parameter per unique id, and `ids` is unbounded. Many adapters cap parameters per statement (SQLite ~999 by default, SQL Server 2100); above the cap the single `findMany` fails outright where the per-id version did not. If large input lists are realistic, chunk `uniqueIds` into batches and merge the resulting maps.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 23
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites `loadUsers` in `src/users.ts` from an N+1 pattern (`Promise.all(ids.map(id => db.users.find(id)))`) into a single batched lookup: it deduplicates the input ids, fetches all rows with one `findMany({ where: { id: { in: uniqueIds } } })`, builds a `Map` keyed by row id, and remaps the original `ids` array to the fetched rows (missing ids become `null`).\n\nThe rewrite is a clear improvement — one database round trip instead of N — and it correctly preserves the caller-visible shape: result length, ordering, and duplicate positions all match the input array. The residual issues are edge-case confirmations rather than blocking defects: empty input now hits the database, the not-found sentinel is normalized to `null`, and one query now carries one bind parameter per unique id.\n\n## Verification\n\nVerification was disabled: `pr_review_verify` (list) reported no user-level `verificationBaselines` are configured, so no baseline was selected or run. Disclosure: configured baselines execute PR code unsandboxed with POSIX-process-group supervision only — deliberate session escapes can survive it; use an external sandbox/container wrapper for untrusted PRs.\n\n## Findings\n\n### [P3] Short-circuit empty input before querying\n**Severity:** P3\n**Rationale:** Previously `loadUsers([])` resolved to `[]` via `Promise.all([])` without touching the database. The new code unconditionally awaits `findMany({ where: { id: { in: [] } } })`, adding a wasted round trip for an inherently empty result, and on adapters that reject empty `IN` lists (or when the database is unavailable) a call that always succeeded can now reject. A trivial guard restores the old behavior: `if (ids.length === 0) return [];`\n**Location:** `src/users.ts:22-23 RIGHT`\n\n### [P3] Confirm `null` is the intended not-found sentinel\n**Severity:** P3\n**Rationale:** The old implementation returned each `db.users.find(id)` result verbatim; `byId.get(id) ?? null` now normalizes missing rows to `null`. If this adapter's `find` resolves `undefined` for unknown ids, callers distinguishing `undefined` from `null` (e.g. strict `=== undefined` checks) see a changed return contract, despite the PR description stating existing contracts are preserved. `db` is not declared anywhere in this repo (pre-existing), so the previous sentinel cannot be confirmed from source — worth verifying against the actual adapter, or mapping to whatever `find` used to return.\n**Location:** `src/users.ts:25 RIGHT`\n\n### [P3] Confirm the adapter handles large `in` lists\n**Severity:** P3\n**Rationale:** The change goes from N single-parameter queries to one statement with one bind parameter per unique id, and `ids` is unbounded. Many adapters cap parameters per statement (SQLite ~999 by default, SQL Server 2100); above the cap the single `findMany` fails outright where the per-id version did not. If large input lists are realistic, chunk `uniqueIds` into batches and merge the resulting maps.\n**Location:** `src/users.ts:23 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. The `correctness` lane initially returned `partial` in the batch; it was rerun to completion with the same tool policy and its evidence merged. The `security-performance` lane completed with NO FINDINGS.\n\n## Strengths and notes\n\n- Genuine performance win: collapses N sequential round trips into one batched query while keeping result reconstruction O(n) via the `Map`.\n- Correctly preserves caller-visible ordering, length, and duplicate positions by remapping over the original `ids` array rather than the deduplicated set.\n- Missing rows are handled explicitly instead of producing sparse/unstable results.\n\nNotes: correctness — order and duplicate semantics are preserved; the flagged items are edge cases (empty input, sentinel normalization). Security — no concerns; the `where` clause stays parameterized with no new injection or trust-boundary surface. Performance — the batching is an improvement; the only residual costs are the edge cases above and the throwaway pair array fed to `new Map`, which is idiomatic and negligible. The repo has no test infrastructure at all, so the new dedup/remap semantics (duplicates, out-of-order ids, missing ids, empty input) are unverified — if coverage is ever added, those cases would pin this behavior down."
+}

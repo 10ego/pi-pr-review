@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "fea6f880ddd29358f7fc1d30",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P0] Restore the `RequestOptions` export deleted from types.ts",
+      "body": "The removed line `export interface RequestOptions { timeoutMs: number }` was the only declaration of this type. After this PR, `src/client.ts:1` imports `RequestOptions` from `\"./types\"` and `src/client.ts:3` uses it as the parameter type of the exported `request()` function, so TypeScript fails with `Module '\"./types\"' has no exported member 'RequestOptions'` (TS2305) — the project will not compile regardless of input. A repository-wide search confirms `src/client.ts` is the only consumer, so keeping the interface in `types.ts` (or moving the declaration into `client.ts` and updating the import) is required. This also silently breaks any external consumers importing this public type.",
+      "severity": "P0",
+      "location": {
+        "path": "src/types.ts",
+        "side": "LEFT",
+        "start": 1,
+        "end": 1
+      }
+    },
+    {
+      "title": "[nit] Drop the unused `ClientOptions` import in client.ts",
+      "body": "The import was widened to `{ RequestOptions, ClientOptions }`, but `ClientOptions` is never referenced in `src/client.ts`. Remove it or use it, whichever the intended refactor calls for.",
+      "severity": "nit",
+      "location": {
+        "path": "src/client.ts",
+        "side": "RIGHT",
+        "start": 1,
+        "end": 1
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis two-file TypeScript change deletes the exported `RequestOptions` interface from `src/types.ts` and widens the import in `src/client.ts` to `{ RequestOptions, ClientOptions }`. The runtime behavior of `request()` (fetch with `AbortSignal.timeout(options.timeoutMs)`) is untouched.\n\nDespite the stated intent to \"preserve existing contracts,\" the PR does the opposite on the type level: `src/client.ts` still imports and uses `RequestOptions`, which no longer exists in `./types`, so the project no longer type-checks/compiles. The newly imported `ClientOptions` is also unused.\n\n## Verification\n\nVerification was disabled for this run: `pr_review_verify` (`action: list`) found no user-level `verificationBaselines` configured, so no baseline was selected or run. Note that when enabled, baselines execute PR code unsandboxed (lifecycle supervision covers only the original POSIX process group); an external sandbox/container wrapper is recommended for untrusted PRs. Findings below were instead validated by direct source inspection of `src/types.ts`, `src/client.ts`, and a repository-wide `RequestOptions` usage search.\n\n## Findings\n\n### [P0] Restore the `RequestOptions` export deleted from types.ts\n**Severity:** P0\n**Rationale:** The removed line `export interface RequestOptions { timeoutMs: number }` was the only declaration of this type. After this PR, `src/client.ts:1` imports `RequestOptions` from `\"./types\"` and `src/client.ts:3` uses it as the parameter type of the exported `request()` function, so TypeScript fails with `Module '\"./types\"' has no exported member 'RequestOptions'` (TS2305) — the project will not compile regardless of input. A repository-wide search confirms `src/client.ts` is the only consumer, so keeping the interface in `types.ts` (or moving the declaration into `client.ts` and updating the import) is required. This also silently breaks any external consumers importing this public type.\n**Location:** `src/types.ts:1-1 LEFT`\n\n### [nit] Drop the unused `ClientOptions` import in client.ts\n**Severity:** nit\n**Rationale:** The import was widened to `{ RequestOptions, ClientOptions }`, but `ClientOptions` is never referenced in `src/client.ts`. Remove it or use it, whichever the intended refactor calls for.\n**Location:** `src/client.ts:1-1 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. (5/5 passes: overview, correctness, correctness-contracts, security-performance, performance-resources — all `status: complete`, no partial/failed lanes.)\n\n## Strengths and notes\n\n- The runtime request path (timeout via `AbortSignal.timeout`) is intentionally left unchanged, keeping behavior stable.\n- **Correctness:** the only functional defect is the broken import/export contract above; `normalizeClientOptions` and `ClientOptions` remain intact.\n- **Security:** no security regressions found in the changed lines.\n- **Performance:** no resource or performance regressions introduced."
+}

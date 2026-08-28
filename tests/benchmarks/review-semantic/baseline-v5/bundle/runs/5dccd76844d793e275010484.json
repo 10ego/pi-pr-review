@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "5dccd76844d793e275010484",
+  "caseId": "authorization-tenant-scope",
+  "mode": "full",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T11:50:01.298Z",
+  "elapsedMs": 222444.414,
+  "timing": {
+    "parentValidationSynthesisMs": 182655.692
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 8529.14845943451,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "partial",
+      "elapsedMs": 11799.73916721344,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "partial",
+      "elapsedMs": 13205.8062915802,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 20795.71320915222,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 23479.725749969482,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "partial",
+      "elapsedMs": 21304.986624717712,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore tenant scoping in getDocument query",
+      "body": "Any authenticated user can now retrieve another tenant's document simply by supplying its ID. The removed line `tenantId: ctx.user.tenantId,` was the only tenant isolation on this query; the surviving filter `where: { id }` (`src/documents.ts:33`, in `getDocument`) performs an ID-only lookup, so `db.documents.findFirst` will match and return documents belonging to other tenants. This is a cross-tenant authorization bypass / data-exposure regression that bites under realistic inputs (any enumerable or leaked document ID) and directly contradicts the PR's stated intent of preserving existing contracts. Restore the tenant filter, e.g. `where: { id, tenantId: ctx.user.tenantId }`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 33,
+        "end": 33
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/5dccd76844d793e275010484-lane-artifacts.json",
+      "sha256": "4a391db98319ef8a72ed6d7b85bebec6802590bddcb0d7e666add63d4157f8c0",
+      "bytes": 193344
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/5dccd76844d793e275010484-canonical-review.json",
+      "sha256": "caabe3710a849e9b5b4c88cff23acda3776df8c32e77a926e27bab7321c7f298",
+      "bytes": 4144
+    }
+  ]
+}

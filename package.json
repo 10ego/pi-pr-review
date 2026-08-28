@@ -51,7 +51,9 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/extraction-tally.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/workflows.node.mjs",
+    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/extraction-tally.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/review-semantic-benchmark.node.mjs tests/tooling/workflows.node.mjs",
+    "benchmark:review": "node tests/tooling/review-semantic-benchmark.mjs",
+    "benchmark:review:collect": "bun tests/tooling/review-semantic-collect.mjs",
     "verify:release-version": "node scripts/verify-release-version.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:workflows": "node scripts/verify-workflows.mjs"

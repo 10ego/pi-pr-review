@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "81e8ddfd822ea27bce8d9d72",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore tenant scoping in the document lookup",
+      "body": "Removing `tenantId: ctx.user.tenantId` from the `where` clause leaves `db.documents.findFirst({ where: { id } })` unscoped. Any authenticated user of tenant A who supplies a document ID belonging to tenant B can retrieve that tenant's document — broken tenant-level access control (cross-tenant IDOR) and potential sensitive-data exposure. A repo-wide search confirms this was the only tenant filter, so nothing else constrains the result to the caller's tenant. Restore `tenantId: ctx.user.tenantId` alongside `id` in the `where` clause.",
+      "severity": "P1",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 33,
+        "end": 33
+      }
+    },
+    {
+      "title": "[P2] Add a regression test for tenant-scoped document lookup",
+      "body": "The changed lookup path has no test coverage guarding tenant isolation (the repository currently has no tests for `getDocument` at all). When the tenant filter is restored, add a cross-tenant lookup test asserting that a user cannot fetch another tenant's document, so this contract cannot silently regress again.",
+      "severity": "P2",
+      "location": {
+        "path": "src/documents.ts",
+        "side": "RIGHT",
+        "start": 31,
+        "end": 31
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis one-line change to `getDocument` in `src/documents.ts` removes `tenantId: ctx.user.tenantId` from the Prisma `where` clause of the document lookup, leaving the query filtered only by `id`. Authentication (`ctx.user`) and the `findFirst` shape/return contract are unchanged.\n\nDespite the PR description (\"preserving existing contracts\"), the change breaks the tenant-isolation contract: the document fetch is now globally scoped by ID rather than scoped to the authenticated user's tenant. This is a security regression that must be fixed before merge; aside from that, the change is small and introduces no performance or resource concerns.\n\n## Verification\nVerification was not run: `pr_review_verify` discovery returned no user-level `verificationBaselines` (verification disabled). Disclosure: had a baseline run, it would execute PR code unsandboxed — lifecycle supervision signals only the original POSIX process group, so a deliberate `setsid`/session escape could survive it; an external sandbox or container wrapper is recommended for untrusted PRs.\n\n## Findings\n\n### [P1] Restore tenant scoping in the document lookup\n**Severity:** P1\n**Rationale:** Removing `tenantId: ctx.user.tenantId` from the `where` clause leaves `db.documents.findFirst({ where: { id } })` unscoped. Any authenticated user of tenant A who supplies a document ID belonging to tenant B can retrieve that tenant's document — broken tenant-level access control (cross-tenant IDOR) and potential sensitive-data exposure. A repo-wide search confirms this was the only tenant filter, so nothing else constrains the result to the caller's tenant. Restore `tenantId: ctx.user.tenantId` alongside `id` in the `where` clause.\n**Location:** `src/documents.ts:33 RIGHT`\n\n### [P2] Add a regression test for tenant-scoped document lookup\n**Severity:** P2\n**Rationale:** The changed lookup path has no test coverage guarding tenant isolation (the repository currently has no tests for `getDocument` at all). When the tenant filter is restored, add a cross-tenant lookup test asserting that a user cannot fetch another tenant's document, so this contract cannot silently regress again.\n**Location:** `src/documents.ts:31 RIGHT`\n\n## Lane completeness\nThe `performance-resources` lane returned `partial` status on both its batch run and its single-pass rerun; its raw evidence was \"NO FINDINGS\" both times, and I covered the lane inline (the diff only removes a `where` predicate — no resource lifecycle, leaks, extra I/O, unbounded work, or contention are introduced). All other requested lanes (`overview`, `conventions-maintainability`, `correctness`, `correctness-contracts`, `security-performance`) completed.\n\n## Strengths and notes\n- Small, focused diff; authentication check and the `findFirst` return shape are preserved, so callers' type expectations are unaffected.\n- **Correctness:** the only functional change is the removal of tenant scoping — the blocking P1 above.\n- **Security:** cross-tenant document exposure via ID lookup; restore the `tenantId` predicate before merge.\n- **Performance:** no regressions found."
+}

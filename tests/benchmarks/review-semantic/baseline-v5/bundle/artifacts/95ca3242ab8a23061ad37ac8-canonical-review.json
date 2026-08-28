@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "95ca3242ab8a23061ad37ac8",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P2] Short-circuit empty ID lists before querying",
+      "body": "With `ids = []`, the old `Promise.all([].map(...))` resolved to `[]` without touching `db`. The new code always calls `findMany({ where: { id: { in: [] } } })`, which both issues a pointless query and adds a new DB-failure surface for empty input — and some adapters reject empty `IN` lists outright. Flagged independently by four review lanes. Add an early `return []` (or confirm the adapter short-circuits empty lists).",
+      "severity": "P2",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 23
+      }
+    },
+    {
+      "title": "[P2] Snapshot `ids` before awaiting `findMany`",
+      "body": "The old `ids.map(...)` ran synchronously before any await, freezing the ID list at call time. Line 25 now re-reads the caller-owned mutable array *after* the `findMany` await. If the caller mutates `ids` while the query is in flight (adds, removes, reorders), the returned array no longer matches what was queried — e.g., an added ID silently becomes `null`. Snapshot the array at function entry (`const idsSnapshot = [...ids]`) and map over the snapshot.",
+      "severity": "P2",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 25,
+        "end": 25
+      }
+    },
+    {
+      "title": "[P2] Chunk the `IN` lookup below the backend parameter limit",
+      "body": "The single generated statement binds every unique ID, so inputs exceeding the backend's limit (e.g., ~999 on older SQLite, 2100 on SQL Server, 65535 on Postgres) now fail the entire call, where the previous per-ID queries hit no single-statement limit. Downgraded from P1 by the orchestrator because the threshold is backend- and workload-dependent with no in-repo evidence of such call volumes. Consider batching `uniqueIds` into bounded chunks while preserving the order-reconstruction logic.",
+      "severity": "P2",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 23
+      }
+    },
+    {
+      "title": "[P3] Confirm the missing-user sentinel change",
+      "body": "The old code returned whatever `db.users.find(id)` resolved to for a missing ID; the new `byId.get(id) ?? null` normalizes that to `null`. `db` is an ambient global with no in-repo definition, so this cannot be proven a contract change — but if `find` resolved `undefined`, strict-equality/serialization consumers now observe `null`. Worth confirming intended given the PR's \"preserving existing contracts\" claim.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 25,
+        "end": 25
+      }
+    },
+    {
+      "title": "[P3] Add regression coverage for the batched mapping",
+      "body": "The new semantics have several edge cases — order preservation, duplicate-ID reconstruction, missing-user substitution, and the empty-input path — and the repository has no tests verifying any of them. A regression in the mapping logic would go undetected.",
+      "severity": "P3",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 22,
+        "end": 25
+      }
+    },
+    {
+      "title": "[nit] Build the Map without the intermediate tuple array",
+      "body": "`rows.map(row => [row.id, row])` allocates an O(rows) intermediate array plus one two-element tuple per row before `Map` construction. A plain `for` loop populating the map directly avoids the peak allocations — purely optional, the current form is idiomatic.",
+      "severity": "nit",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 24,
+        "end": 24
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites `loadUsers` in `src/users.ts` from one `db.users.find(id)` query per input ID (`Promise.all` over N queries) to a single batched `db.users.findMany({ where: { id: { in: uniqueIds } } })` call. IDs are deduplicated through a `Set` before querying, results are indexed into a `Map` keyed by `row.id`, and the original input order — including duplicate entries — is reconstructed with `?? null` substituting for missing users.\n\nThe change is a genuine performance improvement (N round trips → 1) and the core mapping logic is correct for the common cases. However, the PR body claims \"preserving existing contracts,\" and the review surfaced a few real behavioral deltas: empty input now hits the database, the caller's array is re-read after the await, and unbounded `IN`-list size introduces a new failure mode at scale. None are blocking; all are cheap to fix.\n\n## Verification\n\nVerification was **disabled**: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned none), so no baseline executed against head `a749b53374fadd0c5381b6ebbb7e81ca725912ff`. Disclosure: verification executes PR code unsandboxed (no filesystem/network containment; supervision covers only the original POSIX process group); an external sandbox/container wrapper is recommended for untrusted PRs if enabled later.\n\n## Findings\n\n### [P2] Short-circuit empty ID lists before querying\n**Severity:** P2\n**Rationale:** With `ids = []`, the old `Promise.all([].map(...))` resolved to `[]` without touching `db`. The new code always calls `findMany({ where: { id: { in: [] } } })`, which both issues a pointless query and adds a new DB-failure surface for empty input — and some adapters reject empty `IN` lists outright. Flagged independently by four review lanes. Add an early `return []` (or confirm the adapter short-circuits empty lists).\n**Location:** `src/users.ts:23 RIGHT`\n\n### [P2] Snapshot `ids` before awaiting `findMany`\n**Severity:** P2\n**Rationale:** The old `ids.map(...)` ran synchronously before any await, freezing the ID list at call time. Line 25 now re-reads the caller-owned mutable array *after* the `findMany` await. If the caller mutates `ids` while the query is in flight (adds, removes, reorders), the returned array no longer matches what was queried — e.g., an added ID silently becomes `null`. Snapshot the array at function entry (`const idsSnapshot = [...ids]`) and map over the snapshot.\n**Location:** `src/users.ts:25 RIGHT`\n\n### [P2] Chunk the `IN` lookup below the backend parameter limit\n**Severity:** P2\n**Rationale:** The single generated statement binds every unique ID, so inputs exceeding the backend's limit (e.g., ~999 on older SQLite, 2100 on SQL Server, 65535 on Postgres) now fail the entire call, where the previous per-ID queries hit no single-statement limit. Downgraded from P1 by the orchestrator because the threshold is backend- and workload-dependent with no in-repo evidence of such call volumes. Consider batching `uniqueIds` into bounded chunks while preserving the order-reconstruction logic.\n**Location:** `src/users.ts:23 RIGHT`\n\n### [P3] Confirm the missing-user sentinel change\n**Severity:** P3\n**Rationale:** The old code returned whatever `db.users.find(id)` resolved to for a missing ID; the new `byId.get(id) ?? null` normalizes that to `null`. `db` is an ambient global with no in-repo definition, so this cannot be proven a contract change — but if `find` resolved `undefined`, strict-equality/serialization consumers now observe `null`. Worth confirming intended given the PR's \"preserving existing contracts\" claim.\n**Location:** `src/users.ts:25 RIGHT`\n\n### [P3] Add regression coverage for the batched mapping\n**Severity:** P3\n**Rationale:** The new semantics have several edge cases — order preservation, duplicate-ID reconstruction, missing-user substitution, and the empty-input path — and the repository has no tests verifying any of them. A regression in the mapping logic would go undetected.\n**Location:** `src/users.ts:22-25 RIGHT`\n\n### [nit] Build the Map without the intermediate tuple array\n**Severity:** nit\n**Rationale:** `rows.map(row => [row.id, row])` allocates an O(rows) intermediate array plus one two-element tuple per row before `Map` construction. A plain `for` loop populating the map directly avoids the peak allocations — purely optional, the current form is idiomatic.\n**Location:** `src/users.ts:24 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. The `security-performance` lane's first dispatch returned `partial` (raw evidence: no findings); it was rerun to completion with the same tool policy and confirmed **NO FINDINGS** — no injection, query-construction, or data-exposure regressions were substantiated in the changed code. All other five lanes (`overview`, `conventions-maintainability`, `correctness`, `correctness-contracts`, `performance-resources`) completed on first dispatch.\n\n## Strengths and notes\n\n- **Correctness:** The core batched-lookup logic is sound for the common case — dedupe, Map indexing, and order/duplicate reconstruction are all implemented correctly; the flagged deltas are edge conditions (empty input, concurrent mutation of the input array, oversized lists), not core-logic errors.\n- **Security:** No security regressions found; IDs flow into a structured `where` clause, not raw query construction.\n- **Performance:** Clear win — N queries collapsed to 1 with deduplication reducing list size further; the `IN`-limit and empty-input notes above are the only scalability caveats.\n- **Notes:** All findings are non-blocking; the empty-input early return and the `ids` snapshot are both one-line fixes that would fully align the implementation with the PR's stated \"preserving existing contracts\" intent."
+}

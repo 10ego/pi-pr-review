@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "46f9a1be0bb7cd8608f42275",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Restore `id` in `loadUser`'s return to satisfy the `User` contract",
+      "body": "Bites on every successful call — no special input required. `src/users.ts:8` declares `User = { id: string; name: string }` and `loadUser` is annotated `Promise<User>`, but the changed return at line 12 produces `{ userId: row.id, name: row.display_name }`. Under standard TypeScript this fails type-checking (property `id` missing / excess `userId`); if emitted without type-checking, every caller reading `user.id` silently receives `undefined`. The PR body claims existing contracts are preserved, which is the opposite of the effect. Fix by reverting to `id: row.id`, or — if the rename is intentional — updating `User` to declare `userId` in the same change (no other files in this repo reference `User` yet, so the type and this line must simply agree atomically).",
+      "severity": "P1",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 12,
+        "end": 12
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR makes a single change in `src/users.ts`: `loadUser` now returns its identifier field as `userId` instead of `id`. The lookup, not-found error path, and `name` mapping are all unchanged, and the diff is tightly scoped to one line.\n\nHowever, the change contradicts both the code and the PR's own stated intent. The declared return contract — `export type User = { id: string; name: string }` with `Promise<User>` as the return type — is untouched, so the new object literal no longer satisfies it. The description says \"preserving existing contracts,\" but this is exactly a contract break.\n\n## Verification\n\nVerification was skipped: `pr_review_verify` discovery returned no user-level `verificationBaselines` (disabled), so no trusted baseline was applicable to run. Note that when enabled, verification executes unsandboxed PR code with supervision limited to the original POSIX process group; an external sandbox/container wrapper is recommended for untrusted PRs.\n\n## Findings\n\n### [P1] Restore `id` in `loadUser`'s return to satisfy the `User` contract\n**Severity:** P1\n**Rationale:** Bites on every successful call — no special input required. `src/users.ts:8` declares `User = { id: string; name: string }` and `loadUser` is annotated `Promise<User>`, but the changed return at line 12 produces `{ userId: row.id, name: row.display_name }`. Under standard TypeScript this fails type-checking (property `id` missing / excess `userId`); if emitted without type-checking, every caller reading `user.id` silently receives `undefined`. The PR body claims existing contracts are preserved, which is the opposite of the effect. Fix by reverting to `id: row.id`, or — if the rename is intentional — updating `User` to declare `userId` in the same change (no other files in this repo reference `User` yet, so the type and this line must simply agree atomically).\n**Location:** `src/users.ts:12 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. The `correctness` and `security-performance` lanes first returned `partial` (raw evidence: no findings) and were rerun individually to completion with the same tool policies; both reruns confirmed no findings. The remaining four lanes (`overview`, `conventions-maintainability`, `correctness-contracts`, `performance-resources`) completed on the first pass. Duplicate candidates from `conventions-maintainability` and `correctness-contracts` were merged into the single finding above after source-grounded validation.\n\n## Strengths and notes\n\n- Correctness: aside from the contract break, the change preserves the lookup, null-check, and error-throwing behavior exactly; no async/lifecycle, ordering, or state concerns were introduced.\n- Security: no security-sensitive impact — no injection surface, secrets exposure, or trust-boundary change in the modified line.\n- Performance: no regression — identical allocations and the same single `db.users.find` call.\n- Strength: the diff is minimal and easy to review, and the surrounding null-guard and error path are retained intact."
+}

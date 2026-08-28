@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "a9f6c2e0e28c58316773f818",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P1] Update resolve() for Registry.lookup's versioned return shape",
+      "body": "`Registry.lookup` now returns `{ payload: string; revision: number } | null` (`src/registry.ts:2-3`), but `src/resolve.ts:3` still does `if (cached) return JSON.parse(cached);`. On any cache hit the truthy envelope object is coerced to `\"[object Object]\"` and `JSON.parse` throws `SyntaxError` — every previously-working cached lookup path now fails instead of returning data, and the throw happens before the `remote.resolve` fallback. Under TypeScript this is also a type error (`JSON.parse` requires `string`). Fix by unwrapping the payload, e.g. `JSON.parse(cached.payload)`, or by keeping `lookup`'s string contract.",
+      "severity": "P1",
+      "location": {
+        "path": "src/resolve.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P2] Store implementing only read() no longer works with lookup",
+      "body": "The diff swaps `this.store.read(key)` for `this.store.readVersioned(key)` in `Registry.lookup` (`src/registry.ts:3`). The repo contains no store definition or adapter providing `readVersioned`, so any store wired in with the previously sufficient `read(key)` interface now fails every lookup with `TypeError: this.store.readVersioned is not a function`. Either provide a versioned store/adapter in this PR or keep a `read`-based fallback.",
+      "severity": "P2",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 3,
+        "end": 3
+      }
+    },
+    {
+      "title": "[P2] Remove ~4,400 duplicated filler comment lines",
+      "body": "`src/registry.ts:4-2203` and `src/resolve.ts:4-2203` add ~2,200 identical numbered \"compatibility note\" comments each (~350 KB, growing each module ~1,500×). They carry no information, bury the real behavioral change at the top of each file (which is how a breaking contract edit hides inside a \"preserve contracts\" PR), and inflate every compile/lint/IDE/checkout scan and any comment-preserving build output. Worth confirming this padding is accidental (e.g. a codegen artifact) rather than intentional.",
+      "severity": "P2",
+      "location": {
+        "path": "src/registry.ts",
+        "side": "RIGHT",
+        "start": 4,
+        "end": 6
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites `src/registry.ts` and `src/resolve.ts` (~4,400 added lines), but the only functional change is in `Registry.lookup`: it now returns `this.store.readVersioned(key)` typed `{ payload: string; revision: number } | null` instead of `this.store.read(key)` returning `string | null`. The rest of both files — over 99% of the diff — is thousands of near-identical numbered \"compatibility note\" comment lines. `src/resolve.ts`'s executable logic is re-added unchanged.\n\nDespite the description \"preserving existing contracts,\" the new return shape breaks the one caller in the repo: `resolve()` still passes the lookup result straight to `JSON.parse`, which now receives an object on every cache hit and throws. The change also silently switches the required store interface from `read` to `readVersioned` without any store or adapter providing it.\n\n## Verification\n\nVerification was skipped: `pr_review_verify` reported verification disabled because no user-level `verificationBaselines` are configured (no baseline name was available to select). Baseline execution would run PR code unsandboxed (POSIX-group supervision only); none ran here. All findings below were instead confirmed by direct source reads of the head state of both files and the diff.\n\n## Findings\n\n### [P1] Update resolve() for Registry.lookup's versioned return shape\n**Severity:** P1\n**Rationale:** `Registry.lookup` now returns `{ payload: string; revision: number } | null` (`src/registry.ts:2-3`), but `src/resolve.ts:3` still does `if (cached) return JSON.parse(cached);`. On any cache hit the truthy envelope object is coerced to `\"[object Object]\"` and `JSON.parse` throws `SyntaxError` — every previously-working cached lookup path now fails instead of returning data, and the throw happens before the `remote.resolve` fallback. Under TypeScript this is also a type error (`JSON.parse` requires `string`). Fix by unwrapping the payload, e.g. `JSON.parse(cached.payload)`, or by keeping `lookup`'s string contract.\n**Location:** `src/resolve.ts:3 RIGHT`\n\n### [P2] Store implementing only read() no longer works with lookup\n**Severity:** P2\n**Rationale:** The diff swaps `this.store.read(key)` for `this.store.readVersioned(key)` in `Registry.lookup` (`src/registry.ts:3`). The repo contains no store definition or adapter providing `readVersioned`, so any store wired in with the previously sufficient `read(key)` interface now fails every lookup with `TypeError: this.store.readVersioned is not a function`. Either provide a versioned store/adapter in this PR or keep a `read`-based fallback.\n**Location:** `src/registry.ts:3 RIGHT`\n\n### [P2] Remove ~4,400 duplicated filler comment lines\n**Severity:** P2\n**Rationale:** `src/registry.ts:4-2203` and `src/resolve.ts:4-2203` add ~2,200 identical numbered \"compatibility note\" comments each (~350 KB, growing each module ~1,500×). They carry no information, bury the real behavioral change at the top of each file (which is how a breaking contract edit hides inside a \"preserve contracts\" PR), and inflate every compile/lint/IDE/checkout scan and any comment-preserving build output. Worth confirming this padding is accidental (e.g. a codegen artifact) rather than intentional.\n**Location:** `src/registry.ts:4-6 RIGHT`\n\n## Lane completeness\n\nTwo lanes (`correctness` shard 1 and `performance-resources` shard 1, both covering `src/registry.ts`) first returned partial; their retained evidence was preserved and both were rerun to completion with the same tier and tool policy, corroborating the findings above. All requested lanes completed (6 passes × 2 whole-file shards).\n\n## Strengths and notes\n\n- The versioned-lookup idea itself is reasonable: exposing `revision` alongside the payload avoids reconstructing version metadata in callers, and async delegation and `null` handling are preserved.\n- Correctness: breaking contract break at the `resolve()` call site — see the P1.\n- Security: no new injection, secret-exposure, or trust-boundary issue introduced; the `JSON.parse` regression is fail-closed (it throws rather than mis-parsing attacker data).\n- Performance: apart from the comment bloat, the functional change adds no algorithmic, memory, or I/O regression."
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "45bd88c570472ab253a03584",
+  "publication": {
+    "artifact": "degraded",
+    "fallback": true
+  },
+  "findings": [
+    {
+      "title": "[P3] Guard against a throwing `release()` masking the work error",
+      "body": "If `work()` rejects and `release()` then throws inside the `finally`, JavaScript's `finally` semantics replace the original work error with the release error, hiding the actionable failure from callers. This hazard is introduced by this PR (the old code never called `release()`), but it only bites when `release()` throws synchronously, and nothing in this repository indicates it can — so treat it as a defensive-coding improvement, e.g. swallow or log release failures in the `finally` rather than letting them propagate over the work result.",
+      "severity": "P3",
+      "location": {
+        "path": "src/lock.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 15
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR fixes a resource-lifecycle bug in `withLock` in `src/lock.ts`. Previously the function did `return work();` — it returned the work promise without awaiting it and, more importantly, never called the acquired `release()`, so the lock was held forever after the first use. The new code runs `await work()` inside a `try/finally` and calls `release()` on both success and failure.\n\nThe change is minimal, idiomatic, and preserves the function's return-value and error-propagation contracts for callers. The `await` before `work()` is exactly what's needed for the `finally` to run after the promise settles (including synchronous throws from `work()`), so lock release ordering is correct. No blocking defects were found; one minor defensive-coding note follows.\n\n## Verification\n\nVerification was not run: no user-level `verificationBaselines` are configured, so `pr_review_verify` (`action: list`) returned `enabled: false` and no applicable baseline name was available. Note: baseline execution runs PR code unsandboxed (lifecycle supervision covers only the original POSIX process group; a deliberate `setsid`/session escape could survive it) — an external sandbox or container wrapper is recommended for untrusted PRs if verification is enabled later. Candidate validation was instead performed source-grounded against the diff and the full file.\n\n## Findings\n\n### [P3] Guard against a throwing `release()` masking the work error\n**Severity:** P3\n**Rationale:** If `work()` rejects and `release()` then throws inside the `finally`, JavaScript's `finally` semantics replace the original work error with the release error, hiding the actionable failure from callers. This hazard is introduced by this PR (the old code never called `release()`), but it only bites when `release()` throws synchronously, and nothing in this repository indicates it can — so treat it as a defensive-coding improvement, e.g. swallow or log release failures in the `finally` rather than letting them propagate over the work result.\n**Location:** `src/lock.ts:15 RIGHT`\n\n## Lane completeness\n\nThe `conventions-maintainability` lane returned `partial` twice (initial run and rerun with identical tool policy); its raw evidence was `NO FINDINGS` in both runs and was preserved. I also covered that lane inline: no convention files (`CLAUDE.md`/`AGENTS.md`) exist in this repository, and the changed lines show no naming, dead-code, typo, or duplication issues. All other requested lanes (`overview`, `correctness`, `correctness-contracts`, `security-performance`, `performance-resources`) completed.\n\n## Strengths and notes\n\n- Correctly guarantees lock release on both fulfillment and rejection of `work()`, fixing the permanent lock leak in the previous code.\n- `return await work()` inside the `try` is the right idiom — it ensures `finally` (and thus `release()`) runs only after the work settles, while preserving the generic return type and error propagation.\n- Minimal, focused diff with no unrelated modifications.\n- **Correctness:** no state, ordering, or concurrency defects found; the only residual note is the P3 error-masking guard above.\n- **Security:** no security regressions in the changed lines.\n- **Performance:** the change removes an unbounded resource leak (never-released locks) and introduces no contention or allocation concerns."
+}

@@ -1,0 +1,17 @@
+diff --git a/src/socket-view.ts b/src/socket-view.ts
+index 1111111..2222222 100644
+--- a/src/socket-view.ts
++++ b/src/socket-view.ts
+@@ -12,10 +12,9 @@ export class SocketView {
+   mount(socket: Socket) {
+     this.socket = socket;
+-    this.onMessage = message => this.render(message);
+-    socket.on("message", this.onMessage);
++    socket.on("message", message => this.render(message));
+   }
+ 
+   unmount() {
+-    this.socket?.off("message", this.onMessage);
++    this.socket = undefined;
+   }
+ }

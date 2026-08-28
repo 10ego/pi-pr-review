@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "9deb590d0a90a0b9652afba9",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Precompute the current-ID lookup instead of rescanning per item",
+      "body": "`src/reconcile.ts:41` rebuilds the full `current` ID array for every element of `previous`: `current.map(candidate => candidate.id).includes(item.id)` allocates a new C-length array and scans up to C entries per previous item. The removed code built one `Set` in O(C) and answered each membership check in O(1), for O(P + C) total; the new code is O(P × C) with P temporary arrays. With two disjoint 10k-element collections this moves from ~milliseconds to hundreds of milliseconds of CPU plus GC pressure on a single-threaded event loop — and since the function is exported with no in-repo callers or size guards, nothing bounds the inputs. Restoring the precomputed lookup (Set or equivalent) keeps the identical output while preserving linear time.",
+      "severity": "P2",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 41
+      }
+    },
+    {
+      "title": "[P3] Repeated `id` accessor reads make the filter depend on per-iteration state",
+      "body": "The old code read `candidate.id` for each current item exactly once, when the Set snapshot was built; the new code at `src/reconcile.ts:41` re-reads every current item's `id` on each iteration over `previous` (P × C accessor invocations). For plain data objects the result is unchanged, but if `id` is a getter or the array holds proxies (or the getter has side effects or throws intermittently), later iterations can observe different state than earlier ones, where the previous implementation used one consistent snapshot. Worth snapshotting once — which the P2 fix above does anyway.",
+      "severity": "P3",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 41
+      }
+    }
+  ],
+  "markdown": "All six lanes completed semantically complete (6/6, no partial/failed/timed-out). Validation is done: the diff replaces a one-time `Set` membership lookup with a per-item `current.map(...).includes(...)` rescan — confirmed directly in `src/reconcile.ts:41`, and `rg` shows no other callers or tests in the repo (so realistic input scale is unbounded by any in-repo evidence). The four perf/security/contract candidates all describe the same root cause and are merged; the accessor-snapshot candidate is kept as a lower-severity behavioral note. Temp diff removed.\n\n# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR rewrites `removedIds` in `src/reconcile.ts` to compute removals inline: instead of building a `Set` of current IDs once and filtering `previous` against it, it now calls `current.map(candidate => candidate.id).includes(item.id)` inside the `previous.filter(...)` callback. The output remains the same — IDs present in `previous` but absent from `current` — so the stated intent of \"refining behavior while preserving existing contracts\" holds for ordinary data.\n\nThe cost of the rewrite, however, is a complexity regression: membership checking goes from O(P + C) to O(P × C) with repeated intermediate allocations. No callers or tests exist in the repo for `removedIds`, so nothing breaks outright, but the algorithmic step backward is real and worth fixing before this sees production-sized inputs.\n\n## Verification\n\nVerification was disabled: no user-level `verificationBaselines` are configured for this repository (`pr_review_verify` list returned `enabled: false`, no applicable names). No baseline was run. Note that baseline execution would run PR code unsandboxed (POSIX-group supervision only; a deliberate `setsid`/session escape survives it) — an external sandbox/container wrapper is recommended for untrusted PRs. Findings below are validated by direct source inspection of the diff and `src/reconcile.ts` instead.\n\n## Findings\n\n### [P2] Precompute the current-ID lookup instead of rescanning per item\n**Severity:** P2\n**Rationale:** `src/reconcile.ts:41` rebuilds the full `current` ID array for every element of `previous`: `current.map(candidate => candidate.id).includes(item.id)` allocates a new C-length array and scans up to C entries per previous item. The removed code built one `Set` in O(C) and answered each membership check in O(1), for O(P + C) total; the new code is O(P × C) with P temporary arrays. With two disjoint 10k-element collections this moves from ~milliseconds to hundreds of milliseconds of CPU plus GC pressure on a single-threaded event loop — and since the function is exported with no in-repo callers or size guards, nothing bounds the inputs. Restoring the precomputed lookup (Set or equivalent) keeps the identical output while preserving linear time.\n**Location:** `src/reconcile.ts:41 RIGHT`\n\n### [P3] Repeated `id` accessor reads make the filter depend on per-iteration state\n**Severity:** P3\n**Rationale:** The old code read `candidate.id` for each current item exactly once, when the Set snapshot was built; the new code at `src/reconcile.ts:41` re-reads every current item's `id` on each iteration over `previous` (P × C accessor invocations). For plain data objects the result is unchanged, but if `id` is a getter or the array holds proxies (or the getter has side effects or throws intermittently), later iterations can observe different state than earlier ones, where the previous implementation used one consistent snapshot. Worth snapshotting once — which the P2 fix above does anyway.\n**Location:** `src/reconcile.ts:41 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- The rewrite keeps the exported signature, return shape, and filtering semantics identical, so callers see no contract change.\n- The chained `filter`/`map` form is readable and the diff is minimal and self-contained.\n- **Correctness:** no functional break for ordinary inputs; only the accessor-reread edge case noted above.\n- **Security:** no injection, secret exposure, or trust-boundary concerns in the changed lines; the quadratic CPU cost is a availability/DoS concern only under attacker-scaled inputs, covered by the P2.\n- **Performance:** the one substantive issue is the O(P × C) regression — non-blocking at unknown input sizes, but should be fixed before large reconciliations hit this path."
+}

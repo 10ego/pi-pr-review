@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "9deb590d0a90a0b9652afba9",
+  "caseId": "algorithmic-quadratic",
+  "mode": "full",
+  "repetition": 1,
+  "startedAtUtc": "2026-08-27T09:54:01.979Z",
+  "elapsedMs": 321034.024,
+  "timing": {
+    "parentValidationSynthesisMs": 166732.913
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 11456.609957695007,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 20470.397666931152,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 46573.30837535858,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 154295.82487487793,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 43333.48062515259,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 18820.02595806122,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Precompute the current-ID lookup instead of rescanning per item",
+      "body": "`src/reconcile.ts:41` rebuilds the full `current` ID array for every element of `previous`: `current.map(candidate => candidate.id).includes(item.id)` allocates a new C-length array and scans up to C entries per previous item. The removed code built one `Set` in O(C) and answered each membership check in O(1), for O(P + C) total; the new code is O(P × C) with P temporary arrays. With two disjoint 10k-element collections this moves from ~milliseconds to hundreds of milliseconds of CPU plus GC pressure on a single-threaded event loop — and since the function is exported with no in-repo callers or size guards, nothing bounds the inputs. Restoring the precomputed lookup (Set or equivalent) keeps the identical output while preserving linear time.",
+      "severity": "P2",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 41
+      }
+    },
+    {
+      "title": "[P3] Repeated `id` accessor reads make the filter depend on per-iteration state",
+      "body": "The old code read `candidate.id` for each current item exactly once, when the Set snapshot was built; the new code at `src/reconcile.ts:41` re-reads every current item's `id` on each iteration over `previous` (P × C accessor invocations). For plain data objects the result is unchanged, but if `id` is a getter or the array holds proxies (or the getter has side effects or throws intermittently), later iterations can observe different state than earlier ones, where the previous implementation used one consistent snapshot. Worth snapshotting once — which the P2 fix above does anyway.",
+      "severity": "P3",
+      "location": {
+        "path": "src/reconcile.ts",
+        "side": "RIGHT",
+        "start": 41,
+        "end": 41
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/9deb590d0a90a0b9652afba9-lane-artifacts.json",
+      "sha256": "0701bb604985ee06ad34ec04be8777ce06db49f940d17c527dd36fceb1ec4da6",
+      "bytes": 194016
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/9deb590d0a90a0b9652afba9-canonical-review.json",
+      "sha256": "f6ea56d8b0bba442a30dacbeb912b183e167e97ab500e7b34fa24e162169d48a",
+      "bytes": 6526
+    }
+  ]
+}

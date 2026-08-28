@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "f80bc6b761ff1409f33095b9",
+  "caseId": "cross-shard-cache-contract",
+  "mode": "full",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T12:25:30.185Z",
+  "elapsedMs": 283772.481,
+  "timing": {
+    "parentValidationSynthesisMs": 200141.86
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "conventions-maintainability",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 6
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 9549.798250198364,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "conventions-maintainability",
+      "lens": "conventions-maintainability",
+      "status": "complete",
+      "elapsedMs": 38424.73766708374,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-terra"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 28171.988916397095,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 26984.682708740234,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 83625.88458251953,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 13173.917167663574,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Parse `cached.value` instead of the metadata object",
+      "body": "`Cache.get()` now returns `{ value: string; stale: boolean } | null` (`src/cache.ts:5-6`), but `loadProfile` still passes the whole result to `JSON.parse` at `src/profile.ts:19`. TypeScript rejects this argument (`JSON.parse` expects `string`); if type checking is bypassed, every cache hit coerces the object to `\"[object Object]\"` and throws a `SyntaxError` instead of returning the profile. Fix: `JSON.parse(cached.value)` (and handle `stale` per intent). This is the only caller of `cache.get`, so nothing else needs the migration.",
+      "severity": "P1",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    },
+    {
+      "title": "[P3] `stale` flag is fetched but never consumed — confirm intended handling",
+      "body": "The new `readWithMetadata` contract exposes `stale: true` entries, but the only caller (`loadProfile`, `src/profile.ts:19-21`) checks only existence. If stale entries are meant to trigger an API refresh or be distrusted (e.g. revoked or outdated profile state), that edge case is currently unhandled. Confirm whether serving stale-while-revalidate behavior is intended; if so, a brief comment would help.",
+      "severity": "P3",
+      "location": {
+        "path": "src/cache.ts",
+        "side": "RIGHT",
+        "start": 5,
+        "end": 6
+      }
+    },
+    {
+      "title": "[P3] Add regression coverage for the changed cache result contract",
+      "body": "The changed `{ value, stale }` return shape has no test coverage — the repository has no test tooling at all, and a cache-hit test through `loadProfile` would have caught the P1 above. Standing up minimal coverage for the cache-hit path would prevent future contract drift from silently reaching callers.",
+      "severity": "P3",
+      "location": {
+        "path": "src/cache.ts",
+        "side": "RIGHT",
+        "start": 5,
+        "end": 6
+      }
+    },
+    {
+      "title": "[nit] Drop the no-op delete/re-add of the `if (cached)` line",
+      "body": "The removed and re-added `if (cached) return JSON.parse(cached);` lines are byte-identical, adding diff/history noise without changing behavior. If the edit was meant to update this line for the new contract, that update is missing (see the P1 above).",
+      "severity": "nit",
+      "location": {
+        "path": "src/profile.ts",
+        "side": "RIGHT",
+        "start": 19,
+        "end": 19
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/f80bc6b761ff1409f33095b9-lane-artifacts.json",
+      "sha256": "35b991c8a47f4144dffa6452bd05158346145075daa618b8dd812dc1d82a08fa",
+      "bytes": 196618
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/f80bc6b761ff1409f33095b9-canonical-review.json",
+      "sha256": "82cdae01e8d5b20604f42951456418edc6d5efeb41fe4f7081f48994c51e063f",
+      "bytes": 6406
+    }
+  ]
+}

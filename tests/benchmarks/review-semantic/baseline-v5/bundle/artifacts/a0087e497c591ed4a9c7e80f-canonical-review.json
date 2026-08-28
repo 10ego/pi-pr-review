@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "a0087e497c591ed4a9c7e80f",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P2] Add regression tests for lock release on success and failure",
+      "body": "The new cleanup behavior in `withLock` has no test coverage, and the repository contains no tests at all. Since this PR changes lifecycle-critical semantics (the lock is now released when `work` resolves *and* when it rejects — previously it was never released), tests should exercise a resolving and a rejecting `work` callback and assert that a subsequent acquisition of the same key can proceed. Without coverage, a future refactor could silently reintroduce the leak.",
+      "severity": "P2",
+      "location": {
+        "path": "src/lock.ts",
+        "side": "RIGHT",
+        "start": 13,
+        "end": 17
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** approve\n\n## Overview\n\nThis PR fixes a lock-leak in `withLock` in `src/lock.ts`. Previously the function acquired the lock via `locks.acquire(key)` and returned `work()` directly, never calling `release()` — so every call leaked its lock (and returned before the work settled). The new implementation awaits the callback inside `try`/`finally` and invokes `release()` on both success and failure.\n\nThe change is small, correct, and preserves the existing generic signature and acquisition flow. It is a strict improvement to resource and error semantics: the lock is now held for the full duration of the work and released deterministically.\n\n## Verification\n\nVerification was disabled: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned `enabled: false`, no baselines), so no trusted baseline ran. Note that baseline execution runs PR code unsandboxed (lifecycle supervision signals only the original POSIX process group; a deliberate `setsid` escape can survive it) — an external sandbox/container wrapper is recommended for untrusted PRs if verification is enabled later.\n\n## Findings\n\n### [P2] Add regression tests for lock release on success and failure\n**Severity:** P2\n**Rationale:** The new cleanup behavior in `withLock` has no test coverage, and the repository contains no tests at all. Since this PR changes lifecycle-critical semantics (the lock is now released when `work` resolves *and* when it rejects — previously it was never released), tests should exercise a resolving and a rejecting `work` callback and assert that a subsequent acquisition of the same key can proceed. Without coverage, a future refactor could silently reintroduce the leak.\n**Location:** `src/lock.ts:13-17 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed. (Six of six `--full` passes returned complete: overview, conventions-maintainability, correctness, correctness-contracts, security-performance, performance-resources; none were partial, timed out, or failed.)\n\n## Strengths and notes\n\n- Ensures lock cleanup on both the success and failure paths, fixing a definite per-call resource leak.\n- Correctly uses `return await work()` inside the `try` so the lock is held for the full duration of the work and `finally` runs after the promise settles.\n- Keeps the existing generic API and acquisition flow unchanged; no caller-visible contract change.\n- **Correctness:** no introduced defects found; the try/finally pattern is the standard idiom for this shape.\n- **Security:** no security regressions in the changed lines.\n- **Performance:** lock hold time now correctly spans the awaited work (previously it was effectively infinite due to the leak); no contention or cleanup regressions identified."
+}

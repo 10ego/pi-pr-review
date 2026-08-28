@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "9b178bbaa86901b7772c459d",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P0] Return `id`, not `userId`, to satisfy the declared `User` contract",
+      "body": "`loadUser` declares `Promise<User>`, and `User` is still `{ id: string; name: string }` (src/users.ts:7), but the changed return line produces `{ userId: row.id, name: row.display_name }`. This fails type-checking under standard TypeScript (missing required property `id`, excess property `userId`, error TS2322), and even in transpile-only setups every successful lookup returns an object whose `.id` is `undefined` for consumers of the typed contract. The break is deterministic — it occurs on every input that finds a row — so it is blocking despite no other callers currently existing in the repo.",
+      "severity": "P0",
+      "location": {
+        "path": "src/users.ts",
+        "side": "RIGHT",
+        "start": 12,
+        "end": 12
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\nThis PR modifies `loadUser` in `src/users.ts` to rename the returned `id` property to `userId` in the success-path object literal, described as \"refine behavior while preserving existing contracts.\" The database lookup and not-found error behavior are unchanged, and the diff is small and focused.\n\nHowever, the change does the opposite of its stated intent: it breaks the function's own declared contract. `loadUser` still returns `Promise<User>` with `User = { id: string; name: string }`, but the returned object now carries `userId` and omits the required `id` field.\n\n## Verification\nVerification was not run: no user-level `verificationBaselines` profiles are configured (`pr_review_verify` list returned disabled), so there was no applicable baseline to execute. Note that when enabled, such baselines execute PR code unsandboxed (supervised only at the original POSIX process group); an external sandbox/container is recommended for untrusted PRs.\n\n## Findings\n\n### [P0] Return `id`, not `userId`, to satisfy the declared `User` contract\n**Severity:** P0\n**Rationale:** `loadUser` declares `Promise<User>`, and `User` is still `{ id: string; name: string }` (src/users.ts:7), but the changed return line produces `{ userId: row.id, name: row.display_name }`. This fails type-checking under standard TypeScript (missing required property `id`, excess property `userId`, error TS2322), and even in transpile-only setups every successful lookup returns an object whose `.id` is `undefined` for consumers of the typed contract. The break is deterministic — it occurs on every input that finds a row — so it is blocking despite no other callers currently existing in the repo.\n**Location:** `src/users.ts:12 RIGHT`\n\n## Lane completeness\nAll requested lanes completed.\n\n## Strengths and notes\n- Minimal, focused diff; the lookup and error-handling behavior are correctly preserved.\n- **Correctness:** the single changed line violates the function's return type; restore `id: row.id` (or update the `User` type if a rename is genuinely intended).\n- **Security:** no security impact identified in the changed lines.\n- **Performance:** no performance or resource impact identified in the changed lines."
+}

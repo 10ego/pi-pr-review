@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "9a4e324f7c42b7b5a312af42",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Define or implement `renderError` before calling it",
+      "body": "`SearchController` (src/search.ts:19-30) declares no `renderError` method, extends no base class, and a repository-wide search finds the only occurrence of `renderError` is the new call site itself (src/search.ts:27). At runtime, the first time `this.api.search` rejects, the catch block throws `TypeError: this.renderError is not a function`, replacing the original error — the PR's entire new behavior never executes and the real error is masked. TypeScript also reports TS2339 (`Property 'renderError' does not exist`) at this new line. Unlike the pre-existing references (`api`, `render`, `active`), this method is newly invented by the diff with no definition or provider anywhere.",
+      "severity": "P1",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 27,
+        "end": 27
+      }
+    },
+    {
+      "title": "[P2] Ignore failures from superseded searches before rendering an error",
+      "body": "Every `search()` call aborts the previous `this.active` controller (src/search.ts:21). With fetch-like `api.search` semantics, aborting an in-flight request rejects it with an `AbortError`, so the new unconditional catch renders a user-facing error during a perfectly normal search-replacement flow (type-ahead, rapid re-queries). A late-rejecting older request can also paint a stale error over the newer query's result. Capture the request's controller (e.g. `const { signal } = this.active`) inside the try and skip `renderError` when the failure is an abort or the controller is no longer `this.active`.",
+      "severity": "P2",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 26,
+        "end": 27
+      }
+    },
+    {
+      "title": "[P3] Raw error objects are passed to the error renderer",
+      "body": "When `renderError` is implemented, it will receive raw exception objects that may embed internal URLs, backend messages, request metadata, or stack traces; displaying or serializing them can leak internals. Map exceptions to a safe public message and route detailed diagnostics to a logging sink instead. Worth settling now, while the error-rendering contract introduced by this diff is being defined.",
+      "severity": "P3",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 27,
+        "end": 27
+      }
+    },
+    {
+      "title": "[P3] Add coverage for the new error path",
+      "body": "The change introduces materially different handling for rejected API requests (rendered error vs. propagated rejection), yet no tests exercise it — the repository currently has no test harness at all. At minimum, cover: API rejection renders an error, and a superseded/aborted request does not.",
+      "severity": "P3",
+      "location": {
+        "path": "src/search.ts",
+        "side": "RIGHT",
+        "start": 23,
+        "end": 28
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR modifies `SearchController.search` in `src/search.ts` to wrap the awaited `this.api.search(query, this.active.signal)` call and the subsequent `this.render(result)` in a `try/catch`. On rejection, the method now calls `this.renderError(error)` instead of letting the rejection propagate to the caller. The successful path is unchanged, matching the PR's stated intent of \"refining behavior while preserving existing contracts.\"\n\nThe intent — surfacing API failures as a user-visible error state instead of an unhandled rejection — is reasonable. However, the error path as written cannot work: `renderError` is not defined anywhere in the repository, so the first API failure replaces the original error with a `TypeError`. Secondary issues exist around abort-race handling and catch scope.\n\n## Verification\n\nVerification was disabled for this run: `pr_review_verify` (action=list) found no user-level `verificationBaselines` configured, so no trusted baseline was executed. Baseline execution would run PR code unsandboxed (filesystem/network), supervised only at the original POSIX process group level; an external sandbox/container wrapper is recommended for untrusted PRs. Findings above are validated directly against source instead.\n\n## Findings\n\n### [P1] Define or implement `renderError` before calling it\n**Severity:** P1\n**Rationale:** `SearchController` (src/search.ts:19-30) declares no `renderError` method, extends no base class, and a repository-wide search finds the only occurrence of `renderError` is the new call site itself (src/search.ts:27). At runtime, the first time `this.api.search` rejects, the catch block throws `TypeError: this.renderError is not a function`, replacing the original error — the PR's entire new behavior never executes and the real error is masked. TypeScript also reports TS2339 (`Property 'renderError' does not exist`) at this new line. Unlike the pre-existing references (`api`, `render`, `active`), this method is newly invented by the diff with no definition or provider anywhere.\n**Location:** `src/search.ts:27 RIGHT`\n\n### [P2] Ignore failures from superseded searches before rendering an error\n**Severity:** P2\n**Rationale:** Every `search()` call aborts the previous `this.active` controller (src/search.ts:21). With fetch-like `api.search` semantics, aborting an in-flight request rejects it with an `AbortError`, so the new unconditional catch renders a user-facing error during a perfectly normal search-replacement flow (type-ahead, rapid re-queries). A late-rejecting older request can also paint a stale error over the newer query's result. Capture the request's controller (e.g. `const { signal } = this.active`) inside the try and skip `renderError` when the failure is an abort or the controller is no longer `this.active`.\n**Location:** `src/search.ts:26-27 RIGHT`\n\n### [P3] Raw error objects are passed to the error renderer\n**Severity:** P3\n**Rationale:** When `renderError` is implemented, it will receive raw exception objects that may embed internal URLs, backend messages, request metadata, or stack traces; displaying or serializing them can leak internals. Map exceptions to a safe public message and route detailed diagnostics to a logging sink instead. Worth settling now, while the error-rendering contract introduced by this diff is being defined.\n**Location:** `src/search.ts:27 RIGHT`\n\n### [P3] Add coverage for the new error path\n**Severity:** P3\n**Rationale:** The change introduces materially different handling for rejected API requests (rendered error vs. propagated rejection), yet no tests exercise it — the repository currently has no test harness at all. At minimum, cover: API rejection renders an error, and a superseded/aborted request does not.\n**Location:** `src/search.ts:23-28 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed (overview, conventions-maintainability, correctness, correctness-contracts, security-performance, performance-resources — 6/6, no partial/timeout/failed). The performance-resources lane returned no findings. Duplicate candidates across lanes were merged: the conventions-pass \"narrow the catch\" and contracts-pass \"rejection contract\" findings are consolidated below in notes since, with zero in-repo callers of `search()`, their impact is limited to renderer-bug masking rather than a broken caller.\n\n## Strengths and notes\n\n- The change is minimal and localized, preserves the successful-path contract, and gives API failures an explicit destination instead of an unhandled rejection — the right shape for a UI controller once the P1 is fixed.\n- **Correctness:** blocked by the undefined `renderError` (P1); abort-race handling (P2) should be addressed in the same fix. One consolidated non-blocking note: the try block also covers `this.render(result)` (src/search.ts:25), so a renderer exception is converted into a `renderError` call and `search()` now resolves instead of rejecting — narrowing the try to just the `await` would keep renderer bugs visible and preserve the prior promise contract for future callers.\n- **Security:** raw error objects flow to the user-facing renderer (P3 hardening note above); no injection, secret, or trust-boundary issues found in the diff.\n- **Performance:** no regressions — the change adds no allocations, I/O, or retained references of consequence."
+}

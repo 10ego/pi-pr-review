@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "7df70655d567daf398012f0b",
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Remove the \"message\" listener on unmount instead of only nulling the socket",
+      "body": "After `mount(socket)` and `unmount()`, the anonymous listener registered at line 14 is never removed — `unmount()` only sets `this.socket = undefined`, and the closure reference was lost by inlining it. On any socket that outlives the view, subsequent `\"message\"` events still call `this.render(message)` on the unmounted view (stale renders). Because the closure captures `this`, the socket also retains the `SocketView` indefinitely, preventing garbage collection. Repeated mount/unmount cycles on the same socket accumulate listeners, causing duplicate renders and unbounded listener growth. The removed code stored `this.onMessage` precisely so `off(\"message\", this.onMessage)` could deregister it; restore the stored handler (or otherwise keep a reference) and detach it in `unmount()`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/socket-view.ts",
+        "side": "RIGHT",
+        "start": 14,
+        "end": 18
+      }
+    }
+  ],
+  "markdown": "# PR Review\n\n**Verdict:** request_changes\n\n## Overview\n\nThis PR simplifies `SocketView`'s listener wiring in `src/socket-view.ts`: `mount()` now registers an inline arrow (`socket.on(\"message\", message => this.render(message))`) instead of storing the handler on `this.onMessage`, and `unmount()` replaces the explicit `socket?.off(\"message\", this.onMessage)` deregistration with `this.socket = undefined`.\n\nThe rendering path itself is unchanged, but the lifecycle cleanup is broken by the refactor: the handler reference is no longer retained, and `unmount()` no longer detaches it. This contradicts the PR description (\"preserving existing contracts\") and is the one substantive defect in the change.\n\n## Verification\n\nVerification was not run: no user-level `verificationBaselines` are configured (`pr_review_verify` list returned `enabled: false`). Note that baseline execution, if enabled, runs PR code unsandboxed (supervised only at the original POSIX process group; a deliberate `setsid` escape could survive) — an external sandbox/container is recommended for untrusted PRs.\n\n## Findings\n\n### [P1] Remove the \"message\" listener on unmount instead of only nulling the socket\n**Severity:** P1\n**Rationale:** After `mount(socket)` and `unmount()`, the anonymous listener registered at line 14 is never removed — `unmount()` only sets `this.socket = undefined`, and the closure reference was lost by inlining it. On any socket that outlives the view, subsequent `\"message\"` events still call `this.render(message)` on the unmounted view (stale renders). Because the closure captures `this`, the socket also retains the `SocketView` indefinitely, preventing garbage collection. Repeated mount/unmount cycles on the same socket accumulate listeners, causing duplicate renders and unbounded listener growth. The removed code stored `this.onMessage` precisely so `off(\"message\", this.onMessage)` could deregister it; restore the stored handler (or otherwise keep a reference) and detach it in `unmount()`.\n**Location:** `src/socket-view.ts:14-18 RIGHT`\n\n## Lane completeness\n\nAll requested lanes completed.\n\n## Strengths and notes\n\n- Small, focused diff with no unrelated changes; the message-to-render path itself remains straightforward.\n- Correctness: `unmount()` lifecycle contract is broken — see the P1 finding.\n- Security: no security issues introduced by this diff.\n- Performance: definite listener/view retention leak and listener accumulation on long-lived or reused sockets — same root cause as the P1 finding."
+}

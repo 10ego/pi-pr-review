@@ -1,0 +1,22 @@
+diff --git a/src/cache.ts b/src/cache.ts
+index 1111111..2222222 100644
+--- a/src/cache.ts
++++ b/src/cache.ts
+@@ -5,4 +5,4 @@ export class Cache {
+-  async get(key: string): Promise<string | null> {
+-    return this.store.read(key);
++  async get(key: string): Promise<{ value: string; stale: boolean } | null> {
++    return this.store.readWithMetadata(key);
+   }
+ }
+diff --git a/src/profile.ts b/src/profile.ts
+index 3333333..4444444 100644
+--- a/src/profile.ts
++++ b/src/profile.ts
+@@ -18,5 +18,5 @@ export async function loadProfile(id: string) {
+   const cached = await cache.get(`profile:${id}`);
+-  if (cached) return JSON.parse(cached);
++  if (cached) return JSON.parse(cached);
+   const profile = await api.loadProfile(id);
+   return profile;
+ }

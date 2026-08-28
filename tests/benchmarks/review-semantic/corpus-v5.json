@@ -1,0 +1,716 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "pi-pr-review-semantic-v5",
+  "description": "Seeded PR-review defects and clean controls. Reviewer-visible diffs contain no benchmark IDs or expected-answer annotations.",
+  "lenses": [
+    "correctness",
+    "correctness-contracts",
+    "security-performance",
+    "performance-resources"
+  ],
+  "cases": [
+    {
+      "id": "compile-export-removal",
+      "title": "Removed exported request contract",
+      "diff": "diffs/compile-export-removal.diff",
+      "diffSha256": "be33415720d5789d0d74658a4e172c8243e37603e47830444f25289ed1e17eb7",
+      "diffBytes": 703,
+      "changedFiles": [
+        "src/types.ts",
+        "src/client.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "compile.missing-request-options",
+          "targetSeverity": "P0",
+          "allowedSeverities": [
+            "P0",
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/types.ts",
+              "side": "LEFT",
+              "start": 1,
+              "end": 1
+            },
+            {
+              "path": "src/client.ts",
+              "side": "RIGHT",
+              "start": 1,
+              "end": 1
+            }
+          ],
+          "rationale": "RequestOptions is still imported and used after its export is removed, so the module cannot type-check.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "RequestOptions"
+            ],
+            [
+              "export",
+              "import",
+              "type"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "RequestOptions.{0,100}(remov|miss|drop|no longer export|not export)",
+              "(remov|miss|drop|no longer export|not export).{0,100}RequestOptions"
+            ],
+            [
+              "(cannot|will not|fails? to).{0,80}(compil|type-check|resolv)",
+              "(compil|type-check|resol).{0,80}(fail|error|break)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "RequestOptions\\s+(?:is\\s+)?(?:still\\s+)?exported",
+            "(?:compiles?|type-checks?|resolves?)\\s+(?:successfully|correctly|fine)",
+            "\\bnot\\s+(?:missing|removed|broken)\\b",
+            "RequestOptions.{0,50}\\b(?:was|is|has)\\s+not\\s+(?:remov|drop|miss)",
+            "\\b(?:compil\\w*|type-check\\w*|resol\\w*)\\s+(?:does|do|did|will|can)\\s+not\\s+(?:fail|break|error)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "data-shape-contract",
+      "title": "Returned user shape no longer satisfies its API",
+      "diff": "diffs/data-shape-contract.diff",
+      "diffSha256": "ed864f90d71d8b4ecc117f80d2a9fed27b177954a818d1f9a9a6b80508d23cbb",
+      "diffBytes": 425,
+      "changedFiles": [
+        "src/users.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "contract.user-id-field",
+          "targetSeverity": "P0",
+          "allowedSeverities": [
+            "P0",
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/users.ts",
+              "side": "RIGHT",
+              "start": 11,
+              "end": 11
+            }
+          ],
+          "rationale": "loadUser promises User with id, but returns userId, breaking type-checking and consumers.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "userId"
+            ],
+            [
+              "id"
+            ],
+            [
+              "User",
+              "return",
+              "shape"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "userId.{0,100}(instead|rather|replac|missing|does not satisfy).{0,100}\\bid\\b",
+              "\\bid\\b.{0,100}(missing|replac|renam).{0,100}userId",
+              "returns?.{0,40}userId.{0,100}(\\bid\\b|User|contract)",
+              "\\bid\\b.{0,100}returns?.{0,40}userId"
+            ],
+            [
+              "(break|fail|violate|does not satisfy).{0,80}(User|type|contract|consumer)",
+              "(User|type|contract|consumer).{0,80}(break|fail|violate|mismatch)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "userId\\s+(?:is|remains)\\s+(?:valid|expected|compatible)",
+            "\\b(?:no|not)\\s+(?:mismatch|break|violation|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "state-cancellation-race",
+      "title": "Superseded searches render cancellation as failure",
+      "diff": "diffs/state-cancellation-race.diff",
+      "diffSha256": "933ddfbd172a14f93d747e490de60ea7e63fa84137f79f8a7377152798b5700f",
+      "diffBytes": 543,
+      "changedFiles": [
+        "src/search.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "lifecycle.abort-rendered-error",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/search.ts",
+              "side": "RIGHT",
+              "start": 23,
+              "end": 27
+            }
+          ],
+          "rationale": "Starting a new search aborts the prior request, whose catch now renders an error and can overwrite the newer request state.",
+          "lenses": [
+            "correctness"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "abort",
+              "cancel"
+            ],
+            [
+              "renderError",
+              "error"
+            ],
+            [
+              "new",
+              "next",
+              "superseded",
+              "stale"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(abort|cancel).{0,100}(renderError|error)",
+              "(renderError|error).{0,100}(abort|cancel)"
+            ],
+            [
+              "(stale|superseded|newer|next).{0,100}(render|overwrite|error)",
+              "(render|overwrite|error).{0,100}(stale|superseded|newer|next)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:abort|cancel)(?:led)?\\s+(?:request\\s+)?(?:is|gets)\\s+(?:safely\\s+)?ignored",
+            "\\b(?:no|not)\\s+(?:race|stale|overwrite|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "resource-listener-leak",
+      "title": "Socket view loses listener ownership",
+      "diff": "diffs/resource-listener-leak.diff",
+      "diffSha256": "c0c02b8d64db28352674a3de21d0abd54f6977925c5669952c6bb6968a1d4ad2",
+      "diffBytes": 500,
+      "changedFiles": [
+        "src/socket-view.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "resource.message-listener-leak",
+          "targetSeverity": "P2",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/socket-view.ts",
+              "side": "RIGHT",
+              "start": 14,
+              "end": 17
+            }
+          ],
+          "rationale": "The anonymous listener cannot be removed on unmount, retaining the view and duplicating messages after remount.",
+          "lenses": [
+            "performance-resources",
+            "correctness"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "listener",
+              "message"
+            ],
+            [
+              "remove",
+              "off",
+              "unmount"
+            ],
+            [
+              "leak",
+              "duplicate",
+              "retain"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(listener|message handler).{0,100}(cannot|not|never|fails? to).{0,50}(remove|off|unregister)",
+              "(remove|off|unregister).{0,100}(cannot|not|lost|anonymous).{0,50}(listener|handler)"
+            ],
+            [
+              "(leak|retain|duplicate|multiple).{0,100}(listener|message|view)",
+              "(listener|message|view).{0,100}(leak|retain|duplicate|multiple)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:listener|handler)\\s+(?:is|gets)\\s+(?:properly\\s+)?(?:removed|unregistered|cleaned)",
+            "\\b(?:no|not)\\s+(?:leak|duplicate|retain)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "authorization-tenant-scope",
+      "title": "Document lookup drops tenant authorization",
+      "diff": "diffs/authorization-tenant-scope.diff",
+      "diffSha256": "9b46b7a8d321e28d97fd41ce3692e7f87a3761d62fe62fcac5f86a33175db84d",
+      "diffBytes": 386,
+      "changedFiles": [
+        "src/documents.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "security.missing-tenant-scope",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/documents.ts",
+              "side": "RIGHT",
+              "start": 33,
+              "end": 33
+            }
+          ],
+          "rationale": "An authenticated user can fetch another tenant\u2019s document by ID after tenantId is removed from the query.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "tenant"
+            ],
+            [
+              "authorization",
+              "access",
+              "other"
+            ],
+            [
+              "id",
+              "document"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(tenantId|tenant).{0,100}(removed|missing|not filtered|not scoped|omitted)",
+              "(removed|missing|not filtered|not scoped|omitted).{0,100}(tenantId|tenant)"
+            ],
+            [
+              "(other|cross).{0,40}tenant|unauthori[sz]ed|access.{0,80}another tenant"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:tenant|tenantId)\\s+(?:is\\s+)?(?:still\\s+)?(?:properly\\s+)?(?:scoped|filtered|checked)",
+            "(?:cannot|does not)\\s+(?:access|read|fetch).{0,30}(?:other|cross).{0,20}tenant"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "command-injection",
+      "title": "Branch input is interpolated into a shell command",
+      "diff": "diffs/command-injection.diff",
+      "diffSha256": "2bfb0c3f8065f829a565066cd0cd617975ad5375b5375b6cd547ec676b4ede55",
+      "diffBytes": 342,
+      "changedFiles": [
+        "src/git.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "security.branch-command-injection",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/git.ts",
+              "side": "RIGHT",
+              "start": 16,
+              "end": 17
+            }
+          ],
+          "rationale": "A caller-controlled branch is passed through a shell command instead of execFile argv, enabling command injection.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "branch"
+            ],
+            [
+              "shell",
+              "command",
+              "exec"
+            ],
+            [
+              "inject",
+              "escape",
+              "quote"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(branch|input).{0,100}(shell|command).{0,100}(inject|escape|quote|interpolat)",
+              "(inject|escape|quote|interpolat).{0,100}(branch|input)"
+            ],
+            [
+              "(execAsync|shell).{0,100}(instead|replac|rather).{0,100}(execFile|argv)",
+              "(execFile|argv).{0,100}(replac|instead).{0,100}(execAsync|shell)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:cannot|can not|does not|never)\\s+(?:lead\\s+to|cause|enable|allow)?\\s*(?:command\\s+)?inject(?:ion)?",
+            "(?:argv|execFile)\\s+(?:is|are)\\s+(?:still\\s+)?used.{0,40}(?:instead of|rather than)\\s+(?:a\\s+)?shell",
+            "\\b(?:not|no)\\s+(?:injectable|injection|vulnerable|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "algorithmic-quadratic",
+      "title": "Reconciliation rebuilds IDs for every item",
+      "diff": "diffs/algorithmic-quadratic.diff",
+      "diffSha256": "615fe1a3443dae7bcde3216154a375b7786c83667f3b001ce568e219cb095e20",
+      "diffBytes": 480,
+      "changedFiles": [
+        "src/reconcile.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "performance.quadratic-reconcile",
+          "targetSeverity": "P2",
+          "allowedSeverities": [
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/reconcile.ts",
+              "side": "RIGHT",
+              "start": 41,
+              "end": 43
+            }
+          ],
+          "rationale": "Mapping current IDs inside the previous-items filter changes linear reconciliation into quadratic work.",
+          "lenses": [
+            "performance-resources"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "quadratic",
+              "O(n",
+              "O(N"
+            ],
+            [
+              "map",
+              "includes"
+            ],
+            [
+              "filter",
+              "each",
+              "every"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(quadratic|O\\(n(?:\\^2|\u00b2)\\)).{0,100}(map|includes|filter)",
+              "(map|includes|filter).{0,100}(quadratic|O\\(n(?:\\^2|\u00b2)\\))"
+            ],
+            [
+              "(each|every|inside).{0,80}(filter|item).{0,80}(map|includes)",
+              "(map|includes).{0,80}(each|every|per).{0,80}(item|filter)",
+              "(map|mapping).{0,80}inside.{0,80}filter"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:remains|is still)\\s+(?:linear|O\\(n\\))",
+            "\\b(?:not|never|no)\\s+(?:quadratic|regression|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cross-shard-cache-contract",
+      "title": "Cache return envelope is not integrated at its caller",
+      "diff": "diffs/cross-shard-cache-contract.diff",
+      "diffSha256": "36318dfe23bd1d93d9d0d457e1394a754ca6c13e94e0529aafd9b697ea51b836",
+      "diffBytes": 752,
+      "changedFiles": [
+        "src/cache.ts",
+        "src/profile.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "integration.cache-envelope-parser",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/profile.ts",
+              "side": "RIGHT",
+              "start": 19,
+              "end": 19
+            },
+            {
+              "path": "src/cache.ts",
+              "side": "RIGHT",
+              "start": 6,
+              "end": 7
+            }
+          ],
+          "rationale": "Cache.get now returns an envelope, but loadProfile still passes the object itself to JSON.parse instead of cached.value.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "cache",
+              "cached"
+            ],
+            [
+              "value",
+              "envelope",
+              "object"
+            ],
+            [
+              "JSON.parse",
+              "parse"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(JSON\\.parse|parse).{0,100}(object|envelope|cached).{0,100}(value|instead)",
+              "(object|envelope|cached).{0,100}(passed|sent).{0,100}(JSON\\.parse|parse)"
+            ],
+            [
+              "cached\\.value",
+              "cached value",
+              "\\.value"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:cached\\.value|value)\\s+(?:is\\s+)?(?:correctly\\s+)?(?:parsed|passed)",
+            "\\b(?:not|no)\\s+(?:mismatch|break|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "boundary-nonfinite-timeout",
+      "title": "Timeout parsing admits non-finite numbers",
+      "diff": "diffs/boundary-nonfinite-timeout.diff",
+      "diffSha256": "30114f2fe7b0dbc22d72486e10ed7e273ad3fd1d7ac18d55479aedc79f8dbfd3",
+      "diffBytes": 483,
+      "changedFiles": [
+        "src/options.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "boundary.nonfinite-timeout",
+          "targetSeverity": "P2",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/options.ts",
+              "side": "RIGHT",
+              "start": 11,
+              "end": 12
+            }
+          ],
+          "rationale": "Number accepts NaN and Infinity, and the new positive-only guard lets both invalid timeout values through.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "NaN",
+              "Infinity",
+              "non-finite",
+              "finite"
+            ],
+            [
+              "timeout"
+            ],
+            [
+              "guard",
+              "check",
+              "accept"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(NaN|Infinity|non.?finite).{0,100}(accept|pass|allow|guard|check)",
+              "(accept|pass|allow|guard|check).{0,100}(NaN|Infinity|non.?finite)"
+            ],
+            [
+              "(timeout|Number).{0,100}(finite|safe integer|validation)",
+              "(finite|safe integer|validation).{0,100}(timeout|Number)",
+              "invalid.{0,40}timeout",
+              "timeout.{0,40}(invalid|NaN|Infinity)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:NaN|Infinity|non.?finite)(?:\\s+values?)?\\s+(?:are|is)\\s+(?:correctly\\s+)?(?:rejected|blocked|invalidated)",
+            "(?:guard|check|validation)\\s+(?:correctly\\s+)?(?:rejects|blocks).{0,40}(?:NaN|Infinity|non.?finite)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sharded-registry-contract",
+      "title": "Versioned registry result integration",
+      "diff": "diffs/sharded-registry-contract.diff",
+      "diffSha256": "152b56845367c8f0a38d1453e23f152bf2f3227e555f838eea8b95bb7b29724e",
+      "diffBytes": 357136,
+      "changedFiles": [
+        "src/registry.ts",
+        "src/resolve.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "integration.sharded-registry-envelope",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P1",
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/resolve.ts",
+              "side": "RIGHT",
+              "start": 3,
+              "end": 3
+            },
+            {
+              "path": "src/registry.ts",
+              "side": "RIGHT",
+              "start": 2,
+              "end": 3
+            }
+          ],
+          "rationale": "Registry.lookup now returns a versioned envelope, but resolve still passes the object itself to JSON.parse instead of cached.payload.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "registry",
+              "cached"
+            ],
+            [
+              "payload",
+              "envelope",
+              "object"
+            ],
+            [
+              "JSON.parse",
+              "parse"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(JSON\\.parse|parse).{0,100}(object|envelope|cached).{0,100}(payload|instead)",
+              "(object|envelope|cached).{0,100}(passed|sent).{0,100}(JSON\\.parse|parse)"
+            ],
+            [
+              "cached\\.payload",
+              "cached payload",
+              "\\.payload"
+            ]
+          ],
+          "contradictionPatterns": [
+            "(?:cached\\.payload|payload)\\s+(?:is\\s+)?(?:correctly\\s+)?(?:parsed|passed)",
+            "\\b(?:not|no)\\s+(?:mismatch|break|issue)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "clean-batched-lookup",
+      "title": "Batch user lookup preserves order and missing entries",
+      "diff": "diffs/clean-batched-lookup.diff",
+      "diffSha256": "72c2c0ab8888f3c4392826acb9062aca7a732a14275c7a63cd404ea5009334a5",
+      "diffBytes": 459,
+      "changedFiles": [
+        "src/users.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": []
+    },
+    {
+      "id": "clean-finally-cleanup",
+      "title": "Lock release is guaranteed with finally",
+      "diff": "diffs/clean-finally-cleanup.diff",
+      "diffSha256": "05c479c4e0951344ba12bb75ed53e71359006033d244145670113114516bd0ad",
+      "diffBytes": 333,
+      "changedFiles": [
+        "src/lock.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": []
+    }
+  ]
+}

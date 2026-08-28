@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "83dce263c309ef87b3ff35ff",
+  "caseId": "resource-listener-leak",
+  "mode": "balanced",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T11:42:08.643Z",
+  "elapsedMs": 222043.654,
+  "timing": {
+    "parentValidationSynthesisMs": 184697.912
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 5
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 11002.18570804596,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 34533.92704105377,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 37340.72620868683,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 36700.01545715332,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 27755.099749565125,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P1] Detach the message listener in unmount instead of only clearing the socket",
+      "body": "`mount()` now registers an inline anonymous closure — `socket.on(\"message\", message => this.render(message))` — whose reference is never stored, while `unmount()` only does `this.socket = undefined`. Two concrete failures follow whenever the socket outlives the view: (1) after `unmount()`, every incoming socket message still invokes `render()` on the unmounted view; (2) each `mount()` adds another listener that can never be removed, so mount/unmount/remount cycles accumulate handlers, causing duplicate renders per message and unbounded listener/view retention via the closure. The removed code (`this.onMessage = ...` plus `this.socket?.off(\"message\", this.onMessage)`) existed precisely to prevent this, so the regression is introduced by this diff and contradicts the PR's stated intent of preserving existing contracts. Restore the stored handler (or capture the closure in a field / use an AbortSignal) and detach it in `unmount()` before clearing `this.socket`.",
+      "severity": "P1",
+      "location": {
+        "path": "src/socket-view.ts",
+        "side": "RIGHT",
+        "start": 18,
+        "end": 18
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/83dce263c309ef87b3ff35ff-lane-artifacts.json",
+      "sha256": "1910ee06f59ead60edffc1c4a44415515ad826787ef1604dd2d37f7a7a7d1590",
+      "bytes": 175846
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/83dce263c309ef87b3ff35ff-canonical-review.json",
+      "sha256": "d2d56c6a7b2de6c9bb419f036fa9bbc82cfd2298d8975b62a888715d104d6212",
+      "bytes": 4589
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "planEntryId": "fea6f880ddd29358f7fc1d30",
+  "caseId": "compile-export-removal",
+  "mode": "balanced",
+  "repetition": 2,
+  "startedAtUtc": "2026-08-27T11:19:05.561Z",
+  "elapsedMs": 138119.393,
+  "timing": {
+    "parentValidationSynthesisMs": 110452.912
+  },
+  "configuration": {
+    "provider": "zai",
+    "model": "glm-5.3",
+    "thinking": "high",
+    "toolPolicy": "frozen-user-tools-with-host-no-write-overrides",
+    "reviewVersion": "1.15.8",
+    "piVersion": "0.84.3",
+    "piSha256": "1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a",
+    "piRuntimeSha256": "27d3e60e264accd7997fc74ccfe11e916288579577a86f0e2bd22073103b6fa5",
+    "nodeVersion": "v25.2.1",
+    "nodeSha256": "69512d106bd549ddc26b19d2c3cbeca5adea8255138cbe943b18e3c5ddab5609",
+    "collectorRuntimeVersion": "1.2.15",
+    "collectorRuntimeSha256": "345b4181856b60a5d9cf85fd5d47a54f1904cc852bd05c74d13f17d9bf0fe34a",
+    "reviewConfigSha256": "0bfe9b08aa0a4ba27d3c07e17e858d11386ed48c10c1cdc1ca08e743f2758ce4",
+    "extensionSha256": "3879b85ff84643829265a4d886031bbf1b2b31fcf142c1d7e7ef920286ae1c9c",
+    "promptSha256": "2af9c2c67113d66c822c6c7206b511915302845cd60441b7a69b40e52338488f",
+    "collectorSha256": "865c51cb38802e417e8ff4e96d0d0107bf9fff77c406df491481695520129ecd",
+    "topology": {
+      "passIds": [
+        "overview",
+        "correctness",
+        "correctness-contracts",
+        "security-performance",
+        "performance-resources"
+      ],
+      "shardCount": 1,
+      "maxParallel": 5
+    }
+  },
+  "lanes": [
+    {
+      "id": "overview",
+      "lens": "overview",
+      "status": "complete",
+      "elapsedMs": 14859.188833236694,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "correctness",
+      "lens": "correctness",
+      "status": "complete",
+      "elapsedMs": 17941.179666519165,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "correctness-contracts",
+      "lens": "correctness-contracts",
+      "status": "complete",
+      "elapsedMs": 27660.86099910736,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "security-performance",
+      "lens": "security-performance",
+      "status": "complete",
+      "elapsedMs": 11005.25024986267,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "id": "performance-resources",
+      "lens": "performance-resources",
+      "status": "complete",
+      "elapsedMs": 12193.9015417099,
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "publication": {
+    "artifact": "canonical",
+    "fallback": false
+  },
+  "findings": [
+    {
+      "title": "[P0] Restore the `RequestOptions` export deleted from types.ts",
+      "body": "The removed line `export interface RequestOptions { timeoutMs: number }` was the only declaration of this type. After this PR, `src/client.ts:1` imports `RequestOptions` from `\"./types\"` and `src/client.ts:3` uses it as the parameter type of the exported `request()` function, so TypeScript fails with `Module '\"./types\"' has no exported member 'RequestOptions'` (TS2305) — the project will not compile regardless of input. A repository-wide search confirms `src/client.ts` is the only consumer, so keeping the interface in `types.ts` (or moving the declaration into `client.ts` and updating the import) is required. This also silently breaks any external consumers importing this public type.",
+      "severity": "P0",
+      "location": {
+        "path": "src/types.ts",
+        "side": "LEFT",
+        "start": 1,
+        "end": 1
+      }
+    },
+    {
+      "title": "[nit] Drop the unused `ClientOptions` import in client.ts",
+      "body": "The import was widened to `{ RequestOptions, ClientOptions }`, but `ClientOptions` is never referenced in `src/client.ts`. Remove it or use it, whichever the intended refactor calls for.",
+      "severity": "nit",
+      "location": {
+        "path": "src/client.ts",
+        "side": "RIGHT",
+        "start": 1,
+        "end": 1
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "lane-artifacts",
+      "path": "artifacts/fea6f880ddd29358f7fc1d30-lane-artifacts.json",
+      "sha256": "6aa7767bda93b7236f3a3fbd8f3751a05761c157d447cd4480fe3fa27af3cf7e",
+      "bytes": 156617
+    },
+    {
+      "kind": "canonical-review",
+      "path": "artifacts/fea6f880ddd29358f7fc1d30-canonical-review.json",
+      "sha256": "e7e102a12d3f1d18ba3d1b46903456ee58ae1d9408abf5e186fc6fb7f8970798",
+      "bytes": 4618
+    }
+  ]
+}
