@@ -465,9 +465,9 @@ async function publishCompletedReview(
 		expectedRepository: record.repository,
 		review: record.review,
 		...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
-		...(record.synthesisQuality === "fully_parsed" && typeof record.rawText === "string" && record.rawText.trim()
-			? { fallbackPublicationBody: safeReviewBody(record.rawText) }
-			: {}),
+		// Fully parsed reviews publish only the concise host-rendered body plus
+		// inline findings. If that payload cannot fit, publication fails closed;
+		// retained raw synthesis is never substituted as a public report dump.
 		// A degraded synthesis stays COMMENT-only, but its safely parsed findings
 		// still earn inline placement; only unparsable output is forced body-only.
 		forceBodyOnly: record.synthesisQuality !== undefined &&

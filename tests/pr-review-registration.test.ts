@@ -146,23 +146,22 @@ describe("extension registration without self-review prerequisites", () => {
 		expect(Object.keys(parameters.properties)[0]).toBe("passes");
 	});
 
-	test("exposes expected_output on the public batch pass schema with the real enum", () => {
+	test("keeps topology and completion controls out of the public batch schema", () => {
 		const harness = registrationHarness();
 		registerPrReview(harness.pi as any);
 
 		const parameters = harness.toolDefinitions.get("review_subagents")?.parameters;
 		const passSchema = parameters.properties.passes.items;
-		const expectedOutput = passSchema.properties.expected_output;
-		expect(expectedOutput).toMatchObject({ enum: ["review_lane", "nonempty"] });
-		expect(expectedOutput.description).toContain("successful terminal stop");
-		expect(expectedOutput.description).toContain("Review status: COMPLETE");
-		expect(expectedOutput.description).toContain("Review status: INCOMPLETE");
-		expect(expectedOutput.description).toContain("Overview:");
-		expect(expectedOutput.description).toContain("Strengths:");
-		expect(expectedOutput.description).toContain("Risk areas:");
-		expect(expectedOutput.description).toContain("NO FINDINGS.");
-		expect(expectedOutput.description).toContain("arbitrary prose");
-		expect(expectedOutput.description).not.toContain("any nonempty terminal output");
+		expect(Object.keys(passSchema.properties)).toEqual(["id", "objective", "context"]);
+		expect(parameters.additionalProperties).toBeFalse();
+		expect(passSchema.additionalProperties).toBeFalse();
+		for (const removed of ["expected_output", "tier", "tool_policy", "context_file", "max_parallel", "shard_count", "major_only", "minor_hygiene"]) {
+			expect(passSchema.properties).not.toHaveProperty(removed);
+		}
+		for (const removed of ["max_parallel", "shard_count", "major_only", "minor_hygiene"]) {
+			expect(parameters.properties).not.toHaveProperty(removed);
+		}
+		expect(parameters.properties.context_file).toBeDefined();
 	});
 
 	test("registers without Git and keeps the startup PATH failure local to self-review", async () => {

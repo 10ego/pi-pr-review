@@ -109,6 +109,18 @@ function harness() {
 	};
 }
 
+function quickPasses(overrides: Partial<Record<"correctness" | "correctness-contracts" | "security-performance", string>> = {}) {
+	return ["correctness", "correctness-contracts", "security-performance"].map((id) => ({
+		id,
+		objective: overrides[id as keyof typeof overrides] ?? "review",
+	}));
+}
+
+function balancedPasses() {
+	return ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"]
+		.map((id) => ({ id, objective: "review" }));
+}
+
 describe("review tool execution gate", () => {
 	test("registers self-review with an empty closed schema and hides it while idle", () => {
 		const h = harness();
@@ -142,7 +154,7 @@ describe("review tool execution gate", () => {
 	test("verification reports action-specific argument errors after flat-schema validation", async () => {
 		const h = harness();
 		h.coordinator.begin(
-			parsePublishMode("/pr-review 7"),
+			parsePublishMode("/pr-review 7 --quick"),
 			resolveAutoPostSetting({ autoPostReviews: false }),
 			"interactive",
 			h.ctx,
@@ -173,7 +185,7 @@ describe("review tool execution gate", () => {
 	test("the config command revokes authority even though extension commands bypass input events", async () => {
 		const h = harness();
 		h.coordinator.begin(
-			parsePublishMode("/pr-review 7"),
+			parsePublishMode("/pr-review 7 --quick"),
 			resolveAutoPostSetting({ autoPostReviews: false }),
 			"interactive",
 			h.ctx,
@@ -217,11 +229,11 @@ describe("review tool execution gate", () => {
 			mkdirSync(path.join(root, "repo"));
 			const h = harness();
 			h.ctx.cwd = path.join(root, "repo");
-			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-multipart",
-				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				{ passes: quickPasses() },
 				undefined,
 				undefined,
 				h.ctx,
@@ -256,11 +268,11 @@ describe("review tool execution gate", () => {
 			mkdirSync(path.join(root, "repo"));
 			const h = harness();
 			h.ctx.cwd = path.join(root, "repo");
-			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --deep"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-public-nonempty",
-				{ passes: [{ id: "deep-review", tier: "heavy", objective: "review", expected_output: "nonempty" }], max_parallel: 1 },
+				{ passes: [{ id: "deep-review", objective: "review" }] },
 				undefined,
 				undefined,
 				h.ctx,
@@ -291,11 +303,11 @@ describe("review tool execution gate", () => {
 			mkdirSync(path.join(root, "repo"));
 			const h = harness();
 			h.ctx.cwd = path.join(root, "repo");
-			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-no-findings",
-				{ passes: [{ id: "security", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				{ passes: quickPasses() },
 				undefined, undefined, h.ctx,
 			);
 			expect(result.isError).not.toBeTrue();
@@ -307,75 +319,68 @@ describe("review tool execution gate", () => {
 		}
 	});
 
-	test("assigns and preserves explicit identities for every shard while keeping unsharded IDs compatible", async () => {
-		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-explicit-shards-"));
+	test("uses fixed mode reviewer identities without caller scheduler controls", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-fixed-topology-"));
 		const child = path.join(root, "child.mjs");
-		const diff = path.join(root, "repo", "diff.patch");
-		writeFileSync(child, `
-			process.stdin.resume();
-			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
-				type: "message_end",
-				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "NO FINDINGS." }] },
-			})));
-		`);
-		const originalScript = process.argv[1];
-		try {
-			mkdirSync(path.join(root, "repo"));
-			writeFileSync(diff, [
-				"diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1 @@", "-a", "+aa",
-				"diff --git a/b.ts b/b.ts", "--- a/b.ts", "+++ b/b.ts", "@@ -1 +1 @@", "-b", "+bb",
-			].join("\n"));
-			const h = harness();
-			h.ctx.cwd = path.join(root, "repo");
-			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
-			process.argv[1] = child;
-			const result = await h.tools.get("review_subagents").execute(
-				"batch-shards",
-				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context_file: diff, shard_count: 2 },
-				undefined, undefined, h.ctx,
-			);
-			expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
-			expect(result.details.scheduling.intervals.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
-			expect(result.content[0].text).toContain("## Pass: correctness-shard-1");
-		} finally {
-			process.argv[1] = originalScript;
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	test("automatically shards oversized inline diffs before model dispatch", async () => {
-		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-auto-shards-")), child = path.join(root, "child.mjs");
 		writeFileSync(child, `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}})));`);
-		const block = (name: string, marker: string) => [
-			`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${marker}${"x".repeat(105_000)}`,
-		].join("\n"), diffText = `${block("a.ts", "a")}\n${block("b.ts", "b")}`, retainedMetadata = "PR metadata only.\n\nTrailing requirement.", context = `PR metadata only.\n\n${diffText}\n\nTrailing requirement.`, diffFile = path.join(root, "diff.patch"); writeFileSync(diffFile, diffText);
 		const originalScript = process.argv[1];
 		try {
-			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
-			const result = await h.tools.get("review_subagents").execute("auto-shards", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h.ctx);
-			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 1, fileBackedPassCount: 0, sharedContextBytes: Buffer.byteLength(retainedMetadata) }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
-			const metadataWithExample = "Description includes an example:\ndiff --git a/example.ts b/example.ts\n-old\n+new\nKeep this trailing cross-cutting requirement.";
-			const h2 = harness(); h2.ctx.cwd = root; h2.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h2.ctx);
-			const exampleResult = await h2.tools.get("review_subagents").execute("metadata-example", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context: metadataWithExample, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h2.ctx);
-			expect(exampleResult.isError).not.toBeTrue(); expect(exampleResult.details.sharedContextBytes).toBe(Buffer.byteLength(metadataWithExample));
+			const h = harness(); h.ctx.cwd = root;
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute("batch-fixed", { passes: quickPasses() }, undefined, undefined, h.ctx);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details).toMatchObject({ reviewMode: "quick", reviewerCount: 3, coverageStrategy: "embedded", passCount: 3 });
+			expect(result.details).not.toHaveProperty("maxParallel");
+			expect(result.details).not.toHaveProperty("shardCount");
+			expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness", "correctness-contracts", "security-performance"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness", "correctness-contracts", "security-performance"]);
+			expect(result.content[0].text).toContain("Review mode: Quick. Reviewers completed: 3/3");
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
-	test("routes individually oversized pass contexts through configured file-backed tools", async () => {
-		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-backed-")), child = path.join(root, "child.mjs"), diff = path.join(root, "large.patch");
-		writeFileSync(diff, ["diff --git a/large.ts b/large.ts", "--- a/large.ts", "+++ b/large.ts", "@@ -1 +1 @@", "-old", `+${"x".repeat(1_100_000)}`].join("\n"));
-		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>{const i=process.argv.indexOf('--tools'),safe=i>=0&&process.argv[i+1]==='read,grep,find,ls'&&!process.argv.includes('bash');process.stdout.write(JSON.stringify({type:'message_end',message:{role:'assistant',stopReason:'stop',content:[{type:'text',text:n<100000&&safe?'NO FINDINGS.':'UNSAFE_OR_OVERSIZED'}]}}))});`);
-		const originalScript = process.argv[1];
-		try { const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child; const result = await h.tools.get("review_subagents").execute("file-backed", { passes: [{ id: "correctness-shard-1", tier: "heavy", objective: "review", context_file: diff, tool_policy: "none" }], max_parallel: 1 }, undefined, undefined, h.ctx); expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ fileBackedPassCount: 1, passCount: 1 }); expect(result.details.results[0]).toMatchObject({ status: "complete", rawText: "NO FINDINGS.", toolPolicy: "configured" });
-			const h2 = harness(); h2.ctx.cwd = root; h2.coordinator.begin(parsePublishMode("/pr-review 7 --deep"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h2.ctx); const unsharded = await h2.tools.get("review_subagents").execute("file-backed-deep", { passes: [{ id: "deep-review", tier: "heavy", objective: "review", tool_policy: "none" }], context_file: diff, max_parallel: 1 }, undefined, undefined, h2.ctx); expect(unsharded.isError).not.toBeTrue(); expect(unsharded.details).toMatchObject({ shardCount: 1, fileBackedPassCount: 1 }); expect(unsharded.details.results[0]).toMatchObject({ status: "complete", rawText: "NO FINDINGS.", toolPolicy: "configured" }); }
-		finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
+	test("rejects a batch that does not match the active fixed mode", async () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const result = await h.tools.get("review_subagents").execute("wrong-topology", { passes: [{ id: "correctness", objective: "review" }] }, undefined, undefined, h.ctx);
+		expect(result.isError).toBeTrue();
+		expect(result.content[0].text).toContain("quick mode requires exactly these ordered reviewers");
+		expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
 	});
 
-	test("fails closed instead of truncating an oversized file-backed shard manifest", async () => {
-		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-manifest-")), diff = path.join(root, "unsafe.patch"), longName = `${"a".repeat(2_100)}.ts`, block = (name: string, marker: string) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${"x".repeat(1_100_000)}`].join("\n"); writeFileSync(diff, `${block(longName, "a")}\n${block("safe.ts", "b")}`);
-		try { const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); const result = await h.tools.get("review_subagents").execute("unsafe-manifest", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context_file: diff, shard_count: 2 }, undefined, undefined, h.ctx); expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("manifest is unsafe or exceeds deterministic bounds"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]); }
-		finally { rmSync(root, { recursive: true, force: true }); }
+	test("routes oversized complete diffs through the same file-backed reviewers", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-backed-")), child = path.join(root, "child.mjs"), diffFile = path.join(root, "diff.patch");
+		const block = (name: string, marker: string) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${marker}${"x".repeat(105_000)}`].join("\n");
+		const diffText = `${block("a.ts", "a")}\n${block("b.ts", "b")}`; writeFileSync(diffFile, diffText);
+		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>{const i=process.argv.indexOf("--tools"),safe=i>=0&&process.argv[i+1]==="read,grep,find,ls"&&!process.argv.includes("bash");process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:n<100000&&safe?"NO FINDINGS.":"UNSAFE_OR_OVERSIZED"}]}}))});`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root;
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute("file-backed", { passes: quickPasses(), context: "PR metadata only.", context_file: diffFile }, undefined, undefined, h.ctx);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details).toMatchObject({ reviewMode: "quick", reviewerCount: 3, coverageStrategy: "file-backed", changedFileCount: 2, fileBackedPassCount: 3, sharedContextBytes: Buffer.byteLength("PR metadata only.") });
+			expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness", "correctness-contracts", "security-performance"]);
+			expect(result.details.results.every((lane: any) => lane.toolPolicy === "configured" && lane.rawText === "NO FINDINGS.")).toBeTrue();
+			expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000);
+		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test("requires context_file instead of embedding oversized caller input", async () => {
+		const h = harness(); h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const result = await h.tools.get("review_subagents").execute("oversized-inline", { passes: quickPasses(), context: `diff --git a/a b/a\n+${"x".repeat(200_000)}` }, undefined, undefined, h.ctx);
+		expect(result.isError).toBeTrue();
+		expect(result.content[0].text).toContain("oversized review input requires a top-level context_file");
+	});
+
+	test("fails closed instead of truncating an unsafe complete-diff manifest", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-manifest-")), diff = path.join(root, "unsafe.patch"), longName = `${"a".repeat(2_100)}.ts`;
+		writeFileSync(diff, [`diff --git a/${longName} b/${longName}`, `--- a/${longName}`, `+++ b/${longName}`, "@@ -1 +1 @@", "-a", `+${"x".repeat(200_000)}`].join("\n"));
+		try {
+			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const result = await h.tools.get("review_subagents").execute("unsafe-manifest", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("manifest is unsafe or exceeds deterministic bounds"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
+		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
 	test("ordinary review_subagents retains canonical delta-only text when the child exits before message_end", async () => {
@@ -411,11 +416,11 @@ describe("review tool execution gate", () => {
 			mkdirSync(path.join(root, "repo"));
 			const h = harness();
 			h.ctx.cwd = path.join(root, "repo");
-			h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-delta",
-				{ passes: [{ id: "correctness", tier: "heavy", objective: "review" }], max_parallel: 1 },
+				{ passes: quickPasses() },
 				undefined,
 				undefined,
 				h.ctx,
@@ -464,7 +469,7 @@ describe("review tool execution gate", () => {
 			const h = harness();
 			h.ctx.cwd = path.join(root, "repo");
 			h.coordinator.begin(
-				parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx,
+				parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx,
 				true, false, "off", undefined,
 				{ source: "default", warnings: [], config: {
 					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 2_000,
@@ -475,22 +480,19 @@ describe("review tool execution gate", () => {
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-deadline",
-				{ passes: [
-					{ id: "fast", tier: "heavy", objective: "fast lane" },
-					{ id: "slow", tier: "heavy", objective: "slow lane" },
-				], max_parallel: 2 },
+				{ passes: quickPasses({ "correctness-contracts": "slow lane" }) },
 				undefined, undefined, h.ctx,
 			);
 			expect(result.isError).toBeTrue();
-			expect(result.details.lifecycleCounts).toEqual({ complete: 1, partial: 0, timed_out: 1, failed: 0 });
-			expect(result.details.results[0]).toMatchObject({ id: "fast", status: "complete" });
-			expect(result.details.results[1]).toMatchObject({ id: "slow", status: "timed_out", rawText: "partial slow evidence" });
+			expect(result.details.lifecycleCounts).toEqual({ complete: 2, partial: 0, timed_out: 1, failed: 0 });
+			expect(result.details.results[0]).toMatchObject({ id: "correctness", status: "complete" });
+			expect(result.details.results[1]).toMatchObject({ id: "correctness-contracts", status: "timed_out", rawText: "partial slow evidence" });
 			expect(result.details.results[1].attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
 			});
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(1_000);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete"]);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
 			});
