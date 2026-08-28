@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.16](https://github.com/10ego/pi-pr-review/compare/v1.15.15...v1.15.16) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** require quadratic complexity evidence ([#118](https://github.com/10ego/pi-pr-review/issues/118)) ([42f1fc2](https://github.com/10ego/pi-pr-review/commit/42f1fc2767d66421c3bfbe40cf18d9799654f9a7))
+
 ## [1.15.15](https://github.com/10ego/pi-pr-review/compare/v1.15.14...v1.15.15) (2026-08-28)
 
 
