@@ -6,8 +6,9 @@
  * bound to host invocation state, validates current PR state and anchors, and emits
  * at most one formal COMMENT or qualified APPROVE review with associated inline comments.
  *
- * Rendering only rewrites interactive TUI output. Print/json/rpc modes retain the raw
- * assistant response.
+ * Rendering prettifies interactive TUI output. Print/json/rpc modes retain fully
+ * parsed raw responses, but host-degraded or incomplete reviews use the deterministic
+ * publication body so an unsafe model verdict is never surfaced as authoritative.
  */
 
 import * as fs from "node:fs";
@@ -1212,10 +1213,18 @@ export default function registerReviewTable(
 					: null;
 		if (!review) return; // not a renderable /pr-review artifact — leave untouched
 
-		// Keep the raw assistant response for automation; only prettify interactive TUI output.
-		if (ctx.mode !== "tui") return;
 		const nonText = event.message.content.filter((part) => part.type !== "text");
-		const degradedBody = artifact && artifact.quality !== "fully_parsed" ? artifact.body : undefined;
+		const degradedBody = artifact && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
+			? artifact.body
+			: undefined;
+		// Automation must not surface an approval claim that host-owned lane
+		// evidence has already downgraded. Preserve raw fully parsed output for
+		// machine consumers, but replace degraded/incomplete terminal text with
+		// the same deterministic body used by publication.
+		if (ctx.mode !== "tui") {
+			if (!degradedBody) return;
+			return { message: { ...event.message, content: [...nonText, { type: "text", text: degradedBody }] } };
+		}
 		return {
 			message: {
 				...event.message,

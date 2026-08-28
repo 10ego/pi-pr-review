@@ -649,9 +649,13 @@ function buildDegradedReviewBody(input: {
 		// batch evidence the model's own claim stays authoritative.
 		const claimComplete = coverage === "All requested lanes completed.";
 		const batchEvidence = input.lanes.length > 0 || expected > 0;
-		const reconciled = !claimComplete && batchEvidence
+		const reconciledCoverage = !claimComplete && batchEvidence
 			? synthesis.replace(/All requested lanes completed\.?/gi, "Host verification found incomplete requested lanes.")
 			: synthesis;
+		// Retained model prose is evidence, not an authority surface. Neutralize
+		// its top-level verdict label so automation and readers see exactly one
+		// authoritative verdict: the host-owned preamble above.
+		const reconciled = reconciledCoverage.replace(/^\s*\*\*Verdict:\*\*\s*/gmi, "**Model-reported verdict (non-authoritative):** ");
 		// Two levels keep the synthesis's own document heading below the host
 		// labels (its canonical "# PR Review" becomes a level-3 heading).
 		lines.push("## Retained synthesis", "", demoteHeadings(reconciled, 2).trim(), "");

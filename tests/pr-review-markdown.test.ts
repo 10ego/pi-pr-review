@@ -368,7 +368,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("raw");
 		expect(artifact.review.verdict).toBe("comment");
 		expect(artifact.mergeApprovalEligible).toBe(false);
-		expect(artifact.body).toContain("**Verdict:** approve");
+		expect(artifact.body).toContain("**Model-reported verdict (non-authoritative):** approve");
 	});
 
 	test.each([

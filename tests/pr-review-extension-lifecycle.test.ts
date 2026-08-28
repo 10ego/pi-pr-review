@@ -731,7 +731,7 @@ describe("completed review extension lifecycle", () => {
 			"# PR Review", "", "<pre>", "**Verdict:** approve", "</pre>", "", "## Overview", "Inspect controls.", "",
 			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
 			"## Lane completeness", "All requested lanes completed.",
-		].join("\n"), "**Verdict:** approve"],
+		].join("\n"), "**Model-reported verdict (non-authoritative):** approve"],
 		["a blocker outside Findings", [
 			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Inspect controls.", "",
 			"### [P1] Hidden outside Findings", "**Severity:** P1", "**Rationale:** This must remain public.", "",
@@ -933,7 +933,10 @@ describe("completed review extension lifecycle", () => {
 			"**Location:** `src/parser.ts:2 RIGHT`", "", "## Lane completeness", "One lane was partial.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
-		await harness.emit("message_end", { message });
+		const rendered = await harness.emit("message_end", { message });
+		const visible = rendered.find((result) => result?.message)?.message?.content?.find((part: any) => part.type === "text")?.text;
+		expect(visible).toContain("**Verdict:** Comment — host lane evidence contains incomplete lanes");
+		expect(visible.match(/^\*\*Verdict:\*\*/gm)).toHaveLength(1);
 		harness.appendMessage(message, "incomplete-approve-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(1);
