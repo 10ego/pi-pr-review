@@ -20,7 +20,7 @@ The user selects review intent; the host selects reviewer count, tier, tool poli
 
 - **Quick (`--quick`, with `--major-only` retained as a compatibility alias):** exactly three concurrent heavy reviewers — `correctness`, `correctness-contracts`, and `security-performance`. Report only substantiated P0–P2 defects. The security/performance reviewer also owns performance, resource, cleanup, and scalability risks in this mode.
 - **Balanced (default or `--balanced`):** exactly five concurrent reviewers — `overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`. Heavy reviewers report P0–P2; the light overview may report at most three direct-diff P3/nit candidates.
-- **Full (`--full`):** exactly six concurrent reviewers — the balanced five plus `conventions-maintainability`. Every reviewer reports all qualifying severities.
+- **Full (`--full`):** exactly six concurrent reviewers in this order — `overview`, `conventions-maintainability`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`. Every reviewer reports all qualifying severities.
 - **Deep (`--deep`):** exactly one integrated heavy reviewer, `deep-review`, reporting every substantiated severity.
 
 The mode flags are mutually exclusive. Do not describe internal file transport as extra reviewers.

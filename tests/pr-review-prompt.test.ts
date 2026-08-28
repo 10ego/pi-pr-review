@@ -45,7 +45,7 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("preserves the comprehensive six-reviewer full mode", () => {
 		expect(prompt).toContain("**Full (`--full`):** exactly six concurrent reviewers");
-		expect(prompt).toContain("the balanced five plus `conventions-maintainability`");
+		expect(prompt).toContain("`overview`, `conventions-maintainability`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
 		expect(prompt).toContain("mode-0600 temporary file is the exact base↔head `context_file`");
 		expect(prompt).toContain('gh pr diff $1 > "$diff_file" || { status=$?; rm -f -- "$diff_file"');
 		expect(prompt).toContain("remove it before every early return, skipped review, confirmation pause");
@@ -63,7 +63,8 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("the first nonblank line is `Review status: COMPLETE`");
 		expect(prompt).toContain("In deep mode dispatch only `deep-review`");
 		expect(prompt).toContain("`--deep` selects one integrated heavy reviewer");
-		expect(extension).toContain('{ id: "deep-review", tier: "heavy", toolPolicy: "configured", expectedOutput: "nonempty" }');
+		expect(extension).toContain('{ id: "deep-review", tier: "heavy", toolPolicy: "configured", scope:');
+		expect(extension).toContain('expectedOutput: "nonempty"');
 	});
 
 	test("offers quick mode and retains major-only as its compatibility alias", () => {

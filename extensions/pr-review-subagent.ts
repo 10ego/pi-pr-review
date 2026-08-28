@@ -132,32 +132,33 @@ interface FixedReviewPass {
 	readonly id: string;
 	readonly tier: Tier;
 	readonly toolPolicy: ToolPolicy;
+	readonly scope: string;
 	readonly expectedOutput?: "nonempty";
 }
 
 const FIXED_REVIEW_TOPOLOGIES: Readonly<Record<ReviewMode, readonly FixedReviewPass[]>> = Object.freeze({
 	quick: Object.freeze([
-		{ id: "correctness", tier: "heavy", toolPolicy: "configured" },
-		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured" },
-		{ id: "security-performance", tier: "heavy", toolPolicy: "configured" },
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, and cancellation; report only substantiated P0-P2 defects." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, and test-sensitive behavior; report only substantiated P0-P2 defects." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security plus performance, resource ownership, cleanup, scalability, I/O, memory, and contention; report only substantiated P0-P2 defects." },
 	]),
 	balanced: Object.freeze([
-		{ id: "overview", tier: "light", toolPolicy: "none" },
-		{ id: "correctness", tier: "heavy", toolPolicy: "configured" },
-		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured" },
-		{ id: "security-performance", tier: "heavy", toolPolicy: "configured" },
-		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured" },
+		{ id: "overview", tier: "light", toolPolicy: "none", scope: "Overview, strengths, high-level risks, and at most three direct-diff P3/nit candidates; do not report P0-P2 findings." },
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, and cancellation; report only substantiated P0-P2 defects." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, and test-sensitive behavior; report only substantiated P0-P2 defects." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security vulnerabilities and trust-boundary regressions; report only substantiated P0-P2 defects." },
+		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured", scope: "Performance, resource ownership, cleanup, scalability, I/O, memory, and contention; report only substantiated P0-P2 defects." },
 	]),
 	full: Object.freeze([
-		{ id: "overview", tier: "light", toolPolicy: "none" },
-		{ id: "conventions-maintainability", tier: "medium", toolPolicy: "configured" },
-		{ id: "correctness", tier: "heavy", toolPolicy: "configured" },
-		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured" },
-		{ id: "security-performance", tier: "heavy", toolPolicy: "configured" },
-		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured" },
+		{ id: "overview", tier: "light", toolPolicy: "none", scope: "Overview, strengths, high-level risks, and qualifying findings at every severity." },
+		{ id: "conventions-maintainability", tier: "medium", toolPolicy: "configured", scope: "Applicable conventions, readability, maintainability, test gaps, and qualifying findings at every severity." },
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, cancellation, and qualifying findings at every severity." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, tests, and qualifying findings at every severity." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security vulnerabilities and trust-boundary regressions at every qualifying severity." },
+		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured", scope: "Performance, resource ownership, cleanup, scalability, I/O, memory, contention, and qualifying findings at every severity." },
 	]),
 	deep: Object.freeze([
-		{ id: "deep-review", tier: "heavy", toolPolicy: "configured", expectedOutput: "nonempty" },
+		{ id: "deep-review", tier: "heavy", toolPolicy: "configured", scope: "Integrated whole-PR intent, implementation, callers, tests, and risks at every qualifying severity.", expectedOutput: "nonempty" },
 	]),
 });
 const TIER_PURPOSE: Record<Tier, string> = {
@@ -1846,7 +1847,7 @@ export default function registerPrReviewSubagents(
 					id: fixed.id,
 					expectedOutput: fixed.expectedOutput,
 					tier: fixed.tier,
-					objective: rawPass.objective,
+					objective: `${rawPass.objective}\n\nHost-fixed reviewer scope: ${fixed.scope}`,
 					context: combineContexts(combineContexts(sharedContext, passContext), fileInstructions),
 					toolPolicy: fileBacked ? "configured" as const : fixed.toolPolicy,
 					...(fileBacked ? { toolNames: ["read", "grep", "find", "ls"] } : {}),
