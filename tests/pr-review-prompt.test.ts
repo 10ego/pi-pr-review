@@ -129,6 +129,8 @@ describe("PR review prompt scheduling policy", () => {
 		expect(extension).toContain("shardUnifiedDiff(diffForSharding!, requestedShardCount)");
 		expect(extension).toContain("automatic-size-preflight");
 		expect(extension).toContain("diffBytes >= 400_000 && changedFileCount >= 3");
+		expect(extension).toContain("MAX_EMBEDDED_REVIEW_SHARD_BYTES = 1024 * 1024");
+		expect(extension).toContain("fileBackedPassCount");
 		expect(extension).toContain("const tierPriority: Record<Tier, number> = { heavy: 0, medium: 1, light: 2 }");
 		expect(extension).toContain("dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex)");
 		expect(extension).toContain("firstAssistantMs");

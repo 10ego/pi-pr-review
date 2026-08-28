@@ -24,9 +24,10 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	invariant(completedIndexes.length === 1, "requires exactly one completed review"); invariant(telemetry.length === 1, "requires exactly one terminal telemetry record");
 	const completedIndex = completedIndexes[0], data = records[completedIndex].data, timing = telemetry[0].data, lanes = Array.isArray(data?.laneArtifacts) ? data.laneArtifacts : [];
 	invariant(typeof data?.rawText === "string", "completed review rawText is missing"); const rawText = data.rawText;
-	const boundAssistants = records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.message?.role === "assistant" && record.message?.stopReason === "stop" && assistantText(record.message) === rawText);
-	invariant(boundAssistants.length === 1, "completed review is not uniquely bound to its terminal assistant message");
-	const terminalText = assistantText(boundAssistants[0].message), publicationText = typeof data?.publicationBody === "string" ? data.publicationBody : terminalText;
+	const publicationBody = typeof data?.publicationBody === "string" ? data.publicationBody : null, boundTerminalTexts = new Set([rawText, ...(publicationBody === null ? [] : [publicationBody])]);
+	const boundAssistants = records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.message?.role === "assistant" && record.message?.stopReason === "stop" && boundTerminalTexts.has(assistantText(record.message)));
+	invariant(boundAssistants.length === 1, "completed review is not uniquely bound to its raw or rendered terminal assistant message");
+	const terminalText = assistantText(boundAssistants[0].message), publicationText = publicationBody ?? terminalText;
 	invariant(data?.invocation?.mode === "disabled", "dogfood run was not --no-comment"); invariant(Number.isFinite(timing.totalWallMs) && timing.totalWallMs >= 0, "invalid totalWallMs");
 	const contextLimitPattern = /context(?:_| )[ -]?(?:length|window)(?:_| )?exceeded|context window|input exceeds|maximum context length|prompt is too long/i;
 	const lifecycleCounts = Object.fromEntries(LIFECYCLES.map((state) => [state, lanes.filter((lane) => lane?.lifecycle === state).length])), contextLimitFailures = lanes.flatMap((lane) => Array.isArray(lane?.attempts) ? lane.attempts : []).filter((attempt) => contextLimitPattern.test(String(attempt?.errorMessage ?? ""))).length;
@@ -36,7 +37,7 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	const referencedReviews = typeof data?.reviewEntryId === "string" ? records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.id === data.reviewEntryId && record.message?.role === "assistant") : [];
 	invariant(data?.reviewEntryId === undefined || referencedReviews.length === 1, "completed review references a missing or ambiguous preceding assistant entry"); const referencedReview = referencedReviews[0];
 	const persistedHostVerdict = typeof data?.review?.verdict === "string" ? data.review.verdict : referencedReview ? verdict(assistantText(referencedReview.message)) : null;
-	const hostVerdict = typeof data?.publicationBody === "string" ? verdict(publicationText) : persistedHostVerdict, visibleVerdict = visibleOutputFile ? verdict(readBoundedRegular(visibleOutputFile, "visible output")) : null, modelVerdict = verdict(rawText), sessionTerminalVerdict = verdict(terminalText);
+	const hostVerdict = publicationBody !== null ? verdict(publicationText) : persistedHostVerdict, visibleVerdict = visibleOutputFile ? verdict(readBoundedRegular(visibleOutputFile, "visible output")) : null, modelVerdict = verdict(rawText), sessionTerminalVerdict = verdict(terminalText);
 	return {
 		schemaVersion: 1,
 		prNumber: data?.invocation?.prNumber ?? data?.review?.pr?.number ?? null,

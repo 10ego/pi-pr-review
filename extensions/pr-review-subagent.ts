@@ -127,6 +127,7 @@ const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const DEFAULT_BATCH_PARALLEL = 4;
 const MAX_BATCH_PARALLEL = 18;
+const MAX_EMBEDDED_REVIEW_SHARD_BYTES = 1024 * 1024;
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
 	medium: "convention compliance + readability / maintainability",
@@ -814,6 +815,8 @@ interface SubagentPassRequest {
 	generation?: number;
 	artifactKey?: string;
 	requestedPassOrdinal?: number;
+	toolNames?: readonly string[];
+	fileBackedContext?: boolean;
 }
 
 interface ModelAttemptReport {
@@ -928,7 +931,7 @@ async function runSubagentAttempt(
 		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
 		appendTierThinkingArgs(args, attempt.spec, config.thinkingLevels[pass.tier]);
-		appendToolPolicyArgs(args, toolPolicy, config.tools);
+		appendToolPolicyArgs(args, toolPolicy, pass.toolNames ?? config.tools);
 
 		tmp = await writeTempPrompt(
 			pass.tier,
@@ -1868,41 +1871,65 @@ export default function registerPrReviewSubagents(
 				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
 				: [];
 			const sharded = requestedShards.length > 1;
+			const topUnshardedFileBacked = !sharded && loadedContext.contextFileBytes > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedContext.contextFile && !!loadedContext.contextFileText;
 			const selectedFileDiffIndex = loadedDiff ? inlineContext.indexOf(loadedDiff) : -1;
 			const compactInlineContext = selectedFileDiffIndex >= 0
 				? [inlineContext.slice(0, selectedFileDiffIndex).trim(), inlineContext.slice(selectedFileDiffIndex + loadedDiff!.length).trim()].filter(Boolean).join("\n\n")
 				: inlineDiffStart >= 0 && !loadedDiff
 					? inlineContext.slice(0, inlineDiffStart).trim()
 					: inlineContext;
-			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
+			const sharedContext = sharded || topUnshardedFileBacked ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
-			const passesWithoutFocus: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
+			const exactHeaderManifest = (text: string) => {
+				const headers = text.match(/^diff --git .+$/gm) ?? [], bytes = Buffer.byteLength(headers.join("\n"), "utf8");
+				return headers.length > 0 && headers.length <= 2_000 && bytes <= 256 * 1024 && headers.every((line) => Buffer.byteLength(line, "utf8") <= 2_048 && !/[\u0000-\u001f\u007f]/.test(line)) ? headers : undefined;
+			};
+			const topShardHeaders = requestedShards.map((shard) => loadedContext.contextFile && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES ? exactHeaderManifest(shard) : []);
+			if (topShardHeaders.some((headers) => headers === undefined)) {
+				return { content: [{ type: "text", text: "Review batch context failed: oversized file-backed shard manifest is unsafe or exceeds deterministic bounds." }], isError: true, details: { passCount: rawPasses.length, contextFileBytes: loadedContext.contextFileBytes, shardCount: 0 } };
+			}
+			const fileBackedInstructions = (contextFile: string, label: string, headers?: readonly string[]) => [
+				`--- File-backed ${label} ---`,
+				`The complete captured unified diff is at ${JSON.stringify(contextFile)}. Use only the host-enforced read-only tools (read, grep, find, ls) to inspect it; the oversized diff is intentionally not embedded in this prompt.`,
+				...(headers ? ["Review only these exact diff headers:", ...headers] : ["Review the complete captured diff in this file."]),
+			].join("\n");
+			const passesWithoutFocus = rawPasses.flatMap((pass, index) => {
 				const tier = pass.tier as Tier;
 				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
-				const baseContext = combineContexts(sharedContext, loadedPassContexts[index]!.context);
-				const makePass = (shard: string | undefined, shardIndex: number): SubagentPassRequest => ({
-					// Every actual shard receives an explicit identity, including shard 1.
-					// The unsharded compatibility path retains the caller's exact base ID.
-					id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
-					expectedOutput: pass.expected_output,
-					tier,
-					objective: shard
-						? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
-						: pass.objective,
-					context: shard
-						? combineContexts(
-							baseContext,
-							`--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`,
-						)
-						: baseContext,
-					toolPolicy: normalizeToolPolicy(pass.tool_policy),
-					majorOnly,
-					minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
-				});
-				return sharded
-					? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex))
-					: [makePass(undefined, 0)];
+				const loadedPass = loadedPassContexts[index]!;
+				const passFileBacked = loadedPass.contextFileBytes > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedPass.contextFile && !!loadedPass.contextFileText;
+				const passContext = passFileBacked ? (typeof pass.context === "string" ? pass.context.trim() : undefined) : loadedPass.context;
+				const baseContext = combineContexts(sharedContext, passContext);
+				const makePass = (shard: string | undefined, shardIndex: number) => {
+					const topFileBacked = (!!shard && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES || topUnshardedFileBacked) && !!loadedContext.contextFile;
+					const fileBacked = passFileBacked || topFileBacked;
+					const label = sharded ? `diff shard ${shardIndex + 1}/${requestedShards.length}` : passFileBacked ? `pass context for ${baseId}` : "complete diff";
+					const fileInstructions = passFileBacked
+						? fileBackedInstructions(loadedPass.contextFile!, label)
+						: topFileBacked
+							? fileBackedInstructions(loadedContext.contextFile!, label, shard ? topShardHeaders[shardIndex] as readonly string[] : undefined)
+							: undefined;
+					return {
+						// Every actual shard receives an explicit identity, including shard 1.
+						// The unsharded compatibility path retains the caller's exact base ID.
+						id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
+						expectedOutput: pass.expected_output,
+						tier,
+						objective: shard
+							? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
+							: pass.objective,
+						context: fileInstructions ? combineContexts(baseContext, fileInstructions) : shard
+							? combineContexts(baseContext, `--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`)
+							: baseContext,
+						toolPolicy: fileBacked ? "configured" as const : normalizeToolPolicy(pass.tool_policy),
+						...(fileBacked ? { toolNames: ["read", "grep", "find", "ls"] } : {}),
+						majorOnly,
+						minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
+						fileBackedContext: fileBacked,
+					};
+				};
+				return sharded ? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex)) : [makePass(undefined, 0)];
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -1986,6 +2013,7 @@ export default function registerPrReviewSubagents(
 					shardingSource: automaticShardCount > explicitShardCount ? "automatic-size-preflight" : explicitShardCount > 1 ? "requested" : "none",
 					diffBytes,
 					changedFileCount,
+					fileBackedPassCount: passes.filter((pass) => pass.fileBackedContext === true).length,
 					sharedContextBytes: Buffer.byteLength(sharedContext ?? "", "utf8"),
 					contextFileBytes:
 						loadedContext.contextFileBytes +
