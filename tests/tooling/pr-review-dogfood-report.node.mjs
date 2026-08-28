@@ -22,6 +22,10 @@ test("dogfood report binds no-comment completion, verdict parity, lanes, and tim
 	const referenced = structuredClone(records), referencedJson = JSON.stringify({ pr: { number: 7 }, findings: [], verdict: "approve" }); referenced[1].id = "review-entry"; referenced[1].message.content[0].text = referencedJson; delete referenced[3].data.publicationBody; referenced[3].data.rawText = referencedJson; referenced[3].data.reviewEntryId = "review-entry"; const referencedFile = session(referenced), referencedStdout = path.join(path.dirname(referencedFile), "stdout.log"); fs.writeFileSync(referencedStdout, referencedJson); assert.deepEqual(buildDogfoodReport(referencedFile, referencedStdout).verdicts, { model: "approve", sessionTerminal: "approve", visible: "approve", host: "approve", visibleMatchesHost: true });
 });
 
+test("dogfood report accepts an exactly bound absent-synthesis fallback", () => {
+	const absent = structuredClone(records); absent[1].message.content = []; absent[3].data.rawText = ""; absent[3].data.publicationBody = canonical; const file = session(absent), stdout = path.join(path.dirname(file), "stdout.log"); fs.writeFileSync(stdout, canonical); const report = buildDogfoodReport(file, stdout); assert.equal(report.verdicts.model, null); assert.equal(report.verdicts.sessionTerminal, null); assert.equal(report.verdicts.visibleMatchesHost, true);
+});
+
 test("dogfood report rejects publish-enabled and ambiguous sessions", () => {
 	const enabled = structuredClone(records); enabled[3].data.invocation.mode = "force"; assert.throws(() => buildDogfoodReport(session(enabled)), /not --no-comment/);
 	assert.throws(() => buildDogfoodReport(session(records.filter((record) => record.customType !== "pr-review-telemetry"))), /terminal telemetry/);

@@ -22,9 +22,10 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	const records = sessionText.split("\n").filter(Boolean).map((line, index) => { try { return JSON.parse(line); } catch { throw new Error(`Dogfood report invalid: malformed JSONL record ${index + 1}`); } });
 	const completedIndexes = records.map((record, index) => record?.type === "custom" && record.customType === "pr-review-completed" ? index : -1).filter((index) => index >= 0), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response");
 	invariant(completedIndexes.length === 1, "requires exactly one completed review"); invariant(telemetry.length === 1, "requires exactly one terminal telemetry record");
-	const completedIndex = completedIndexes[0], data = records[completedIndex].data, timing = telemetry[0].data, lanes = Array.isArray(data?.laneArtifacts) ? data.laneArtifacts : [], rawText = typeof data?.rawText === "string" ? data.rawText : "";
+	const completedIndex = completedIndexes[0], data = records[completedIndex].data, timing = telemetry[0].data, lanes = Array.isArray(data?.laneArtifacts) ? data.laneArtifacts : [];
+	invariant(typeof data?.rawText === "string", "completed review rawText is missing"); const rawText = data.rawText;
 	const boundAssistants = records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.message?.role === "assistant" && record.message?.stopReason === "stop" && assistantText(record.message) === rawText);
-	invariant(rawText.length > 0 && boundAssistants.length === 1, "completed review is not uniquely bound to its terminal assistant message");
+	invariant(boundAssistants.length === 1, "completed review is not uniquely bound to its terminal assistant message");
 	const terminalText = assistantText(boundAssistants[0].message), publicationText = typeof data?.publicationBody === "string" ? data.publicationBody : terminalText;
 	invariant(data?.invocation?.mode === "disabled", "dogfood run was not --no-comment"); invariant(Number.isFinite(timing.totalWallMs) && timing.totalWallMs >= 0, "invalid totalWallMs");
 	const contextLimitPattern = /context(?:_| )[ -]?(?:length|window)(?:_| )?exceeded|context window|input exceeds|maximum context length|prompt is too long/i;
