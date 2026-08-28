@@ -48,7 +48,8 @@ function hasPositiveDefectCue(text) {
 	text = expandNegations(text);
 	for (const match of text.matchAll(new RegExp(DEFECT_CUE.source, "giu"))) {
 		const start = match.index ?? 0, end = start + match[0].length, before = text.slice(Math.max(0, start - 40), start), localBefore = before.split(/[,;:]|\b(?:and|but|while|yet)\b/iu).at(-1) ?? before, after = text.slice(end, Math.min(text.length, end + 40));
-		if (/(?:\b(?:addressed|addresses|cannot|eliminates|fixed|fixes|never|no|not|prevents|remediated|removes|resolved|resolves|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
+		const failedPrevention = /\b(?:can(?:not|'t)|could not|did not|does not|do not|will not|would not) (?:adequately |fully )?prevent\s+[^.!?\n]{0,30}$/iu.test(localBefore);
+		if (!failedPrevention && /(?:\b(?:addressed|addresses|cannot|eliminates|fixed|fixes|never|no|not|prevents|remediated|removes|resolved|resolves|without)\b|does not|rather than (?:an? )?|\b(?:fix|guard|patch)\s+(?:addresses|eliminates|fixes|prevents|removes|resolves)\b|\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b)\s*[^.!?\n]{0,30}$/iu.test(localBefore)) continue;
 		if (/^[^.!?\n]{0,30}(?:\b(?:absent|acceptable|addressed|eliminated|fixed|impossible|mitigated|not possible|prevented|remediated|resolved|safe)\b|\bremoved by (?:this )?(?:change|fix|patch)\b|\bby (?:this )?(?:change|fix|patch)\b)/iu.test(after)) continue;
 		return true;
 	}
@@ -337,8 +338,9 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 			latencyBound = hardTimeoutMs !== null && run.elapsedMs > 0 && run.elapsedMs >= hardTimeoutMs - 1_000 && run.elapsedMs <= hardTimeoutMs + 10_000;
 		}
 		if (!hasProcessElapsed && !latencyBound) {
-			const timestamps = records.map((record) => Date.parse(record?.timestamp)).filter(Number.isFinite);
-			if (timestamps.length >= 2) { const sessionSpanMs = Math.max(...timestamps) - Math.min(...timestamps); latencyBound = sessionSpanMs > 0 && run.elapsedMs > 0 && run.elapsedMs >= sessionSpanMs && run.elapsedMs <= sessionSpanMs + 5_000; }
+			let firstTimestamp = Infinity, lastTimestamp = -Infinity, timestampCount = 0;
+			for (const record of records) { const timestamp = Date.parse(record?.timestamp); if (!Number.isFinite(timestamp)) continue; timestampCount += 1; if (timestamp < firstTimestamp) firstTimestamp = timestamp; if (timestamp > lastTimestamp) lastTimestamp = timestamp; }
+			if (timestampCount >= 2) { const sessionSpanMs = lastTimestamp - firstTimestamp; latencyBound = sessionSpanMs > 0 && run.elapsedMs > 0 && run.elapsedMs >= sessionSpanMs && run.elapsedMs <= sessionSpanMs + 5_000; }
 		}
 		invariant(latencyBound, `${label} retained failed-run latency binding`);
 	}
@@ -546,7 +548,15 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 	for (const entry of files.sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)))) {
 		const run = readJson(path.join(runDir, entry.name)).value, planEntry = entryById.get(run?.planEntryId);
 		invariant(planEntry && !seen.has(planEntry.entryId), `unknown or duplicate plan entry in ${entry.name}`); seen.add(planEntry.entryId);
-		runs.push(validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId), effectiveConfig));
+		const validated = validateRun(run, planEntry, bundleRoot, caseById.get(planEntry.caseId), effectiveConfig);
+		// Embedded payloads are needed only while validating their hashes and host
+		// bindings. Retaining nested base64 evidence for every run can otherwise
+		// multiply a valid comparison into several GiB of live heap. Compact the
+		// scorer-owned copy without mutating collector callers of validateRun().
+		if (Object.hasOwn(validated, "artifactPayloads")) {
+			const compact = { ...validated }; delete compact.artifactPayloads;
+			Object.defineProperty(compact, SEMANTIC_FINDINGS, { value: validated[SEMANTIC_FINDINGS], enumerable: false }); runs.push(compact);
+		} else runs.push(validated);
 	}
 	invariant(runs.length === plan.entries.length, `result bundle is incomplete: ${runs.length}/${plan.entries.length} runs`);
 	invariant(sha256(effectiveConfigBytes) === runs[0].configuration.reviewConfigSha256, "effective review config hash differs from run configuration");
