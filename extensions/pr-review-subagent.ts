@@ -1868,10 +1868,12 @@ export default function registerPrReviewSubagents(
 				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
 				: [];
 			const sharded = requestedShards.length > 1;
-			const inlineDiffDuplicatesSelectedFile = !!loadedDiff && !!inlineDiff && inlineDiff.trim() === loadedDiff.trim();
-			const compactInlineContext = inlineDiffStart >= 0 && (!loadedDiff || inlineDiffDuplicatesSelectedFile)
-				? inlineContext.slice(0, inlineDiffStart).trim()
-				: inlineContext;
+			const selectedFileDiffIndex = loadedDiff ? inlineContext.indexOf(loadedDiff) : -1;
+			const compactInlineContext = selectedFileDiffIndex >= 0
+				? [inlineContext.slice(0, selectedFileDiffIndex).trim(), inlineContext.slice(selectedFileDiffIndex + loadedDiff!.length).trim()].filter(Boolean).join("\n\n")
+				: inlineDiffStart >= 0 && !loadedDiff
+					? inlineContext.slice(0, inlineDiffStart).trim()
+					: inlineContext;
 			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
