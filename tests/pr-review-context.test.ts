@@ -16,8 +16,8 @@ function fixture(): string {
 }
 
 describe("review context files", () => {
-	test("keeps a bounded 64 MiB complete-diff file contract", () => {
-		expect(MAX_REVIEW_CONTEXT_FILE_BYTES).toBe(64 * 1024 * 1024);
+	test("keeps a bounded 1 MiB non-sharded complete-diff file contract", () => {
+		expect(MAX_REVIEW_CONTEXT_FILE_BYTES).toBe(1024 * 1024);
 	});
 
 	test("appends a relative complete diff to compact inline metadata", async () => {

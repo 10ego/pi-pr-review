@@ -127,8 +127,13 @@ const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
 const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const MAX_EMBEDDED_REVIEW_CONTEXT_BYTES = 200_000;
+const MAX_SHARED_REVIEW_METADATA_BYTES = 64 * 1024;
+const MAX_PASS_REVIEW_METADATA_BYTES = 64 * 1024;
+const MAX_REVIEW_OBJECTIVE_BYTES = 16 * 1024;
+const MAX_BATCH_REVIEW_METADATA_BYTES = 256 * 1024;
 const MAX_FILE_BACKED_READ_BYTES = 40 * 1024;
 const MAX_FILE_BACKED_READ_LINES = 1_000;
+const MAX_FILE_BACKED_READ_RANGES = 16;
 
 interface FixedReviewPass {
 	readonly id: string;
@@ -1847,12 +1852,16 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			const inlineContext = typeof params.context === "string" ? params.context.trim() : "";
-			const oversizedPassContext = rawPasses.find((pass) =>
-				typeof pass.context === "string" && Buffer.byteLength(pass.context.trim(), "utf8") >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES
-			);
-			if (Buffer.byteLength(inlineContext, "utf8") >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES || oversizedPassContext) {
+			const sharedMetadataBytes = Buffer.byteLength(inlineContext, "utf8");
+			const passMetadataBytes = rawPasses.map((pass) => Buffer.byteLength(typeof pass.context === "string" ? pass.context.trim() : "", "utf8"));
+			const objectiveBytes = rawPasses.map((pass) => Buffer.byteLength(typeof pass.objective === "string" ? pass.objective : "", "utf8"));
+			const aggregateMetadataBytes = sharedMetadataBytes + passMetadataBytes.reduce((sum, bytes) => sum + bytes, 0) + objectiveBytes.reduce((sum, bytes) => sum + bytes, 0);
+			if (sharedMetadataBytes > MAX_SHARED_REVIEW_METADATA_BYTES ||
+				passMetadataBytes.some((bytes) => bytes > MAX_PASS_REVIEW_METADATA_BYTES) ||
+				objectiveBytes.some((bytes) => bytes === 0 || bytes > MAX_REVIEW_OBJECTIVE_BYTES) ||
+				aggregateMetadataBytes > MAX_BATCH_REVIEW_METADATA_BYTES) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: shared and pass-specific metadata must each remain below 200000 UTF-8 bytes; supply the complete diff only through context_file." }],
+					content: [{ type: "text", text: "Review batch context failed: objective, shared metadata, pass metadata, or aggregate metadata exceeds its deterministic UTF-8 byte bound; supply the complete diff only through context_file." }],
 					isError: true,
 					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};
@@ -1883,12 +1892,12 @@ export default function registerPrReviewSubagents(
 					limit++; bytes += lineBytes;
 				}
 				if (limit > 0) ranges.push({ offset, limit });
-				return ranges.length > 0 && ranges.length <= 2_000 ? ranges : undefined;
+				return ranges.length > 0 && ranges.length <= MAX_FILE_BACKED_READ_RANGES ? ranges : undefined;
 			};
 			const requiredReads = fileBacked ? boundedReadRanges(diffText!) : undefined;
 			if (fileBacked && (!headers || !requiredReads)) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: complete file-backed diff manifest or bounded read plan is unsafe or exceeds deterministic bounds." }],
+					content: [{ type: "text", text: `Review batch context failed: complete file-backed diff manifest is unsafe or full coverage requires more than ${MAX_FILE_BACKED_READ_RANGES} bounded reads; non-sharded review cannot safely cover this diff with the current Pi reader.` }],
 					isError: true,
 					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};

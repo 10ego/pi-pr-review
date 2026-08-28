@@ -389,13 +389,27 @@ describe("review tool execution gate", () => {
 				{ passes: quickPasses(), context: `diff --git a/a b/a\n+${"x".repeat(200_000)}` },
 				{ passes: quickPasses(), context_file: diff, context: "x".repeat(200_000) },
 				{ passes: quickPasses().map((pass, index) => index === 1 ? { ...pass, context: "x".repeat(200_000) } : pass), context_file: diff },
+				{ passes: quickPasses().map((pass, index) => index === 1 ? { ...pass, objective: "x".repeat(20_000) } : pass), context_file: diff },
+				{ passes: quickPasses().map((pass) => ({ ...pass, context: "x".repeat(64 * 1024) })), context: "x".repeat(64 * 1024), context_file: diff },
 			]) {
 				const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 				const result = await h.tools.get("review_subagents").execute("oversized-inline", params, undefined, undefined, h.ctx);
 				expect(result.isError).toBeTrue();
-				expect(result.content[0].text).toContain("metadata must each remain below 200000 UTF-8 bytes");
+				expect(result.content[0].text).toContain("aggregate metadata exceeds its deterministic UTF-8 byte bound");
 				expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
 			}
+		} finally { rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test("fails closed when non-sharded full coverage would require too many reads", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-read-plan-limit-")), diff = path.join(root, "large.patch");
+		writeFileSync(diff, ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1,8000 @@", "-a", ...Array.from({ length: 8_000 }, (_, index) => `+${index}:${"x".repeat(90)}`)].join("\n"));
+		try {
+			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const result = await h.tools.get("review_subagents").execute("read-plan-limit", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeTrue();
+			expect(result.content[0].text).toContain("full coverage requires more than 16 bounded reads");
+			expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
@@ -405,7 +419,7 @@ describe("review tool execution gate", () => {
 		try {
 			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 			const result = await h.tools.get("review_subagents").execute("unsafe-manifest", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
-			expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("manifest or bounded read plan is unsafe or exceeds deterministic bounds"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
+			expect(result.isError).toBeTrue(); expect(result.content[0].text).toContain("diff manifest is unsafe or full coverage requires more than 16 bounded reads"); expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 

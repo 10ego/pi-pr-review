@@ -2,8 +2,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 // Large diffs are transported as read-only file-backed context rather than
-// embedded or multiplied into reviewer shards. Keep a hard host memory bound.
-export const MAX_REVIEW_CONTEXT_FILE_BYTES = 64 * 1024 * 1024;
+// embedded or multiplied into reviewer shards. One non-sharded reviewer cannot
+// safely absorb arbitrary multi-megabyte diffs through Pi's current line reader.
+export const MAX_REVIEW_CONTEXT_FILE_BYTES = 1024 * 1024;
 
 export interface LoadedReviewContext {
 	context?: string;

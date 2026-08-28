@@ -88,8 +88,11 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("uses file-backed complete diffs without multiplying reviewers", () => {
 		expect(prompt).toContain("At 200,000 bytes and above");
-		expect(prompt).toContain("it never creates shard reviewers");
+		expect(prompt).toContain("It never creates shard reviewers");
 		expect(extension).toContain("MAX_EMBEDDED_REVIEW_CONTEXT_BYTES = 200_000");
+		expect(extension).toContain("MAX_REVIEW_OBJECTIVE_BYTES = 16 * 1024");
+		expect(extension).toContain("MAX_BATCH_REVIEW_METADATA_BYTES = 256 * 1024");
+		expect(extension).toContain("MAX_FILE_BACKED_READ_RANGES = 16");
 		expect(extension).toContain("complete file-backed diff manifest");
 		expect(extension).toContain('toolNames: ["read", "grep", "find", "ls"]');
 		expect(extension).toContain("Read every host-required range of the supplied file-backed diff");
