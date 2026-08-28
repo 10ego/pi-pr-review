@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.15](https://github.com/10ego/pi-pr-review/compare/v1.15.14...v1.15.15) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** eliminate large-review retry amplification ([#116](https://github.com/10ego/pi-pr-review/issues/116)) ([9aa0b82](https://github.com/10ego/pi-pr-review/commit/9aa0b82c3dbf80b3bb707634acd32c4a0c61b7df))
+
 ## [1.15.14](https://github.com/10ego/pi-pr-review/compare/v1.15.13...v1.15.14) (2026-08-28)
 
 
