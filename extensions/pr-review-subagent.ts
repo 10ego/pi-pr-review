@@ -1885,7 +1885,7 @@ export default function registerPrReviewSubagents(
 				const headers = text.match(/^diff --git .+$/gm) ?? [], bytes = Buffer.byteLength(headers.join("\n"), "utf8");
 				return headers.length > 0 && headers.length <= 2_000 && bytes <= 256 * 1024 && headers.every((line) => Buffer.byteLength(line, "utf8") <= 2_048 && !/[\u0000-\u001f\u007f]/.test(line)) ? headers : undefined;
 			};
-			const topShardHeaders = requestedShards.map((shard) => Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES ? exactHeaderManifest(shard) : []);
+			const topShardHeaders = requestedShards.map((shard) => loadedContext.contextFile && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES ? exactHeaderManifest(shard) : []);
 			if (topShardHeaders.some((headers) => headers === undefined)) {
 				return { content: [{ type: "text", text: "Review batch context failed: oversized file-backed shard manifest is unsafe or exceeds deterministic bounds." }], isError: true, details: { passCount: rawPasses.length, contextFileBytes: loadedContext.contextFileBytes, shardCount: 0 } };
 			}
