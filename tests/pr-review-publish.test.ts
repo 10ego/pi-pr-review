@@ -235,7 +235,6 @@ async function diagnosePullPublication(
 		approveMaxPriorityLevel?: "P2" | "P3" | "nit";
 		prAuthor?: string;
 		bodyOnly?: string;
-		fallbackPublicationBody?: string;
 	} = {},
 ): Promise<{
 	result: Awaited<ReturnType<typeof publishPullReview>>;
@@ -336,7 +335,6 @@ fi
 					allowStaleApprovals: options.allowStaleApprovals ?? false,
 					approveMaxPriorityLevel: options.approveMaxPriorityLevel,
 					review: candidateReview,
-					fallbackPublicationBody: options.fallbackPublicationBody,
 				})
 			: await publishPullReviewBody({ ...common, body: options.bodyOnly });
 		return {
@@ -907,18 +905,21 @@ describe("invocation publication snapshot", () => {
 
 describe("trusted invocation mode", () => {
 	test("defaults to auto and binds force/disable to the requested PR", () => {
-		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", prNumber: 7 });
+		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", reviewMode: "balanced", prNumber: 7 });
 		expect(parsePublishMode("/prompt:pr-review 7")).toEqual({ matched: false });
 		expect(parsePublishMode("/pr-review 8 --comment")).toMatchObject({ mode: "force", prNumber: 8 });
 		expect(parsePublishMode("/pr-review 9 --no-comment")).toMatchObject({ mode: "disabled", prNumber: 9 });
-		expect(parsePublishMode("/pr-review 10 --major-only --no-comment")).toMatchObject({ mode: "disabled", prNumber: 10 });
-		expect(parsePublishMode("/pr-review 11 --balanced --no-comment")).toMatchObject({ mode: "disabled", prNumber: 11 });
-		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", prNumber: 12 });
+		expect(parsePublishMode("/pr-review 10 --major-only --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "quick", prNumber: 10 });
+		expect(parsePublishMode("/pr-review 10 --quick --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "quick", prNumber: 10 });
+		expect(parsePublishMode("/pr-review 11 --balanced --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "balanced", prNumber: 11 });
+		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "full", prNumber: 12 });
+		expect(parsePublishMode("/pr-review 13 --deep --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "deep", prNumber: 13 });
 	});
 
 	test("rejects contradictory flags", () => {
 		expect(parsePublishMode("/pr-review 7 --comment --no-comment").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --major-only --balanced").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --quick --major-only").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --full --balanced").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --full --major-only").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --deep --full").error).toContain("cannot be used together");
@@ -934,6 +935,7 @@ describe("trusted invocation mode", () => {
 		expect(gate.begin(parsePublishMode("/pr-review 8 --comment"), autoOff)).toMatchObject({ accepted: false });
 		expect(gate.consume()).toEqual({
 			mode: "disabled",
+			reviewMode: "balanced",
 			prNumber: 7,
 			allowNonOpen: false,
 			allowStalePublish: true,
@@ -964,6 +966,7 @@ describe("trusted invocation mode", () => {
 		expect(gate.phase()).toBe("confirmed");
 		expect(gate.consume()).toEqual({
 			mode: "force",
+			reviewMode: "balanced",
 			prNumber: 7,
 			allowNonOpen: true,
 			allowStalePublish: true,
@@ -992,6 +995,7 @@ describe("trusted invocation mode", () => {
 		const invocation = gate.consume();
 		expect(invocation).toEqual({
 			mode: "force",
+			reviewMode: "balanced",
 			prNumber: 7,
 			allowNonOpen: false,
 			allowStalePublish: true,
@@ -1076,6 +1080,22 @@ describe("publish-only completed review command", () => {
 				sessionA,
 			),
 		).toBeFalse();
+	});
+
+	test("drops a legacy full-report override when restoring a fully parsed concise review", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, reviewMode: "balanced" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const approvalReview: ReviewLike = { ...review, verdict: "approve", overall_correctness: "patch is correct" };
+		const record = cache.replace(approvalReview, invocation, repository, {
+			synthesisQuality: "fully_parsed", completeness: "complete", rawText: JSON.stringify(approvalReview),
+			publicationBody: "# Retained full report\n\nThis must remain internal.",
+		}).record;
+		const persisted = cache.persist(record, sessionA);
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted, sessionA)).toBeTrue();
+		expect(restored.get(7, repository)).not.toHaveProperty("publicationBody");
+		expect(restored.get(7, repository)).toMatchObject({ review: { verdict: "comment" }, mergeApprovalEligible: false });
 	});
 
 	test("persists and restores canonical synthesis diagnostics independently of the assistant reference", () => {
@@ -1646,7 +1666,7 @@ describe("single lossless publication payload", () => {
 		expect(degraded.postCount).toBe(0);
 	});
 
-	test("falls back to retained synthesis when the concise approval body is oversized", async () => {
+	test("fails closed instead of dumping retained synthesis when the concise approval body is oversized", async () => {
 		const findings = Array.from({ length: 70 }, (_, index) => ({
 			title: `[P3] Large note ${index + 1}`,
 			severity: "P3",
@@ -1659,16 +1679,15 @@ describe("single lossless publication payload", () => {
 		const retained = `# PR Review\n\n**Verdict:** approve\n\n${"Retained original review notes.\n".repeat(1_500)}`;
 		const diagnostic = await diagnosePullPublication(large, [], {
 			approveMaxPriorityLevel: "P3",
-			fallbackPublicationBody: retained,
 		});
-		expect(diagnostic.result.status).toBe("posted");
-		expect(diagnostic.postCount).toBe(1);
-		expect(diagnostic.payload?.event).toBe("APPROVE");
-		expect(String(diagnostic.payload?.body)).toContain("Retained original review notes.");
-		expect(String(diagnostic.payload?.body)).not.toContain("### Other Notes");
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("review body exceeds 65536 UTF-8 bytes");
+		expect(diagnostic.postCount).toBe(0);
+		expect(diagnostic.payload).toBeUndefined();
+		expect(retained).toContain("Retained original review notes.");
 	});
 
-	test("uses retained synthesis when only the canonical marker exceeds the body limit", async () => {
+	test("fails closed when the canonical marker makes the concise body exceed the limit", async () => {
 		const markerSuffixBytes = Buffer.byteLength(`\n\n${canonicalReviewMarker("a".repeat(40))}`, "utf8");
 		const makeReview = (body: string): ReviewLike => ({
 			...review,
@@ -1683,13 +1702,11 @@ describe("single lossless publication payload", () => {
 		const boundary = makeReview("x".repeat(rationaleBytes));
 		expect(Buffer.byteLength(buildReviewSummary(boundary), "utf8")).toBe(desiredContentBytes);
 
-		const diagnostic = await diagnosePullPublication(boundary, [], {
-			fallbackPublicationBody: "Retained compact synthesis.",
-		});
-		expect(diagnostic.result.status).toBe("posted");
-		expect(diagnostic.postCount).toBe(1);
-		expect(String(diagnostic.payload?.body)).toContain("Retained compact synthesis.");
-		expect(String(diagnostic.payload?.body)).not.toContain("Boundary note");
+		const diagnostic = await diagnosePullPublication(boundary, []);
+		expect(diagnostic.result.status).toBe("failed");
+		expect(diagnostic.result.message).toContain("final review body exceeds 65536 UTF-8 bytes");
+		expect(diagnostic.postCount).toBe(0);
+		expect(diagnostic.payload).toBeUndefined();
 	});
 
 	test("fails an oversized selected payload before POST", async () => {

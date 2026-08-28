@@ -36,7 +36,7 @@ function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], repetitio
 			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
-			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.8", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
+			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.16", topologyGeneration: "fixed-v1", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
 			lanes: topology.passIds.map((id) => ({ id, lens: id.replace(/-shard-[123]$/, ""), status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
 			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
 		};
@@ -74,12 +74,17 @@ test("plan is deterministic and spans the same corpus for every mode and repetit
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
 });
 
-test("large multi-file corpus case exercises the production sharding thresholds", () => {
-	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "sharded-registry-contract"), balanced = expectedModeTopology("balanced", item), full = expectedModeTopology("full", item), deep = expectedModeTopology("deep", item);
+test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {
+	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "sharded-registry-contract");
+	const quick = expectedModeTopology("quick", item), majorOnly = expectedModeTopology("major-only", item), balanced = expectedModeTopology("balanced", item), full = expectedModeTopology("full", item), deep = expectedModeTopology("deep", item);
 	assert.ok(item.diffBytes >= 200_000 && item.diffBytes < 400_000); assert.equal(item.changedFiles.length, 2);
-	assert.equal(balanced.shardCount, 2); assert.equal(balanced.passIds.length, 10); assert.equal(balanced.maxParallel, 10);
-	assert.equal(full.shardCount, 2); assert.equal(full.passIds.length, 12); assert.equal(full.maxParallel, 12);
+	assert.deepEqual(quick, { passIds: ["correctness", "correctness-contracts", "security-performance"], shardCount: 1, maxParallel: 3 });
+	assert.deepEqual(majorOnly, quick);
+	assert.equal(balanced.shardCount, 1); assert.equal(balanced.passIds.length, 5); assert.equal(balanced.maxParallel, 5);
+	assert.equal(full.shardCount, 1); assert.equal(full.passIds.length, 6); assert.equal(full.maxParallel, 6);
 	assert.deepEqual(deep, { passIds: ["deep-review"], shardCount: 1, maxParallel: 1 });
+	const legacy = expectedModeTopology("balanced", item, { legacySharding: true });
+	assert.equal(legacy.shardCount, 2); assert.equal(legacy.passIds.length, 10); assert.equal(legacy.maxParallel, 10);
 });
 
 test("perfect immutable result bundle emits recall, lifecycle, fallback, and latency metrics", () => {

@@ -691,7 +691,7 @@ describe("completed review extension lifecycle", () => {
 		expect(persisted?.data).toMatchObject({ mergeApprovalEligible: false, laneArtifacts: [] });
 	});
 
-	test("uses retained Markdown when the concise approval summary exceeds GitHub's body limit", async () => {
+	test("fails closed instead of dumping retained Markdown when the concise approval summary is oversized", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -719,11 +719,11 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "markdown-large-approval");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.event).toBe("APPROVE");
-		expect(String(probe.payload()?.body)).toContain("# PR Review");
-		expect(String(probe.payload()?.body)).toContain("Review content was truncated by the host");
-		expect(String(probe.payload()?.body)).not.toContain("### Other Notes");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
+		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
+		expect(persisted?.data.rawText).toBe(raw);
+		expect(persisted?.data).not.toHaveProperty("publicationBody");
 	});
 
 	test.each([
@@ -910,7 +910,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(String(probe.payload()?.body)).toContain("**Verdict:** approve");
+		expect(String(probe.payload()?.body)).toContain("**Verdict:** Comment");
+		expect(String(probe.payload()?.body)).not.toContain("# PR Review");
 	});
 
 	test("forces incomplete lane evidence to one body-only COMMENT under P3 approval config", async () => {

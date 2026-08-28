@@ -58,7 +58,7 @@ import {
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
-import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
+import { loadReviewContext } from "../lib/pr-review-context.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
@@ -92,6 +92,7 @@ import {
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
 	type ApproveMaxPriorityLevel,
+	type ReviewMode,
 } from "../lib/pr-review-publish.ts";
 import { monotonicNow } from "../lib/pr-review-telemetry.ts";
 import {
@@ -125,9 +126,48 @@ const INHERIT_THINKING = "(inherit — pi default)";
 const INHERIT_TOOL_POLICY = "(inherit — configured tools)";
 const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
-const DEFAULT_BATCH_PARALLEL = 4;
-const MAX_BATCH_PARALLEL = 18;
-const MAX_EMBEDDED_REVIEW_SHARD_BYTES = 1024 * 1024;
+const MAX_EMBEDDED_REVIEW_CONTEXT_BYTES = 200_000;
+const MAX_SHARED_REVIEW_METADATA_BYTES = 64 * 1024;
+const MAX_PASS_REVIEW_METADATA_BYTES = 64 * 1024;
+const MAX_REVIEW_OBJECTIVE_BYTES = 16 * 1024;
+const MAX_BATCH_REVIEW_METADATA_BYTES = 256 * 1024;
+const MAX_FILE_BACKED_READ_BYTES = 40 * 1024;
+const MAX_FILE_BACKED_READ_LINES = 1_000;
+const MAX_FILE_BACKED_READ_RANGES = 16;
+
+interface FixedReviewPass {
+	readonly id: string;
+	readonly tier: Tier;
+	readonly toolPolicy: ToolPolicy;
+	readonly scope: string;
+	readonly expectedOutput?: "nonempty";
+}
+
+const FIXED_REVIEW_TOPOLOGIES: Readonly<Record<ReviewMode, readonly FixedReviewPass[]>> = Object.freeze({
+	quick: Object.freeze([
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, and cancellation; report only substantiated P0-P2 defects." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, and test-sensitive behavior; report only substantiated P0-P2 defects." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security plus performance, resource ownership, cleanup, scalability, I/O, memory, and contention; report only substantiated P0-P2 defects." },
+	]),
+	balanced: Object.freeze([
+		{ id: "overview", tier: "light", toolPolicy: "none", scope: "Overview, strengths, high-level risks, and at most three direct-diff P3/nit candidates; do not report P0-P2 findings." },
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, and cancellation; report only substantiated P0-P2 defects." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, and test-sensitive behavior; report only substantiated P0-P2 defects." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security vulnerabilities and trust-boundary regressions; report only substantiated P0-P2 defects." },
+		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured", scope: "Performance, resource ownership, cleanup, scalability, I/O, memory, and contention; report only substantiated P0-P2 defects." },
+	]),
+	full: Object.freeze([
+		{ id: "overview", tier: "light", toolPolicy: "none", scope: "Overview, strengths, high-level risks, and qualifying findings at every severity." },
+		{ id: "conventions-maintainability", tier: "medium", toolPolicy: "configured", scope: "Applicable conventions, readability, maintainability, test gaps, and qualifying findings at every severity." },
+		{ id: "correctness", tier: "heavy", toolPolicy: "configured", scope: "State transitions, async lifecycle, ordering, concurrency, cancellation, and qualifying findings at every severity." },
+		{ id: "correctness-contracts", tier: "heavy", toolPolicy: "configured", scope: "Compile/types, API/data/error contracts, boundary inputs, integration, tests, and qualifying findings at every severity." },
+		{ id: "security-performance", tier: "heavy", toolPolicy: "configured", scope: "Security vulnerabilities and trust-boundary regressions at every qualifying severity." },
+		{ id: "performance-resources", tier: "heavy", toolPolicy: "configured", scope: "Performance, resource ownership, cleanup, scalability, I/O, memory, contention, and qualifying findings at every severity." },
+	]),
+	deep: Object.freeze([
+		{ id: "deep-review", tier: "heavy", toolPolicy: "configured", scope: "Integrated whole-PR intent, implementation, callers, tests, and risks at every qualifying severity.", expectedOutput: "nonempty" },
+	]),
+});
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
 	medium: "convention compliance + readability / maintainability",
@@ -444,13 +484,15 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput): string {
+function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput, fileBacked = false): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
 		"",
 		minorHygiene
-			? "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
+			? fileBacked
+				? "This is a bounded minor-hygiene scan. Read every host-required range of the supplied file-backed diff (grep is optional for navigation), report at most three direct, substantiated P3/nit observations, do not deep-audit the repository or report P0-P2 defects, and do not inflate severity. The dedicated heavy reviewers cover P0-P2."
+				: "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
 			: majorOnly
 				? "This is major-only mode. Within the assigned objective, report only substantiated P0, P1, or P2 defects. Do not spend review time on P3/nit style, naming, documentation, or low-impact observations, and never inflate a minor issue's severity to include it."
 				: "Stay inside the assigned objective. Within that objective, surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
@@ -527,6 +569,7 @@ interface RunResult {
 	firstAssistantMs?: number;
 	toolElapsedMs: number;
 	toolCallCount: number;
+	fileBackedAccessObserved?: boolean;
 }
 
 export function runReviewSubprocess(
@@ -800,6 +843,11 @@ export function runReviewSubprocess(
 	});
 }
 
+interface FileBackedReadRange {
+	readonly offset: number;
+	readonly limit: number;
+}
+
 interface SubagentPassRequest {
 	id?: string;
 	tier: Tier;
@@ -817,6 +865,8 @@ interface SubagentPassRequest {
 	requestedPassOrdinal?: number;
 	toolNames?: readonly string[];
 	fileBackedContext?: boolean;
+	fileBackedContextPath?: string;
+	fileBackedRequiredReads?: readonly FileBackedReadRange[];
 }
 
 interface ModelAttemptReport {
@@ -940,6 +990,7 @@ async function runSubagentAttempt(
 				pass.majorOnly === true,
 				pass.minorHygiene && pass.tier === "light",
 				pass.expectedOutput,
+				pass.fileBackedContext === true,
 			),
 		);
 		args.push("--append-system-prompt", tmp.filePath);
@@ -950,6 +1001,9 @@ async function runSubagentAttempt(
 		}
 		pass.focusPublisher?.publish({ type: "attempt_started", attempt: attemptOrdinal, model: attempt.spec });
 		const invocation = getPiInvocation(args);
+		let fileBackedAccessObserved = false;
+		const completedFileBackedReads = new Set<string>();
+		const pendingFileBackedReads = new Map<string, string>();
 		const result = await runReviewSubprocess(
 			invocation.command,
 			invocation.args,
@@ -961,6 +1015,26 @@ async function runSubagentAttempt(
 				for (const normalized of normalizeReviewFocusJsonEvent(event)) {
 					pass.focusPublisher?.publish(normalized);
 				}
+				if (pass.fileBackedContextPath && pass.fileBackedRequiredReads && event && typeof event === "object") {
+					const record = event as { type?: unknown; toolCallId?: unknown; toolName?: unknown; args?: unknown; isError?: unknown };
+					if (record.type === "tool_execution_start" && typeof record.toolCallId === "string" &&
+						record.toolName === "read" && record.args && typeof record.args === "object") {
+						try {
+							const args = record.args as { path?: unknown; offset?: unknown; limit?: unknown };
+							const target = args.path;
+							const key = `${String(args.offset)}:${String(args.limit)}`;
+							if (typeof target === "string" && path.resolve(ctx.cwd, target) === pass.fileBackedContextPath &&
+								pass.fileBackedRequiredReads.some((range) => key === `${range.offset}:${range.limit}`)) {
+								pendingFileBackedReads.set(record.toolCallId, key);
+							}
+						} catch { /* malformed event arguments never establish file coverage */ }
+					}
+					if (record.type === "tool_execution_end" && typeof record.toolCallId === "string") {
+						const key = pendingFileBackedReads.get(record.toolCallId);
+						pendingFileBackedReads.delete(record.toolCallId);
+						if (key && record.isError !== true) completedFileBackedReads.add(key);
+					}
+				}
 			},
 			budget ? {
 				deadlineMs: deadlineAtMs!,
@@ -968,6 +1042,9 @@ async function runSubagentAttempt(
 				cleanupReserveMs: budget.config.cleanupReserveMs,
 			} : undefined,
 		);
+		fileBackedAccessObserved = !!pass.fileBackedRequiredReads?.length &&
+			pass.fileBackedRequiredReads.every((range) => completedFileBackedReads.has(`${range.offset}:${range.limit}`));
+		result.fileBackedAccessObserved = fileBackedAccessObserved;
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt, deadlineMs };
 	} catch (e) {
 		return {
@@ -1188,9 +1265,13 @@ async function runSubagentPass(
 			minorHygiene: pass.minorHygiene,
 			expectedOutput: pass.expectedOutput === "json_object" ? undefined : pass.expectedOutput,
 		};
-		const lifecycle = pass.expectedOutput === "json_object"
+		let lifecycle = pass.expectedOutput === "json_object"
 			? classifyReviewJsonObject(completionInput)
 			: classifyReviewLane(completionInput);
+		if (lifecycle === "complete" && pass.fileBackedContext && result.fileBackedAccessObserved !== true) {
+			lifecycle = "partial";
+			result.errorMessage = "File-backed complete diff was not fully read through every host-required range.";
+		}
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;
@@ -1290,12 +1371,6 @@ async function runSubagentPass(
 	return incomplete;
 }
 
-function normalizeMaxParallel(raw: unknown, count: number): number {
-	if (count <= 0) return 0;
-	const requested = typeof raw === "number" && Number.isFinite(raw) ? Math.floor(raw) : DEFAULT_BATCH_PARALLEL;
-	return Math.max(1, Math.min(count, MAX_BATCH_PARALLEL, requested > 0 ? requested : DEFAULT_BATCH_PARALLEL));
-}
-
 function formatAttemptSummary(result: SubagentPassResult): string {
 	if (result.attempts.length <= 1) return "";
 	return `attempts: ${result.attempts
@@ -1310,8 +1385,9 @@ function deadlineExpiryCounts(results: readonly SubagentPassResult[]): Record<Re
 }
 
 function formatBatchResults(
+	mode: ReviewMode,
 	results: SubagentPassResult[],
-	maxParallel: number,
+	coverageStrategy: "embedded" | "file-backed",
 	warnings: readonly string[] = [],
 ): string {
 	const lifecycleCounts = Object.fromEntries(
@@ -1320,8 +1396,9 @@ function formatBatchResults(
 	const incomplete = results.length - lifecycleCounts.complete;
 	const externalDeadlines = deadlineExpiryCounts(results);
 	const externalTotal = externalDeadlines.total + externalDeadlines.synthesis;
+	const modeLabel = mode[0]!.toUpperCase() + mode.slice(1);
 	const lines = [
-		`Review subagents completed: ${lifecycleCounts.complete}/${results.length} semantically complete (max_parallel=${maxParallel}; partial=${lifecycleCounts.partial}; timed_out=${lifecycleCounts.timed_out}; failed=${lifecycleCounts.failed}).`,
+		`Review mode: ${modeLabel}. Reviewers completed: ${lifecycleCounts.complete}/${results.length} (partial=${lifecycleCounts.partial}; timed_out=${lifecycleCounts.timed_out}; failed=${lifecycleCounts.failed}). Coverage strategy: ${coverageStrategy}.`,
 		...warnings,
 	];
 	if (externalTotal > 0) {
@@ -1433,86 +1510,30 @@ const ReviewSubagentParams = Type.Object({
 });
 
 const ReviewSubagentsParams = Type.Object({
-	// Keep the required structured value first and the free-form context last.
-	// Some model tool encoders follow schema order; putting a long scalar first can
-	// cause malformed markup to absorb every later argument into that string.
+	// The host derives reviewer count, tiers, tool policies, completion contracts,
+	// and concurrency from the trusted /pr-review mode. The model supplies only
+	// the fixed reviewers' objectives and optional pass-specific context.
 	passes: Type.Array(
 		Type.Object({
-			expected_output: Type.Optional(
-				StringEnum(["review_lane", "nonempty"] as const, {
-					description: `Completion contract for this pass. review_lane (default): candidate-evidence fields or exactly NO FINDINGS. nonempty: ${NONEMPTY_CONTRACT_DESCRIPTION}`,
-				}),
-			),
-			id: Type.Optional(
-				Type.String({
-					description: "Stable pass label used in the ordered batch result, e.g. overview, conventions, correctness.",
-				}),
-			),
-			tier: StringEnum(["light", "medium", "heavy"] as const, {
-			description:
-					"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
+			id: Type.String({
+				description: "Fixed reviewer id required by the active review mode.",
 			}),
 			objective: Type.String({
-				description: "Precise instruction for this pass — what to review and what to return.",
+				description: "Precise instruction for this fixed reviewer.",
 			}),
 			context: Type.Optional(
-				Type.String({
-					description: "Optional pass-specific context appended after the shared context.",
-				}),
+				Type.String({ description: "Optional pass-specific context, such as applicable conventions." }),
 			),
-			context_file: Type.Optional(
-				Type.String({
-					description: "Optional pass-specific unified-diff shard. When set, this pass receives the shard instead of the top-level context_file.",
-				}),
-			),
-			tool_policy: Type.Optional(
-				StringEnum(["none", "configured"] as const, {
-					description:
-						"Tool access for this pass. none emits --no-tools; configured uses the configured allowlist. The resolved policy remains fixed across fallback model attempts.",
-				}),
-			),
-		}),
-		{
-			description:
-				"Required JSON array of independent review-pass objects to run concurrently. Pass this as an array value, never as serialized JSON, XML-like markup, or text inside context. Results are returned in this same order.",
-		},
+		}, { additionalProperties: false }),
+		{ description: "The exact ordered reviewer ids required by the active /pr-review mode." },
 	),
 	context_file: Type.Optional(
-		Type.String({
-			description:
-				"Path to a complete unified diff already captured by the orchestrator. Its contents are appended to shared context inside the extension.",
-		}),
-	),
-	shard_count: Type.Optional(
-		Type.Integer({
-			minimum: 1,
-			maximum: 3,
-			description:
-				"For large diffs, split whole changed-file blocks into two or three balanced shards and run every requested lens once per shard.",
-		}),
-	),
-	max_parallel: Type.Optional(
-		Type.Number({
-			description: `Maximum pass subprocesses to run concurrently. Defaults to ${DEFAULT_BATCH_PARALLEL}; capped at ${MAX_BATCH_PARALLEL}.`,
-		}),
-	),
-	major_only: Type.Optional(
-		Type.Boolean({
-			description: "Apply major-only P0-P2 candidate reporting to every requested pass without changing model, thinking, tools, or diff scope.",
-		}),
-	),
-	minor_hygiene: Type.Optional(
-		Type.Boolean({
-			description: "Add a bounded direct-diff P3/nit scan to the light overview pass; heavy passes remain P0-P2 only.",
-		}),
+		Type.String({ description: "Path to the complete captured unified diff shared by every fixed reviewer." }),
 	),
 	context: Type.Optional(
-		Type.String({
-			description:
-				"Shared PR metadata and cross-cutting requirements for every pass. Supply a large complete diff through context_file to avoid duplicating it in tool arguments. Do not embed other tool parameters in this string.",
-		}),
+		Type.String({ description: "Shared compact PR metadata and cross-cutting requirements. Do not embed a large diff here." }),
 	),
-});
+}, { additionalProperties: false });
 
 export default function registerPrReviewSubagents(
 	pi: ExtensionAPI,
@@ -1788,18 +1809,18 @@ export default function registerPrReviewSubagents(
 		name: "review_subagents",
 		label: "Review Subagents Batch",
 		description: [
-			"Delegate multiple independent PR-review passes to isolated subagents and run them concurrently.",
-			"Pass shared PR context once plus ordered pass assignments with tier, objective, and optional pass-specific context.",
-			"Each pass uses the configured light/medium/heavy model tier from /pr-review-config.",
-			"Returns deterministic ordered per-pass outputs; partial failures are explicit so the orchestrator can rerun or cover them inline.",
+			"Run the fixed reviewer topology selected by the active /pr-review mode.",
+			"The host owns reviewer ids, tiers, tool policies, completion contracts, and concurrency; callers provide only objectives and context.",
+			"Oversized complete diffs remain one file-backed input per reviewer and never multiply into shard reviewers.",
+			"Returns deterministic ordered reviewer outputs; partial failures remain explicit for one targeted replacement.",
 		].join(" "),
 		promptSnippet:
-			"Run independent light/medium/heavy PR-review passes concurrently in isolated subagents with shared PR context",
+			"Run the active /pr-review mode's fixed reviewers concurrently against one complete diff",
 		promptGuidelines: [
-			"Prefer review_subagents over separate review_subagent calls for independent /pr-review passes; it guarantees bounded parallel execution instead of relying on the orchestrator to emit concurrent tool calls.",
-			"Always provide `passes` as the tool call's top-level JSON array of pass objects. Never serialize it or append any parameter markup to `context`.",
-			"Fetch PR metadata and the unified diff once. Prefer the captured diff path in `context_file` plus compact metadata in `context`; for large multi-file diffs shard_count=2 or 3 runs every requested lens over every balanced whole-file shard.",
-			"If any pass reports status=failed, treat the review evidence as incomplete: rerun that pass or perform it inline before finalizing the JSON.",
+			"Provide exactly the ordered reviewer ids required by the active mode; the host rejects missing, extra, reordered, or invented reviewers.",
+			"Pass only each fixed reviewer's id, objective, and optional pass-specific context. Do not supply tiers, tool policies, parallelism, or shard controls.",
+			"Fetch the unified diff once and pass its captured path through `context_file` with compact metadata in `context`.",
+			"If a reviewer is incomplete, preserve it and use at most one targeted review_subagent replacement for that missing scope.",
 		],
 		parameters: ReviewSubagentsParams,
 
@@ -1808,128 +1829,106 @@ export default function registerPrReviewSubagents(
 			if (!lease) return reviewLoopDeniedResult("review_subagents");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
-			if (rawPasses.length === 0) {
+			const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+			const topology = FIXED_REVIEW_TOPOLOGIES[reviewMode];
+			const receivedIds = rawPasses.map((pass) => typeof pass.id === "string" ? pass.id.trim() : "");
+			const expectedIds = topology.map((pass) => pass.id);
+			if (receivedIds.length !== expectedIds.length || receivedIds.some((id, index) => id !== expectedIds[index])) {
 				return {
-					content: [{ type: "text", text: "review_subagents requires at least one pass assignment." }],
+					content: [{ type: "text", text: `Review batch topology failed: ${reviewMode} mode requires exactly these ordered reviewers: ${expectedIds.join(", ")}.` }],
 					isError: true,
-					details: { passCount: 0 },
+					details: { reviewMode, reviewerCount: 0, expectedReviewerIds: expectedIds },
 				};
 			}
 
-			if (params.context_file && rawPasses.some((pass) => pass.context_file)) {
-				return {
-					content: [{ type: "text", text: "Review batch context failed: use either top-level context_file or pass-specific context_file shards, not both." }],
-					isError: true,
-					details: { passCount: rawPasses.length, contextFileBytes: 0 },
-				};
-			}
 			let loadedContext;
-			let loadedPassContexts;
 			try {
 				loadedContext = await loadReviewContext(ctx.cwd, params.context, params.context_file);
-				loadedPassContexts = await Promise.all(
-					rawPasses.map((pass) =>
-						loadReviewContext(
-							ctx.cwd,
-							typeof pass.context === "string" ? pass.context : undefined,
-							typeof pass.context_file === "string" ? pass.context_file : undefined,
-						),
-					),
-				);
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Review batch context failed: ${errMessage(error)}` }],
 					isError: true,
-					details: { passCount: rawPasses.length, contextFileBytes: 0 },
+					details: { reviewMode, reviewerCount: 0, contextFileBytes: 0 },
 				};
 			}
-			const explicitShardCount = params.shard_count === 2 || params.shard_count === 3 ? params.shard_count : 1;
-			const deepReview = rawPasses.length === 1 && rawPasses[0]?.id === "deep-review";
-			const loadedDiff = loadedContext.contextFileText;
 			const inlineContext = typeof params.context === "string" ? params.context.trim() : "";
-			const inlineDiffStart = inlineContext.search(/^diff --git /m);
-			const inlineDiff = inlineDiffStart >= 0 ? inlineContext.slice(inlineDiffStart) : undefined;
-			const diffForSharding = loadedDiff ?? inlineDiff;
-			const changedFileCount = diffForSharding ? (diffForSharding.match(/^diff --git /gm) ?? []).length : 0;
-			const diffBytes = diffForSharding ? Buffer.byteLength(diffForSharding, "utf8") : 0;
-			const automaticShardCount = deepReview
-				? 1
-				: diffBytes >= 400_000 && changedFileCount >= 3
-					? 3
-					: diffBytes >= 200_000 && changedFileCount >= 2
-						? 2
-						: 1;
-			const requestedShardCount = Math.max(explicitShardCount, automaticShardCount);
-			if (requestedShardCount > 1 && !diffForSharding) {
+			const sharedMetadataBytes = Buffer.byteLength(inlineContext, "utf8");
+			const passMetadataBytes = rawPasses.map((pass) => Buffer.byteLength(typeof pass.context === "string" ? pass.context.trim() : "", "utf8"));
+			const objectiveBytes = rawPasses.map((pass) => Buffer.byteLength(typeof pass.objective === "string" ? pass.objective : "", "utf8"));
+			const aggregateMetadataBytes = sharedMetadataBytes + passMetadataBytes.reduce((sum, bytes) => sum + bytes, 0) + objectiveBytes.reduce((sum, bytes) => sum + bytes, 0);
+			if (sharedMetadataBytes > MAX_SHARED_REVIEW_METADATA_BYTES ||
+				passMetadataBytes.some((bytes) => bytes > MAX_PASS_REVIEW_METADATA_BYTES) ||
+				objectiveBytes.some((bytes) => bytes === 0 || bytes > MAX_REVIEW_OBJECTIVE_BYTES) ||
+				aggregateMetadataBytes > MAX_BATCH_REVIEW_METADATA_BYTES) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: sharding requires a unified diff in top-level context or context_file." }],
+					content: [{ type: "text", text: "Review batch context failed: objective, shared metadata, pass metadata, or aggregate metadata exceeds its deterministic UTF-8 byte bound; supply the complete diff only through context_file." }],
 					isError: true,
-					details: { passCount: rawPasses.length, contextFileBytes: 0, shardCount: 0 },
+					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};
 			}
-			const requestedShards = requestedShardCount > 1
-				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
-				: [];
-			const sharded = requestedShards.length > 1;
-			const topUnshardedFileBacked = !sharded && loadedContext.contextFileBytes > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedContext.contextFile && !!loadedContext.contextFileText;
-			const selectedFileDiffIndex = loadedDiff ? inlineContext.indexOf(loadedDiff) : -1;
-			const compactInlineContext = selectedFileDiffIndex >= 0
-				? [inlineContext.slice(0, selectedFileDiffIndex).trim(), inlineContext.slice(selectedFileDiffIndex + loadedDiff!.length).trim()].filter(Boolean).join("\n\n")
-				: inlineDiffStart >= 0 && !loadedDiff
-					? inlineContext.slice(0, inlineDiffStart).trim()
-					: inlineContext;
-			const sharedContext = sharded || topUnshardedFileBacked ? compactInlineContext || undefined : loadedContext.context;
-			const majorOnly = params.major_only === true;
-			const minorHygiene = params.minor_hygiene === true;
+			const diffText = loadedContext.contextFileText;
+			const diffBytes = diffText ? Buffer.byteLength(diffText, "utf8") : 0;
+			const changedFileCount = diffText ? (diffText.match(/^diff --git /gm) ?? []).length : 0;
+			const fileBacked = loadedContext.contextFileBytes >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES &&
+				!!loadedContext.contextFile && !!diffText;
 			const exactHeaderManifest = (text: string) => {
-				const headers = text.match(/^diff --git .+$/gm) ?? [], bytes = Buffer.byteLength(headers.join("\n"), "utf8");
-				return headers.length > 0 && headers.length <= 2_000 && bytes <= 256 * 1024 && headers.every((line) => Buffer.byteLength(line, "utf8") <= 2_048 && !/[\u0000-\u001f\u007f]/.test(line)) ? headers : undefined;
+				const headers = text.match(/^diff --git .+$/gm) ?? [];
+				const bytes = Buffer.byteLength(headers.join("\n"), "utf8");
+				return headers.length > 0 && headers.length <= 2_000 && bytes <= 256 * 1024 &&
+					headers.every((line) => Buffer.byteLength(line, "utf8") <= 2_048 && !/[\u0000-\u001f\u007f]/.test(line))
+					? headers : undefined;
 			};
-			const topShardHeaders = requestedShards.map((shard) => loadedContext.contextFile && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES ? exactHeaderManifest(shard) : []);
-			if (topShardHeaders.some((headers) => headers === undefined)) {
-				return { content: [{ type: "text", text: "Review batch context failed: oversized file-backed shard manifest is unsafe or exceeds deterministic bounds." }], isError: true, details: { passCount: rawPasses.length, contextFileBytes: loadedContext.contextFileBytes, shardCount: 0 } };
-			}
-			const fileBackedInstructions = (contextFile: string, label: string, headers?: readonly string[]) => [
-				`--- File-backed ${label} ---`,
-				`The complete captured unified diff is at ${JSON.stringify(contextFile)}. Use only the host-enforced read-only tools (read, grep, find, ls) to inspect it; the oversized diff is intentionally not embedded in this prompt.`,
-				...(headers ? ["Review only these exact diff headers:", ...headers] : ["Review the complete captured diff in this file."]),
-			].join("\n");
-			const passesWithoutFocus = rawPasses.flatMap((pass, index) => {
-				const tier = pass.tier as Tier;
-				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
-				const loadedPass = loadedPassContexts[index]!;
-				const passFileBacked = loadedPass.contextFileBytes > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedPass.contextFile && !!loadedPass.contextFileText;
-				const passContext = passFileBacked ? (typeof pass.context === "string" ? pass.context.trim() : undefined) : loadedPass.context;
-				const baseContext = combineContexts(sharedContext, passContext);
-				const makePass = (shard: string | undefined, shardIndex: number) => {
-					const topFileBacked = (!!shard && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES || topUnshardedFileBacked) && !!loadedContext.contextFile;
-					const fileBacked = passFileBacked || topFileBacked;
-					const label = sharded ? `diff shard ${shardIndex + 1}/${requestedShards.length}` : passFileBacked ? `pass context for ${baseId}` : "complete diff";
-					const fileInstructions = passFileBacked
-						? fileBackedInstructions(loadedPass.contextFile!, label)
-						: topFileBacked
-							? fileBackedInstructions(loadedContext.contextFile!, label, shard ? topShardHeaders[shardIndex] as readonly string[] : undefined)
-							: undefined;
-					return {
-						// Every actual shard receives an explicit identity, including shard 1.
-						// The unsharded compatibility path retains the caller's exact base ID.
-						id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
-						expectedOutput: pass.expected_output,
-						tier,
-						objective: shard
-							? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
-							: pass.objective,
-						context: fileInstructions ? combineContexts(baseContext, fileInstructions) : shard
-							? combineContexts(baseContext, `--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`)
-							: baseContext,
-						toolPolicy: fileBacked ? "configured" as const : normalizeToolPolicy(pass.tool_policy),
-						...(fileBacked ? { toolNames: ["read", "grep", "find", "ls"] } : {}),
-						majorOnly,
-						minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
-						fileBackedContext: fileBacked,
-					};
+			const headers = fileBacked ? exactHeaderManifest(diffText!) : undefined;
+			const boundedReadRanges = (text: string): FileBackedReadRange[] | undefined => {
+				const lines = text.split("\n");
+				const ranges: FileBackedReadRange[] = [];
+				let offset = 1, limit = 0, bytes = 0;
+				for (let index = 0; index < lines.length; index++) {
+					const lineBytes = Buffer.byteLength(lines[index]!, "utf8") + (index + 1 < lines.length ? 1 : 0);
+					if (lineBytes > MAX_FILE_BACKED_READ_BYTES) return undefined;
+					if (limit > 0 && (limit >= MAX_FILE_BACKED_READ_LINES || bytes + lineBytes > MAX_FILE_BACKED_READ_BYTES)) {
+						ranges.push({ offset, limit }); offset += limit; limit = 0; bytes = 0;
+					}
+					limit++; bytes += lineBytes;
+				}
+				if (limit > 0) ranges.push({ offset, limit });
+				return ranges.length > 0 && ranges.length <= MAX_FILE_BACKED_READ_RANGES ? ranges : undefined;
+			};
+			const requiredReads = fileBacked ? boundedReadRanges(diffText!) : undefined;
+			if (fileBacked && (!headers || !requiredReads)) {
+				return {
+					content: [{ type: "text", text: `Review batch context failed: complete file-backed diff manifest is unsafe or full coverage requires more than ${MAX_FILE_BACKED_READ_RANGES} bounded reads; non-sharded review cannot safely cover this diff with the current Pi reader.` }],
+					isError: true,
+					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};
-				return sharded ? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex)) : [makePass(undefined, 0)];
+			}
+			const fileInstructions = fileBacked ? [
+				"--- File-backed complete diff ---",
+				`The complete captured unified diff is at ${JSON.stringify(loadedContext.contextFile)}. Review the complete diff under this reviewer objective; the host does not create shard reviewers.`,
+				"To establish complete coverage, successfully call read with this exact path and every exact offset/limit pair below. Other tools or partial reads do not satisfy completion:",
+				...requiredReads!.map((range) => `- offset ${range.offset}, limit ${range.limit}`),
+				"Changed-file manifest:",
+				...headers!,
+			].join("\n") : undefined;
+			const sharedContext = fileBacked ? inlineContext || undefined : loadedContext.context;
+			const majorOnly = reviewMode === "quick" || reviewMode === "balanced";
+			const minorHygiene = reviewMode === "balanced";
+			const passesWithoutFocus = rawPasses.map((rawPass, index) => {
+				const fixed = topology[index]!;
+				const passContext = typeof rawPass.context === "string" ? rawPass.context.trim() || undefined : undefined;
+				return {
+					id: fixed.id,
+					expectedOutput: fixed.expectedOutput,
+					tier: fixed.tier,
+					objective: `${rawPass.objective}\n\nHost-fixed reviewer scope: ${fixed.scope}`,
+					context: combineContexts(combineContexts(sharedContext, passContext), fileInstructions),
+					toolPolicy: fileBacked ? "configured" as const : fixed.toolPolicy,
+					...(fileBacked ? { toolNames: ["read", "grep", "find", "ls"] } : {}),
+					majorOnly,
+					minorHygiene: minorHygiene && fixed.id === "overview",
+					fileBackedContext: fileBacked,
+					...(fileBacked ? { fileBackedContextPath: loadedContext.contextFile, fileBackedRequiredReads: requiredReads } : {}),
+				};
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -1956,9 +1955,9 @@ export default function registerPrReviewSubagents(
 			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
-			// max_parallel is an absolute caller-owned process ceiling. Automatic
-			// sharding may add work, but must never silently multiply concurrency.
-			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
+			// Fixed mode topology is also the concurrency policy: every selected
+			// reviewer may run concurrently, and no caller/model tuning knob exists.
+			const reviewerConcurrency = passes.length;
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
@@ -1966,7 +1965,7 @@ export default function registerPrReviewSubagents(
 			const dispatchPasses = passes
 				.map((pass, originalIndex) => ({ pass, originalIndex }))
 				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
-			const dispatchResults = await runWithConcurrency(dispatchPasses, maxParallel, async ({ pass, originalIndex }) => {
+			const dispatchResults = await runWithConcurrency(dispatchPasses, reviewerConcurrency, async ({ pass, originalIndex }) => {
 				const startOffsetMs = monotonicNow() - batchStartedAt;
 				const result = await runSubagentPass(
 					config,
@@ -2001,23 +2000,20 @@ export default function registerPrReviewSubagents(
 			) as Record<ReviewLaneLifecycle, number>;
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
-				content: [{ type: "text", text: formatBatchResults(results, maxParallel, [...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
+				content: [{ type: "text", text: formatBatchResults(reviewMode, results, fileBacked ? "file-backed" : "embedded", [...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
 				...(incomplete.length > 0 ? { isError: true } : {}),
 				details: {
-					maxParallel,
+					reviewMode,
+					reviewerCount: results.length,
+					coverageStrategy: fileBacked ? "file-backed" : "embedded",
 					majorOnly,
 					minorHygiene,
 					passCount: results.length,
-					shardCount: sharded ? requestedShards.length : 1,
-					requestedShardCount: explicitShardCount,
-					shardingSource: automaticShardCount > explicitShardCount ? "automatic-size-preflight" : explicitShardCount > 1 ? "requested" : "none",
 					diffBytes,
 					changedFileCount,
 					fileBackedPassCount: passes.filter((pass) => pass.fileBackedContext === true).length,
 					sharedContextBytes: Buffer.byteLength(sharedContext ?? "", "utf8"),
-					contextFileBytes:
-						loadedContext.contextFileBytes +
-						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),
+					contextFileBytes: loadedContext.contextFileBytes,
 					failedCount: lifecycleCounts.failed,
 					incompleteCount: incomplete.length,
 					fallbackStarts: results.filter((result) => result.attempts.length > 1).length,

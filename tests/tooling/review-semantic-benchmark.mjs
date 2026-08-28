@@ -11,17 +11,25 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
-const MODES = new Set(["balanced", "full", "major-only", "deep"]);
+const MODES = new Set(["quick", "balanced", "full", "major-only", "deep"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
 const PUBLICATION_ARTIFACTS = new Set(["canonical", "degraded", "raw_body_only"]);
 const GATE_INELIGIBLE_CORPORA = new Set(["pi-pr-review-semantic-v5"]);
+const QUICK_PASS_IDS = ["correctness", "correctness-contracts", "security-performance"];
 const MODE_TOPOLOGIES = Object.freeze({
+	quick: { passIds: QUICK_PASS_IDS, maxParallel: 3 },
 	balanced: { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
 	full: { passIds: ["overview", "conventions-maintainability", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 6 },
-	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
+	"major-only": { passIds: QUICK_PASS_IDS, maxParallel: 3 },
 	deep: { passIds: ["deep-review"], maxParallel: 1 },
+});
+const LEGACY_MODE_TOPOLOGIES = Object.freeze({
+	balanced: MODE_TOPOLOGIES.balanced,
+	full: MODE_TOPOLOGIES.full,
+	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
+	deep: MODE_TOPOLOGIES.deep,
 });
 const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review" });
 const EXPLICIT_NON_FINDING = [
@@ -216,10 +224,15 @@ export function validatePlan(plan, corpusInfo) {
 	return plan;
 }
 
-export function expectedModeTopology(mode, item) {
+export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
-	const base = MODE_TOPOLOGIES[mode], shardCount = mode === "deep" ? 1 : item.diffBytes >= 400_000 && item.changedFiles.length >= 3 ? 3 : item.diffBytes >= 200_000 && item.changedFiles.length >= 2 ? 2 : 1;
+	const legacySharding = options.legacySharding === true;
+	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];
+	invariant(base, `mode ${mode} is unavailable under the requested topology generation`);
+	const shardCount = legacySharding && mode !== "deep"
+		? item.diffBytes >= 400_000 && item.changedFiles.length >= 3 ? 3 : item.diffBytes >= 200_000 && item.changedFiles.length >= 2 ? 2 : 1
+		: 1;
 	const passIds = shardCount === 1 ? [...base.passIds] : base.passIds.flatMap((id) => Array.from({ length: shardCount }, (_, index) => `${id}-shard-${index + 1}`));
 	return { passIds, shardCount, maxParallel: base.maxParallel * shardCount };
 }
@@ -353,10 +366,15 @@ export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
 	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
-	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "piSha256", "piRuntimeSha256", "nodeVersion", "nodeSha256", "collectorRuntimeVersion", "collectorRuntimeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256", "topology"]), `${label} configuration schema`);
+	invariant(exactKeys(run.configuration, ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "piSha256", "piRuntimeSha256", "nodeVersion", "nodeSha256", "collectorRuntimeVersion", "collectorRuntimeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256", "topology"], ["topologyGeneration"]), `${label} configuration schema`);
+	invariant(run.configuration.topologyGeneration === undefined || run.configuration.topologyGeneration === "fixed-v1", `${label} topology generation`);
 	for (const key of ["provider", "model", "thinking", "toolPolicy", "reviewVersion", "piVersion", "nodeVersion", "collectorRuntimeVersion"]) invariant(typeof run.configuration[key] === "string" && run.configuration[key].length > 0 && run.configuration[key].length <= 200, `${label} configuration ${key}`);
 	for (const key of ["piSha256", "piRuntimeSha256", "nodeSha256", "collectorRuntimeSha256", "reviewConfigSha256", "extensionSha256", "promptSha256", "collectorSha256"]) invariant(typeof run.configuration[key] === "string" && SHA256.test(run.configuration[key]), `${label} configuration ${key}`);
-	const topology = run.configuration.topology, expectedTopology = expectedModeTopology(run.mode, item);
+	const topology = run.configuration.topology, expectedTopology = expectedModeTopology(run.mode, item, {
+		// Historical rows predate this explicit discriminator and retain their
+		// immutable sharded interpretation regardless of package version.
+		legacySharding: run.configuration.topologyGeneration !== "fixed-v1",
+	});
 	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
 	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === expectedTopology.shardCount && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
 	invariant(Array.isArray(run.lanes) && run.lanes.length > 0, `${label} lanes`);
@@ -533,7 +551,7 @@ function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint,
 }
 
 function comparableConfiguration(run) {
-	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, collectorRuntimeVersion: run.configuration.collectorRuntimeVersion, collectorRuntimeSha256: run.configuration.collectorRuntimeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
+	return { provider: run.configuration.provider, model: run.configuration.model, thinking: run.configuration.thinking, toolPolicy: run.configuration.toolPolicy, reviewVersion: run.configuration.reviewVersion, topologyGeneration: run.configuration.topologyGeneration ?? "legacy-sharded-v1", piVersion: run.configuration.piVersion, piSha256: run.configuration.piSha256, piRuntimeSha256: run.configuration.piRuntimeSha256, nodeVersion: run.configuration.nodeVersion, nodeSha256: run.configuration.nodeSha256, collectorRuntimeVersion: run.configuration.collectorRuntimeVersion, collectorRuntimeSha256: run.configuration.collectorRuntimeSha256, reviewConfigSha256: run.configuration.reviewConfigSha256, extensionSha256: run.configuration.extensionSha256, promptSha256: run.configuration.promptSha256, collectorSha256: run.configuration.collectorSha256 };
 }
 function comparableEnvironment(run) {
 	const configuration = comparableConfiguration(run); delete configuration.extensionSha256; delete configuration.promptSha256; return configuration;

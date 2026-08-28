@@ -454,6 +454,8 @@ async function publishCompletedReview(
 		ctx.ui.notify("PR review was not posted: cached review artifact is missing pr.head_sha", "error");
 		return undefined;
 	}
+	const useDegradedPublicationBody = typeof record.publicationBody === "string" &&
+		(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete");
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: record.invocation.prNumber,
@@ -464,10 +466,10 @@ async function publishCompletedReview(
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
-		...(record.publicationBody ? { publicationBody: record.publicationBody } : {}),
-		...(record.synthesisQuality === "fully_parsed" && typeof record.rawText === "string" && record.rawText.trim()
-			? { fallbackPublicationBody: safeReviewBody(record.rawText) }
-			: {}),
+		...(useDegradedPublicationBody ? { publicationBody: record.publicationBody } : {}),
+		// Fully parsed reviews publish only the concise host-rendered body plus
+		// inline findings. If that payload cannot fit, publication fails closed;
+		// retained raw synthesis is never substituted as a public report dump.
 		// A degraded synthesis stays COMMENT-only, but its safely parsed findings
 		// still earn inline placement; only unparsable output is forced body-only.
 		forceBodyOnly: record.synthesisQuality !== undefined &&
@@ -476,7 +478,7 @@ async function publishCompletedReview(
 		// A publication body identifies Markdown-derived or degraded synthesis.
 		// Enforce COMMENT again at the final publication boundary so restored
 		// canonical artifacts created by an older parser cannot inherit APPROVE.
-		forceComment: record.mergeApprovalEligible === false || record.publicationBody !== undefined ||
+		forceComment: record.mergeApprovalEligible === false || useDegradedPublicationBody ||
 			(record.synthesisQuality !== undefined &&
 				(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete")),
 	});

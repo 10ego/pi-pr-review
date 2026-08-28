@@ -1,34 +1,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-export const MAX_REVIEW_CONTEXT_FILE_BYTES = 16 * 1024 * 1024;
-
-/** Split whole changed-file blocks into deterministic, changed-line-balanced shards. */
-export function shardUnifiedDiff(diff: string, requested: number): string[] {
-	const starts = [...diff.matchAll(/^diff --git /gm)].map((match) => match.index!);
-	if (requested <= 1 || starts.length <= 1) return [diff.trim()];
-	const blocks = starts.map((start, index) => {
-		const text = diff.slice(start, starts[index + 1] ?? diff.length).trim();
-		const weight = Math.max(
-			1,
-			text.split("\n").filter((line) =>
-				(line.startsWith("+") && !line.startsWith("+++")) ||
-				(line.startsWith("-") && !line.startsWith("---")),
-			).length,
-		);
-		return { index, text, weight };
-	});
-	const count = Math.min(Math.max(1, Math.floor(requested)), blocks.length);
-	const shards = Array.from({ length: count }, () => ({ weight: 0, blocks: [] as typeof blocks }));
-	for (const block of [...blocks].sort((a, b) => b.weight - a.weight || a.index - b.index)) {
-		const target = shards.reduce((best, shard) => (shard.weight < best.weight ? shard : best), shards[0]!);
-		target.blocks.push(block);
-		target.weight += block.weight;
-	}
-	return shards.map((shard) =>
-		shard.blocks.sort((a, b) => a.index - b.index).map((block) => block.text).join("\n"),
-	);
-}
+// Large diffs are transported as read-only file-backed context rather than
+// embedded or multiplied into reviewer shards. One non-sharded reviewer cannot
+// safely absorb arbitrary multi-megabyte diffs through Pi's current line reader.
+export const MAX_REVIEW_CONTEXT_FILE_BYTES = 1024 * 1024;
 
 export interface LoadedReviewContext {
 	context?: string;

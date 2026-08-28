@@ -6,6 +6,7 @@ import { synthesizeReviewArtifact, type ReviewSynthesisCompleteness } from "./pr
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
+export type ReviewMode = "quick" | "balanced" | "full" | "deep";
 export type AutoPostSource = "default" | "user" | "project";
 export type CompletionAction = "continue_tools" | "accept_final" | "clear_invocation";
 
@@ -201,6 +202,7 @@ export function resolveAllowStaleApprovalsSetting(
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
+	reviewMode?: ReviewMode;
 	prNumber?: number;
 	allowNonOpen?: boolean;
 	error?: string;
@@ -217,6 +219,7 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	}
 	const force = tokens.includes("--comment");
 	const disabled = tokens.includes("--no-comment");
+	const quick = tokens.includes("--quick");
 	const full = tokens.includes("--full");
 	const majorOnly = tokens.includes("--major-only");
 	const balanced = tokens.includes("--balanced");
@@ -224,12 +227,13 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	if (force && disabled) {
 		return { matched: true, error: "--comment and --no-comment cannot be used together" };
 	}
-	if ([full, majorOnly, balanced, deep].filter(Boolean).length > 1) {
-		return { matched: true, error: "--full, --major-only, --balanced, and --deep cannot be used together" };
+	if ([quick, full, majorOnly, balanced, deep].filter(Boolean).length > 1) {
+		return { matched: true, error: "--quick, --full, --major-only, --balanced, and --deep cannot be used together" };
 	}
 	return {
 		matched: true,
 		mode: disabled ? "disabled" : force ? "force" : "auto",
+		reviewMode: deep ? "deep" : full ? "full" : quick || majorOnly ? "quick" : "balanced",
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
 	};
@@ -248,6 +252,8 @@ export interface ReviewHostBinding extends RepositoryBinding {
 
 export interface ReviewInvocation {
 	readonly mode: PublishMode;
+	/** Host-derived reviewer topology. Optional only for restoring pre-mode records. */
+	readonly reviewMode?: ReviewMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
 	/** Host-resolved target captured before review execution; assistant output cannot override it. */
@@ -377,6 +383,7 @@ export class ReviewInvocationGate {
 		}
 		this.active = Object.freeze({
 			mode: parsed.mode,
+			reviewMode: parsed.reviewMode ?? "balanced",
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
 			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
@@ -603,6 +610,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 	if (
 		!Number.isInteger(value.prNumber) ||
 		Number(value.prNumber) <= 0 ||
+		(value.reviewMode !== undefined && !new Set(["quick", "balanced", "full", "deep"]).has(String(value.reviewMode))) ||
 		typeof value.allowNonOpen !== "boolean" ||
 		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean") ||
 		(value.allowStaleApprovals !== undefined && typeof value.allowStaleApprovals !== "boolean")
@@ -640,6 +648,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		: undefined;
 	return {
 		mode: value.mode as PublishMode,
+		...(value.reviewMode === undefined ? {} : { reviewMode: value.reviewMode as ReviewMode }),
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
 		...(parsedBinding ? { reviewBinding: parsedBinding } : {}),
@@ -893,19 +902,26 @@ export class CompletedReviewCache {
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
 			: undefined;
-		const restoredReview = persistedMergeApprovalEligible === true && mergeApprovalEligible === false &&
-			parsed.review.verdict === "approve"
-			? { ...parsed.review, verdict: "comment" }
-			: parsed.review;
+		const useDegradedPublicationBody = !!publicationBody &&
+			(quality !== "fully_parsed" || completeness === "incomplete");
+		const droppedLegacyPublicationBody = !!publicationBody && !useDegradedPublicationBody;
+		const restoredMergeApprovalEligible = droppedLegacyPublicationBody && persistedMergeApprovalEligible !== true
+			? false
+			: mergeApprovalEligible;
+		const approvalMustDowngrade = parsed.review.verdict === "approve" && (
+			persistedMergeApprovalEligible === true && mergeApprovalEligible === false ||
+			droppedLegacyPublicationBody && persistedMergeApprovalEligible !== true
+		);
+		const restoredReview = approvalMustDowngrade ? { ...parsed.review, verdict: "comment" } : parsed.review;
 		this.replace(restoredReview, invocation, value.repository, {
-			...(publicationBody ? { publicationBody } : {}),
+			...(useDegradedPublicationBody ? { publicationBody } : {}),
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),
 			...(expectedLaneDescriptors ? { expectedLaneDescriptors } : {}),
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
-			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
+			...(restoredMergeApprovalEligible !== undefined ? { mergeApprovalEligible: restoredMergeApprovalEligible } : {}),
 			...(diagnostics ? { diagnostics } : {}),
 		});
 		return true;
@@ -1437,7 +1453,6 @@ function buildLosslessReviewPayload(input: {
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
 	bodyOverride?: string;
-	fallbackBodyOverride?: string;
 	diagnostics?: readonly string[];
 	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
@@ -1467,21 +1482,7 @@ function buildLosslessReviewPayload(input: {
 	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
 	const marker = canonicalReviewMarker(markerHeadSha);
-	let bodyError = validateReviewBody(content);
-	const finalBodyTooLarge = Buffer.byteLength(`${content}\n\n${marker}`, "utf8") > MAX_BODY_BYTES;
-	if (
-		(bodyError === "review body exceeds 65536 UTF-8 bytes" || (!bodyError && finalBodyTooLarge)) &&
-		input.fallbackBodyOverride?.trim()
-	) {
-		const fallback = input.bodyPreamble?.trim()
-			? `${input.bodyPreamble.trim()}\n\n${input.fallbackBodyOverride.trim()}`
-			: input.fallbackBodyOverride.trim();
-		const fallbackError = validateReviewBody(fallback);
-		if (!fallbackError) {
-			content = fallback;
-			bodyError = undefined;
-		}
-	}
+	const bodyError = validateReviewBody(content);
 	if (bodyError) return { diagnostics, errors: [bodyError] };
 	const body = `${content}\n\n${marker}`;
 	if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
@@ -2099,8 +2100,6 @@ export async function publishPullReview(input: {
 	review: ReviewLike;
 	/** Host-sanitized original synthesis retained when structured extraction is partial or absent. */
 	publicationBody?: string;
-	/** Host-sanitized original synthesis used only if the concise body exceeds GitHub's limit. */
-	fallbackPublicationBody?: string;
 	/** Prevent uncertain/raw synthesis from selecting APPROVE or inline anchors. */
 	forceBodyOnly?: boolean;
 	/** Prevent partially trusted synthesis from selecting a merge-relevant event. */
@@ -2117,7 +2116,6 @@ export async function publishPullReview(input: {
 		expectedRepository,
 		review,
 		publicationBody,
-		fallbackPublicationBody,
 		forceBodyOnly = false,
 		forceComment = false,
 	} = input;
@@ -2218,7 +2216,6 @@ export async function publishPullReview(input: {
 			allowInlineComments,
 			changedFiles,
 			...(publicationBody ? { bodyOverride: publicationBody } : {}),
-			...(fallbackPublicationBody ? { fallbackBodyOverride: fallbackPublicationBody } : {}),
 			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale

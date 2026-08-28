@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { loadReviewContext, shardUnifiedDiff } from "../lib/pr-review-context.ts";
+import { loadReviewContext, MAX_REVIEW_CONTEXT_FILE_BYTES } from "../lib/pr-review-context.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -15,27 +15,11 @@ function fixture(): string {
 	return root;
 }
 
-describe("unified diff sharding", () => {
-	test("keeps file blocks whole and covers each block exactly once", () => {
-		const diff = [
-			"diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new",
-			"diff --git a/b.ts b/b.ts\n--- a/b.ts\n+++ b/b.ts\n@@ -1 +1,3 @@\n-old\n+one\n+two\n+three",
-			"diff --git a/c.ts b/c.ts\n--- a/c.ts\n+++ b/c.ts\n@@ -1 +1 @@\n-old\n+new",
-		].join("\n");
-		const shards = shardUnifiedDiff(diff, 3);
-		expect(shards).toHaveLength(3);
-		for (const path of ["a.ts", "b.ts", "c.ts"]) {
-			expect(shards.filter((shard) => shard.includes(`a/${path} b/${path}`))).toHaveLength(1);
-		}
-	});
-
-	test("does not invent empty shards for a single changed file", () => {
-		const diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new";
-		expect(shardUnifiedDiff(diff, 2)).toEqual([diff]);
-	});
-});
-
 describe("review context files", () => {
+	test("keeps a bounded 1 MiB non-sharded complete-diff file contract", () => {
+		expect(MAX_REVIEW_CONTEXT_FILE_BYTES).toBe(1024 * 1024);
+	});
+
 	test("appends a relative complete diff to compact inline metadata", async () => {
 		const root = fixture();
 		fs.writeFileSync(path.join(root, "pr.diff"), "diff --git a/a.ts b/a.ts\n+added\n");
