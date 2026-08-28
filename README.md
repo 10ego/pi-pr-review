@@ -70,7 +70,20 @@ A review uses five focused passes by default:
 4. security (`heavy`);
 5. performance and resource ownership (`heavy`).
 
-`--full` adds a convention and maintainability pass (`medium`). Large multi-file diffs are split by whole-file boundaries and reviewed in parallel. If the extension is unavailable, the prompt falls back to the current Pi session model.
+`--full` adds a convention and maintainability pass (`medium`). Large multi-file diffs are split by whole-file boundaries and reviewed in parallel. The host enforces this before model dispatch: multi-file diffs from 200,000–399,999 bytes use two shards, and diffs of at least 400,000 bytes with at least three files use three shards, even if an orchestrator accidentally supplied the unified diff inline without requesting sharding. This avoids spending model attempts on payloads already known to exceed ordinary context budgets. Failed registered lanes remain visible and cannot be erased by model-named reruns. If the extension is unavailable, the prompt falls back to the current Pi session model.
+
+When host lane evidence degrades or is incomplete, TUI and automation output starts with the deterministic host-owned `Comment` verdict and coverage disclosure. Any contradictory model verdict retained for evidence is relabeled as non-authoritative.
+
+## No-write dogfooding
+
+Dogfood a released package against a closed or merged PR without publishing:
+
+```bash
+pi --session-dir /tmp/pi-pr-review-dogfood -p "/pr-review 123 --include-closed --no-comment"
+npm run dogfood:report -- --session /tmp/pi-pr-review-dogfood/<session>.jsonl
+```
+
+Use three representative sizes over time: a small ordinary PR, a medium cross-file PR, and a large PR that activates deterministic sharding. The report fails closed unless the retained invocation was `--no-comment` and contains exactly one completed review plus terminal telemetry. It records visible/model/host verdicts, verdict parity, lane lifecycle counts, context-limit failures, and review-tool versus parent-orchestration latency. Verify GitHub review counts independently before and after a production dogfood run.
 
 ## Focus running reviewers
 
