@@ -344,6 +344,20 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("automatically shards oversized inline diffs before model dispatch", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-auto-shards-")), child = path.join(root, "child.mjs");
+		writeFileSync(child, `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}})));`);
+		const block = (name: string, marker: string) => [
+			`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${marker}${"x".repeat(105_000)}`,
+		].join("\n"), diffText = `${block("a.ts", "a")}\n${block("b.ts", "b")}`, context = `PR metadata only.\n\n${diffText}`, diffFile = path.join(root, "diff.patch"); writeFileSync(diffFile, diffText);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute("auto-shards", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h.ctx);
+			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 2, sharedContextBytes: Buffer.byteLength("PR metadata only.") }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
+	});
+
 	test("ordinary review_subagents retains canonical delta-only text when the child exits before message_end", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-ordinary-delta-"));
 		const child = path.join(root, "child.mjs");

@@ -1840,23 +1840,36 @@ export default function registerPrReviewSubagents(
 					details: { passCount: rawPasses.length, contextFileBytes: 0 },
 				};
 			}
-			const requestedShardCount = params.shard_count === 2 || params.shard_count === 3
-				? params.shard_count
-				: 1;
-			if (requestedShardCount > 1 && !loadedContext.contextFileText) {
+			const explicitShardCount = params.shard_count === 2 || params.shard_count === 3 ? params.shard_count : 1;
+			const deepReview = rawPasses.length === 1 && rawPasses[0]?.id === "deep-review";
+			const loadedDiff = loadedContext.contextFileText;
+			const inlineContext = typeof params.context === "string" ? params.context.trim() : "";
+			const inlineDiffStart = inlineContext.search(/^diff --git /m);
+			const inlineDiff = inlineDiffStart >= 0 ? inlineContext.slice(inlineDiffStart) : undefined;
+			const diffForSharding = loadedDiff ?? inlineDiff;
+			const changedFileCount = diffForSharding ? (diffForSharding.match(/^diff --git /gm) ?? []).length : 0;
+			const diffBytes = diffForSharding ? Buffer.byteLength(diffForSharding, "utf8") : 0;
+			const automaticShardCount = deepReview
+				? 1
+				: diffBytes >= 400_000 && changedFileCount >= 3
+					? 3
+					: diffBytes >= 200_000 && changedFileCount >= 2
+						? 2
+						: 1;
+			const requestedShardCount = Math.max(explicitShardCount, automaticShardCount);
+			if (requestedShardCount > 1 && !diffForSharding) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: shard_count>1 requires a top-level context_file." }],
+					content: [{ type: "text", text: "Review batch context failed: sharding requires a unified diff in top-level context or context_file." }],
 					isError: true,
 					details: { passCount: rawPasses.length, contextFileBytes: 0, shardCount: 0 },
 				};
 			}
 			const requestedShards = requestedShardCount > 1
-				? shardUnifiedDiff(loadedContext.contextFileText!, requestedShardCount)
+				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
 				: [];
 			const sharded = requestedShards.length > 1;
-			const sharedContext = sharded
-				? (typeof params.context === "string" ? params.context.trim() : undefined)
-				: loadedContext.context;
+			const compactInlineContext = inlineDiffStart >= 0 ? inlineContext.slice(0, inlineDiffStart).trim() : inlineContext;
+			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
 			const passesWithoutFocus: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
@@ -1911,7 +1924,10 @@ export default function registerPrReviewSubagents(
 			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
-			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
+			const requestedParallel = automaticShardCount > explicitShardCount && Number.isInteger(params.max_parallel)
+				? Number(params.max_parallel) * requestedShardCount
+				: params.max_parallel;
+			const maxParallel = normalizeMaxParallel(requestedParallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
@@ -1962,6 +1978,11 @@ export default function registerPrReviewSubagents(
 					minorHygiene,
 					passCount: results.length,
 					shardCount: sharded ? requestedShards.length : 1,
+					requestedShardCount: explicitShardCount,
+					shardingSource: automaticShardCount > explicitShardCount ? "automatic-size-preflight" : explicitShardCount > 1 ? "requested" : "none",
+					diffBytes,
+					changedFileCount,
+					sharedContextBytes: Buffer.byteLength(sharedContext ?? "", "utf8"),
 					contextFileBytes:
 						loadedContext.contextFileBytes +
 						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),

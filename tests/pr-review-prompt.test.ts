@@ -126,12 +126,16 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("Never shard a single-file diff");
 		expect(extension).toContain("const MAX_BATCH_PARALLEL = 18");
 		expect(extension).toContain("maximum: 3");
-		expect(extension).toContain("shardUnifiedDiff(loadedContext.contextFileText!, requestedShardCount)");
-		expect(extension).toContain("shard_count>1 requires a top-level context_file");
+		expect(extension).toContain("shardUnifiedDiff(diffForSharding!, requestedShardCount)");
+		expect(extension).toContain("automatic-size-preflight");
+		expect(extension).toContain("diffBytes >= 400_000 && changedFileCount >= 3");
 		expect(extension).toContain("const tierPriority: Record<Tier, number> = { heavy: 0, medium: 1, light: 2 }");
 		expect(extension).toContain("dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex)");
 		expect(extension).toContain("firstAssistantMs");
 		expect(extension).toContain("toolElapsedMs");
+		expect(prompt).toContain("host independently enforces the same two-/three-shard size thresholds");
+		expect(prompt).toContain("Never redispatch a complete lane, launch a generic whole-review follow-up");
+		expect(prompt).toContain("model-named reruns cannot erase retained failure evidence");
 	});
 
 	test("balances correctness work without dropping error or resource coverage", () => {

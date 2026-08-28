@@ -7,6 +7,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
+import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -108,6 +109,7 @@ test("semantic matching requires severity, overlapping anchor, and every concept
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, title: "[P1] branch shell", body: "No semantic classification." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command injection is safe and not an issue; no finding exists." }] }).missedExpectedIds, [expected.id]);
 	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch shell command cannot lead to injection because argv is used instead of a shell." }] }).missedExpectedIds, [expected.id]);
+	assert.deepEqual(scoreRun(item, { findings: [{ ...valid, body: "The branch validation does not prevent command injection, so an attacker can execute arbitrary shell commands." }] }).matchedExpectedIds, [expected.id]);
 });
 
 test("semantic anchors allow one adjacent hunk context line or replacement side but no wider drift", () => {
@@ -242,6 +244,16 @@ test("artifact envelopes bind lanes/findings and artifact paths must be distinct
 
 test("atomic embedded artifact envelopes score without external artifact files", () => {
 	const bundle = createBundle({ modes: ["balanced"] }), runFile = path.join(bundle.root, "runs", `${bundle.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(runFile)); run.artifactPayloads = Object.fromEntries(run.artifacts.map((reference) => [reference.path, fs.readFileSync(path.join(bundle.root, reference.path)).toString("base64")])); for (const reference of run.artifacts) fs.unlinkSync(path.join(bundle.root, reference.path)); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); const orphanDirectory = path.join(bundle.root, ".pi-pr-review-atomic"); fs.mkdirSync(orphanDirectory); fs.writeFileSync(path.join(orphanDirectory, "interrupted.tmp"), "orphan"); assert.doesNotThrow(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root })); const safePath = run.artifacts[0].path, encoded = run.artifactPayloads[safePath]; delete run.artifactPayloads[safePath]; run.artifacts[0].path = "../escape.json"; run.artifactPayloads[run.artifacts[0].path] = encoded; fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /unsafe path/); delete run.artifactPayloads[run.artifacts[0].path]; run.artifacts[0].path = safePath; run.artifactPayloads[safePath] = encoded; run.artifactPayloads[run.artifacts[0].path] = Buffer.from("tampered").toString("base64"); fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), /artifact bytes\/hash/);
+});
+
+test("privacy sanitizer handles partitioned sessions without rewriting opaque bindings", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-sanitize-")), runs = path.join(root, "runs"), entryId = "entry", artifactPath = "artifacts/lane.json"; fs.mkdirSync(runs);
+	const sessionBytes = Buffer.from(`${JSON.stringify({ type: "session", version: 3, cwd: "/Users/ey/project", user: "ey" })}\n`), sessionRecord = { sha256: sha256(sessionBytes), bytes: sessionBytes.length, recordCount: 1, contentBase64: sessionBytes.toString("base64") };
+	const payload = { schemaVersion: 1, planEntryId: entryId, raw: { owner: "ey", session: { sha256: null, bytes: 0, recordCount: 0, contentBase64: null, files: [sessionRecord] } } }, payloadBytes = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`), reference = { kind: "lane-artifacts", path: artifactPath, sha256: sha256(payloadBytes), bytes: payloadBytes.length };
+	const runFile = path.join(runs, "row.json"), run = { planEntryId: entryId, note: "/Users/ey/project", artifacts: [reference], artifactPayloads: { [artifactPath]: payloadBytes.toString("base64") } }; fs.writeFileSync(runFile, `${JSON.stringify(run, null, 2)}\n`);
+	assert.equal(sanitizeBundle(root, "ey"), 1);
+	const sanitizedRun = JSON.parse(fs.readFileSync(runFile, "utf8")), encoded = sanitizedRun.artifactPayloads[artifactPath], sanitizedPayloadBytes = Buffer.from(encoded, "base64"), sanitizedPayload = JSON.parse(sanitizedPayloadBytes.toString("utf8")), sanitizedSession = Buffer.from(sanitizedPayload.raw.session.files[0].contentBase64, "base64").toString("utf8");
+	assert.equal(sha256(sanitizedPayloadBytes), sanitizedRun.artifacts[0].sha256); assert.equal(sanitizedPayloadBytes.length, sanitizedRun.artifacts[0].bytes); assert.match(sanitizedRun.note, /reviewer/); assert.doesNotMatch(sanitizedSession, /\/Users\/ey|\"ey\"/); assert.match(sanitizedSession, /reviewer/); assert.deepEqual(fs.readdirSync(runs), ["row.json"]);
 });
 
 test("retained session lifecycle cannot be removed behind valid artifact hashes", () => {
