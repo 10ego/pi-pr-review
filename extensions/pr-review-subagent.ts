@@ -1868,9 +1868,8 @@ export default function registerPrReviewSubagents(
 				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
 				: [];
 			const sharded = requestedShards.length > 1;
-			const sharedContext = sharded
-				? (loadedDiff ? inlineContext || undefined : inlineContext.slice(0, inlineDiffStart).trim() || undefined)
-				: loadedContext.context;
+			const compactInlineContext = inlineDiffStart >= 0 ? inlineContext.slice(0, inlineDiffStart).trim() : inlineContext;
+			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
 			const passesWithoutFocus: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
@@ -1983,6 +1982,7 @@ export default function registerPrReviewSubagents(
 					shardingSource: automaticShardCount > explicitShardCount ? "automatic-size-preflight" : explicitShardCount > 1 ? "requested" : "none",
 					diffBytes,
 					changedFileCount,
+					sharedContextBytes: Buffer.byteLength(sharedContext ?? "", "utf8"),
 					contextFileBytes:
 						loadedContext.contextFileBytes +
 						loadedPassContexts.reduce((total, loaded) => total + loaded.contextFileBytes, 0),

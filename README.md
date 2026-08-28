@@ -79,8 +79,8 @@ When host lane evidence degrades or is incomplete, TUI and automation output sta
 Dogfood a released package against a closed or merged PR without publishing:
 
 ```bash
-pi --session-dir /tmp/pi-pr-review-dogfood -p "/pr-review 123 --include-closed --no-comment"
-npm run dogfood:report -- --session /tmp/pi-pr-review-dogfood/<session>.jsonl
+pi --session-dir /tmp/pi-pr-review-dogfood -p "/pr-review 123 --include-closed --no-comment" > /tmp/pi-pr-review-dogfood/stdout.log
+npm run dogfood:report -- --session /tmp/pi-pr-review-dogfood/<session>.jsonl --stdout /tmp/pi-pr-review-dogfood/stdout.log
 ```
 
 Use three representative sizes over time: a small ordinary PR, a medium cross-file PR, and a large PR that activates deterministic sharding. The report fails closed unless the retained invocation was `--no-comment` and contains exactly one completed review plus terminal telemetry. It records visible/model/host verdicts, verdict parity, lane lifecycle counts, context-limit failures, and review-tool versus parent-orchestration latency. Verify GitHub review counts independently before and after a production dogfood run.

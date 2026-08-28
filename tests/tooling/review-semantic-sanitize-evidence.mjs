@@ -34,7 +34,14 @@ function replaceAtomic(file, bytes) {
 	try {
 		descriptor = fs.openSync(temporary, "wx", 0o600); fs.writeFileSync(descriptor, bytes); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = undefined;
 		fs.renameSync(temporary, file);
-		const directory = fs.openSync(path.dirname(file), "r"); try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+		// The rename is atomic without a directory fsync. Sync the directory when
+		// the platform supports it, but do not report a failed sanitization after
+		// replacement merely because Windows or the backing filesystem rejects
+		// directory descriptors/fsync.
+		let directory;
+		try { directory = fs.openSync(path.dirname(file), "r"); fs.fsyncSync(directory); }
+		catch (error) { if (!["EBADF", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(error?.code)) throw error; }
+		finally { if (directory !== undefined) fs.closeSync(directory); }
 	} finally {
 		if (descriptor !== undefined) fs.closeSync(descriptor);
 		try { fs.unlinkSync(temporary); } catch (error) { if (error?.code !== "ENOENT") throw error; }
