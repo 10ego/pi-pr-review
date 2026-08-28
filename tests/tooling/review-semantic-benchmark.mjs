@@ -400,7 +400,8 @@ function locationMatches(actual, acceptable) {
 }
 function containsConcept(text, term) {
 	const normalized = term.toLocaleLowerCase("en-US");
-	if (["quadratic", "o(n"].includes(normalized) && MULTIPLICATIVE_COMPLEXITY.test(text)) return true;
+	if (normalized === "o(n") return MULTIPLICATIVE_COMPLEXITY.test(text);
+	if (normalized === "quadratic" && MULTIPLICATIVE_COMPLEXITY.test(text)) return true;
 	if (["access", "authorization", "other"].includes(normalized) && /\b(?:cross[- ]tenant|ownership)\b/iu.test(text)) return true;
 	if (!/^[\p{L}\p{N}_]+$/u.test(normalized)) return text.includes(normalized);
 	const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), variant = normalized.endsWith("e") ? `(?:${escaped}(?:s|d)?|${escaped.slice(0, -1)}ing)` : `${escaped}(?:s|es|ed|ing|ion|ions)?`;
