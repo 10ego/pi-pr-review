@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.13](https://github.com/10ego/pi-pr-review/compare/v1.15.12...v1.15.13) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** preserve partitioned session schema ([#112](https://github.com/10ego/pi-pr-review/issues/112)) ([6fbe09a](https://github.com/10ego/pi-pr-review/commit/6fbe09a2587ec43bb23810274a4e79a116055134))
+
 ## [1.15.12](https://github.com/10ego/pi-pr-review/compare/v1.15.11...v1.15.12) (2026-08-28)
 
 
