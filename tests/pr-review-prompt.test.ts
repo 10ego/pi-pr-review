@@ -92,6 +92,7 @@ describe("PR review prompt scheduling policy", () => {
 		expect(extension).toContain("MAX_EMBEDDED_REVIEW_CONTEXT_BYTES = 200_000");
 		expect(extension).toContain("complete file-backed diff manifest");
 		expect(extension).toContain('toolNames: ["read", "grep", "find", "ls"]');
+		expect(extension).toContain("Use only read or grep to inspect the supplied file-backed diff");
 		expect(extension).toContain("fileBackedPassCount");
 		expect(extension).not.toContain("shardUnifiedDiff");
 		expect(extension).not.toContain("automaticShardCount");

@@ -477,13 +477,15 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput): string {
+function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput, fileBacked = false): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
 		"",
 		minorHygiene
-			? "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
+			? fileBacked
+				? "This is a bounded minor-hygiene scan. Use only read or grep to inspect the supplied file-backed diff, report at most three direct, substantiated P3/nit observations, do not deep-audit the repository or report P0-P2 defects, and do not inflate severity. The dedicated heavy reviewers cover P0-P2."
+				: "This is a bounded minor-hygiene scan. Report at most three direct, substantiated P3/nit observations from the supplied diff; do not use tools, deep-audit the repository, report P0-P2 defects, or inflate severity. The dedicated heavy passes cover P0-P2."
 			: majorOnly
 				? "This is major-only mode. Within the assigned objective, report only substantiated P0, P1, or P2 defects. Do not spend review time on P3/nit style, naming, documentation, or low-impact observations, and never inflate a minor issue's severity to include it."
 				: "Stay inside the assigned objective. Within that objective, surface EVERY issue the author would want to know about — from trivial nits up to blocking defects. Do not discard minor issues; classify them by severity instead. Only leave out non-issues: things that are actually correct, unsubstantiated speculation, or subjective preferences with no concrete benefit.",
@@ -975,6 +977,7 @@ async function runSubagentAttempt(
 				pass.majorOnly === true,
 				pass.minorHygiene && pass.tier === "light",
 				pass.expectedOutput,
+				pass.fileBackedContext === true,
 			),
 		);
 		args.push("--append-system-prompt", tmp.filePath);

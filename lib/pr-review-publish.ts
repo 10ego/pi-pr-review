@@ -902,12 +902,17 @@ export class CompletedReviewCache {
 		const diagnostics = Array.isArray(value.diagnostics) && value.diagnostics.every((item) => typeof item === "string")
 			? value.diagnostics as string[]
 			: undefined;
-		const restoredReview = persistedMergeApprovalEligible === true && mergeApprovalEligible === false &&
-			parsed.review.verdict === "approve"
-			? { ...parsed.review, verdict: "comment" }
-			: parsed.review;
 		const useDegradedPublicationBody = !!publicationBody &&
 			(quality !== "fully_parsed" || completeness === "incomplete");
+		const droppedLegacyPublicationBody = !!publicationBody && !useDegradedPublicationBody;
+		const restoredMergeApprovalEligible = droppedLegacyPublicationBody && persistedMergeApprovalEligible !== true
+			? false
+			: mergeApprovalEligible;
+		const approvalMustDowngrade = parsed.review.verdict === "approve" && (
+			persistedMergeApprovalEligible === true && mergeApprovalEligible === false ||
+			droppedLegacyPublicationBody && persistedMergeApprovalEligible !== true
+		);
+		const restoredReview = approvalMustDowngrade ? { ...parsed.review, verdict: "comment" } : parsed.review;
 		this.replace(restoredReview, invocation, value.repository, {
 			...(useDegradedPublicationBody ? { publicationBody } : {}),
 			...(quality ? { synthesisQuality: quality } : {}),
@@ -916,7 +921,7 @@ export class CompletedReviewCache {
 			...(expectedLaneDescriptors ? { expectedLaneDescriptors } : {}),
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
-			...(mergeApprovalEligible !== undefined ? { mergeApprovalEligible } : {}),
+			...(restoredMergeApprovalEligible !== undefined ? { mergeApprovalEligible: restoredMergeApprovalEligible } : {}),
 			...(diagnostics ? { diagnostics } : {}),
 		});
 		return true;

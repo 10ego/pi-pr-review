@@ -1086,14 +1086,16 @@ describe("publish-only completed review command", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, reviewMode: "balanced" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
 		const repository = { hostname: "github.com", repository: "owner/repo" };
-		const record = cache.replace(review, invocation, repository, {
-			synthesisQuality: "fully_parsed", completeness: "complete", rawText: JSON.stringify(review),
+		const approvalReview: ReviewLike = { ...review, verdict: "approve", overall_correctness: "patch is correct" };
+		const record = cache.replace(approvalReview, invocation, repository, {
+			synthesisQuality: "fully_parsed", completeness: "complete", rawText: JSON.stringify(approvalReview),
 			publicationBody: "# Retained full report\n\nThis must remain internal.",
 		}).record;
 		const persisted = cache.persist(record, sessionA);
 		const restored = new CompletedReviewCache();
 		expect(restored.restore(persisted, sessionA)).toBeTrue();
 		expect(restored.get(7, repository)).not.toHaveProperty("publicationBody");
+		expect(restored.get(7, repository)).toMatchObject({ review: { verdict: "comment" }, mergeApprovalEligible: false });
 	});
 
 	test("persists and restores canonical synthesis diagnostics independently of the assistant reference", () => {

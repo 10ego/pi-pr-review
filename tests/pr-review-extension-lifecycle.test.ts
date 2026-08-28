@@ -910,7 +910,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.commands.get("pr-review-publish")!("7", harness.ctx);
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(String(probe.payload()?.body)).toContain("**Verdict:** approve");
+		expect(String(probe.payload()?.body)).toContain("**Verdict:** Comment");
+		expect(String(probe.payload()?.body)).not.toContain("# PR Review");
 	});
 
 	test("forces incomplete lane evidence to one body-only COMMENT under P3 approval config", async () => {
