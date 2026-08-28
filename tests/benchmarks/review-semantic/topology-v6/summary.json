@@ -1,0 +1,264 @@
+{
+  "corpusId": "pi-pr-review-semantic-v6",
+  "corpusSha256": "95185fb89a9c8fd2d638f1f0f60e8c054ff174063b2e361957c0f9658266abe0",
+  "planId": "a6487655d69a59d48a53d3f455fd2985780d14cea9a276e9543c21db6426af3f",
+  "scorerSha256": "4353c5fa3fe2c9bc1f829f06eaab1edbbebcd8fe2b8c6f8eec8953525fb9b71a",
+  "configurationFingerprint": "cc28bebc50d6ca35537614018e5cc1bb7e2a1deca360cd051de97f1f7b9a16cf",
+  "environmentFingerprint": "b9ba88efc2f330d9d393423ada35208de88de6257177c9dc55692b512445363e",
+  "resultCount": 72,
+  "gate": {
+    "status": "baseline_required",
+    "passed": false,
+    "failures": [
+      "No accepted baseline gate file was supplied; metrics are diagnostic only."
+    ]
+  },
+  "modes": {
+    "balanced": {
+      "runs": 24,
+      "p0p1": {
+        "matched": 12,
+        "opportunities": 14,
+        "recall": 0.8571428571428571
+      },
+      "p2": {
+        "matched": 3,
+        "opportunities": 6,
+        "recall": 0.5
+      },
+      "crossFile": {
+        "matched": 5,
+        "opportunities": 6,
+        "recall": 0.8333333333333334
+      },
+      "perLens": {
+        "correctness": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        },
+        "correctness-contracts": {
+          "matched": 8,
+          "opportunities": 10,
+          "recall": 0.8
+        },
+        "security-performance": {
+          "matched": 3,
+          "opportunities": 4,
+          "recall": 0.75
+        },
+        "performance-resources": {
+          "matched": 2,
+          "opportunities": 4,
+          "recall": 0.5
+        }
+      },
+      "cleanControls": {
+        "runs": 4,
+        "runsWithFindings": 1,
+        "caseFalsePositiveRate": 0.25
+      },
+      "findings": {
+        "total": 27,
+        "matched": 15,
+        "underclassified": 3,
+        "overclassified": 3,
+        "exactSeverityRate": 0.6,
+        "unmatched": 12,
+        "falsePositives": 1,
+        "duplicates": 0,
+        "falsePositiveRate": 0.037037037037037035,
+        "duplicateRate": 0
+      },
+      "lanes": {
+        "total": 130,
+        "complete": 101,
+        "partial": 14,
+        "timed_out": 0,
+        "failed": 15,
+        "completeRate": 0.7769230769230769,
+        "partialRate": 0.1076923076923077,
+        "timedOutRate": 0,
+        "failedRate": 0.11538461538461539
+      },
+      "publication": {
+        "fallbackRuns": 12,
+        "fallbackRate": 0.5,
+        "visibleFallbackFindings": 1
+      },
+      "latencyMs": {
+        "p50": 154765.829,
+        "p95": 284671.549,
+        "mean": 218744.29145833335,
+        "standardDeviation": 217447.07198698068,
+        "minimum": 96350.028,
+        "maximum": 1229990,
+        "parentValidationSynthesisP50": 102265.987
+      }
+    },
+    "full": {
+      "runs": 24,
+      "p0p1": {
+        "matched": 13,
+        "opportunities": 14,
+        "recall": 0.9285714285714286
+      },
+      "p2": {
+        "matched": 5,
+        "opportunities": 6,
+        "recall": 0.8333333333333334
+      },
+      "crossFile": {
+        "matched": 5,
+        "opportunities": 6,
+        "recall": 0.8333333333333334
+      },
+      "perLens": {
+        "correctness": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        },
+        "correctness-contracts": {
+          "matched": 9,
+          "opportunities": 10,
+          "recall": 0.9
+        },
+        "security-performance": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        },
+        "performance-resources": {
+          "matched": 3,
+          "opportunities": 4,
+          "recall": 0.75
+        }
+      },
+      "cleanControls": {
+        "runs": 4,
+        "runsWithFindings": 4,
+        "caseFalsePositiveRate": 1
+      },
+      "findings": {
+        "total": 62,
+        "matched": 18,
+        "underclassified": 3,
+        "overclassified": 4,
+        "exactSeverityRate": 0.6111111111111112,
+        "unmatched": 43,
+        "falsePositives": 12,
+        "duplicates": 1,
+        "falsePositiveRate": 0.1935483870967742,
+        "duplicateRate": 0.016129032258064516
+      },
+      "lanes": {
+        "total": 156,
+        "complete": 134,
+        "partial": 10,
+        "timed_out": 0,
+        "failed": 12,
+        "completeRate": 0.8589743589743589,
+        "partialRate": 0.0641025641025641,
+        "timedOutRate": 0,
+        "failedRate": 0.07692307692307693
+      },
+      "publication": {
+        "fallbackRuns": 12,
+        "fallbackRate": 0.5,
+        "visibleFallbackFindings": 5
+      },
+      "latencyMs": {
+        "p50": 236558.815,
+        "p95": 468485.487,
+        "mean": 261444.48308333327,
+        "standardDeviation": 115927.33333527873,
+        "minimum": 117842.728,
+        "maximum": 516194.514,
+        "parentValidationSynthesisP50": 119526.835
+      }
+    },
+    "deep": {
+      "runs": 24,
+      "p0p1": {
+        "matched": 13,
+        "opportunities": 14,
+        "recall": 0.9285714285714286
+      },
+      "p2": {
+        "matched": 6,
+        "opportunities": 6,
+        "recall": 1
+      },
+      "crossFile": {
+        "matched": 5,
+        "opportunities": 6,
+        "recall": 0.8333333333333334
+      },
+      "perLens": {
+        "correctness": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        },
+        "correctness-contracts": {
+          "matched": 9,
+          "opportunities": 10,
+          "recall": 0.9
+        },
+        "security-performance": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        },
+        "performance-resources": {
+          "matched": 4,
+          "opportunities": 4,
+          "recall": 1
+        }
+      },
+      "cleanControls": {
+        "runs": 4,
+        "runsWithFindings": 0,
+        "caseFalsePositiveRate": 0
+      },
+      "findings": {
+        "total": 28,
+        "matched": 19,
+        "underclassified": 3,
+        "overclassified": 3,
+        "exactSeverityRate": 0.6842105263157895,
+        "unmatched": 8,
+        "falsePositives": 0,
+        "duplicates": 1,
+        "falsePositiveRate": 0,
+        "duplicateRate": 0.03571428571428571
+      },
+      "lanes": {
+        "total": 24,
+        "complete": 23,
+        "partial": 0,
+        "timed_out": 0,
+        "failed": 1,
+        "completeRate": 0.9583333333333334,
+        "partialRate": 0,
+        "timedOutRate": 0,
+        "failedRate": 0.041666666666666664
+      },
+      "publication": {
+        "fallbackRuns": 2,
+        "fallbackRate": 0.08333333333333333,
+        "visibleFallbackFindings": 1
+      },
+      "latencyMs": {
+        "p50": 156063.238,
+        "p95": 308858.785,
+        "mean": 201465.39391666665,
+        "standardDeviation": 220593.62877398275,
+        "minimum": 78613.148,
+        "maximum": 1230039,
+        "parentValidationSynthesisP50": 91452.089
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "d2d1d5fc13db8cb1e283ac775c752ebb0965b3d856ba8b3f57bc1e6c4ced63a5",
+  "sanitizerSha256": "58903ced1e70bcf8c48203ab25752f103a723989c687fb3c73ee5429fe6e5b26",
+  "sanitizedRunManifestSha256": "9938234904e7a8268a2290c41c5fbf4e65331b11065e4fce9ef209bba10e53bb",
+  "reportSha256": "0db10a7d791e43c91f8621c7e4f91aa4baf31ee2f56f834848ed2728f131940c",
+  "transformations": [
+    "replace the local account name with reviewer",
+    "replace host-specific /var/folders paths with an entry-scoped redacted path",
+    "recompute retained session, artifact, run, and run-manifest hashes"
+  ],
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true
+}
