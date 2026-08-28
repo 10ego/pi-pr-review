@@ -1868,7 +1868,12 @@ export default function registerPrReviewSubagents(
 				? shardUnifiedDiff(diffForSharding!, requestedShardCount)
 				: [];
 			const sharded = requestedShards.length > 1;
-			const compactInlineContext = inlineDiffStart >= 0 ? inlineContext.slice(0, inlineDiffStart).trim() : inlineContext;
+			const selectedFileDiffIndex = loadedDiff ? inlineContext.indexOf(loadedDiff) : -1;
+			const compactInlineContext = selectedFileDiffIndex >= 0
+				? [inlineContext.slice(0, selectedFileDiffIndex).trim(), inlineContext.slice(selectedFileDiffIndex + loadedDiff!.length).trim()].filter(Boolean).join("\n\n")
+				: inlineDiffStart >= 0 && !loadedDiff
+					? inlineContext.slice(0, inlineDiffStart).trim()
+					: inlineContext;
 			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
@@ -1924,10 +1929,9 @@ export default function registerPrReviewSubagents(
 			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
-			const requestedParallel = automaticShardCount > explicitShardCount && Number.isInteger(params.max_parallel)
-				? Number(params.max_parallel) * requestedShardCount
-				: params.max_parallel;
-			const maxParallel = normalizeMaxParallel(requestedParallel, passes.length);
+			// max_parallel is an absolute caller-owned process ceiling. Automatic
+			// sharding may add work, but must never silently multiply concurrency.
+			const maxParallel = normalizeMaxParallel(params.max_parallel, passes.length);
 			const config = loadConfig(ctx);
 			const batchStartedAt = monotonicNow();
 
