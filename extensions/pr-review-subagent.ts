@@ -127,6 +127,7 @@ const TOOL_POLICIES: ToolPolicy[] = ["configured", "none"];
 const TOOLS_PRESETS = ["read,bash,grep,find,ls", "read,grep,find,ls", "read"];
 const DEFAULT_BATCH_PARALLEL = 4;
 const MAX_BATCH_PARALLEL = 18;
+const MAX_EMBEDDED_REVIEW_SHARD_BYTES = 1024 * 1024;
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
 	medium: "convention compliance + readability / maintainability",
@@ -1877,32 +1878,49 @@ export default function registerPrReviewSubagents(
 			const sharedContext = sharded ? compactInlineContext || undefined : loadedContext.context;
 			const majorOnly = params.major_only === true;
 			const minorHygiene = params.minor_hygiene === true;
-			const passesWithoutFocus: SubagentPassRequest[] = rawPasses.flatMap((pass, index) => {
+			const fileBackedInstructions = (contextFile: string, text: string, label: string) => {
+				const headers = (text.match(/^diff --git .+$/gm) ?? []).slice(0, 200).map((line) => line.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 500));
+				return [
+					`--- File-backed ${label} ---`,
+					`The complete captured unified diff is at ${JSON.stringify(contextFile)}. Use configured read-only tools to inspect it; the oversized diff is intentionally not embedded in this prompt.`,
+					...(headers.length > 0 ? ["Review only these exact diff headers:", ...headers] : []),
+				].join("\n");
+			};
+			const passesWithoutFocus = rawPasses.flatMap((pass, index) => {
 				const tier = pass.tier as Tier;
 				const baseId = typeof pass.id === "string" && pass.id.trim() ? pass.id.trim() : `${index + 1}-${tier}`;
-				const baseContext = combineContexts(sharedContext, loadedPassContexts[index]!.context);
-				const makePass = (shard: string | undefined, shardIndex: number): SubagentPassRequest => ({
-					// Every actual shard receives an explicit identity, including shard 1.
-					// The unsharded compatibility path retains the caller's exact base ID.
-					id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
-					expectedOutput: pass.expected_output,
-					tier,
-					objective: shard
-						? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
-						: pass.objective,
-					context: shard
-						? combineContexts(
-							baseContext,
-							`--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`,
-						)
-						: baseContext,
-					toolPolicy: normalizeToolPolicy(pass.tool_policy),
-					majorOnly,
-					minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
-				});
-				return sharded
-					? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex))
-					: [makePass(undefined, 0)];
+				const loadedPass = loadedPassContexts[index]!;
+				const passFileBacked = loadedPass.contextFileBytes > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedPass.contextFile && !!loadedPass.contextFileText;
+				const passContext = passFileBacked ? (typeof pass.context === "string" ? pass.context.trim() : undefined) : loadedPass.context;
+				const baseContext = combineContexts(sharedContext, passContext);
+				const makePass = (shard: string | undefined, shardIndex: number) => {
+					const topFileBacked = !!shard && Buffer.byteLength(shard, "utf8") > MAX_EMBEDDED_REVIEW_SHARD_BYTES && !!loadedContext.contextFile;
+					const fileBacked = passFileBacked || topFileBacked;
+					const label = sharded ? `diff shard ${shardIndex + 1}/${requestedShards.length}` : `pass context for ${baseId}`;
+					const fileInstructions = passFileBacked
+						? fileBackedInstructions(loadedPass.contextFile!, loadedPass.contextFileText!, label)
+						: topFileBacked
+							? fileBackedInstructions(loadedContext.contextFile!, shard!, label)
+							: undefined;
+					return {
+						// Every actual shard receives an explicit identity, including shard 1.
+						// The unsharded compatibility path retains the caller's exact base ID.
+						id: sharded ? `${baseId}-shard-${shardIndex + 1}` : baseId,
+						expectedOutput: pass.expected_output,
+						tier,
+						objective: shard
+							? `${pass.objective}\nReview every changed line in diff shard ${shardIndex + 1}/${requestedShards.length} under this objective. Other concurrent shard passes cover the remaining changed files.`
+							: pass.objective,
+						context: fileInstructions ? combineContexts(baseContext, fileInstructions) : shard
+							? combineContexts(baseContext, `--- Complete diff shard ${shardIndex + 1}/${requestedShards.length} ---\n${shard}`)
+							: baseContext,
+						toolPolicy: fileBacked ? "configured" as const : normalizeToolPolicy(pass.tool_policy),
+						majorOnly,
+						minorHygiene: minorHygiene && tier === "light" && baseId === "overview",
+						fileBackedContext: fileBacked,
+					};
+				};
+				return sharded ? requestedShards.map((shard, shardIndex) => makePass(shard, shardIndex)) : [makePass(undefined, 0)];
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -1986,6 +2004,7 @@ export default function registerPrReviewSubagents(
 					shardingSource: automaticShardCount > explicitShardCount ? "automatic-size-preflight" : explicitShardCount > 1 ? "requested" : "none",
 					diffBytes,
 					changedFileCount,
+					fileBackedPassCount: passes.filter((pass) => pass.fileBackedContext === true).length,
 					sharedContextBytes: Buffer.byteLength(sharedContext ?? "", "utf8"),
 					contextFileBytes:
 						loadedContext.contextFileBytes +

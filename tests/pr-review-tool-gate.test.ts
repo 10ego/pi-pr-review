@@ -354,12 +354,21 @@ describe("review tool execution gate", () => {
 		try {
 			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute("auto-shards", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h.ctx);
-			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 1, sharedContextBytes: Buffer.byteLength(retainedMetadata) }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 1, fileBackedPassCount: 0, sharedContextBytes: Buffer.byteLength(retainedMetadata) }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
 			const metadataWithExample = "Description includes an example:\ndiff --git a/example.ts b/example.ts\n-old\n+new\nKeep this trailing cross-cutting requirement.";
 			const h2 = harness(); h2.ctx.cwd = root; h2.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h2.ctx);
 			const exampleResult = await h2.tools.get("review_subagents").execute("metadata-example", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context: metadataWithExample, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h2.ctx);
 			expect(exampleResult.isError).not.toBeTrue(); expect(exampleResult.details.sharedContextBytes).toBe(Buffer.byteLength(metadataWithExample));
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test("routes individually oversized pass contexts through configured file-backed tools", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-backed-")), child = path.join(root, "child.mjs"), diff = path.join(root, "large.patch");
+		writeFileSync(diff, ["diff --git a/large.ts b/large.ts", "--- a/large.ts", "+++ b/large.ts", "@@ -1 +1 @@", "-old", `+${"x".repeat(1_100_000)}`].join("\n"));
+		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:n<100000?"NO FINDINGS.":"OVERSIZED"}]}})));`);
+		const originalScript = process.argv[1];
+		try { const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child; const result = await h.tools.get("review_subagents").execute("file-backed", { passes: [{ id: "correctness-shard-1", tier: "heavy", objective: "review", context_file: diff, tool_policy: "none" }], max_parallel: 1 }, undefined, undefined, h.ctx); expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ fileBackedPassCount: 1, passCount: 1 }); expect(result.details.results[0]).toMatchObject({ status: "complete", rawText: "NO FINDINGS.", toolPolicy: "configured" }); }
+		finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
 	test("ordinary review_subagents retains canonical delta-only text when the child exits before message_end", async () => {
