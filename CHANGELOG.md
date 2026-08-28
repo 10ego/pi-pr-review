@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.14](https://github.com/10ego/pi-pr-review/compare/v1.15.13...v1.15.14) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** route oversized shards through read-only files ([#114](https://github.com/10ego/pi-pr-review/issues/114)) ([e300264](https://github.com/10ego/pi-pr-review/commit/e3002640e5d9060245a11a142a334652370598c0))
+
 ## [1.15.13](https://github.com/10ego/pi-pr-review/compare/v1.15.12...v1.15.13) (2026-08-28)
 
 
