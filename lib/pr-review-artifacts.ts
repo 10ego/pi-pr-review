@@ -462,7 +462,11 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 		const fields = input.minorHygiene ? ["overview", "strengths", "minor candidates"] : ["overview", "strengths"];
 		return fields.every((field) => hasMeaningfulLightSection(text, field, fields));
 	}
-	if (text === NO_FINDINGS_SENTINEL) return true;
+	// Ordinary lanes use the sentinel only as an unambiguous clean result; a
+	// missing final period carries no semantic uncertainty and must not amplify
+	// into expensive replacement passes. Integrated/deep `nonempty` output keeps
+	// its exact byte contract in parseIntegratedCompletion().
+	if (/^NO FINDINGS\.?$/.test(text)) return true;
 	return CANDIDATE_FIELDS.every((field) => hasMeaningfulField(text, field));
 }
 

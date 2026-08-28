@@ -276,14 +276,14 @@ describe("review tool execution gate", () => {
 		}
 	});
 
-	test("ordinary review_subagents accepts an exit-zero unterminated NO FINDINGS event", async () => {
+	test("ordinary review_subagents accepts a punctuation-only NO FINDINGS variant", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-ordinary-no-findings-"));
 		const child = path.join(root, "child.mjs");
 		writeFileSync(child, `
 			process.stdin.resume();
 			process.stdin.on("end", () => process.stdout.write(JSON.stringify({
 				type: "message_end",
-				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "NO FINDINGS." }] },
+				message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "NO FINDINGS" }] },
 			})));
 		`);
 		const originalScript = process.argv[1];
@@ -299,8 +299,8 @@ describe("review tool execution gate", () => {
 				undefined, undefined, h.ctx,
 			);
 			expect(result.isError).not.toBeTrue();
-			expect(result.details.results[0]).toMatchObject({ rawText: "NO FINDINGS.", status: "complete" });
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({ rawText: "NO FINDINGS.", lifecycle: "complete" });
+			expect(result.details.results[0]).toMatchObject({ rawText: "NO FINDINGS", status: "complete" });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({ rawText: "NO FINDINGS", lifecycle: "complete" });
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });
