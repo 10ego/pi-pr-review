@@ -24,7 +24,7 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	invariant(completedIndexes.length === 1, "requires exactly one completed review"); invariant(telemetry.length === 1, "requires exactly one terminal telemetry record");
 	const completedIndex = completedIndexes[0], data = records[completedIndex].data, timing = telemetry[0].data, lanes = Array.isArray(data?.laneArtifacts) ? data.laneArtifacts : [];
 	invariant(typeof data?.rawText === "string", "completed review rawText is missing"); const rawText = data.rawText;
-	const publicationBody = typeof data?.publicationBody === "string" ? data.publicationBody : null, boundTerminalTexts = new Set([rawText, ...(publicationBody === null ? [] : [publicationBody])]);
+	const publicationBody = typeof data?.publicationBody === "string" ? data.publicationBody : null, visibleOutputText = visibleOutputFile ? readBoundedRegular(visibleOutputFile, "visible output") : null, boundTerminalTexts = new Set([rawText, ...(publicationBody === null ? [] : [publicationBody]), ...(visibleOutputText === null ? [] : [visibleOutputText.trimEnd()])]);
 	const boundAssistants = records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.message?.role === "assistant" && record.message?.stopReason === "stop" && boundTerminalTexts.has(assistantText(record.message)));
 	invariant(boundAssistants.length === 1, "completed review is not uniquely bound to its raw or rendered terminal assistant message");
 	const terminalText = assistantText(boundAssistants[0].message), publicationText = publicationBody ?? terminalText;
@@ -37,7 +37,7 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	const referencedReviews = typeof data?.reviewEntryId === "string" ? records.slice(0, completedIndex).filter((record) => record?.type === "message" && record.id === data.reviewEntryId && record.message?.role === "assistant") : [];
 	invariant(data?.reviewEntryId === undefined || referencedReviews.length === 1, "completed review references a missing or ambiguous preceding assistant entry"); const referencedReview = referencedReviews[0];
 	const persistedHostVerdict = typeof data?.review?.verdict === "string" ? data.review.verdict : referencedReview ? verdict(assistantText(referencedReview.message)) : null;
-	const hostVerdict = publicationBody !== null ? verdict(publicationText) : persistedHostVerdict, visibleVerdict = visibleOutputFile ? verdict(readBoundedRegular(visibleOutputFile, "visible output")) : null, modelVerdict = verdict(rawText), sessionTerminalVerdict = verdict(terminalText);
+	const hostVerdict = publicationBody !== null ? verdict(publicationText) : persistedHostVerdict, visibleVerdict = visibleOutputText === null ? null : verdict(visibleOutputText), modelVerdict = verdict(rawText), sessionTerminalVerdict = verdict(terminalText);
 	return {
 		schemaVersion: 1,
 		prNumber: data?.invocation?.prNumber ?? data?.review?.pr?.number ?? null,
