@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/10ego/pi-pr-review/compare/v1.15.16...v1.16.0) (2026-08-28)
+
+
+### Features
+
+* **review:** derive fixed review modes ([#120](https://github.com/10ego/pi-pr-review/issues/120)) ([f705165](https://github.com/10ego/pi-pr-review/commit/f705165145c0fdb647b550999e292c604ffc867e))
+
 ## [1.15.16](https://github.com/10ego/pi-pr-review/compare/v1.15.15...v1.15.16) (2026-08-28)
 
 
