@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.12](https://github.com/10ego/pi-pr-review/compare/v1.15.11...v1.15.12) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** resolve follow-up dogfood findings ([#110](https://github.com/10ego/pi-pr-review/issues/110)) ([4c5c5e3](https://github.com/10ego/pi-pr-review/commit/4c5c5e33c705d64b2c8b67c17d9509a18f69c3cf))
+
 ## [1.15.11](https://github.com/10ego/pi-pr-review/compare/v1.15.10...v1.15.11) (2026-08-28)
 
 
