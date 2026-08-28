@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, usesLegacyShardedTopology } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
@@ -72,6 +72,13 @@ test("plan is deterministic and spans the same corpus for every mode and repetit
 	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 36);
 	assert.notEqual(one.entries[0].mode, one.entries[1].mode);
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
+});
+
+test("topology generation changes after the final sharded release", () => {
+	assert.equal(usesLegacyShardedTopology("1.15.15"), true);
+	assert.equal(usesLegacyShardedTopology("1.15.16"), false);
+	assert.equal(usesLegacyShardedTopology("1.16.0"), false);
+	assert.equal(usesLegacyShardedTopology("invalid"), false);
 });
 
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {

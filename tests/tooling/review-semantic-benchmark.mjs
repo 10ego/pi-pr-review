@@ -237,11 +237,11 @@ export function expectedModeTopology(mode, item, options = {}) {
 	return { passIds, shardCount, maxParallel: base.maxParallel * shardCount };
 }
 
-function usesLegacyShardedTopology(reviewVersion) {
+export function usesLegacyShardedTopology(reviewVersion) {
 	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(reviewVersion);
 	if (!match) return false;
 	const [major, minor, patch] = match.slice(1).map(Number);
-	return major < 1 || major === 1 && (minor < 15 || minor === 15 && patch <= 16);
+	return major < 1 || major === 1 && (minor < 15 || minor === 15 && patch <= 15);
 }
 
 export function createPlan(corpusInfo, modes, repetitions) {

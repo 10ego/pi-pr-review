@@ -1082,6 +1082,20 @@ describe("publish-only completed review command", () => {
 		).toBeFalse();
 	});
 
+	test("drops a legacy full-report override when restoring a fully parsed concise review", () => {
+		const cache = new CompletedReviewCache();
+		const invocation = { mode: "force" as const, reviewMode: "balanced" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };
+		const repository = { hostname: "github.com", repository: "owner/repo" };
+		const record = cache.replace(review, invocation, repository, {
+			synthesisQuality: "fully_parsed", completeness: "complete", rawText: JSON.stringify(review),
+			publicationBody: "# Retained full report\n\nThis must remain internal.",
+		}).record;
+		const persisted = cache.persist(record, sessionA);
+		const restored = new CompletedReviewCache();
+		expect(restored.restore(persisted, sessionA)).toBeTrue();
+		expect(restored.get(7, repository)).not.toHaveProperty("publicationBody");
+	});
+
 	test("persists and restores canonical synthesis diagnostics independently of the assistant reference", () => {
 		const cache = new CompletedReviewCache();
 		const invocation = { mode: "force" as const, prNumber: 7, allowNonOpen: false, allowStalePublish: true, allowStaleApprovals: false, autoPost: autoOff, approveMaxPriorityLevel: "off" as const };

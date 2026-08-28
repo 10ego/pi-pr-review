@@ -352,7 +352,7 @@ describe("review tool execution gate", () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-backed-")), child = path.join(root, "child.mjs"), diffFile = path.join(root, "diff.patch");
 		const block = (name: string, marker: string) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, `+++ b/${name}`, "@@ -1 +1 @@", `-${marker}`, `+${marker}${"x".repeat(105_000)}`].join("\n");
 		const diffText = `${block("a.ts", "a")}\n${block("b.ts", "b")}`; writeFileSync(diffFile, diffText);
-		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>{const i=process.argv.indexOf("--tools"),safe=i>=0&&process.argv[i+1]==="read,grep,find,ls"&&!process.argv.includes("bash");process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:n<100000&&safe?"NO FINDINGS.":"UNSAFE_OR_OVERSIZED"}]}}))});`);
+		writeFileSync(child, `let n=0;process.stdin.on("data",b=>n+=b.length);process.stdin.on("end",()=>{const i=process.argv.indexOf("--tools"),safe=i>=0&&process.argv[i+1]==="read,grep,find,ls"&&!process.argv.includes("bash");console.log(JSON.stringify({type:"tool_execution_start",toolCallId:"read-diff",toolName:"read",args:{path:${JSON.stringify(diffFile)}}}));console.log(JSON.stringify({type:"tool_execution_end",toolCallId:"read-diff",toolName:"read",isError:false}));process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:n<100000&&safe?"NO FINDINGS.":"UNSAFE_OR_OVERSIZED"}]}}))});`);
 		const originalScript = process.argv[1];
 		try {
 			const h = harness(); h.ctx.cwd = root;
@@ -363,6 +363,21 @@ describe("review tool execution gate", () => {
 			expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness", "correctness-contracts", "security-performance"]);
 			expect(result.details.results.every((lane: any) => lane.toolPolicy === "configured" && lane.rawText === "NO FINDINGS.")).toBeTrue();
 			expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000);
+		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
+	});
+
+	test("keeps a file-backed reviewer partial until it successfully accesses the complete diff", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-file-access-")), child = path.join(root, "child.mjs"), diff = path.join(root, "diff.patch");
+		writeFileSync(diff, ["diff --git a/a.ts b/a.ts", "--- a/a.ts", "+++ b/a.ts", "@@ -1 +1 @@", "-a", `+${"x".repeat(200_000)}`].join("\n"));
+		writeFileSync(child, `process.stdin.resume();process.stdin.on("end",()=>process.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}})));`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
+			const result = await h.tools.get("review_subagents").execute("no-file-access", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeTrue();
+			expect(result.details.lifecycleCounts).toEqual({ complete: 0, partial: 3, timed_out: 0, failed: 0 });
+			expect(result.details.results.every((lane: any) => lane.errorMessage === "File-backed complete diff was not accessed through read or grep.")).toBeTrue();
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.every((lane) => lane.lifecycle === "partial")).toBeTrue();
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 

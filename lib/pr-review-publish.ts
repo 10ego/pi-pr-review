@@ -906,8 +906,10 @@ export class CompletedReviewCache {
 			parsed.review.verdict === "approve"
 			? { ...parsed.review, verdict: "comment" }
 			: parsed.review;
+		const useDegradedPublicationBody = !!publicationBody &&
+			(quality !== "fully_parsed" || completeness === "incomplete");
 		this.replace(restoredReview, invocation, value.repository, {
-			...(publicationBody ? { publicationBody } : {}),
+			...(useDegradedPublicationBody ? { publicationBody } : {}),
 			...(quality ? { synthesisQuality: quality } : {}),
 			...(rawText !== undefined ? { rawText } : {}),
 			...(laneArtifacts ? { laneArtifacts } : {}),

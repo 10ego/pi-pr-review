@@ -560,6 +560,7 @@ interface RunResult {
 	firstAssistantMs?: number;
 	toolElapsedMs: number;
 	toolCallCount: number;
+	fileBackedAccessObserved?: boolean;
 }
 
 export function runReviewSubprocess(
@@ -850,6 +851,7 @@ interface SubagentPassRequest {
 	requestedPassOrdinal?: number;
 	toolNames?: readonly string[];
 	fileBackedContext?: boolean;
+	fileBackedContextPath?: string;
 }
 
 interface ModelAttemptReport {
@@ -983,6 +985,8 @@ async function runSubagentAttempt(
 		}
 		pass.focusPublisher?.publish({ type: "attempt_started", attempt: attemptOrdinal, model: attempt.spec });
 		const invocation = getPiInvocation(args);
+		let fileBackedAccessObserved = false;
+		const pendingFileBackedAccess = new Set<string>();
 		const result = await runReviewSubprocess(
 			invocation.command,
 			invocation.args,
@@ -994,6 +998,22 @@ async function runSubagentAttempt(
 				for (const normalized of normalizeReviewFocusJsonEvent(event)) {
 					pass.focusPublisher?.publish(normalized);
 				}
+				if (pass.fileBackedContextPath && event && typeof event === "object") {
+					const record = event as { type?: unknown; toolCallId?: unknown; toolName?: unknown; args?: unknown; isError?: unknown };
+					if (record.type === "tool_execution_start" && typeof record.toolCallId === "string" &&
+						(record.toolName === "read" || record.toolName === "grep") && record.args && typeof record.args === "object") {
+						try {
+							const target = (record.args as { path?: unknown }).path;
+							if (typeof target === "string" && path.resolve(ctx.cwd, target) === pass.fileBackedContextPath) {
+								pendingFileBackedAccess.add(record.toolCallId);
+							}
+						} catch { /* malformed event arguments never establish file access */ }
+					}
+					if (record.type === "tool_execution_end" && typeof record.toolCallId === "string" &&
+						pendingFileBackedAccess.delete(record.toolCallId) && record.isError !== true) {
+						fileBackedAccessObserved = true;
+					}
+				}
 			},
 			budget ? {
 				deadlineMs: deadlineAtMs!,
@@ -1001,6 +1021,7 @@ async function runSubagentAttempt(
 				cleanupReserveMs: budget.config.cleanupReserveMs,
 			} : undefined,
 		);
+		result.fileBackedAccessObserved = fileBackedAccessObserved;
 		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt, deadlineMs };
 	} catch (e) {
 		return {
@@ -1221,9 +1242,13 @@ async function runSubagentPass(
 			minorHygiene: pass.minorHygiene,
 			expectedOutput: pass.expectedOutput === "json_object" ? undefined : pass.expectedOutput,
 		};
-		const lifecycle = pass.expectedOutput === "json_object"
+		let lifecycle = pass.expectedOutput === "json_object"
 			? classifyReviewJsonObject(completionInput)
 			: classifyReviewLane(completionInput);
+		if (lifecycle === "complete" && pass.fileBackedContext && result.fileBackedAccessObserved !== true) {
+			lifecycle = "partial";
+			result.errorMessage = "File-backed complete diff was not accessed through read or grep.";
+		}
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
 		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;
@@ -1854,6 +1879,7 @@ export default function registerPrReviewSubagents(
 					majorOnly,
 					minorHygiene: minorHygiene && fixed.id === "overview",
 					fileBackedContext: fileBacked,
+					...(fileBacked ? { fileBackedContextPath: loadedContext.contextFile } : {}),
 				};
 			});
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagents");
