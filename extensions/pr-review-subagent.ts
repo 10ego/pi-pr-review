@@ -1832,11 +1832,14 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			const inlineContext = typeof params.context === "string" ? params.context.trim() : "";
-			if (!loadedContext.contextFile && Buffer.byteLength(inlineContext, "utf8") >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES) {
+			const oversizedPassContext = rawPasses.find((pass) =>
+				typeof pass.context === "string" && Buffer.byteLength(pass.context.trim(), "utf8") >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES
+			);
+			if (Buffer.byteLength(inlineContext, "utf8") >= MAX_EMBEDDED_REVIEW_CONTEXT_BYTES || oversizedPassContext) {
 				return {
-					content: [{ type: "text", text: "Review batch context failed: oversized review input requires a top-level context_file." }],
+					content: [{ type: "text", text: "Review batch context failed: shared and pass-specific metadata must each remain below 200000 UTF-8 bytes; supply the complete diff only through context_file." }],
 					isError: true,
-					details: { reviewMode, reviewerCount: 0, contextFileBytes: 0 },
+					details: { reviewMode, reviewerCount: 0, contextFileBytes: loadedContext.contextFileBytes },
 				};
 			}
 			const diffText = loadedContext.contextFileText;

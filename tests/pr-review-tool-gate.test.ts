@@ -381,11 +381,22 @@ describe("review tool execution gate", () => {
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
-	test("requires context_file instead of embedding oversized caller input", async () => {
-		const h = harness(); h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
-		const result = await h.tools.get("review_subagents").execute("oversized-inline", { passes: quickPasses(), context: `diff --git a/a b/a\n+${"x".repeat(200_000)}` }, undefined, undefined, h.ctx);
-		expect(result.isError).toBeTrue();
-		expect(result.content[0].text).toContain("oversized review input requires a top-level context_file");
+	test("rejects oversized embedded metadata even when context_file is present", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-embedded-limit-")), diff = path.join(root, "diff.patch");
+		writeFileSync(diff, "diff --git a/a b/a\n-old\n+new\n");
+		try {
+			for (const params of [
+				{ passes: quickPasses(), context: `diff --git a/a b/a\n+${"x".repeat(200_000)}` },
+				{ passes: quickPasses(), context_file: diff, context: "x".repeat(200_000) },
+				{ passes: quickPasses().map((pass, index) => index === 1 ? { ...pass, context: "x".repeat(200_000) } : pass), context_file: diff },
+			]) {
+				const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+				const result = await h.tools.get("review_subagents").execute("oversized-inline", params, undefined, undefined, h.ctx);
+				expect(result.isError).toBeTrue();
+				expect(result.content[0].text).toContain("metadata must each remain below 200000 UTF-8 bytes");
+				expect(h.coordinator.artifactSnapshot(h.ctx)).toEqual([]);
+			}
+		} finally { rmSync(root, { recursive: true, force: true }); }
 	});
 
 	test("fails closed instead of truncating an unsafe complete-diff manifest", async () => {
