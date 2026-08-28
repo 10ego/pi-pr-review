@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.11](https://github.com/10ego/pi-pr-review/compare/v1.15.10...v1.15.11) (2026-08-28)
+
+
+### Bug Fixes
+
+* **review:** stabilize released dogfood reviews ([#108](https://github.com/10ego/pi-pr-review/issues/108)) ([4e9852c](https://github.com/10ego/pi-pr-review/commit/4e9852cf07e702256f50e296cb0d6f1972bf243b))
+
 ## [1.15.10](https://github.com/10ego/pi-pr-review/compare/v1.15.9...v1.15.10) (2026-08-28)
 
 
