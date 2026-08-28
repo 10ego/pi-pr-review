@@ -18,6 +18,7 @@ test("dogfood report binds no-comment completion, verdict parity, lanes, and tim
 	const file = session(records), stdout = path.join(path.dirname(file), "stdout.log"); fs.writeFileSync(stdout, canonical);
 	assert.deepEqual(buildDogfoodReport(file, stdout), { schemaVersion: 1, prNumber: 7, invocationMode: "disabled", completeness: "incomplete", synthesisQuality: "partially_parsed", expectedLaneCount: 2, retainedLaneCount: 2, lifecycleCounts: { complete: 1, partial: 0, timed_out: 0, failed: 1 }, contextLimitFailures: 3, verdicts: { model: "approve", sessionTerminal: "approve", visible: "Comment — incomplete lanes", host: "Comment — incomplete lanes", visibleMatchesHost: true }, timingMs: { total: 100, reviewTools: 60, parentOrchestration: 40 } });
 	assert.deepEqual(buildDogfoodReport(file).verdicts, { model: "approve", sessionTerminal: "approve", visible: null, host: "Comment — incomplete lanes", visibleMatchesHost: null });
+	const later = structuredClone(records); later.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "**Verdict:** unrelated" }], stopReason: "stop" } }); assert.equal(buildDogfoodReport(session(later), stdout).verdicts.sessionTerminal, "approve");
 });
 
 test("dogfood report rejects publish-enabled and ambiguous sessions", () => {

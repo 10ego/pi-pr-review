@@ -354,7 +354,11 @@ describe("review tool execution gate", () => {
 		try {
 			const h = harness(); h.ctx.cwd = root; h.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx); process.argv[1] = child;
 			const result = await h.tools.get("review_subagents").execute("auto-shards", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h.ctx);
-			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 2, sharedContextBytes: Buffer.byteLength("PR metadata only.") }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			expect(result.isError).not.toBeTrue(); expect(result.details).toMatchObject({ shardCount: 2, requestedShardCount: 1, shardingSource: "automatic-size-preflight", changedFileCount: 2, maxParallel: 1, sharedContextBytes: Buffer.byteLength("PR metadata only.") }); expect(result.details.diffBytes).toBeGreaterThanOrEqual(200_000); expect(result.details.results.map((lane: any) => lane.id)).toEqual(["correctness-shard-1", "correctness-shard-2"]); expect(h.coordinator.artifactSnapshot(h.ctx)?.map((lane) => lane.passId)).toEqual(["correctness-shard-1", "correctness-shard-2"]);
+			const metadataWithExample = "Description includes an example:\ndiff --git a/example.ts b/example.ts\n-old\n+new\nKeep this trailing cross-cutting requirement.";
+			const h2 = harness(); h2.ctx.cwd = root; h2.coordinator.begin(parsePublishMode("/pr-review 7"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h2.ctx);
+			const exampleResult = await h2.tools.get("review_subagents").execute("metadata-example", { passes: [{ id: "correctness", tier: "heavy", objective: "review" }], context: metadataWithExample, context_file: diffFile, max_parallel: 1 }, undefined, undefined, h2.ctx);
+			expect(exampleResult.isError).not.toBeTrue(); expect(exampleResult.details.sharedContextBytes).toBe(Buffer.byteLength(metadataWithExample));
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
