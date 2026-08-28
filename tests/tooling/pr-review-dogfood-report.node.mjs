@@ -29,4 +29,5 @@ test("dogfood report accepts an exactly bound absent-synthesis fallback", () => 
 test("dogfood report rejects publish-enabled and ambiguous sessions", () => {
 	const enabled = structuredClone(records); enabled[3].data.invocation.mode = "force"; assert.throws(() => buildDogfoodReport(session(enabled)), /not --no-comment/);
 	assert.throws(() => buildDogfoodReport(session(records.filter((record) => record.customType !== "pr-review-telemetry"))), /terminal telemetry/);
+	const futureReference = structuredClone(records); delete futureReference[3].data.publicationBody; futureReference[3].data.reviewEntryId = "future"; futureReference.push({ type: "message", id: "future", message: { role: "assistant", content: [{ type: "text", text: JSON.stringify({ verdict: "approve" }) }], stopReason: "stop" } }); assert.throws(() => buildDogfoodReport(session(futureReference)), /preceding assistant entry/);
 });
