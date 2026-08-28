@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.10](https://github.com/10ego/pi-pr-review/compare/v1.15.9...v1.15.10) (2026-08-28)
+
+
+### Tests
+
+* **review:** evaluate integrated topology on corpus v6 ([#105](https://github.com/10ego/pi-pr-review/issues/105)) ([df2288d](https://github.com/10ego/pi-pr-review/commit/df2288d33474b5d92e3db32e1dce78dc4906534a)), closes [#60](https://github.com/10ego/pi-pr-review/issues/60)
+
 ## [1.15.9](https://github.com/10ego/pi-pr-review/compare/v1.15.8...v1.15.9) (2026-08-28)
 
 
