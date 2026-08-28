@@ -30,7 +30,9 @@ export function buildDogfoodReport(sessionFile, visibleOutputFile) {
 	// Pi persists the original assistant message, not the extension's rendered
 	// print projection. Verdict parity is measurable only when the caller retains
 	// and supplies stdout; never infer historical visible output from host state.
-	const persistedHostVerdict = typeof data?.review?.verdict === "string" ? data.review.verdict : null;
+	const referencedReview = typeof data?.reviewEntryId === "string" ? records.find((record) => record?.type === "message" && record.id === data.reviewEntryId && record.message?.role === "assistant") : undefined;
+	invariant(data?.reviewEntryId === undefined || referencedReview, "completed review references a missing assistant entry");
+	const persistedHostVerdict = typeof data?.review?.verdict === "string" ? data.review.verdict : referencedReview ? verdict(assistantText(referencedReview.message)) : null;
 	const hostVerdict = typeof data?.publicationBody === "string" ? verdict(publicationText) : persistedHostVerdict, visibleVerdict = visibleOutputFile ? verdict(readBoundedRegular(visibleOutputFile, "visible output")) : null, modelVerdict = verdict(rawText), sessionTerminalVerdict = verdict(terminalText);
 	return {
 		schemaVersion: 1,
