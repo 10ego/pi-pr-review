@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/10ego/pi-pr-review/compare/v1.16.0...v1.17.0) (2026-08-29)
+
+
+### Features
+
+* **review:** configure default review mode ([#122](https://github.com/10ego/pi-pr-review/issues/122)) ([52028be](https://github.com/10ego/pi-pr-review/commit/52028be9fcc91713e54378e3d50f31a3cd9cd642))
+
 ## [1.16.0](https://github.com/10ego/pi-pr-review/compare/v1.15.16...v1.16.0) (2026-08-28)
 
 
