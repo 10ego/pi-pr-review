@@ -7,6 +7,7 @@ import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
 
 export type PublishMode = "auto" | "force" | "disabled";
 export type ReviewMode = "quick" | "balanced" | "full" | "deep";
+export const REVIEW_MODES: readonly ReviewMode[] = ["quick", "balanced", "full", "deep"];
 export type AutoPostSource = "default" | "user" | "project";
 export type CompletionAction = "continue_tools" | "accept_final" | "clear_invocation";
 
@@ -28,6 +29,47 @@ export interface ApproveMaxPriorityLevelResolution {
 	readonly valid: boolean;
 	readonly source: AutoPostSource;
 	readonly error?: string;
+}
+
+export interface ReviewModeResolution {
+	readonly value: ReviewMode;
+	readonly valid: boolean;
+	readonly source: AutoPostSource;
+	readonly error?: string;
+}
+
+function isReviewMode(value: unknown): value is ReviewMode {
+	return typeof value === "string" && REVIEW_MODES.includes(value as ReviewMode);
+}
+
+/** Resolve the default reviewer topology, with a trusted project overlaying user config. */
+export function resolveDefaultReviewModeSetting(
+	user: unknown,
+	trustedProject?: unknown,
+): ReviewModeResolution {
+	if (hasOwn(trustedProject, "defaultReviewMode")) {
+		const value = (trustedProject as { defaultReviewMode?: unknown }).defaultReviewMode;
+		return isReviewMode(value)
+			? { value, valid: true, source: "project" }
+			: {
+					value: "balanced",
+					valid: false,
+					source: "project",
+					error: `project defaultReviewMode must be one of: ${REVIEW_MODES.join(", ")}`,
+				};
+	}
+	if (hasOwn(user, "defaultReviewMode")) {
+		const value = (user as { defaultReviewMode?: unknown }).defaultReviewMode;
+		return isReviewMode(value)
+			? { value, valid: true, source: "user" }
+			: {
+					value: "balanced",
+					valid: false,
+					source: "user",
+					error: `user defaultReviewMode must be one of: ${REVIEW_MODES.join(", ")}`,
+				};
+	}
+	return { value: "balanced", valid: true, source: "default" };
 }
 
 function isValidApproveLevel(value: unknown): value is ApproveMaxPriorityLevel {
@@ -233,7 +275,15 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	return {
 		matched: true,
 		mode: disabled ? "disabled" : force ? "force" : "auto",
-		reviewMode: deep ? "deep" : full ? "full" : quick || majorOnly ? "quick" : "balanced",
+		...(deep
+			? { reviewMode: "deep" as const }
+			: full
+				? { reviewMode: "full" as const }
+				: quick || majorOnly
+					? { reviewMode: "quick" as const }
+					: balanced
+						? { reviewMode: "balanced" as const }
+						: {}),
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
 	};

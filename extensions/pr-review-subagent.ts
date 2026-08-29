@@ -91,6 +91,8 @@ import {
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
+	resolveDefaultReviewModeSetting,
+	REVIEW_MODES,
 	type ApproveMaxPriorityLevel,
 	type ReviewMode,
 } from "../lib/pr-review-publish.ts";
@@ -175,6 +177,8 @@ const TIER_PURPOSE: Record<Tier, string> = {
 };
 
 interface PrReviewConfig {
+	/** Review topology used when /pr-review has no explicit mode flag. */
+	defaultReviewMode: ReviewMode;
 	/** Tier label -> model spec (e.g. "anthropic/model", "openai/model:high"). */
 	tiers: Partial<Record<Tier, string>>;
 	/** Tier label -> ordered fallback model specs used for quota/capacity failures. */
@@ -258,6 +262,17 @@ function normalizeToolPolicies(
 	return out;
 }
 
+function resolveDefaultReviewModeForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
+	const user = readConfigFile(userConfigPath());
+	let project: Partial<PrReviewConfig> | undefined;
+	try {
+		if (ctx.isProjectTrusted()) project = readConfigFile(projectConfigPath(ctx.cwd));
+	} catch {
+		/* user config only */
+	}
+	return resolveDefaultReviewModeSetting(user, project);
+}
+
 function resolveAutoPostForContext(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">) {
 	const user = readConfigFile(userConfigPath());
 	let project: Partial<PrReviewConfig> | undefined;
@@ -315,7 +330,9 @@ function loadConfig(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Pr
 	const allowStale = resolveAllowStalePublishSetting(user, project);
 	const allowStaleApprovals = resolveAllowStaleApprovalsSetting(user, project);
 	const approveMaxPriority = resolveApproveMaxPriorityLevelSetting(user, project);
+	const defaultReviewMode = resolveDefaultReviewModeSetting(user, project);
 	return {
+		defaultReviewMode: defaultReviewMode.valid ? defaultReviewMode.value : "balanced",
 		tiers: { ...(user.tiers ?? {}), ...(project.tiers ?? {}) },
 		fallbacks: { ...normalizeFallbacks(user.fallbacks, true), ...normalizeFallbacks(project.fallbacks, true) },
 		thinkingLevels: {
@@ -345,7 +362,9 @@ function readUserConfig(): PrReviewConfig {
 	const allowStale = resolveAllowStalePublishSetting(raw);
 	const allowStaleApprovals = resolveAllowStaleApprovalsSetting(raw);
 	const approveMaxPriority = resolveApproveMaxPriorityLevelSetting(raw);
+	const defaultReviewMode = resolveDefaultReviewModeSetting(raw);
 	return {
+		defaultReviewMode: defaultReviewMode.valid ? defaultReviewMode.value : "balanced",
 		tiers: { ...(raw.tiers ?? {}) },
 		fallbacks: normalizeFallbacks(raw.fallbacks),
 		thinkingLevels: normalizeThinkingLevels(raw.thinkingLevels, "User pr-review config"),
@@ -2072,7 +2091,7 @@ export default function registerPrReviewSubagents(
 	});
 
 	pi.registerCommand("pr-review-config", {
-		description: "Open review-tier settings, or show/set models, thinking, and fallbacks for /pr-review",
+		description: "Open review settings, or set the default mode, models, thinking, and publication policy",
 		handler: async (args, ctx) => {
 			// Extension commands execute before input events, so revoke explicitly.
 			loopCoordinator.clear();
@@ -2085,7 +2104,7 @@ export default function registerPrReviewSubagents(
 			}
 
 			try {
-				// Direct set: `/pr-review-config light=... heavy=... heavy_fallbacks=...`
+				// Direct set: `/pr-review-config default_review_mode=full light=... heavy=...`
 				if (parsed.hasChanges) {
 					const next = applyConfigPatch(readUserConfig(), parsed.patch);
 					writeUserConfig(next);
@@ -2145,6 +2164,7 @@ function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
 }
 
 const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
+	{ value: "default_review_mode=", label: "default_review_mode=<quick|balanced|full|deep> — topology used when no mode flag is supplied" },
 	...TIERS.map((t) => ({ value: `${t}=`, label: `${t}=<model> — ${TIER_PURPOSE[t]}` })),
 	...TIERS.map((t) => ({
 		value: `${t}_fallbacks=`,
@@ -2233,6 +2253,7 @@ function tierFromCompoundKey(key: string): Tier {
 }
 
 interface ConfigPatch {
+	defaultReviewMode?: ReviewMode;
 	tiers: Partial<Record<Tier, string | null>>;
 	fallbacks: Partial<Record<Tier, string[] | null>>;
 	thinkingLevels: Partial<Record<Tier, ThinkingLevel | null>>;
@@ -2256,7 +2277,11 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 		}
 		const key = token.slice(0, eq).replace(/^--?/, "").toLowerCase();
 		const value = token.slice(eq + 1);
-		if ((TIERS as string[]).includes(key)) {
+		if (key === "default_review_mode" || key === "defaultreviewmode" || key === "default-review-mode") {
+			const normalized = value.toLowerCase();
+			if (REVIEW_MODES.includes(normalized as ReviewMode)) patch.defaultReviewMode = normalized as ReviewMode;
+			else errors.push(`invalid ${key} "${value}" (expected ${REVIEW_MODES.join("|")})`);
+		} else if ((TIERS as string[]).includes(key)) {
 			patch.tiers[key as Tier] = value === "" || value === "unset" ? null : value;
 		} else if (isFallbackKey(key)) {
 			const tier = tierFromCompoundKey(key);
@@ -2308,11 +2333,12 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 			patch.tools = splitCommaList(value);
 		} else {
 			errors.push(
-				`unknown key "${key}" (expected light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|allow_stale_approvals|approve_max_priority_level|tools)`,
+				`unknown key "${key}" (expected default_review_mode|light|medium|heavy|<tier>_fallbacks|<tier>_thinking|<tier>_tool_policy|auto_post_reviews|allow_stale_publish|allow_stale_approvals|approve_max_priority_level|tools)`,
 			);
 		}
 	}
 	const hasChanges =
+		patch.defaultReviewMode !== undefined ||
 		Object.keys(patch.tiers).length > 0 ||
 		Object.keys(patch.fallbacks).length > 0 ||
 		Object.keys(patch.thinkingLevels).length > 0 ||
@@ -2327,6 +2353,7 @@ function parseConfigArgs(args: string): { patch: ConfigPatch; hasChanges: boolea
 
 function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewConfig {
 	const next: PrReviewConfig = {
+		defaultReviewMode: base.defaultReviewMode,
 		tiers: { ...base.tiers },
 		fallbacks: normalizeFallbacks(base.fallbacks),
 		thinkingLevels: normalizeThinkingLevels(base.thinkingLevels, "PR review config"),
@@ -2339,6 +2366,7 @@ function applyConfigPatch(base: PrReviewConfig, patch: ConfigPatch): PrReviewCon
 		tools: [...base.tools],
 		deadlines: base.deadlines,
 	};
+	if (patch.defaultReviewMode !== undefined) next.defaultReviewMode = patch.defaultReviewMode;
 	for (const tier of TIERS) {
 		if (tier in patch.tiers) {
 			const value = patch.tiers[tier];
@@ -2388,6 +2416,7 @@ function summarizeConfig(
 	} catch {
 		/* ignore */
 	}
+	const defaultReviewMode = resolveDefaultReviewModeForContext(ctx);
 	const autoPost = resolveAutoPostForContext(ctx);
 	const allowStale = resolveAllowStaleForContext(ctx);
 	const allowStaleApprovals = resolveAllowStaleApprovalsForContext(ctx);
@@ -2401,6 +2430,7 @@ function summarizeConfig(
 			(t) =>
 				`| \`${t}\` | ${user.tiers[t] ? `\`${user.tiers[t]}\`` : "_unset_"} | ${effective.tiers[t] ? `\`${effective.tiers[t]}\`` : "_pi default_"} | ${TIER_PURPOSE[t]} |`,
 		),
+		`| \`defaultReviewMode\` | \`${user.defaultReviewMode}\` | \`${effective.defaultReviewMode}\` (${defaultReviewMode.source}) | topology used when no explicit mode flag is supplied; default \`balanced\` |`,
 		`| \`autoPostReviews\` | \`${user.autoPostReviews}\` | \`${effective.autoPostReviews}\` (${autoPost.source}) | automatically post one GitHub review; default \`false\` |`,
 		`| \`allowStalePublish\` | \`${user.allowStalePublish}\` | \`${effective.allowStalePublish}\` (${allowStale.source}) | permit body-only stale publication with reviewed/current SHAs; default \`true\` |`,
 		`| \`allowStaleApprovals\` | \`${user.allowStaleApprovals}\` | \`${effective.allowStaleApprovals}\` (${allowStaleApprovals.source}) | permit qualified stale fully parsed reviews to record APPROVE; default \`false\` |`,
@@ -2420,6 +2450,10 @@ function summarizeConfig(
 	if (projectPath) lines.push(`Project overlay (trusted): \`${projectPath}\``);
 	const warnings = thinkingWarnings(effective);
 	if (warnings.length) lines.push("", ...warnings);
+	if (!defaultReviewMode.valid) lines.push(`Default review mode config error: ${defaultReviewMode.error}`);
+	else if (defaultReviewMode.source === "project") {
+		lines.push("Default review mode is controlled by the trusted project overlay; this command edits user config only.");
+	}
 	if (!autoPost.valid) lines.push(`Automatic posting config error: ${autoPost.error}`);
 	else if (autoPost.source === "project") {
 		lines.push("Automatic posting is controlled by the trusted project overlay; this command edits user config only.");
@@ -2441,7 +2475,8 @@ function summarizeConfig(
 		"## Usage",
 		"- Open the settings menu: `/pr-review-config`",
 		"- Print this summary: `/pr-review-config show`",
-		"- Set directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
+		"- Set the no-flag review topology: `/pr-review-config default_review_mode=balanced`",
+		"- Set models directly: `/pr-review-config light=provider/model heavy=provider/model:high`",
 		"- Set fallback chain: `/pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2`",
 		"- Set tier thinking: `/pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high`",
 		"- Enable automatic GitHub review posting: `/pr-review-config auto_post_reviews=true`",
@@ -2570,6 +2605,13 @@ function configMenuItems(cfg: PrReviewConfig, available: string[]): SettingItem[
 	const current = cfg.tools.join(",");
 	const toolValues = [current, ...TOOLS_PRESETS.filter((p) => p !== current)];
 	return [
+		{
+			id: "default_review_mode",
+			label: "default review mode",
+			description: "Topology used when /pr-review has no explicit mode flag. Enter/Space cycles values.",
+			currentValue: cfg.defaultReviewMode,
+			values: [...REVIEW_MODES],
+		},
 		...tierItems,
 		...fallbackItems,
 		...thinkingItems,
@@ -2628,6 +2670,7 @@ async function showConfigMenu(
 
 			let settingsList: SettingsList;
 			const refresh = () => {
+				settingsList.updateValue("default_review_mode", draft.defaultReviewMode);
 				for (const tier of TIERS) {
 					settingsList.updateValue(tier, draft.tiers[tier] ?? UNSET);
 					settingsList.updateValue(`${tier}_fallbacks`, draft.fallbacks[tier]?.join(",") || "(none)");
@@ -2641,7 +2684,13 @@ async function showConfigMenu(
 			};
 
 			const persist = (id: string, newValue: string) => {
-				if ((TIERS as string[]).includes(id)) {
+				if (id === "default_review_mode") {
+					if (!REVIEW_MODES.includes(newValue as ReviewMode)) {
+						ctx.ui.notify(`Invalid review mode: ${newValue}`, "error");
+						return;
+					}
+					draft.defaultReviewMode = newValue as ReviewMode;
+				} else if ((TIERS as string[]).includes(id)) {
 					if (newValue === "__unset__") delete draft.tiers[id as Tier];
 					else draft.tiers[id as Tier] = newValue;
 				} else if (isFallbackKey(id)) {
@@ -2689,7 +2738,9 @@ async function showConfigMenu(
 				try {
 					writeUserConfig(draft);
 					refresh();
-					const shown = id === "tools"
+					const shown = id === "default_review_mode"
+						? draft.defaultReviewMode
+						: id === "tools"
 						? draft.tools.join(",")
 						: id === "auto_post_reviews"
 							? String(draft.autoPostReviews)
@@ -2706,7 +2757,17 @@ async function showConfigMenu(
 									: isToolPolicyKey(id)
 										? (draft.toolPolicies[tierFromCompoundKey(id)] ?? INHERIT_TOOL_POLICY)
 										: (draft.tiers[id as Tier] ?? UNSET);
-					if (id === "auto_post_reviews") {
+					if (id === "default_review_mode") {
+						const effective = resolveDefaultReviewModeForContext(ctx);
+						if (effective.source === "project") {
+							ctx.ui.notify(
+								`User defaultReviewMode saved as ${shown}, but trusted project config remains effective at ${effective.value}. Edit ${projectConfigPath(ctx.cwd)}.`,
+								"warning",
+							);
+						} else {
+							ctx.ui.notify(`PR review config: ${id} = ${shown} (effective ${effective.value})`, "info");
+						}
+					} else if (id === "auto_post_reviews") {
 						const effective = resolveAutoPostForContext(ctx);
 						if (effective.source === "project") {
 							ctx.ui.notify(

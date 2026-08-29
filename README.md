@@ -59,7 +59,7 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 | `/pr-review 123 --deep` | One integrated heavy reviewer for the whole PR. |
 | `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
 
-`--quick`, `--major-only`, `--balanced`, `--full`, and `--deep` are mutually exclusive.
+`--quick`, `--major-only`, `--balanced`, `--full`, and `--deep` are mutually exclusive. When no mode flag is supplied, `/pr-review` uses the configured default mode; this is `balanced` until changed with `/pr-review-config`.
 
 `--deep` trades parallel lens coverage for holistic judgment: a single heavy-tier reviewer receives the complete diff plus repository tools and reviews the change as one story—intent, approach, cross-file behavior, and test fit. It uses the same deadline, artifact, degradation, extraction, and publication machinery as every other mode. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
 
@@ -115,7 +115,7 @@ The viewer intentionally cannot send prompts, steering, or follow-ups to reviewe
 
 ## Configure models
 
-`/pr-review-config` opens an interactive settings menu in the TUI. Use `/pr-review-config show` for a text summary or `key=value` arguments for direct changes.
+`/pr-review-config` opens an interactive settings menu in the TUI. Its **default review mode** selector replaces the former parallelism control: reviewer count and concurrency are derived from the selected mode. Use `/pr-review-config show` for a text summary or `key=value` arguments for direct changes.
 
 | Tier | Purpose |
 |---|---|
@@ -126,6 +126,7 @@ The viewer intentionally cannot send prompts, steering, or follow-ups to reviewe
 Common settings:
 
 ```text
+/pr-review-config default_review_mode=balanced
 /pr-review-config light=provider/model heavy=provider/model:high
 /pr-review-config heavy_fallbacks=provider/backup:high,provider/backup2
 /pr-review-config light_thinking=low medium_thinking=medium heavy_thinking=high
@@ -147,12 +148,13 @@ Configuration is stored in:
 - user scope: `~/.pi/agent/pr-review.json`;
 - project scope: `<repo>/.pi/pr-review.json`, applied only when the project is trusted.
 
-A trusted project can override model, tool, and publication settings. Verification profiles are always user-only.
+A trusted project can override the default review mode, model, tool, and publication settings. Explicit `/pr-review --quick|--balanced|--full|--deep` flags override the configured default. Verification profiles are always user-only.
 
 Example:
 
 ```json
 {
+  "defaultReviewMode": "balanced",
   "tiers": {
     "light": "provider/fast-model",
     "medium": "provider/balanced-model",
