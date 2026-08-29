@@ -54,7 +54,7 @@ Arguments for this run: `$@`
 - `$1` is the PR number (required).
 - `--comment` explicitly requests one GitHub review for this run, even when automatic posting is disabled. A fully parsed, complete Markdown review may qualify for host-gated `APPROVE`; degraded Markdown remains `COMMENT`, and assistant text never directly selects the GitHub event.
 - `--no-comment` suppresses posting for this run, even when automatic posting is enabled.
-- With no review-mode flag, use the balanced five-reviewer default.
+- With no review-mode flag in the user's invocation, the host appends the configured default mode before expanding this prompt. The installation default is balanced.
 - `--quick` selects three P0–P2 reviewers; `--major-only` is its compatibility alias.
 - `--balanced` explicitly selects the five-reviewer default.
 - `--full` selects six all-severity reviewers, including conventions/maintainability.

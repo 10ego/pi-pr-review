@@ -35,6 +35,9 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("uses host-fixed balanced coverage by default", () => {
 		expect(prompt).toContain("**Balanced (default or `--balanced`):** exactly five concurrent reviewers");
+		expect(prompt).toContain("the host appends the configured default mode before expanding this prompt");
+		expect(readme).toContain("default_review_mode=balanced");
+		expect(extension).toContain('id: "default_review_mode"');
 		expect(prompt).toContain("`overview`, `correctness`, `correctness-contracts`, `security-performance`, and `performance-resources`");
 		expect(extension).toContain("FIXED_REVIEW_TOPOLOGIES");
 		expect(extension).toContain('reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced"');

@@ -542,6 +542,28 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("the config command replaces legacy max parallelism with a default review mode", async () => {
+		const agentDir = getAgentDir();
+		const configPath = `${agentDir}/pr-review.json`;
+		rmSync(agentDir, { recursive: true, force: true });
+		mkdirSync(agentDir, { recursive: true });
+		writeFileSync(configPath, JSON.stringify({ maxParallel: 9, tiers: {} }));
+		try {
+			const h = harness();
+			const command = h.commands.get("pr-review-config")!;
+			await command("default_review_mode=full", h.ctx);
+			const saved = JSON.parse(readFileSync(configPath, "utf8"));
+			expect(saved.defaultReviewMode).toBe("full");
+			expect(saved).not.toHaveProperty("maxParallel");
+			await command("default_review_mode=deep", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).defaultReviewMode).toBe("deep");
+			await command("default_review_mode=invalid", h.ctx);
+			expect(JSON.parse(readFileSync(configPath, "utf8")).defaultReviewMode).toBe("deep");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	test("the config command persists approval gates and explicit stale-approval opt-in", async () => {
 		const agentDir = getAgentDir();
 		const configPath = `${agentDir}/pr-review.json`;

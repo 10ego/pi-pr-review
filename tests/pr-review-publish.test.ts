@@ -32,6 +32,7 @@ import {
 	resolveAllowStalePublishSetting,
 	resolveAutoPostSetting,
 	resolveApproveMaxPriorityLevelSetting,
+	resolveDefaultReviewModeSetting,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
 	APPROVE_EVENT,
@@ -904,8 +905,8 @@ describe("invocation publication snapshot", () => {
 });
 
 describe("trusted invocation mode", () => {
-	test("defaults to auto and binds force/disable to the requested PR", () => {
-		expect(parsePublishMode("/pr-review 7")).toMatchObject({ mode: "auto", reviewMode: "balanced", prNumber: 7 });
+	test("leaves an omitted topology for trusted config resolution and binds explicit modes", () => {
+		expect(parsePublishMode("/pr-review 7")).toEqual({ matched: true, mode: "auto", prNumber: 7, allowNonOpen: false });
 		expect(parsePublishMode("/prompt:pr-review 7")).toEqual({ matched: false });
 		expect(parsePublishMode("/pr-review 8 --comment")).toMatchObject({ mode: "force", prNumber: 8 });
 		expect(parsePublishMode("/pr-review 9 --no-comment")).toMatchObject({ mode: "disabled", prNumber: 9 });
@@ -914,6 +915,20 @@ describe("trusted invocation mode", () => {
 		expect(parsePublishMode("/pr-review 11 --balanced --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "balanced", prNumber: 11 });
 		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "full", prNumber: 12 });
 		expect(parsePublishMode("/pr-review 13 --deep --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "deep", prNumber: 13 });
+	});
+
+	test("resolves the configured default with trusted project precedence", () => {
+		expect(resolveDefaultReviewModeSetting({})).toEqual({ value: "balanced", valid: true, source: "default" });
+		expect(resolveDefaultReviewModeSetting({ defaultReviewMode: "quick" })).toEqual({ value: "quick", valid: true, source: "user" });
+		expect(resolveDefaultReviewModeSetting(
+			{ defaultReviewMode: "quick" },
+			{ defaultReviewMode: "deep" },
+		)).toEqual({ value: "deep", valid: true, source: "project" });
+		expect(resolveDefaultReviewModeSetting({ defaultReviewMode: "fast" })).toMatchObject({
+			value: "balanced",
+			valid: false,
+			source: "user",
+		});
 	});
 
 	test("rejects contradictory flags", () => {

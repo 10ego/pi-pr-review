@@ -39,6 +39,7 @@ import {
 	resolveAutoPostSetting,
 	canonicalReviewSnapshot,
 	resolveApproveMaxPriorityLevelSetting,
+	resolveDefaultReviewModeSetting,
 	type PublishResult,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
@@ -50,6 +51,7 @@ import {
 	type CompletedReviewRecord,
 	type CompletedReviewSessionIdentity,
 	type ReviewInvocation,
+	type ReviewModeResolution,
 } from "../lib/pr-review-publish.ts";
 import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
@@ -373,6 +375,7 @@ function readJsonObject(filePath: string): ConfigReadResult {
 }
 
 interface PublishingConfigResolution {
+	defaultReviewMode: ReviewModeResolution;
 	autoPost: AutoPostResolution;
 	allowStale: AutoPostResolution;
 	allowStaleApprovals: AutoPostResolution;
@@ -382,7 +385,8 @@ interface PublishingConfigResolution {
 function invalidPublishingConfig(source: "user" | "project", error: string): PublishingConfigResolution {
 	const invalid = { value: false, valid: false, source, error } as const;
 	const invalidLevel = { value: "off" as const, valid: false, source, error } as const;
-	return { autoPost: invalid, allowStale: invalid, allowStaleApprovals: invalid, approveMaxPriority: invalidLevel };
+	const invalidMode = { value: "balanced" as const, valid: false, source, error } as const;
+	return { defaultReviewMode: invalidMode, autoPost: invalid, allowStale: invalid, allowStaleApprovals: invalid, approveMaxPriority: invalidLevel };
 }
 
 function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolution {
@@ -398,6 +402,7 @@ function resolvePublishingConfig(ctx: ExtensionContext): PublishingConfigResolut
 		/* user config only */
 	}
 	return {
+		defaultReviewMode: resolveDefaultReviewModeSetting(user.value, project?.value),
 		autoPost: resolveAutoPostSetting(user.value, project?.value),
 		allowStale: resolveAllowStalePublishSetting(user.value, project?.value),
 		allowStaleApprovals: resolveAllowStaleApprovalsSetting(user.value, project?.value),
@@ -911,8 +916,18 @@ export default function registerReviewTable(
 			return { action: "handled" as const };
 		}
 
-		// Freeze trusted publication config and target binding before review tools or optional PR code can run.
+		// Freeze trusted mode/publication config and target binding before review tools or optional PR code can run.
 		const publishingConfig = resolvePublishingConfig(ctx);
+		const explicitReviewMode = parsed.reviewMode;
+		if (explicitReviewMode === undefined && !publishingConfig.defaultReviewMode.valid) {
+			ctx.ui.notify(`Invalid /pr-review invocation: ${publishingConfig.defaultReviewMode.error}`, "error");
+			return { action: "handled" as const };
+		}
+		const resolvedReviewMode = explicitReviewMode ?? publishingConfig.defaultReviewMode.value;
+		const resolvedParsed = { ...parsed, reviewMode: resolvedReviewMode };
+		const transformedInput = explicitReviewMode === undefined
+			? `${event.text.trimEnd()} --${resolvedReviewMode}`
+			: event.text;
 		const deadlineResolution = resolveReviewDeadlinesForContext(ctx);
 		const budget = createReviewBudget(deadlineResolution);
 		const preflight = {
@@ -952,7 +967,7 @@ export default function registerReviewTable(
 		}
 		activePreflight = undefined;
 		const gate = loopCoordinator.begin(
-			parsed,
+			resolvedParsed,
 			publishingConfig.autoPost,
 			source,
 			ctx,
@@ -968,6 +983,9 @@ export default function registerReviewTable(
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			persistTelemetry("cleared");
 			return { action: "handled" as const };
+		}
+		if (transformedInput !== event.text) {
+			return { action: "transform" as const, text: transformedInput, images: event.images };
 		}
 	});
 

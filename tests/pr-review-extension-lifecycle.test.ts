@@ -2038,6 +2038,34 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.activeTools()).not.toContain(SELF_REVIEW_TOOL_NAME);
 	});
 
+	test("applies the configured default mode before prompt expansion and preserves explicit overrides", async () => {
+		const configured = createHarness([], session, { userConfig: { defaultReviewMode: "full" } });
+		const configuredResults = await configured.emit("input", { text: "/pr-review 7 --no-comment", source: "interactive" });
+		expect(configuredResults).toContainEqual({
+			action: "transform",
+			text: "/pr-review 7 --no-comment --full",
+			images: undefined,
+		});
+		expect(configured.loopCoordinator.peek()?.reviewMode).toBe("full");
+
+		const explicit = createHarness([], { ...session, id: "explicit-mode" }, { userConfig: { defaultReviewMode: "full" } });
+		const explicitResults = await explicit.emit("input", { text: "/pr-review 7 --quick --no-comment", source: "interactive" });
+		expect(explicitResults).not.toContainEqual(expect.objectContaining({ action: "transform" }));
+		expect(explicit.loopCoordinator.peek()?.reviewMode).toBe("quick");
+	});
+
+	test("fails closed on an invalid configured default while explicit mode remains available", async () => {
+		const invalid = createHarness([], session, { userConfig: { defaultReviewMode: "fast" } });
+		const invalidResults = await invalid.emit("input", { text: "/pr-review 7", source: "interactive" });
+		expect(invalidResults).toContainEqual({ action: "handled" });
+		expect(invalid.loopCoordinator.peek()).toBeUndefined();
+		expect(invalid.notifications.some((message) => message.includes("defaultReviewMode must be one of"))).toBeTrue();
+
+		const explicit = createHarness([], { ...session, id: "invalid-default-explicit" }, { userConfig: { defaultReviewMode: "fast" } });
+		await explicit.emit("input", { text: "/pr-review 7 --deep", source: "interactive" });
+		expect(explicit.loopCoordinator.peek()?.reviewMode).toBe("deep");
+	});
+
 	test("exposes review tools only for trusted command-loop phases", async () => {
 		const harness = createHarness();
 		await harness.emit("session_start", { reason: "startup" });
