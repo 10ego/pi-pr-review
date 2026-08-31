@@ -105,6 +105,8 @@ export function resolveReviewDeadlines(user: unknown, project?: unknown): Deadli
 
 export interface ReviewBudget {
 	readonly startedAtMs: number;
+	/** First reviewer dispatch time. Undefined until the batch window is activated. */
+	readonly batchStartedAtMs?: number;
 	readonly totalDeadlineMs: number;
 	readonly batchDeadlineMs: number;
 	readonly config: ReviewDeadlineConfig;
@@ -128,6 +130,37 @@ export function createReviewBudget(
 		source: resolution.source,
 		warnings: [...resolution.warnings],
 	});
+}
+
+const activatedBatchBudgets = new WeakMap<ReviewBudget, ReviewBudget>();
+
+/**
+ * Start the reviewer-batch window once, at the first reviewer dispatch.
+ *
+ * PR binding, diff capture, and parent orchestration remain charged to the total
+ * invocation deadline, but no longer consume `batchMs` before a reviewer exists.
+ * The original synthesis and termination reserves remain hard upper bounds.
+ */
+export function activateReviewBatch(
+	budget: ReviewBudget,
+	now: MonotonicNow = monotonicNow,
+): ReviewBudget {
+	if (budget.batchStartedAtMs !== undefined) return budget;
+	const existing = activatedBatchBudgets.get(budget);
+	if (existing) return existing;
+	const batchStartedAtMs = now();
+	const terminationReserveMs = budget.config.terminationGraceMs + budget.config.cleanupReserveMs;
+	const batchDeadlineMs = Math.min(
+		batchStartedAtMs + budget.config.batchMs,
+		budget.totalDeadlineMs - budget.config.synthesisMs - terminationReserveMs,
+	);
+	const activated = Object.freeze({
+		...budget,
+		batchStartedAtMs,
+		batchDeadlineMs,
+	});
+	activatedBatchBudgets.set(budget, activated);
+	return activated;
 }
 
 export function attemptDeadline(
