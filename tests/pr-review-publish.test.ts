@@ -11,6 +11,7 @@ import {
 	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
+	canonicalReviewSnapshot,
 	collectFoldedComments,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
@@ -1513,9 +1514,14 @@ describe("strict publication parsing", () => {
 		expect(parsed.source).toBe("json");
 	});
 
-	test("rejects prose and partial objects", () => {
+	test("rejects prose, partial objects, and missing strict-JSON confidence", () => {
 		expect(parsePublishableReview(`review follows\n${JSON.stringify(review)}`).review).toBeUndefined();
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
+		const missing = structuredClone(review);
+		delete missing.overall_confidence_score;
+		delete missing.findings?.[0]?.confidence_score;
+		expect(parsePublishableReview(JSON.stringify(missing)).review).toBeUndefined();
+		expect(canonicalReviewSnapshot(missing).review).toEqual(missing);
 	});
 
 	test("auto-heals a Markdown-fenced review object while retaining Markdown provenance", () => {

@@ -866,7 +866,7 @@ export class CompletedReviewCache {
 		const candidate = hasReference ? referencedReview : value.review;
 		let parsed: PublishableReviewParseResult;
 		try {
-			parsed = parsePublishableReview(JSON.stringify(candidate));
+			parsed = canonicalReviewSnapshot(candidate as ReviewLike);
 		} catch {
 			return false;
 		}
@@ -1083,7 +1083,10 @@ function publishableReviewEnvelope(text: string): { text: string; source: "json"
  * Publication accepts one complete JSON object. A single surrounding Markdown code
  * fence is tolerated for compatibility but remains distinguishable from exact JSON.
  */
-export function parsePublishableReview(text: string): PublishableReviewParseResult {
+export function parsePublishableReview(
+	text: string,
+	options: { allowMissingConfidence?: boolean } = {},
+): PublishableReviewParseResult {
 	const envelope = publishableReviewEnvelope(text);
 	let value: unknown;
 	try {
@@ -1124,7 +1127,11 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 		if (typeof finding.blocking !== "boolean" || finding.blocking !== ["P0", "P1"].includes(finding.severity)) {
 			return { error: `finding ${index + 1} has inconsistent blocking value` };
 		}
-		if (!isConfidence(finding.confidence_score)) {
+		if (
+			finding.confidence_score !== undefined
+				? !isConfidence(finding.confidence_score)
+				: !options.allowMissingConfidence
+		) {
 			return { error: `finding ${index + 1} has invalid confidence_score` };
 		}
 		const locationError = validateFindingLocation(finding as ReviewFindingLike, index);
@@ -1140,7 +1147,11 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 	if (!new Set(["patch is correct", "patch is incorrect"]).has(String(value.overall_correctness))) {
 		return { error: "overall_correctness is invalid" };
 	}
-	if (!isConfidence(value.overall_confidence_score)) {
+	if (
+		value.overall_confidence_score !== undefined
+			? !isConfidence(value.overall_confidence_score)
+			: !options.allowMissingConfidence
+	) {
 		return { error: "overall_confidence_score is invalid" };
 	}
 	return { review: value as unknown as ReviewLike, source: envelope.source };
@@ -1421,7 +1432,10 @@ export function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewPa
 	if (typeof serialized !== "string") {
 		return { error: "review could not be serialized for publication" };
 	}
-	return parsePublishableReview(serialized);
+	// Host-synthesized canonical Markdown may legitimately have no confidence
+	// when replaying a legacy artifact. Assistant-authored strict JSON still
+	// requires every numeric confidence field at its public parse boundary.
+	return parsePublishableReview(serialized, { allowMissingConfidence: true });
 }
 
 export function validateInlineComments(
