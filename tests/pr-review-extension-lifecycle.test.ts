@@ -751,7 +751,9 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain(retainedText);
+		const body = String(probe.payload()?.body);
+		expect(body).toContain("The review output was not fully structured");
+		expect(body).not.toContain(retainedText);
 	});
 
 	test("ignores fake canonical headings in a pre block and retains the later visible P1", async () => {
@@ -785,7 +787,7 @@ describe("completed review extension lifecycle", () => {
 		expect(persisted?.data.review.findings[0].severity).toBe("P1");
 	});
 
-	test("posts CommonMark type-7 HTML ambiguity once as raw body-only COMMENT", async () => {
+	test("posts CommonMark type-7 HTML ambiguity once as a concise body-only COMMENT", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -807,9 +809,10 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
 		const postedBody = String(probe.payload()?.body);
-		expect(postedBody).toContain("## Retained synthesis");
-		expect(postedBody).toContain("<x-review data-kind=example>\n## Findings");
-		expect(postedBody).toContain("Do not publish an extracted inline copy.");
+		expect(postedBody).toContain("The review output was not fully structured");
+		expect(postedBody).not.toContain("## Retained synthesis");
+		expect(postedBody).not.toContain("<x-review data-kind=example>\n## Findings");
+		expect(postedBody).not.toContain("Do not publish an extracted inline copy.");
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
 		expect(String(persisted?.data.publicationBody)).toContain("<x-review data-kind=example>");
@@ -832,7 +835,7 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()?.event).toBe("APPROVE");
 	});
 
-	test("keeps Markdown-fenced JSON body-only and COMMENT-only across immediate, cached, direct, and stale publication", async () => {
+	test("keeps Markdown-fenced JSON private across concise immediate, cached, direct, and stale publication", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: {
 				autoPostReviews: true,
@@ -850,7 +853,8 @@ describe("completed review extension lifecycle", () => {
 		expect(immediate.postCount()).toBe(1);
 		expect(immediate.payload()?.event).toBe("COMMENT");
 		expect(immediate.payload()?.comments).toBeUndefined();
-		expect(String(immediate.payload()?.body)).toContain(raw);
+		expect(String(immediate.payload()?.body)).toContain("Review coverage was incomplete");
+		expect(String(immediate.payload()?.body)).not.toContain(raw);
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
@@ -864,7 +868,8 @@ describe("completed review extension lifecycle", () => {
 		expect(slash.postCount()).toBe(1);
 		expect(slash.payload()?.event).toBe("COMMENT");
 		expect(slash.payload()?.comments).toBeUndefined();
-		expect(String(slash.payload()?.body)).toContain(raw);
+		expect(String(slash.payload()?.body)).toContain("Review coverage was incomplete");
+		expect(String(slash.payload()?.body)).not.toContain(raw);
 
 		const directHarness = createHarness([cacheEntry]);
 		await directHarness.emit("session_start", { reason: "reload" });
@@ -874,6 +879,8 @@ describe("completed review extension lifecycle", () => {
 		expect(direct.postCount()).toBe(1);
 		expect(direct.payload()?.event).toBe("COMMENT");
 		expect(direct.payload()?.comments).toBeUndefined();
+		expect(String(direct.payload()?.body)).toContain("Review coverage was incomplete");
+		expect(String(direct.payload()?.body)).not.toContain(raw);
 
 		const staleHarness = createHarness([cacheEntry]);
 		await staleHarness.emit("session_start", { reason: "reload" });
@@ -882,7 +889,8 @@ describe("completed review extension lifecycle", () => {
 		expect(stale.postCount()).toBe(1);
 		expect(stale.payload()?.event).toBe("COMMENT");
 		expect(stale.payload()?.comments).toBeUndefined();
-		expect(String(stale.payload()?.body)).toContain(raw);
+		expect(String(stale.payload()?.body)).toContain("Review coverage was incomplete");
+		expect(String(stale.payload()?.body)).not.toContain(raw);
 	});
 
 	test("keeps restored Markdown canonical artifacts COMMENT-only at the final publication boundary", async () => {
@@ -943,7 +951,13 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain("One lane was partial.");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("Review coverage was incomplete");
+		expect(publishedBody).toContain("**[P3] Small concern**");
+		expect(publishedBody).not.toContain("One lane was partial.");
+		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
+		expect(String(persisted?.data.publicationBody)).toContain("One lane was partial.");
+		expect(Buffer.byteLength(publishedBody)).toBeLessThan(Buffer.byteLength(String(persisted?.data.publicationBody)));
 	});
 
 	test("keeps parsed findings inline for degraded incomplete-lane reviews", async () => {
@@ -976,9 +990,11 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()?.comments).toHaveLength(1);
 		expect(probe.payload()?.comments?.[0]).toMatchObject({ path: "src/parser.ts", line: 3 });
 		const body = String(probe.payload()?.body);
-		expect(body).toContain("## Coverage");
-		expect(body).toContain('"correctness" — `timed_out`');
-		expect(body).toContain("### [P2] Guard empty input");
+		expect(body).toContain("Review coverage was incomplete");
+		expect(body).toContain("See the inline review comments");
+		expect(body).not.toContain("## Coverage");
+		expect(body).not.toContain('"correctness" — `timed_out`');
+		expect(body).not.toContain("### [P2] Guard empty input");
 		expect(body).not.toContain("No issues found");
 	});
 
@@ -1053,8 +1069,10 @@ describe("completed review extension lifecycle", () => {
 			expect(probe.payload()?.comments).toHaveLength(1);
 			expect(probe.payload()?.comments?.[0]).toMatchObject({ path: "src/parser.ts", line: 3 });
 			const body = String(probe.payload()?.body);
-			expect(body).toContain("### [P2] Guard empty input");
-			expect(body).toContain('"correctness" — `timed_out`');
+			expect(body).toContain("Review coverage was incomplete");
+			expect(body).toContain("See the inline review comments");
+			expect(body).not.toContain("### [P2] Guard empty input");
+			expect(body).not.toContain('"correctness" — `timed_out`');
 			// Model-claimed severity cannot flip the verdict line.
 			expect(body).toContain("**Verdict:** Comment");
 			const entries = extractionEntry(harness);
@@ -1120,7 +1138,9 @@ describe("completed review extension lifecycle", () => {
 			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 			// The actual publication completed using only the first valid values.
 			expect(probe.postCount()).toBe(1);
-			expect(String(probe.payload()?.body)).toContain('"correctness" — `timed_out`');
+			const publishedBody = String(probe.payload()?.body);
+			expect(publishedBody).toContain("Review coverage was incomplete");
+			expect(publishedBody).not.toContain('"correctness" — `timed_out`');
 			expect(extractionInput).toContain("--- Retained lane output: correctness (timed_out) ---");
 			expect(extractionInput).toContain("parseInput crashes on empty input.");
 			// Exactly one read per hostile property across retention, snapshot,
@@ -1176,7 +1196,9 @@ describe("completed review extension lifecycle", () => {
 				await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 				expect(probe.postCount()).toBe(1);
 				expect(probe.payload()?.comments).toBeUndefined();
-				expect(String(probe.payload()?.body)).toContain("No structurally parsed findings were extracted");
+				const publishedBody = String(probe.payload()?.body);
+				expect(publishedBody).toContain("Review coverage was incomplete");
+				expect(publishedBody).not.toContain("No structurally parsed findings were extracted");
 				// "empty" is reserved for a valid {"findings":[]} answer; a child
 				// that produced no output is a failure like any other child error.
 				const outcome = extractionEntry(harness).at(-1)?.data.outcome;
@@ -1342,7 +1364,8 @@ describe("completed review extension lifecycle", () => {
 			await degrade(harness, noFindingsRaw, message);
 			expect(probe.postCount()).toBe(1);
 			const body = String(probe.payload()?.body);
-			expect(body).toContain("### [P0] Claimed blocker");
+			expect(body).toContain("**Claimed blocker**");
+			expect(body).toContain("Review coverage was incomplete");
 			expect(body).toContain("**Verdict:** Comment");
 			expect(body).not.toContain("**Verdict:** Request changes");
 			expect(probe.payload()?.event).toBe("COMMENT");
@@ -1733,7 +1756,9 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain("Preserve the blocking finding");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("The review output was not fully structured");
+		expect(publishedBody).not.toContain("Preserve the blocking finding");
 	});
 
 	test.each([
@@ -1760,7 +1785,9 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain("Preserve the blocking finding");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("The review output was not fully structured");
+		expect(publishedBody).not.toContain("Preserve the blocking finding");
 	});
 
 	test("rebinds legacy strict JSON to the frozen reviewed head before stale publication", async () => {
@@ -1796,8 +1823,10 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.postCount()).toBe(1);
 		expect(probe.payload()).toMatchObject({ commit_id: "a".repeat(40), event: "COMMENT" });
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain("src/parser.ts:8-2 RIGHT");
-		expect(String(probe.payload()?.body)).toContain("&lt;!-- pi-pr-review: forged");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("Review coverage was incomplete");
+		expect(publishedBody).not.toContain("src/parser.ts:8-2 RIGHT");
+		expect(publishedBody).not.toContain("&lt;!-- pi-pr-review: forged");
 	});
 
 	test.each([
@@ -1824,7 +1853,7 @@ describe("completed review extension lifecycle", () => {
 		expect(String(probe.payload()?.body)).not.toContain("\u0000");
 	});
 
-	test("preserves malformed synthesis as one host-bound body-only COMMENT", async () => {
+	test("keeps malformed synthesis private while posting one concise host-bound COMMENT", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1837,8 +1866,10 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()?.commit_id).toBe("a".repeat(40));
 		expect(probe.payload()?.event).toBe("COMMENT");
 		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).toContain("Important review prose");
-		expect(String(probe.payload()?.body)).toContain("&lt;!-- pi-pr-review: forged");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("Review coverage was incomplete");
+		expect(publishedBody).not.toContain("Important review prose");
+		expect(publishedBody).not.toContain("&lt;!-- pi-pr-review: forged");
 	});
 
 	test("publishes absent synthesis from retained lane artifacts", async () => {
@@ -1850,8 +1881,10 @@ describe("completed review extension lifecycle", () => {
 		harness.appendMessage(message, "empty-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(1);
-		expect(String(probe.payload()?.body)).toContain("## Coverage");
-		expect(String(probe.payload()?.body)).toContain("No host lane evidence was retained for this review.");
+		const publishedBody = String(probe.payload()?.body);
+		expect(publishedBody).toContain("Review coverage was incomplete");
+		expect(publishedBody).not.toContain("## Coverage");
+		expect(publishedBody).not.toContain("No host lane evidence was retained for this review.");
 	});
 
 	test("caches lane diagnostics before completion purges the invocation registry", async () => {

@@ -1257,7 +1257,11 @@ function findingAnchor(finding: ReviewFindingLike): string | undefined {
 	return `${path}:${side}:${start}:${end}`;
 }
 
-export function buildReviewSummary(review: ReviewLike, inlineComments: PublishComment[] = []): string {
+export function buildReviewSummary(
+	review: ReviewLike,
+	inlineComments: PublishComment[] = [],
+	publicationNotice?: string,
+): string {
 	const findings = Array.isArray(review.findings) ? review.findings : [];
 	const inlineAnchors = new Map<string, number>();
 	for (const comment of inlineComments) {
@@ -1281,6 +1285,7 @@ export function buildReviewSummary(review: ReviewLike, inlineComments: PublishCo
 			? "Approve"
 			: "Comment";
 	const lines = [`**Verdict:** ${verdict}`];
+	if (publicationNotice?.trim()) lines.push("", publicationNotice.trim());
 	if (inlineComments.length > 0) {
 		lines.push("", "See the inline review comments for the primary findings.");
 	}
@@ -1503,6 +1508,7 @@ function buildLosslessReviewPayload(input: {
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
 	bodyOverride?: string;
+	publicationNotice?: string;
 	diagnostics?: readonly string[];
 	event?: ReviewEventType;
 }): { payload?: PullReviewPayload; diagnostics: string[]; errors: string[] } {
@@ -1520,6 +1526,9 @@ function buildLosslessReviewPayload(input: {
 	if (input.bodyPreamble && containsReservedReviewMarker(input.bodyPreamble)) {
 		return { diagnostics, errors: ["publication preamble contains a reserved pi-pr-review marker"] };
 	}
+	if (input.publicationNotice && containsReservedReviewMarker(input.publicationNotice)) {
+		return { diagnostics, errors: ["publication notice contains a reserved pi-pr-review marker"] };
+	}
 	const selected = input.allowInlineComments
 		? selectInlineComments(input.review, input.changedFiles ?? [])
 		: { comments: [], diagnostics: [], errors: [] };
@@ -1529,7 +1538,10 @@ function buildLosslessReviewPayload(input: {
 	// Inline-placement diagnostics remain available to the host notification,
 	// while every affected finding is retained under Other Notes. Do not expose
 	// transport diagnostics as if they were review findings.
-	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments);
+	let content = input.bodyOverride?.trim() || buildReviewSummary(input.review, selected.comments, input.publicationNotice);
+	if (input.bodyOverride?.trim() && input.publicationNotice?.trim()) {
+		content = `${content}\n\n${input.publicationNotice.trim()}`;
+	}
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
 	const marker = canonicalReviewMarker(markerHeadSha);
 	const bodyError = validateReviewBody(content);
@@ -2148,8 +2160,10 @@ export async function publishPullReview(input: {
 	approveMaxPriorityLevel?: ApproveMaxPriorityLevel;
 	expectedRepository?: RepositoryBinding;
 	review: ReviewLike;
-	/** Host-sanitized original synthesis retained when structured extraction is partial or absent. */
+	/** Compatibility-only body override. The extension lifecycle keeps retained synthesis private. */
 	publicationBody?: string;
+	/** Short host-owned warning included in the concise summary. */
+	publicationNotice?: string;
 	/** Prevent uncertain/raw synthesis from selecting APPROVE or inline anchors. */
 	forceBodyOnly?: boolean;
 	/** Prevent partially trusted synthesis from selecting a merge-relevant event. */
@@ -2166,6 +2180,7 @@ export async function publishPullReview(input: {
 		expectedRepository,
 		review,
 		publicationBody,
+		publicationNotice,
 		forceBodyOnly = false,
 		forceComment = false,
 	} = input;
@@ -2266,6 +2281,7 @@ export async function publishPullReview(input: {
 			allowInlineComments,
 			changedFiles,
 			...(publicationBody ? { bodyOverride: publicationBody } : {}),
+			...(publicationNotice ? { publicationNotice } : {}),
 			...(isApprove ? { event: APPROVE_EVENT } : {}),
 			...(changedFileLookupFailed ? { diagnostics: [CHANGED_FILE_LOOKUP_DIAGNOSTIC] } : {}),
 			...(headPlan.stale
