@@ -386,8 +386,8 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 		const rationale = field(block, "Rationale") ?? field(block, "Why");
 		const confidenceText = field(block, "Confidence");
 		const confidence = confidenceText === undefined ? undefined : Number(confidenceText.trim());
-		const validConfidence = confidenceText === undefined ||
-			(/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(confidenceText.trim()) && Number.isFinite(confidence));
+		const validConfidence = confidenceText !== undefined &&
+			/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(confidenceText.trim()) && Number.isFinite(confidence);
 		const location = parseLocation(field(block, "Location"));
 		const recognizedFieldCount = fieldCount(block, "Severity") + fieldCount(block, "Rationale") +
 			fieldCount(block, "Why") + fieldCount(block, "Confidence") + fieldCount(block, "Location");
@@ -395,7 +395,7 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 		if (
 			!explicitSeverity || !rationale?.trim() || recognizedFieldCount < 2 || unconsumed || !validConfidence ||
 			fieldCount(block, "Severity") !== 1 || fieldCount(block, "Rationale") + fieldCount(block, "Why") !== 1 ||
-			fieldCount(block, "Confidence") > 1 || fieldCount(block, "Location") > 1
+			fieldCount(block, "Confidence") !== 1 || fieldCount(block, "Location") > 1
 		) {
 			complete = false;
 			continue;
@@ -414,7 +414,7 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 			severity,
 			blocking: severity === "P0" || severity === "P1",
 			body: rationale,
-			...(confidence === undefined ? {} : { confidence_score: confidence }),
+			confidence_score: confidence,
 			code_location: location.location,
 		});
 	}

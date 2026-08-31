@@ -1085,7 +1085,7 @@ function publishableReviewEnvelope(text: string): { text: string; source: "json"
  */
 export function parsePublishableReview(
 	text: string,
-	options: { allowMissingConfidence?: boolean } = {},
+	options: { allowMissingOverallConfidence?: boolean } = {},
 ): PublishableReviewParseResult {
 	const envelope = publishableReviewEnvelope(text);
 	let value: unknown;
@@ -1127,11 +1127,7 @@ export function parsePublishableReview(
 		if (typeof finding.blocking !== "boolean" || finding.blocking !== ["P0", "P1"].includes(finding.severity)) {
 			return { error: `finding ${index + 1} has inconsistent blocking value` };
 		}
-		if (
-			finding.confidence_score !== undefined
-				? !isConfidence(finding.confidence_score)
-				: !options.allowMissingConfidence
-		) {
+		if (!isConfidence(finding.confidence_score)) {
 			return { error: `finding ${index + 1} has invalid confidence_score` };
 		}
 		const locationError = validateFindingLocation(finding as ReviewFindingLike, index);
@@ -1150,7 +1146,7 @@ export function parsePublishableReview(
 	if (
 		value.overall_confidence_score !== undefined
 			? !isConfidence(value.overall_confidence_score)
-			: !options.allowMissingConfidence
+			: !options.allowMissingOverallConfidence
 	) {
 		return { error: "overall_confidence_score is invalid" };
 	}
@@ -1432,10 +1428,10 @@ export function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewPa
 	if (typeof serialized !== "string") {
 		return { error: "review could not be serialized for publication" };
 	}
-	// Host-synthesized canonical Markdown may legitimately have no confidence
-	// when replaying a legacy artifact. Assistant-authored strict JSON still
-	// requires every numeric confidence field at its public parse boundary.
-	return parsePublishableReview(serialized, { allowMissingConfidence: true });
+	// Host-synthesized canonical Markdown has no manufactured overall score,
+	// but every parsed finding still requires its validated numeric confidence.
+	// Assistant-authored strict JSON requires both at its public parse boundary.
+	return parsePublishableReview(serialized, { allowMissingOverallConfidence: true });
 }
 
 export function validateInlineComments(

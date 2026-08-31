@@ -1520,11 +1520,13 @@ describe("strict publication parsing", () => {
 	test("rejects prose, partial objects, and missing strict-JSON confidence", () => {
 		expect(parsePublishableReview(`review follows\n${JSON.stringify(review)}`).review).toBeUndefined();
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
-		const missing = structuredClone(review);
-		delete missing.overall_confidence_score;
-		delete missing.findings?.[0]?.confidence_score;
-		expect(parsePublishableReview(JSON.stringify(missing)).review).toBeUndefined();
-		expect(canonicalReviewSnapshot(missing).review).toEqual(missing);
+		const missingOverall = structuredClone(review);
+		delete missingOverall.overall_confidence_score;
+		expect(parsePublishableReview(JSON.stringify(missingOverall)).review).toBeUndefined();
+		expect(canonicalReviewSnapshot(missingOverall).review).toEqual(missingOverall);
+		const missingFinding = structuredClone(missingOverall);
+		delete missingFinding.findings?.[0]?.confidence_score;
+		expect(canonicalReviewSnapshot(missingFinding).review).toBeUndefined();
 	});
 
 	test("auto-heals a Markdown-fenced review object while retaining Markdown provenance", () => {
