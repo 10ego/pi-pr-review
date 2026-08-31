@@ -33,6 +33,12 @@ describe("PR review prompt scheduling policy", () => {
 		expect(readme).toContain("cannot send prompts, steering, or follow-ups");
 	});
 
+	test("carries independently validated confidence into terminal Markdown", () => {
+		expect(prompt).toContain("**Confidence:** 0.92");
+		expect(prompt).toContain("do not use a fixed default");
+		expect(readme).toContain("instead of manufacturing `1.00`");
+	});
+
 	test("uses host-fixed balanced coverage by default", () => {
 		expect(prompt).toContain("**Balanced (default or `--balanced`):** exactly five concurrent reviewers");
 		expect(prompt).toContain("the host appends the configured default mode before expanding this prompt");

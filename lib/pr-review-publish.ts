@@ -596,7 +596,7 @@ export interface CompletedReviewSessionIdentity {
 }
 
 export interface PersistedCompletedReview {
-	schemaVersion: 2;
+	schemaVersion: 3;
 	session: CompletedReviewSessionIdentity;
 	invocation: ReviewInvocation;
 	repository: RepositoryBinding;
@@ -819,7 +819,7 @@ export class CompletedReviewCache {
 		const digest = reviewHash(record.review);
 		const useReference = !!reviewEntryId && !!referencedReview && reviewHash(referencedReview) === digest;
 		return {
-			schemaVersion: 2,
+			schemaVersion: 3,
 			session: { ...session },
 			invocation: { ...record.invocation, autoPost: { ...record.invocation.autoPost } },
 			repository: { ...record.repository },
@@ -849,7 +849,7 @@ export class CompletedReviewCache {
 	): boolean {
 		if (
 			!isObject(value) ||
-			value.schemaVersion !== 2 ||
+			value.schemaVersion !== 3 ||
 			!validSessionIdentity(value.session) ||
 			!sameSessionIdentity(value.session, session) ||
 			!validRepositoryBinding(value.repository)
@@ -866,7 +866,7 @@ export class CompletedReviewCache {
 		const candidate = hasReference ? referencedReview : value.review;
 		let parsed: PublishableReviewParseResult;
 		try {
-			parsed = parsePublishableReview(JSON.stringify(candidate));
+			parsed = canonicalReviewSnapshot(candidate as ReviewLike);
 		} catch {
 			return false;
 		}
@@ -1083,7 +1083,10 @@ function publishableReviewEnvelope(text: string): { text: string; source: "json"
  * Publication accepts one complete JSON object. A single surrounding Markdown code
  * fence is tolerated for compatibility but remains distinguishable from exact JSON.
  */
-export function parsePublishableReview(text: string): PublishableReviewParseResult {
+export function parsePublishableReview(
+	text: string,
+	options: { allowMissingOverallConfidence?: boolean } = {},
+): PublishableReviewParseResult {
 	const envelope = publishableReviewEnvelope(text);
 	let value: unknown;
 	try {
@@ -1140,7 +1143,11 @@ export function parsePublishableReview(text: string): PublishableReviewParseResu
 	if (!new Set(["patch is correct", "patch is incorrect"]).has(String(value.overall_correctness))) {
 		return { error: "overall_correctness is invalid" };
 	}
-	if (!isConfidence(value.overall_confidence_score)) {
+	if (
+		value.overall_confidence_score !== undefined
+			? !isConfidence(value.overall_confidence_score)
+			: !options.allowMissingOverallConfidence
+	) {
 		return { error: "overall_confidence_score is invalid" };
 	}
 	return { review: value as unknown as ReviewLike, source: envelope.source };
@@ -1421,7 +1428,10 @@ export function canonicalReviewSnapshot(review: ReviewLike): PublishableReviewPa
 	if (typeof serialized !== "string") {
 		return { error: "review could not be serialized for publication" };
 	}
-	return parsePublishableReview(serialized);
+	// Host-synthesized canonical Markdown has no manufactured overall score,
+	// but every parsed finding still requires its validated numeric confidence.
+	// Assistant-authored strict JSON requires both at its public parse boundary.
+	return parsePublishableReview(serialized, { allowMissingOverallConfidence: true });
 }
 
 export function validateInlineComments(

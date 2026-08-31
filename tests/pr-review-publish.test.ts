@@ -11,6 +11,7 @@ import {
 	buildStaleReviewNotice,
 	classifyAssistantCompletion,
 	canonicalReviewMarker,
+	canonicalReviewSnapshot,
 	collectFoldedComments,
 	COMPLETED_REVIEW_ENTRY_TYPE,
 	CompletedReviewCache,
@@ -679,8 +680,11 @@ describe("auto-approve priority gate", () => {
 			diagnostics: synthesis.diagnostics,
 		}).record;
 		const persisted = cache.persist(record, session);
+		expect(persisted.schemaVersion).toBe(3);
 		expect(persisted).not.toHaveProperty("publicationBody");
 		expect(persisted.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
+		const preConfidenceFix = { ...persisted, schemaVersion: 2 };
+		expect(new CompletedReviewCache().restore(preConfidenceFix, session)).toBeFalse();
 		expect(persisted.invocation.reviewBinding).toMatchObject({ invocationGeneration: 1, sessionId: session.id });
 
 		const restored = new CompletedReviewCache();
@@ -1513,9 +1517,16 @@ describe("strict publication parsing", () => {
 		expect(parsed.source).toBe("json");
 	});
 
-	test("rejects prose and partial objects", () => {
+	test("rejects prose, partial objects, and missing strict-JSON confidence", () => {
 		expect(parsePublishableReview(`review follows\n${JSON.stringify(review)}`).review).toBeUndefined();
 		expect(parsePublishableReview(JSON.stringify({ pr: review.pr, findings: [], verdict: "comment" })).review).toBeUndefined();
+		const missingOverall = structuredClone(review);
+		delete missingOverall.overall_confidence_score;
+		expect(parsePublishableReview(JSON.stringify(missingOverall)).review).toBeUndefined();
+		expect(canonicalReviewSnapshot(missingOverall).review).toEqual(missingOverall);
+		const missingFinding = structuredClone(missingOverall);
+		delete missingFinding.findings?.[0]?.confidence_score;
+		expect(canonicalReviewSnapshot(missingFinding).review).toBeUndefined();
 	});
 
 	test("auto-heals a Markdown-fenced review object while retaining Markdown provenance", () => {

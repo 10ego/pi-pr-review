@@ -541,8 +541,8 @@ describe("completed review extension lifecycle", () => {
 		const markdown = [
 			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Checks Markdown publication.", "",
 			"## Verification", "Tests passed.", "", "## Findings", "", "### [P2] Guard empty input", "**Severity:** P2",
-			"**Rationale:** Empty input returns the wrong value.", "**Location:** `src/parser.ts:2-3 RIGHT`", "",
-			"### [nit] Rename tmp", "**Severity:** nit", "**Rationale:** This would make the intent clearer.", "",
+			"**Rationale:** Empty input returns the wrong value.", "**Confidence:** 0.91", "**Location:** `src/parser.ts:2-3 RIGHT`", "",
+			"### [nit] Rename tmp", "**Severity:** nit", "**Rationale:** This would make the intent clearer.", "**Confidence:** 0.72", "",
 			"## Lane completeness", "All requested lanes completed.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: markdown }] };
@@ -708,6 +708,7 @@ describe("completed review extension lifecycle", () => {
 			`### [P3] Large note ${index + 1}`,
 			"**Severity:** P3",
 			`**Rationale:** ${index + 1}: ${"z".repeat(1_000)}`,
+			"**Confidence:** 0.80",
 			"",
 		]).flat();
 		const raw = [
@@ -767,7 +768,7 @@ describe("completed review extension lifecycle", () => {
 			"## Verification", "Focused tests passed.", "", "<pre>", "## Findings", "No findings.",
 			"## Lane completeness", "Fake disclosure.", "</pre>", "", "## Findings", "",
 			"### [P1] Preserve the visible blocker", "**Severity:** P1",
-			"**Rationale:** HTML block contents cannot hide this later visible finding.", "",
+			"**Rationale:** HTML block contents cannot hide this later visible finding.", "**Confidence:** 0.96", "",
 			"## Lane completeness", "All requested lanes completed.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
@@ -939,7 +940,7 @@ describe("completed review extension lifecycle", () => {
 			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Looks safe.", "",
 			"## Verification", "Focused tests passed.", "", "## Findings", "",
 			"### [P3] Small concern", "**Severity:** P3", "**Rationale:** Preserve this concern.",
-			"**Location:** `src/parser.ts:2 RIGHT`", "", "## Lane completeness", "One lane was partial.",
+			"**Confidence:** 0.76", "**Location:** `src/parser.ts:2 RIGHT`", "", "## Lane completeness", "One lane was partial.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
 		const rendered = await harness.emit("message_end", { message });
@@ -977,7 +978,7 @@ describe("completed review extension lifecycle", () => {
 			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Looks mostly safe.", "",
 			"## Verification", "Focused tests passed.", "", "## Findings", "",
 			"### [P2] Guard empty input", "**Severity:** P2", "**Rationale:** Empty input returns the wrong value.",
-			"**Location:** `src/parser.ts:2-3 RIGHT`", "", "## Lane completeness", "All requested lanes completed.",
+			"**Confidence:** 0.91", "**Location:** `src/parser.ts:2-3 RIGHT`", "", "## Lane completeness", "All requested lanes completed.",
 		].join("\n");
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
 		await harness.emit("message_end", { message });

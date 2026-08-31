@@ -20,6 +20,7 @@ Focused tests passed.
 ### [P2] Keep the raw synthesis
 **Severity:** P2
 **Rationale:** Partial extraction must not drop this rationale.
+**Confidence:** 0.90
 **Location:** \`src/review.ts:10-11 RIGHT\`
 
 ## Lane completeness
@@ -45,6 +46,31 @@ describe("Markdown-first canonical review artifacts", () => {
 			side: "RIGHT",
 			commentable: true,
 		});
+	});
+
+	test("preserves explicit Markdown confidence instead of manufacturing 1.00", () => {
+		const withConfidence = markdown.replace("**Confidence:** 0.90", "**Confidence:** 0.83");
+		const artifact = synthesizeReviewArtifact({ rawText: withConfidence, ...binding });
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.review.findings?.[0]?.confidence_score).toBe(0.83);
+		expect(artifact.review.overall_confidence_score).toBeUndefined();
+
+		const scoreless = synthesizeReviewArtifact({
+			rawText: markdown.replace("**Confidence:** 0.90\n", ""),
+			...binding,
+		});
+		expect(scoreless.quality).not.toBe("fully_parsed");
+		expect(scoreless.review.findings).toEqual([]);
+		expect(scoreless.mergeApprovalEligible).toBeFalse();
+
+		for (const invalid of ["1.01", "-0.1", "NaN", "0.8\n**Confidence:** 0.7"]) {
+			const malformed = synthesizeReviewArtifact({
+				rawText: markdown.replace("**Confidence:** 0.90", `**Confidence:** ${invalid}`),
+				...binding,
+			});
+			expect(malformed.quality, invalid).not.toBe("fully_parsed");
+			expect(malformed.review.findings, invalid).toEqual([]);
+		}
 	});
 
 	test("keeps a valid nit candidate approval-eligible while reserved nit prose degrades", () => {
@@ -306,7 +332,7 @@ describe("Markdown-first canonical review artifacts", () => {
 			"# PR Review", "", "**Verdict:** approve", "", "## Overview", "Inspect rendered headings.", "",
 			"## Verification", "Focused tests passed.", "", ...htmlLines, "## Findings", "",
 			"### [P1] Preserve the visible blocker", "**Severity:** P1",
-			"**Rationale:** HTML block contents cannot hide this later visible finding.", "",
+			"**Rationale:** HTML block contents cannot hide this later visible finding.", "**Confidence:** 0.96", "",
 			"## Lane completeness", "All requested lanes completed.",
 		].join("\n");
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
