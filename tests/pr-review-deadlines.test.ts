@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	DEFAULT_REVIEW_DEADLINES,
+	activateReviewBatch,
 	attemptDeadline,
 	createReviewBudget,
 	fallbackBudget,
@@ -69,6 +70,18 @@ describe("review budget arithmetic", () => {
 		expect(attemptDeadline(budget, "heavy", false, () => monotonicMs)).toBe(budget.batchDeadlineMs);
 		expect(budget.startedAtMs).toBeLessThanOrEqual(budget.batchDeadlineMs);
 		expect(budget.batchDeadlineMs).toBeLessThan(budget.totalDeadlineMs);
+	});
+
+	test("activates the batch window once at first reviewer dispatch without extending the total cap", () => {
+		const budget = createReviewBudget(resolveReviewDeadlines(configured), () => 1_000);
+		const activated = activateReviewBatch(budget, () => 75_000);
+		expect(activated.startedAtMs).toBe(1_000);
+		expect(activated.batchStartedAtMs).toBe(75_000);
+		expect(activated.batchDeadlineMs).toBe(109_900);
+		expect(activated.totalDeadlineMs).toBe(121_000);
+		expect(attemptDeadline(activated, "heavy", false, () => 75_000)).toBe(109_900);
+		expect(activateReviewBatch(budget, () => 90_000)).toBe(activated);
+		expect(activateReviewBatch(activated, () => 90_000)).toBe(activated);
 	});
 
 	test("reserves grace and cleanup in an adversarial 109s batch budget", () => {

@@ -56,7 +56,7 @@ import {
 	type ReviewLaneLifecycle,
 } from "../lib/pr-review-artifacts.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
-import { attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
+import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext } from "../lib/pr-review-context.ts";
 import {
@@ -1814,6 +1814,7 @@ export default function registerPrReviewSubagents(
 			});
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
 			const config = loadConfig(ctx);
+			const reviewBudget = lease.budget ? activateReviewBatch(lease.budget) : undefined;
 			const result = await runSubagentPass(
 				config,
 				ctx,
@@ -1832,7 +1833,7 @@ export default function registerPrReviewSubagents(
 				executionSignal,
 				(text) => onUpdate?.({ content: [{ type: "text", text }] }),
 				() => loopCoordinator.isLeaseActive(lease, ctx),
-				lease.budget,
+				reviewBudget,
 			);
 
 			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
@@ -2025,6 +2026,7 @@ export default function registerPrReviewSubagents(
 			// reviewer may run concurrently, and no caller/model tuning knob exists.
 			const reviewerConcurrency = passes.length;
 			const config = loadConfig(ctx);
+			const reviewBudget = lease.budget ? activateReviewBatch(lease.budget) : undefined;
 			const batchStartedAt = monotonicNow();
 
 			const tierPriority: Record<Tier, number> = { heavy: 0, medium: 1, light: 2 };
@@ -2040,7 +2042,7 @@ export default function registerPrReviewSubagents(
 					executionSignal,
 					undefined,
 					() => loopCoordinator.isLeaseActive(lease, ctx),
-					lease.budget,
+					reviewBudget,
 				);
 				const endOffsetMs = monotonicNow() - batchStartedAt;
 				result.startOffsetMs = startOffsetMs;

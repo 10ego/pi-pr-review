@@ -513,11 +513,14 @@ describe("review tool execution gate", () => {
 				true, false, "off", undefined,
 				{ source: "default", warnings: [], config: {
 					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 2_000,
-					batchMs: 1_000, synthesisMs: 100, totalMs: 1_300, terminationGraceMs: 50,
+					batchMs: 500, synthesisMs: 100, totalMs: 2_000, terminationGraceMs: 50,
 					cleanupReserveMs: 50, minimumFallbackMs: 100,
 				} },
 			);
 			process.argv[1] = child;
+			// Parent preflight/orchestration may legitimately exceed batchMs before
+			// reviewer dispatch. The batch window starts here, not at invocation input.
+			await new Promise((resolve) => setTimeout(resolve, 600));
 			const result = await h.tools.get("review_subagents").execute(
 				"batch-deadline",
 				{ passes: quickPasses({ "correctness-contracts": "slow lane" }) },
@@ -530,10 +533,10 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
 			});
-			expect(result.details.results[1].attempts[0].budgetElapsedBeforeAttemptMs).toBeGreaterThanOrEqual(0);
+			expect(result.details.results[1].attempts[0].budgetElapsedBeforeAttemptMs).toBeGreaterThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].batchRemainingBeforeAttemptMs).toBeGreaterThan(0);
 			expect(result.details.results[1].attempts[0].totalRemainingBeforeAttemptMs).toBeGreaterThan(0);
-			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(1_000);
+			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete"]);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
