@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.2](https://github.com/10ego/pi-pr-review/compare/v1.17.1...v1.17.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **review:** keep degraded comments concise ([#126](https://github.com/10ego/pi-pr-review/issues/126)) ([912e474](https://github.com/10ego/pi-pr-review/commit/912e474d04be9db504d2ea83bcd9a7c86db2ca5b))
+
 ## [1.17.1](https://github.com/10ego/pi-pr-review/compare/v1.17.0...v1.17.1) (2026-08-31)
 
 
