@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.1](https://github.com/10ego/pi-pr-review/compare/v1.17.0...v1.17.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **review:** start batch deadline at reviewer dispatch ([#124](https://github.com/10ego/pi-pr-review/issues/124)) ([26a38af](https://github.com/10ego/pi-pr-review/commit/26a38af6559223c6403913de32026c7d2eee5d2b))
+
 ## [1.17.0](https://github.com/10ego/pi-pr-review/compare/v1.16.0...v1.17.0) (2026-08-29)
 
 
