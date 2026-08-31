@@ -432,6 +432,16 @@ type ReviewPublicationOrigin =
 	| { readonly kind: "publish-command"; readonly stalePolicy: "frozen" | "allow-stale" }
 	| { readonly kind: "direct-request" };
 
+function conciseDegradedPublicationNotice(record: CompletedReviewRecord): string | undefined {
+	if (record.completeness === "incomplete") {
+		return "> [!WARNING]\n> Review coverage was incomplete. This COMMENT is not evidence of a clean review.";
+	}
+	if (record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed") {
+		return "> [!WARNING]\n> The review output was not fully structured. This COMMENT is not evidence of a clean review.";
+	}
+	return undefined;
+}
+
 async function publishCompletedReview(
 	record: CompletedReviewRecord,
 	origin: ReviewPublicationOrigin,
@@ -459,8 +469,9 @@ async function publishCompletedReview(
 		ctx.ui.notify("PR review was not posted: cached review artifact is missing pr.head_sha", "error");
 		return undefined;
 	}
-	const useDegradedPublicationBody = typeof record.publicationBody === "string" &&
-		(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete");
+	const degradedPublication = record.completeness === "incomplete" ||
+		(record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed");
+	const publicationNotice = conciseDegradedPublicationNotice(record);
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: record.invocation.prNumber,
@@ -471,21 +482,18 @@ async function publishCompletedReview(
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
-		...(useDegradedPublicationBody ? { publicationBody: record.publicationBody } : {}),
-		// Fully parsed reviews publish only the concise host-rendered body plus
-		// inline findings. If that payload cannot fit, publication fails closed;
-		// retained raw synthesis is never substituted as a public report dump.
-		// A degraded synthesis stays COMMENT-only, but its safely parsed findings
-		// still earn inline placement; only unparsable output is forced body-only.
+		...(publicationNotice ? { publicationNotice } : {}),
+		// Every review publishes only the concise host-rendered body plus validated
+		// inline findings. Retained raw synthesis and lane evidence remain private
+		// completion diagnostics, including for degraded/incomplete COMMENT runs.
+		// If the concise payload cannot fit, publication fails closed.
 		forceBodyOnly: record.synthesisQuality !== undefined &&
 			record.synthesisQuality !== "fully_parsed" &&
 			!(Array.isArray(record.review.findings) && record.review.findings.length > 0),
 		// A publication body identifies Markdown-derived or degraded synthesis.
 		// Enforce COMMENT again at the final publication boundary so restored
 		// canonical artifacts created by an older parser cannot inherit APPROVE.
-		forceComment: record.mergeApprovalEligible === false || useDegradedPublicationBody ||
-			(record.synthesisQuality !== undefined &&
-				(record.synthesisQuality !== "fully_parsed" || record.completeness === "incomplete")),
+		forceComment: record.mergeApprovalEligible === false || degradedPublication,
 	});
 	notifyPublishResult(result, source, ctx);
 	return result;

@@ -1946,6 +1946,16 @@ describe("atomic COMMENT review payload", () => {
 		}
 	});
 
+	test("adds a bounded host warning without exposing retained report prose", () => {
+		const retained = "# PR Review\n\n## Retained lane output\n\nprivate diagnostic";
+		const notice = "> [!WARNING]\n> Review coverage was incomplete. This COMMENT is not evidence of a clean review.";
+		const summary = buildReviewSummary({ ...review, verdict: "comment", findings: [], overview: retained }, [], notice);
+		expect(summary).toStartWith("**Verdict:** Comment");
+		expect(summary).toContain(notice);
+		expect(summary).not.toContain(retained);
+		expect(Buffer.byteLength(summary)).toBeLessThan(512);
+	});
+
 	test("keeps standalone exported payload objects mutable", () => {
 		const comments = [{ path: "src/parser.ts", body: "Finding", line: 2, side: "RIGHT" as const }];
 		const payload = buildPullReviewPayload("a".repeat(40), "Summary", comments);

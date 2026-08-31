@@ -840,9 +840,9 @@ export function synthesizeReviewArtifact(input: {
 		}
 		return reasons.length > 0 ? reasons : ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"];
 	})();
-	// Markdown is the durable semantic product. A fully parsed complete synthesis
-	// publishes verbatim; every degraded synthesis publishes the deterministic
-	// host-rendered body so labels stay readable while all content is retained.
+	// Markdown is the durable semantic product. Keep the complete deterministic
+	// body for local rendering, cache diagnostics, and extraction. GitHub
+	// publication independently renders a concise host summary for every quality.
 	const body = quality === "fully_parsed"
 		? safeReviewBody(raw)
 		: buildDegradedReviewBody({
