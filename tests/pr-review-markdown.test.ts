@@ -47,6 +47,34 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 	});
 
+	test("preserves explicit Markdown confidence instead of manufacturing 1.00", () => {
+		const withConfidence = markdown.replace(
+			"**Rationale:** Partial extraction must not drop this rationale.",
+			"**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.83",
+		);
+		const artifact = synthesizeReviewArtifact({ rawText: withConfidence, ...binding });
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.review.findings?.[0]?.confidence_score).toBe(0.83);
+		expect(artifact.review.overall_confidence_score).toBeUndefined();
+
+		const legacy = synthesizeReviewArtifact({ rawText: markdown, ...binding });
+		expect(legacy.quality).toBe("fully_parsed");
+		expect(legacy.review.findings?.[0]?.confidence_score).toBeUndefined();
+		expect(legacy.review.overall_confidence_score).toBeUndefined();
+
+		for (const invalid of ["1.01", "-0.1", "NaN", "0.8\n**Confidence:** 0.7"]) {
+			const malformed = synthesizeReviewArtifact({
+				rawText: markdown.replace(
+					"**Rationale:** Partial extraction must not drop this rationale.",
+					`**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** ${invalid}`,
+				),
+				...binding,
+			});
+			expect(malformed.quality, invalid).not.toBe("fully_parsed");
+			expect(malformed.review.findings, invalid).toEqual([]);
+		}
+	});
+
 	test("keeps a valid nit candidate approval-eligible while reserved nit prose degrades", () => {
 		const synthesis = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const nit = [

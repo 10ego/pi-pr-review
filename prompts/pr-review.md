@@ -222,6 +222,7 @@ Return Markdown using these stable headings. Do not emit a GitHub API payload an
 ### [P1] Imperative finding title
 **Severity:** P1
 **Rationale:** Concise Markdown explaining the trigger, impact, and source-grounded evidence.
+**Confidence:** 0.92
 **Location:** `path/to/file.ts:10-12 RIGHT`
 
 ## Lane completeness
@@ -231,6 +232,6 @@ Return Markdown using these stable headings. Do not emit a GitHub API payload an
 <useful strengths plus concise correctness, security, or performance notes>
 ```
 
-Repeat the `###` finding block for every confirmed finding. Omit `Location` when no safe diff location exists. Use `No findings.` under `## Findings` when empty. The extension retains the complete raw synthesis even when some or all finding blocks cannot be parsed. Canonical heading discovery ignores heading-like content in CommonMark fenced-code and HTML-block contexts. It validates safe P0–P3 anchors for inline placement, preserves ambiguous or unparsed substantive content in exactly one sanitized body-only `COMMENT`, and degrades malformed synthesis the same way; if synthesis is absent, it assembles a deterministic body-only review from retained lane artifacts. Optional formatting repair can never block this fallback.
+Repeat the `###` finding block for every confirmed finding. `Confidence` is the independently validated numeric confidence for that finding from 0.0 through 1.0; do not use a fixed default. Omit `Location` when no safe diff location exists. Use `No findings.` under `## Findings` when empty. The extension retains the complete raw synthesis even when some or all finding blocks cannot be parsed. Canonical heading discovery ignores heading-like content in CommonMark fenced-code and HTML-block contexts. It validates safe P0–P3 anchors for inline placement, preserves ambiguous or unparsed substantive content in exactly one sanitized body-only `COMMENT`, and degrades malformed synthesis the same way; if synthesis is absent, it assembles a deterministic body-only review from retained lane artifacts. Optional formatting repair can never block this fallback.
 
 Host code captures repository, PR, reviewed head, lifecycle, posting authority, stale policy, and invocation identity before review execution, serializes the single GitHub request with `JSON.stringify`, sanitizes reserved markers, enforces payload limits, appends the canonical marker, and performs duplicate/stale/draft/lifecycle/final-head checks. The assistant's semantic `approve` is only one input to the host gates; assistant text cannot directly choose `APPROVE`, `REQUEST_CHANGES`, commit ID, API path, repository, or hostname. Parent candidate validation must gather all independent evidence in one wave and use at most one dependency-driven follow-up, as specified in Step 7.

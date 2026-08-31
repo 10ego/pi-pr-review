@@ -293,7 +293,7 @@ Each finding includes:
 
 - severity: `P0`, `P1`, `P2`, `P3`, or `nit`;
 - whether it blocks the verdict;
-- an explanation and confidence score;
+- an explanation and independently validated confidence score (the host preserves the supplied 0.0–1.0 value instead of manufacturing `1.00`; legacy Markdown without a score displays no confidence);
 - a diff-anchored file and line range when available.
 
 | Severity | Meaning |

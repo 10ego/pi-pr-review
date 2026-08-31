@@ -384,14 +384,18 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 		const severity = explicitSeverity?.toLowerCase() === "nit" ? "nit" : explicitSeverity?.toUpperCase();
 		const normalizedTag = tagged?.toLowerCase() === "nit" ? "nit" : tagged?.toUpperCase();
 		const rationale = field(block, "Rationale") ?? field(block, "Why");
+		const confidenceText = field(block, "Confidence");
+		const confidence = confidenceText === undefined ? undefined : Number(confidenceText.trim());
+		const validConfidence = confidenceText === undefined ||
+			(/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(confidenceText.trim()) && Number.isFinite(confidence));
 		const location = parseLocation(field(block, "Location"));
 		const recognizedFieldCount = fieldCount(block, "Severity") + fieldCount(block, "Rationale") +
-			fieldCount(block, "Why") + fieldCount(block, "Location");
-		const unconsumed = block.replace(/^\*\*(?:Severity|Rationale|Why|Location):\*\*.*$/gim, "").trim();
+			fieldCount(block, "Why") + fieldCount(block, "Confidence") + fieldCount(block, "Location");
+		const unconsumed = block.replace(/^\*\*(?:Severity|Rationale|Why|Confidence|Location):\*\*.*$/gim, "").trim();
 		if (
-			!explicitSeverity || !rationale?.trim() || recognizedFieldCount < 2 || unconsumed ||
+			!explicitSeverity || !rationale?.trim() || recognizedFieldCount < 2 || unconsumed || !validConfidence ||
 			fieldCount(block, "Severity") !== 1 || fieldCount(block, "Rationale") + fieldCount(block, "Why") !== 1 ||
-			fieldCount(block, "Location") > 1
+			fieldCount(block, "Confidence") > 1 || fieldCount(block, "Location") > 1
 		) {
 			complete = false;
 			continue;
@@ -410,7 +414,7 @@ function parseFindings(text: string): { findings: ReviewFindingLike[]; count: nu
 			severity,
 			blocking: severity === "P0" || severity === "P1",
 			body: rationale,
-			confidence_score: 1,
+			...(confidence === undefined ? {} : { confidence_score: confidence }),
 			code_location: location.location,
 		});
 	}
@@ -470,7 +474,6 @@ function syntheticReview(
 		verdict,
 		overall_correctness: verdict === "request_changes" ? "patch is incorrect" : "patch is correct",
 		overall_explanation: overview.split(/\n\n|\n/)[0] ?? "Review completed.",
-		overall_confidence_score: 1,
 	};
 }
 
