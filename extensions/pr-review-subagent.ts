@@ -910,6 +910,12 @@ interface ModelAttemptReport {
 	forcedTermination?: boolean;
 	deadlineMs?: number;
 	configuredDeadlineMs?: number;
+	/** Invocation time already consumed before this model attempt was scheduled. */
+	budgetElapsedBeforeAttemptMs?: number;
+	/** Remaining absolute reviewer-batch window at scheduling time; may be negative. */
+	batchRemainingBeforeAttemptMs?: number;
+	/** Remaining total invocation window at scheduling time. */
+	totalRemainingBeforeAttemptMs?: number;
 }
 
 interface SubagentPassResult {
@@ -986,16 +992,32 @@ async function runSubagentAttempt(
 	onText?: (text: string) => void,
 	beforeSpawn?: () => boolean,
 	budget?: ReviewBudget,
-): Promise<{ result: RunResult; notice: string; elapsedMs: number; deadlineMs?: number }> {
+): Promise<{
+	result: RunResult;
+	notice: string;
+	elapsedMs: number;
+	deadlineMs?: number;
+	budgetElapsedBeforeAttemptMs?: number;
+	batchRemainingBeforeAttemptMs?: number;
+	totalRemainingBeforeAttemptMs?: number;
+}> {
 	let tmp: { dir: string; filePath: string } | undefined;
 	const startedAt = monotonicNow();
+	const budgetElapsedBeforeAttemptMs = budget ? startedAt - budget.startedAtMs : undefined;
+	const batchRemainingBeforeAttemptMs = budget ? budget.batchDeadlineMs - startedAt : undefined;
+	const totalRemainingBeforeAttemptMs = budget ? budget.totalDeadlineMs - startedAt : undefined;
 	const deadlineAtMs = budget
 		? attemptDeadline(budget, pass.tier, attempt.kind === "fallback", () => startedAt)
 		: undefined;
 	const deadlineMs = deadlineAtMs === undefined ? undefined : Math.max(0, deadlineAtMs - startedAt);
 	try {
 		if (deadlineAtMs !== undefined && deadlineAtMs <= startedAt) {
-			throw new Error("Review attempt timed out before it could start within the batch deadline.");
+			throw new Error(
+				`Review attempt timed out before it could start within the batch deadline ` +
+				`(invocation elapsed ${Math.round(budgetElapsedBeforeAttemptMs!)}ms; ` +
+				`batch remaining ${Math.round(batchRemainingBeforeAttemptMs!)}ms; ` +
+				`total remaining ${Math.round(totalRemainingBeforeAttemptMs!)}ms).`,
+			);
 		}
 		const args = buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
@@ -1064,13 +1086,24 @@ async function runSubagentAttempt(
 		fileBackedAccessObserved = !!pass.fileBackedRequiredReads?.length &&
 			pass.fileBackedRequiredReads.every((range) => completedFileBackedReads.has(`${range.offset}:${range.limit}`));
 		result.fileBackedAccessObserved = fileBackedAccessObserved;
-		return { result, notice: noticeForAttempt(pass.tier, attempt), elapsedMs: monotonicNow() - startedAt, deadlineMs };
+		return {
+			result,
+			notice: noticeForAttempt(pass.tier, attempt),
+			elapsedMs: monotonicNow() - startedAt,
+			deadlineMs,
+			budgetElapsedBeforeAttemptMs,
+			batchRemainingBeforeAttemptMs,
+			totalRemainingBeforeAttemptMs,
+		};
 	} catch (e) {
 		return {
 			result: { text: "", exitCode: 1, stderr: "", errorMessage: errMessage(e), toolElapsedMs: 0, toolCallCount: 0 },
 			notice: noticeForAttempt(pass.tier, attempt),
 			elapsedMs: monotonicNow() - startedAt,
 			deadlineMs,
+			budgetElapsedBeforeAttemptMs,
+			batchRemainingBeforeAttemptMs,
+			totalRemainingBeforeAttemptMs,
 		};
 	} finally {
 		if (tmp) {
@@ -1219,6 +1252,9 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 			forcedTermination: attempt.forcedTermination,
 			deadlineMs: attempt.deadlineMs,
 			configuredDeadlineMs: attempt.configuredDeadlineMs,
+			budgetElapsedBeforeAttemptMs: attempt.budgetElapsedBeforeAttemptMs,
+			batchRemainingBeforeAttemptMs: attempt.batchRemainingBeforeAttemptMs,
+			totalRemainingBeforeAttemptMs: attempt.totalRemainingBeforeAttemptMs,
 		})),
 		fallbackUsed: result.fallbackUsed,
 		elapsedMs: result.elapsedMs,
@@ -1263,7 +1299,15 @@ async function runSubagentPass(
 			fallbackBudgetRejected = true;
 			break;
 		}
-		const { result, notice, elapsedMs, deadlineMs } = await runSubagentAttempt(
+		const {
+			result,
+			notice,
+			elapsedMs,
+			deadlineMs,
+			budgetElapsedBeforeAttemptMs,
+			batchRemainingBeforeAttemptMs,
+			totalRemainingBeforeAttemptMs,
+		} = await runSubagentAttempt(
 			config,
 			ctx,
 			pass,
@@ -1320,6 +1364,9 @@ async function runSubagentPass(
 			configuredDeadlineMs: budget
 				? (attempt.kind === "fallback" ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier])
 				: undefined,
+			budgetElapsedBeforeAttemptMs,
+			batchRemainingBeforeAttemptMs,
+			totalRemainingBeforeAttemptMs,
 		});
 
 		if (lifecycle === "complete") {

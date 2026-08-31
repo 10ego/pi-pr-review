@@ -530,11 +530,17 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
 			});
+			expect(result.details.results[1].attempts[0].budgetElapsedBeforeAttemptMs).toBeGreaterThanOrEqual(0);
+			expect(result.details.results[1].attempts[0].batchRemainingBeforeAttemptMs).toBeGreaterThan(0);
+			expect(result.details.results[1].attempts[0].totalRemainingBeforeAttemptMs).toBeGreaterThan(0);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(1_000);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete"]);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
+				budgetElapsedBeforeAttemptMs: expect.any(Number),
+				batchRemainingBeforeAttemptMs: expect.any(Number),
+				totalRemainingBeforeAttemptMs: expect.any(Number),
 			});
 		} finally {
 			process.argv[1] = originalScript;

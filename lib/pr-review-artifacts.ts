@@ -29,6 +29,12 @@ export interface ReviewLaneAttemptArtifact {
 	readonly deadlineMs?: number;
 	/** Configured tier/fallback cap before batch/total truncation. */
 	readonly configuredDeadlineMs?: number;
+	/** Invocation time already consumed before this attempt was scheduled. */
+	readonly budgetElapsedBeforeAttemptMs?: number;
+	/** Remaining reviewer-batch window at scheduling time; negative means dispatch was already late. */
+	readonly batchRemainingBeforeAttemptMs?: number;
+	/** Remaining total invocation window at scheduling time. */
+	readonly totalRemainingBeforeAttemptMs?: number;
 }
 
 export interface ExpectedReviewLane {
@@ -676,6 +682,9 @@ function attemptArtifactSnapshot(value: unknown): ReviewLaneAttemptArtifact | un
 		const forcedTermination = source.forcedTermination;
 		const deadlineMs = source.deadlineMs;
 		const configuredDeadlineMs = source.configuredDeadlineMs;
+		const budgetElapsedBeforeAttemptMs = source.budgetElapsedBeforeAttemptMs;
+		const batchRemainingBeforeAttemptMs = source.batchRemainingBeforeAttemptMs;
+		const totalRemainingBeforeAttemptMs = source.totalRemainingBeforeAttemptMs;
 		// --- Validation phase (locals only). ---
 		if (!isInteger(ordinal)) return undefined;
 		if (!isString(rawText)) return undefined;
@@ -700,6 +709,9 @@ function attemptArtifactSnapshot(value: unknown): ReviewLaneAttemptArtifact | un
 		if (!optional(forcedTermination, isBoolean)) return undefined;
 		if (!optional(deadlineMs, isFiniteNumber)) return undefined;
 		if (!optional(configuredDeadlineMs, isFiniteNumber)) return undefined;
+		if (!optional(budgetElapsedBeforeAttemptMs, isFiniteNumber)) return undefined;
+		if (!optional(batchRemainingBeforeAttemptMs, isFiniteNumber)) return undefined;
+		if (!optional(totalRemainingBeforeAttemptMs, isFiniteNumber)) return undefined;
 		// --- Snapshot phase. ---
 		const snapshot: Record<string, unknown> = {
 			ordinal,
@@ -726,6 +738,9 @@ function attemptArtifactSnapshot(value: unknown): ReviewLaneAttemptArtifact | un
 		withOptional(snapshot, "forcedTermination", forcedTermination);
 		withOptional(snapshot, "deadlineMs", deadlineMs);
 		withOptional(snapshot, "configuredDeadlineMs", configuredDeadlineMs);
+		withOptional(snapshot, "budgetElapsedBeforeAttemptMs", budgetElapsedBeforeAttemptMs);
+		withOptional(snapshot, "batchRemainingBeforeAttemptMs", batchRemainingBeforeAttemptMs);
+		withOptional(snapshot, "totalRemainingBeforeAttemptMs", totalRemainingBeforeAttemptMs);
 		return Object.freeze(snapshot) as ReviewLaneAttemptArtifact;
 	} catch {
 		// A throwing getter is a malformed attempt, never a crash at this boundary.
