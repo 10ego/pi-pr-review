@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.3](https://github.com/10ego/pi-pr-review/compare/v1.17.2...v1.17.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **review:** preserve validated confidence ratings ([#128](https://github.com/10ego/pi-pr-review/issues/128)) ([27843b7](https://github.com/10ego/pi-pr-review/commit/27843b7c6469827e65fc5d7c69511b20be3615ba))
+
 ## [1.17.2](https://github.com/10ego/pi-pr-review/compare/v1.17.1...v1.17.2) (2026-08-31)
 
 
