@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.6](https://github.com/10ego/pi-pr-review/compare/v1.17.5...v1.17.6) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** retain findings from timed-out lanes ([#134](https://github.com/10ego/pi-pr-review/issues/134)) ([78de3e6](https://github.com/10ego/pi-pr-review/commit/78de3e6c0941292e9de3d8243c1fee88987168b5))
+
 ## [1.17.5](https://github.com/10ego/pi-pr-review/compare/v1.17.4...v1.17.5) (2026-09-01)
 
 
