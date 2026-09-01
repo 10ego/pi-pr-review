@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
 	extractValidatedReviewLaneCandidates,
+	isValidatedReviewLaneNoFindings,
 	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
@@ -492,6 +493,39 @@ function retainedLaneText(lane: ReviewLaneArtifact): string {
 	return "";
 }
 
+function retainedLaneCandidateTexts(
+	lane: ReviewLaneArtifact,
+	contract: "review_lane" | "nonempty",
+): string[] {
+	const texts: string[] = [];
+	const seen = new Set<string>();
+	const retain = (value: string): "continue" | "stop" => {
+		const text = value.trim();
+		if (!text || seen.has(text)) return "continue";
+		seen.add(text);
+		// A later exact clean contract supersedes provisional findings from older
+		// attempts. Malformed or empty later output does not.
+		if (isValidatedReviewLaneNoFindings(text, contract)) return "stop";
+		texts.push(text);
+		return "continue";
+	};
+	// The lane-level text is the latest authoritative output. Earlier attempts
+	// remain eligible only for independently contract-valid findings; malformed
+	// prose can neither become a finding nor poison a valid earlier attempt.
+	if (retain(lane.rawText) === "stop") return texts;
+	const ordinals = new Set<number>();
+	for (const attempt of lane.attempts) {
+		if (ordinals.has(attempt.ordinal)) return texts;
+		ordinals.add(attempt.ordinal);
+	}
+	const newestFirst = [...lane.attempts].sort((left, right) =>
+		left.ordinal === right.ordinal ? 0 : left.ordinal > right.ordinal ? -1 : 1);
+	for (const attempt of newestFirst) {
+		if (retain(attempt.rawText) === "stop") break;
+	}
+	return texts;
+}
+
 function retainedLaneFindings(
 	lanes: readonly ReviewLaneArtifact[],
 	expected: readonly ExpectedReviewLane[],
@@ -500,32 +534,34 @@ function retainedLaneFindings(
 	const seen = new Set<string>();
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
-		for (const candidate of extractValidatedReviewLaneCandidates(retainedLaneText(lane), contract)) {
-			if (!candidate.prRelated) continue;
-			const parsedLocation = candidate.location === "repo-wide"
-				? { status: "absent" as const, location: null }
-				: parseLocation(`${candidate.location} ${candidate.side}`);
-			if (parsedLocation.status === "unsafe") continue;
-			const codeLocation = parsedLocation.location
-				? { ...parsedLocation.location, commentable: candidate.inDiff }
-				: null;
-			const key = JSON.stringify([
-				candidate.severity,
-				candidate.title,
-				candidate.why,
-				candidate.location,
-				candidate.side,
-			]);
-			if (seen.has(key)) continue;
-			seen.add(key);
-			findings.push({
-				title: candidate.title,
-				severity: candidate.severity,
-				blocking: candidate.severity === "P0" || candidate.severity === "P1",
-				body: candidate.why,
-				confidence_score: candidate.confidence,
-				code_location: codeLocation,
-			});
+		for (const text of retainedLaneCandidateTexts(lane, contract)) {
+			for (const candidate of extractValidatedReviewLaneCandidates(text, contract)) {
+				if (!candidate.prRelated) continue;
+				const parsedLocation = candidate.location === "repo-wide"
+					? { status: "absent" as const, location: null }
+					: parseLocation(`${candidate.location} ${candidate.side}`);
+				if (parsedLocation.status === "unsafe") continue;
+				const codeLocation = parsedLocation.location
+					? { ...parsedLocation.location, commentable: candidate.inDiff }
+					: null;
+				const key = JSON.stringify([
+					candidate.severity,
+					candidate.title,
+					candidate.why,
+					candidate.location,
+					candidate.side,
+				]);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				findings.push({
+					title: candidate.title,
+					severity: candidate.severity,
+					blocking: candidate.severity === "P0" || candidate.severity === "P1",
+					body: candidate.why,
+					confidence_score: candidate.confidence,
+					code_location: codeLocation,
+				});
+			}
 		}
 	}
 	return findings;

@@ -4,6 +4,7 @@ import {
 	classifyReviewLane,
 	extractValidatedReviewLaneCandidates,
 	finalAssistantText,
+	isValidatedReviewLaneNoFindings,
 	ReviewLaneArtifactRegistry,
 	type ReviewLaneArtifact,
 } from "../lib/pr-review-artifacts.ts";
@@ -125,6 +126,15 @@ describe("validated retained lane candidates", () => {
 		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\ntitle: [P1] unfinished `)).toHaveLength(1);
 		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\nNO FINDINGS.`)).toEqual([]);
 		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
+	});
+
+	test("recognizes only exact validated clean lane contracts", () => {
+		expect(isValidatedReviewLaneNoFindings("NO FINDINGS.")).toBeTrue();
+		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\nNO FINDINGS.`, "nonempty")).toBeTrue();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\n${integratedCandidate()}`, "nonempty")).toBeFalse();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\nNO FINDINGS.\n${integratedCandidate()}`, "nonempty")).toBeFalse();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\n${integratedCandidate()}\nNO FINDINGS.`, "nonempty")).toBeFalse();
 	});
 
 	test("recovers integrated candidates only after exact trusted framing", () => {
