@@ -18,7 +18,7 @@ export interface ReviewDeadlineConfig {
 
 /** Conservative initial caps; the 15 minute invocation cap makes 30 minute reviews impossible. */
 export const DEFAULT_REVIEW_DEADLINES: Readonly<ReviewDeadlineConfig> = Object.freeze({
-	attemptMs: Object.freeze({ light: 180_000, medium: 360_000, heavy: 480_000 }),
+	attemptMs: Object.freeze({ light: 180_000, medium: 360_000, heavy: 720_000 }),
 	fallbackAttemptMs: 180_000,
 	batchMs: 720_000,
 	synthesisMs: 60_000,
