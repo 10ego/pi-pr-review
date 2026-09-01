@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.8](https://github.com/10ego/pi-pr-review/compare/v1.17.7...v1.17.8) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** publish retained incomplete findings ([#138](https://github.com/10ego/pi-pr-review/issues/138)) ([586205b](https://github.com/10ego/pi-pr-review/commit/586205bbe46b50e04f00d53d43b3c353c3bea95e))
+
 ## [1.17.7](https://github.com/10ego/pi-pr-review/compare/v1.17.6...v1.17.7) (2026-09-01)
 
 
