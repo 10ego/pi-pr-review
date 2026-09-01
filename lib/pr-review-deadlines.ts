@@ -29,9 +29,9 @@ export const DEFAULT_REVIEW_DEADLINES: Readonly<ReviewDeadlineConfig> = Object.f
 });
 
 const LIMITS = {
-	attemptMs: [30_000, 720_000],
+	attemptMs: [30_000, 900_000],
 	fallbackAttemptMs: [30_000, 360_000],
-	batchMs: [60_000, 840_000],
+	batchMs: [60_000, 900_000],
 	synthesisMs: [10_000, 120_000],
 	totalMs: [120_000, 1_200_000],
 	terminationGraceMs: [100, 15_000],
