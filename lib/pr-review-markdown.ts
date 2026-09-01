@@ -513,8 +513,15 @@ function retainedLaneCandidateTexts(
 	// remain eligible only for independently contract-valid findings; malformed
 	// prose can neither become a finding nor poison a valid earlier attempt.
 	if (retain(lane.rawText) === "stop") return texts;
-	for (let index = lane.attempts.length - 1; index >= 0; index--) {
-		if (retain(lane.attempts[index]?.rawText ?? "") === "stop") break;
+	const ordinals = new Set<number>();
+	for (const attempt of lane.attempts) {
+		if (ordinals.has(attempt.ordinal)) return texts;
+		ordinals.add(attempt.ordinal);
+	}
+	const newestFirst = [...lane.attempts].sort((left, right) =>
+		left.ordinal === right.ordinal ? 0 : left.ordinal > right.ordinal ? -1 : 1);
+	for (const attempt of newestFirst) {
+		if (retain(attempt.rawText) === "stop") break;
 	}
 	return texts;
 }

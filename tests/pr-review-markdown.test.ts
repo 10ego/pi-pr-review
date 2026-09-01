@@ -1036,9 +1036,10 @@ describe("Markdown-first canonical review artifacts", () => {
 			generation: 1, key: "security:0", passId: "security", tier: "heavy",
 			rawText: "NO FINDINGS.", exitCode: 143, lifecycle: "timed_out", fallbackUsed: true,
 			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			// Deliberately reordered: ordinal, not array position, owns chronology.
 			attempts: [
-				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
 				{ ordinal: 2, kind: "fallback", rawText: "NO FINDINGS.", exitCode: 143, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
 			],
 		} satisfies ReviewLaneArtifact;
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });

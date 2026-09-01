@@ -133,6 +133,8 @@ describe("validated retained lane candidates", () => {
 		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();
 		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\nNO FINDINGS.`, "nonempty")).toBeTrue();
 		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\n${integratedCandidate()}`, "nonempty")).toBeFalse();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\nNO FINDINGS.\n${integratedCandidate()}`, "nonempty")).toBeFalse();
+		expect(isValidatedReviewLaneNoFindings(`${integratedFraming()}\n${integratedCandidate()}\nNO FINDINGS.`, "nonempty")).toBeFalse();
 	});
 
 	test("recovers integrated candidates only after exact trusted framing", () => {
