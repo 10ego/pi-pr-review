@@ -186,6 +186,17 @@ interface CandidateBlock {
 	readonly fields: ReadonlyMap<string, string>;
 }
 
+export interface ValidatedReviewLaneCandidate {
+	readonly title: string;
+	readonly severity: "P0" | "P1" | "P2" | "P3" | "nit";
+	readonly why: string;
+	readonly location: string;
+	readonly side: "RIGHT" | "LEFT";
+	readonly inDiff: boolean;
+	readonly prRelated: boolean;
+	readonly confidence: number;
+}
+
 function normalizeReviewText(text: string): string {
 	// Only CRLF is transport normalization. In particular, do not trim or
 	// rewrite line-leading whitespace before applying the grammar.
@@ -380,6 +391,50 @@ function contradictoryFraming(values: readonly string[]): boolean {
  * exactly one nonempty value line per field. Candidate `why` may have
  * indented continuation lines; reserved productions cannot be continuations.
  */
+function parseCandidatePrefix(
+	lines: readonly string[],
+	startCursor: number,
+): { candidates: CandidateBlock[]; consumedAll: boolean } {
+	let cursor = startCursor;
+	const candidates: CandidateBlock[] = [];
+	while (cursor < lines.length) {
+		while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+		if (cursor >= lines.length) return { candidates, consumedAll: true };
+		const start = cursor;
+		const fields = new Map<string, string>();
+		for (const expected of CANDIDATE_FIELDS) {
+			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+			const fieldLine = lines[cursor] ?? "";
+			if (fieldLine.trim() && /[ \t]+$/.test(fieldLine)) return { candidates, consumedAll: false };
+			const field = candidateLabel(fieldLine);
+			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) {
+				return { candidates, consumedAll: false };
+			}
+			if (hasReservedCandidateProduction(expected, field.value)) return { candidates, consumedAll: false };
+			fields.set(expected, field.value);
+			cursor++;
+			if (expected !== "why") continue;
+			const whyLines = [field.value];
+			while (cursor < lines.length) {
+				const continuation = lines[cursor]!;
+				if (!continuation.trim()) break;
+				if (/[ \t]+$/.test(continuation)) return { candidates, consumedAll: false };
+				if (isReservedContractLine(continuation)) break;
+				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) {
+					return { candidates, consumedAll: false };
+				}
+				if (hasReservedCandidateProduction("why", continuation.slice(2))) return { candidates, consumedAll: false };
+				whyLines.push(continuation.slice(2));
+				cursor++;
+			}
+			fields.set("why", whyLines.join("\n"));
+		}
+		if (!validCandidateFields(fields)) return { candidates, consumedAll: false };
+		candidates.push({ start, end: cursor, fields });
+	}
+	return { candidates, consumedAll: true };
+}
+
 function parseIntegratedCompletion(text: string): boolean {
 	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || hasHtmlContainer(text)) return false;
 	const lines = text.split("\n");
@@ -416,38 +471,70 @@ function parseIntegratedCompletion(text: string): boolean {
 		return cursor === lines.length;
 	}
 
-	const candidates: CandidateBlock[] = [];
-	while (cursor < lines.length) {
-		while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-		if (cursor >= lines.length) break;
-		const start = cursor;
-		const first = candidateLabel(lines[cursor]!);
-		if (!first || canonicalField(first.field) !== "title") return false;
-		const fields = new Map<string, string>();
-		for (const expected of CANDIDATE_FIELDS) {
+	const parsed = parseCandidatePrefix(lines, cursor);
+	return parsed.consumedAll && parsed.candidates.length > 0;
+}
+
+/**
+ * Recover only complete, contract-valid candidate blocks from retained lane
+ * output. A timed-out final block may be truncated; earlier complete blocks
+ * remain usable, while arbitrary prose and unsafe containers recover nothing.
+ */
+export function extractValidatedReviewLaneCandidates(
+	rawText: string,
+	expectedOutput: "review_lane" | "nonempty" = "review_lane",
+): readonly ValidatedReviewLaneCandidate[] {
+	const text = normalizeReviewText(rawText);
+	if (
+		!text.trim() || CODE_FENCE.test(text) ||
+		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
+		/<!--\s*pi-pr-review:/i.test(text)
+	) return [];
+	const lines = text.split("\n");
+	let cursor = 0;
+	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+	if (expectedOutput === "nonempty") {
+		if (lines[cursor] !== "Review status: COMPLETE") return [];
+		const statusIndex = cursor++;
+		if (lines.some((line, index) => index !== statusIndex && hasReservedStatusProduction(line))) return [];
+		const framingValues: string[] = [];
+		for (const expected of FRAMING_LABELS) {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-			const field = candidateLabel(lines[cursor] ?? "");
-			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) return false;
-			if (hasReservedCandidateProduction(expected, field.value)) return false;
-			fields.set(expected, field.value);
+			const framingLine = lines[cursor] ?? "";
+			if (framingLine.trim() && /[ \t]+$/.test(framingLine)) return [];
+			const label = framingLabel(framingLine);
+			if (!label || canonicalField(label.field) !== expected.toLowerCase()) return [];
 			cursor++;
-			if (expected !== "why") continue;
-			const whyLines = [field.value];
-			while (cursor < lines.length) {
-				const continuation = lines[cursor]!;
-				if (!continuation.trim()) break;
-				if (isReservedContractLine(continuation)) break;
-				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) return false;
-				if (hasReservedCandidateProduction("why", continuation.slice(2))) return false;
-				whyLines.push(continuation.slice(2));
+			let value = label.value;
+			if (label.kind === "heading") {
+				const valueLine = lines[cursor] ?? "";
+				if (!valueLine || !valueLine.trim() || /[ \t]+$/.test(valueLine) || /^[ \t]/.test(valueLine) || CONTAINER_PREFIX.test(valueLine) || isReservedContractLine(valueLine)) return [];
+				value = valueLine;
 				cursor++;
 			}
-			fields.set("why", whyLines.join("\n"));
+			if (!meaningfulValue(value) || framingValueHasReservedProduction(value)) return [];
+			framingValues.push(value);
 		}
-		if (!validCandidateFields(fields)) return false;
-		candidates.push({ start, end: cursor, fields });
+		if (topLevelFailure(framingValues.join("\n")) || contradictoryFraming(framingValues)) return [];
+	} else if (lines.some((line) => hasReservedStatusProduction(line))) {
+		return [];
 	}
-	return candidates.length > 0;
+	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+	if (lines.some((line) => line.trim() === NO_FINDINGS_SENTINEL || line.trim() === "NO FINDINGS")) return [];
+	const parsed = parseCandidatePrefix(lines, cursor);
+	return parsed.candidates.map((candidate) => {
+		const fields = candidate.fields;
+		return Object.freeze({
+			title: fields.get("title")!.trim(),
+			severity: fields.get("severity")!.trim() as ValidatedReviewLaneCandidate["severity"],
+			why: fields.get("why")!.trim(),
+			location: fields.get("location")!.trim(),
+			side: fields.get("side")!.trim() as ValidatedReviewLaneCandidate["side"],
+			inDiff: fields.get("in_diff")!.trim() === "yes",
+			prRelated: fields.get("pr_related")!.trim() === "yes",
+			confidence: Number(fields.get("confidence")!.trim()),
+		});
+	});
 }
 
 function hasMeaningfulField(text: string, field: string): boolean {

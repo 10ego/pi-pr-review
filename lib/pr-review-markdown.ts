@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import type { ExpectedReviewLane, ReviewLaneArtifact } from "./pr-review-artifacts.ts";
+import {
+	extractValidatedReviewLaneCandidates,
+	type ExpectedReviewLane,
+	type ReviewLaneArtifact,
+} from "./pr-review-artifacts.ts";
 import type { ReviewFindingLike, ReviewLike } from "./pr-review-publish.ts";
 
 export type ReviewSynthesisQuality = "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
@@ -488,6 +492,76 @@ function retainedLaneText(lane: ReviewLaneArtifact): string {
 	return "";
 }
 
+function retainedLaneFindings(
+	lanes: readonly ReviewLaneArtifact[],
+	expected: readonly ExpectedReviewLane[],
+): ReviewFindingLike[] {
+	const findings: ReviewFindingLike[] = [];
+	const seen = new Set<string>();
+	for (const lane of lanes) {
+		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
+		for (const candidate of extractValidatedReviewLaneCandidates(retainedLaneText(lane), contract)) {
+			if (!candidate.prRelated) continue;
+			const parsedLocation = candidate.location === "repo-wide"
+				? { status: "absent" as const, location: null }
+				: parseLocation(`${candidate.location} ${candidate.side}`);
+			if (parsedLocation.status === "unsafe") continue;
+			const codeLocation = parsedLocation.location
+				? { ...parsedLocation.location, commentable: candidate.inDiff }
+				: null;
+			const key = JSON.stringify([
+				candidate.severity,
+				candidate.title,
+				candidate.why,
+				candidate.location,
+				candidate.side,
+			]);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			findings.push({
+				title: candidate.title,
+				severity: candidate.severity,
+				blocking: candidate.severity === "P0" || candidate.severity === "P1",
+				body: candidate.why,
+				confidence_score: candidate.confidence,
+				code_location: codeLocation,
+			});
+		}
+	}
+	return findings;
+}
+
+function mergeUniqueFindings(
+	primary: readonly ReviewFindingLike[],
+	additional: readonly ReviewFindingLike[],
+): ReviewFindingLike[] {
+	const merged = [...primary];
+	const keys = new Set(merged.map((finding) => JSON.stringify([
+		finding.severity,
+		finding.title,
+		finding.body,
+		finding.code_location?.absolute_file_path,
+		finding.code_location?.line_range?.start,
+		finding.code_location?.line_range?.end,
+		finding.code_location?.side,
+	])));
+	for (const finding of additional) {
+		const key = JSON.stringify([
+			finding.severity,
+			finding.title,
+			finding.body,
+			finding.code_location?.absolute_file_path,
+			finding.code_location?.line_range?.start,
+			finding.code_location?.line_range?.end,
+			finding.code_location?.side,
+		]);
+		if (keys.has(key)) continue;
+		keys.add(key);
+		merged.push(finding);
+	}
+	return merged;
+}
+
 function disclosedPassId(passId: string): string {
 	const normalized = passId.replace(new RegExp(UNSAFE_TEXT_CONTROL.source, "g"), "_").replace(/[\r\n]/g, "_").trim();
 	const sanitized = normalized.replace(/[^A-Za-z0-9._:@/-]+/g, "_") || "unnamed-pass";
@@ -704,6 +778,7 @@ export function synthesizeReviewArtifact(input: {
 		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
 			expected.key === lane.key && expected.tier === lane.tier &&
 			expected.minorHygiene === !!lane.minorHygiene));
+	const validatedLaneFindings = retainedLaneFindings(lanes, expectedLaneDescriptors);
 	if (input.strictJsonReview) {
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
@@ -715,7 +790,10 @@ export function synthesizeReviewArtifact(input: {
 		);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
 		const bodyFallback = !safe || completeness === "incomplete";
-		const strictFindings = safe ? (input.strictJsonReview.findings ?? []) : [];
+		const strictFindings = mergeUniqueFindings(
+			safe ? (input.strictJsonReview.findings ?? []) : [],
+			bodyFallback ? validatedLaneFindings : [],
+		);
 		const body = bodyFallback
 			? buildDegradedReviewBody({
 				rawText: input.rawText,
@@ -761,7 +839,7 @@ export function synthesizeReviewArtifact(input: {
 		const body = buildDegradedReviewBody({
 			rawText: "",
 			lanes,
-			findings: [],
+			findings: validatedLaneFindings,
 			expectedLaneCount,
 			exactCoverage: exactLaneCoverage,
 			reason: "terminal synthesis was absent",
@@ -770,13 +848,18 @@ export function synthesizeReviewArtifact(input: {
 			quality: "lane_fallback" as const,
 			rawText: input.rawText,
 			body,
-			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body),
+			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, validatedLaneFindings),
 			laneArtifacts: lanes,
 			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
 			mergeApprovalEligible: false,
-			diagnostics: Object.freeze(["terminal synthesis was absent; body assembled deterministically from retained lanes"]),
+			diagnostics: Object.freeze([
+				"terminal synthesis was absent; body assembled deterministically from retained lanes",
+				...(validatedLaneFindings.length > 0
+					? [`recovered ${validatedLaneFindings.length} complete contract-valid finding(s) from retained lane output`]
+					: []),
+			]),
 		});
 	}
 	const parsed = parseFindings(raw);
@@ -814,7 +897,9 @@ export function synthesizeReviewArtifact(input: {
 		: hasStructure && canonicalParsed.complete && completeness === "complete"
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
-	const safeFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
+	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
+	const recoveredLaneFindings = quality === "fully_parsed" ? [] : validatedLaneFindings;
+	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
 			return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
@@ -840,6 +925,9 @@ export function synthesizeReviewArtifact(input: {
 		}
 		if (parsed.count > parsed.findings.length) {
 			reasons.push(`${parsed.count - parsed.findings.length} finding section(s) could not be parsed and remain in the body`);
+		}
+		if (recoveredLaneFindings.length > 0) {
+			reasons.push(`recovered ${recoveredLaneFindings.length} complete contract-valid finding(s) from retained lane output`);
 		}
 		return reasons.length > 0 ? reasons : ["terminal synthesis was not structurally parseable; preserved as body-only Markdown"];
 	})();

@@ -999,6 +999,48 @@ describe("completed review extension lifecycle", () => {
 		expect(body).not.toContain("No issues found");
 	});
 
+	test("publishes validated findings retained before a heavy-lane timeout when terminal synthesis is absent", async () => {
+		const harness = createHarness([], session, {
+			projectConfig: { autoPostReviews: true },
+		});
+		const probe = installPublishingProbe({ inlinePatch: true });
+		await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
+		const laneText = [
+			"title: [P2] Preserve retained timeout finding",
+			"severity: P2",
+			"why: Empty input still returns the wrong value after this patch.",
+			"location: src/parser.ts:2-3",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.91",
+		].join("\n");
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+			tier: "heavy", rawText: laneText, exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
+			attempts: [], fallbackUsed: false, elapsedMs: 900_000, toolElapsedMs: 0, toolCallCount: 1,
+		});
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "" }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "timeout-lane-finding-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(probe.payload()?.comments).toHaveLength(1);
+		expect(probe.payload()?.comments?.[0]).toMatchObject({ path: "src/parser.ts", line: 3 });
+		const body = String(probe.payload()?.body);
+		expect(body).toContain("Review coverage was incomplete");
+		expect(body).toContain("See the inline review comments");
+		expect(body).not.toBe([
+			"**Verdict:** Comment",
+			"",
+			"> [!WARNING]",
+			"> Review coverage was incomplete. This COMMENT is not evidence of a clean review.",
+		].join("\n"));
+	});
+
 	describe("model-assisted finding extraction", () => {
 		const degradedRaw = (findingsSection: string) => [
 			"# PR Review", "", "**Verdict:** comment", "", "## Overview", "Looks mostly safe.", "",

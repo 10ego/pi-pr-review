@@ -28,6 +28,20 @@ describe("review deadline configuration", () => {
 		expect(budget.batchDeadlineMs).toBeLessThan(budget.totalDeadlineMs);
 	});
 
+	test("accepts opt-in fifteen-minute heavy attempts and batch windows", () => {
+		const fifteenMinutes = {
+			...configured,
+			attemptMs: { ...configured.attemptMs, heavy: 15 * 60_000 },
+			batchMs: 15 * 60_000,
+			totalMs: 20 * 60_000,
+		};
+		const resolved = resolveReviewDeadlines(fifteenMinutes);
+		expect(resolved.source).toBe("user");
+		expect(resolved.config.attemptMs.heavy).toBe(15 * 60_000);
+		expect(resolved.config.batchMs).toBe(15 * 60_000);
+		expect(resolved.warnings).toEqual([]);
+	});
+
 	test("accepts only complete bounded overlays and lets a valid project replace user settings", () => {
 		const user = { ...configured, totalMs: 130_000 };
 		const project = { ...configured, totalMs: 140_000 };

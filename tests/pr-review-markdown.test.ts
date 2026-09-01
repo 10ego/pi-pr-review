@@ -709,7 +709,16 @@ describe("Markdown-first canonical review artifacts", () => {
 		};
 		const timedOut = {
 			...completeLane, lifecycle: "timed_out" as const, stopReason: "timeout" as const,
-			rawText: "partial", exitCode: 143,
+			rawText: [
+				"title: [P2] Preserve strict-path lane findings",
+				"severity: P2",
+				"why: The strict compatibility synthesis omitted this validated lane finding.",
+				"location: src/strict.ts:4",
+				"side: RIGHT",
+				"in_diff: yes",
+				"pr_related: yes",
+				"confidence: 0.82",
+			].join("\n"), exitCode: 143,
 		};
 		const artifact = synthesizeReviewArtifact({
 			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
@@ -720,8 +729,13 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("**Verdict:** Request changes — incomplete lane evidence degraded this synthesis");
 		expect(artifact.body).toContain("### [P0] SQL injection");
 		expect(artifact.body).toContain("Unescaped input reaches the query.");
+		expect(artifact.body).toContain("Preserve strict-path lane findings");
 		expect(artifact.review.verdict).toBe("request_changes");
-		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]).toMatchObject({
+			title: "[P2] Preserve strict-path lane findings",
+			confidence_score: 0.82,
+		});
 
 		// Missing expected coverage alone also degrades a strict review.
 		const missingExpected = synthesizeReviewArtifact({
@@ -792,6 +806,55 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("lane_fallback");
 		expect(artifact.body).toContain("correctness — partial");
 		expect(artifact.body).toContain("Candidate evidence retained from the lane.");
+	});
+
+	test("promotes complete validated candidate blocks from timed-out lanes into concise findings", () => {
+		const rawText = [
+			"title: [P1] Keep timed-out review findings",
+			"severity: P1",
+			"why: The publication path currently drops every completed candidate when synthesis times out.",
+			"location: lib/pr-review-markdown.ts:480-481",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.91",
+			"",
+			"title: [P2] Truncated candidate",
+			"severity: P2",
+		].join("\n");
+		const lane = {
+			generation: 1,
+			key: "correctness:0",
+			passId: "correctness",
+			tier: "heavy",
+			rawText,
+			exitCode: 143,
+			stopReason: "timeout",
+			lifecycle: "timed_out",
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 900_000,
+			toolElapsedMs: 0,
+			toolCallCount: 1,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "",
+			...binding,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" }],
+		});
+		expect(artifact.quality).toBe("lane_fallback");
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+		expect(artifact.review.verdict).toBe("request_changes");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]).toMatchObject({
+			title: "[P1] Keep timed-out review findings",
+			confidence_score: 0.91,
+			code_location: { absolute_file_path: "lib/pr-review-markdown.ts", commentable: true },
+		});
+		expect(artifact.body).toContain("Keep timed-out review findings");
+		expect(artifact.body).not.toContain("### [P2] Truncated candidate");
 	});
 
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {

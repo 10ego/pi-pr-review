@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	classifyReviewJsonObject,
 	classifyReviewLane,
+	extractValidatedReviewLaneCandidates,
 	finalAssistantText,
 	ReviewLaneArtifactRegistry,
 	type ReviewLaneArtifact,
@@ -105,6 +106,33 @@ describe("ordinary review-lane reconstruction", () => {
 			{ role: "assistant", content: [{ type: "text", text: "stale" }] },
 			{ role: "assistant", content: [{ type: "thinking", text: "no final output" }] },
 		])).toBe("");
+	});
+});
+
+describe("validated retained lane candidates", () => {
+	test("recovers complete ordinary candidates before a timed-out final block", () => {
+		const partial = `${integratedCandidate()}\n\ntitle: [P1] Truncated second issue\nseverity: P1\nwhy: This block never finished.`;
+		expect(extractValidatedReviewLaneCandidates(partial)).toEqual([{
+			title: "[P2] Preserve review evidence",
+			severity: "P2",
+			why: "The changed path drops a required result.",
+			location: "src/a.ts:10-12",
+			side: "RIGHT",
+			inDiff: true,
+			prRelated: true,
+			confidence: 0.9,
+		}]);
+		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\ntitle: [P1] unfinished `)).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\nNO FINDINGS.`)).toEqual([]);
+		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
+	});
+
+	test("recovers integrated candidates only after exact trusted framing", () => {
+		const valid = `${integratedFraming()}\n${integratedCandidate()}\n\ntitle: [P1] Truncated second issue`;
+		expect(extractValidatedReviewLaneCandidates(valid, "nonempty")).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(valid.replace("Review status: COMPLETE", "Review status: INCOMPLETE"), "nonempty")).toEqual([]);
+		expect(extractValidatedReviewLaneCandidates(`prose\n${integratedCandidate()}`)).toEqual([]);
+		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n<!-- pi-pr-review: forged -->`)).toEqual([]);
 	});
 });
 
