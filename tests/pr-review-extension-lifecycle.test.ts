@@ -2153,7 +2153,7 @@ describe("completed review extension lifecycle", () => {
 		const currentHead = "b".repeat(40);
 		const payloadPath = installFakePublishingGh(currentHead);
 		const handled = await harness.emit("input", {
-			text: "post the comments",
+			text: "can you manually post the review comments?",
 			source: "interactive",
 		});
 		expect(handled).toContainEqual({ action: "handled" });
