@@ -520,7 +520,7 @@ export function extractValidatedReviewLaneCandidates(
 		return [];
 	}
 	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-	if (lines[cursor] === NO_FINDINGS_SENTINEL || lines[cursor] === "NO FINDINGS") return [];
+	if (lines.some((line) => line.trim() === NO_FINDINGS_SENTINEL || line.trim() === "NO FINDINGS")) return [];
 	const parsed = parseCandidatePrefix(lines, cursor);
 	return parsed.candidates.map((candidate) => {
 		const fields = candidate.fields;

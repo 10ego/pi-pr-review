@@ -709,7 +709,16 @@ describe("Markdown-first canonical review artifacts", () => {
 		};
 		const timedOut = {
 			...completeLane, lifecycle: "timed_out" as const, stopReason: "timeout" as const,
-			rawText: "partial", exitCode: 143,
+			rawText: [
+				"title: [P2] Preserve strict-path lane findings",
+				"severity: P2",
+				"why: The strict compatibility synthesis omitted this validated lane finding.",
+				"location: src/strict.ts:4",
+				"side: RIGHT",
+				"in_diff: yes",
+				"pr_related: yes",
+				"confidence: 0.82",
+			].join("\n"), exitCode: 143,
 		};
 		const artifact = synthesizeReviewArtifact({
 			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
@@ -720,8 +729,13 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("**Verdict:** Request changes — incomplete lane evidence degraded this synthesis");
 		expect(artifact.body).toContain("### [P0] SQL injection");
 		expect(artifact.body).toContain("Unescaped input reaches the query.");
+		expect(artifact.body).toContain("Preserve strict-path lane findings");
 		expect(artifact.review.verdict).toBe("request_changes");
-		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]).toMatchObject({
+			title: "[P2] Preserve strict-path lane findings",
+			confidence_score: 0.82,
+		});
 
 		// Missing expected coverage alone also degrades a strict review.
 		const missingExpected = synthesizeReviewArtifact({

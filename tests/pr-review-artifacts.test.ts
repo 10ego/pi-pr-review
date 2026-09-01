@@ -123,6 +123,7 @@ describe("validated retained lane candidates", () => {
 			confidence: 0.9,
 		}]);
 		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\ntitle: [P1] unfinished `)).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\nNO FINDINGS.`)).toEqual([]);
 		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
 	});
 

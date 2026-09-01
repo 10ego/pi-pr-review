@@ -531,6 +531,37 @@ function retainedLaneFindings(
 	return findings;
 }
 
+function mergeUniqueFindings(
+	primary: readonly ReviewFindingLike[],
+	additional: readonly ReviewFindingLike[],
+): ReviewFindingLike[] {
+	const merged = [...primary];
+	const keys = new Set(merged.map((finding) => JSON.stringify([
+		finding.severity,
+		finding.title,
+		finding.body,
+		finding.code_location?.absolute_file_path,
+		finding.code_location?.line_range?.start,
+		finding.code_location?.line_range?.end,
+		finding.code_location?.side,
+	])));
+	for (const finding of additional) {
+		const key = JSON.stringify([
+			finding.severity,
+			finding.title,
+			finding.body,
+			finding.code_location?.absolute_file_path,
+			finding.code_location?.line_range?.start,
+			finding.code_location?.line_range?.end,
+			finding.code_location?.side,
+		]);
+		if (keys.has(key)) continue;
+		keys.add(key);
+		merged.push(finding);
+	}
+	return merged;
+}
+
 function disclosedPassId(passId: string): string {
 	const normalized = passId.replace(new RegExp(UNSAFE_TEXT_CONTROL.source, "g"), "_").replace(/[\r\n]/g, "_").trim();
 	const sanitized = normalized.replace(/[^A-Za-z0-9._:@/-]+/g, "_") || "unnamed-pass";
@@ -759,7 +790,10 @@ export function synthesizeReviewArtifact(input: {
 		);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
 		const bodyFallback = !safe || completeness === "incomplete";
-		const strictFindings = safe ? (input.strictJsonReview.findings ?? []) : [];
+		const strictFindings = mergeUniqueFindings(
+			safe ? (input.strictJsonReview.findings ?? []) : [],
+			bodyFallback ? validatedLaneFindings : [],
+		);
 		const body = bodyFallback
 			? buildDegradedReviewBody({
 				rawText: input.rawText,
@@ -865,31 +899,7 @@ export function synthesizeReviewArtifact(input: {
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
 	const recoveredLaneFindings = quality === "fully_parsed" ? [] : validatedLaneFindings;
-	const safeFindings = [...parsedSynthesisFindings];
-	const existingFindingKeys = new Set(safeFindings.map((finding) => JSON.stringify([
-		finding.severity,
-		finding.title,
-		finding.body,
-		finding.code_location?.absolute_file_path,
-		finding.code_location?.line_range?.start,
-		finding.code_location?.line_range?.end,
-		finding.code_location?.side,
-	])));
-	for (const finding of recoveredLaneFindings) {
-		const key = JSON.stringify([
-			finding.severity,
-			finding.title,
-			finding.body,
-			finding.code_location?.absolute_file_path,
-			finding.code_location?.line_range?.start,
-			finding.code_location?.line_range?.end,
-			finding.code_location?.side,
-		]);
-		if (!existingFindingKeys.has(key)) {
-			existingFindingKeys.add(key);
-			safeFindings.push(finding);
-		}
-	}
+	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
 			return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
