@@ -404,7 +404,9 @@ function parseCandidatePrefix(
 		const fields = new Map<string, string>();
 		for (const expected of CANDIDATE_FIELDS) {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-			const field = candidateLabel(lines[cursor] ?? "");
+			const fieldLine = lines[cursor] ?? "";
+			if (fieldLine.trim() && /[ \t]+$/.test(fieldLine)) return { candidates, consumedAll: false };
+			const field = candidateLabel(fieldLine);
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) {
 				return { candidates, consumedAll: false };
 			}
@@ -416,6 +418,7 @@ function parseCandidatePrefix(
 			while (cursor < lines.length) {
 				const continuation = lines[cursor]!;
 				if (!continuation.trim()) break;
+				if (/[ \t]+$/.test(continuation)) return { candidates, consumedAll: false };
 				if (isReservedContractLine(continuation)) break;
 				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) {
 					return { candidates, consumedAll: false };
@@ -483,7 +486,7 @@ export function extractValidatedReviewLaneCandidates(
 ): readonly ValidatedReviewLaneCandidate[] {
 	const text = normalizeReviewText(rawText);
 	if (
-		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
+		!text.trim() || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
 		/<!--\s*pi-pr-review:/i.test(text)
 	) return [];
@@ -497,13 +500,15 @@ export function extractValidatedReviewLaneCandidates(
 		const framingValues: string[] = [];
 		for (const expected of FRAMING_LABELS) {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
-			const label = framingLabel(lines[cursor] ?? "");
+			const framingLine = lines[cursor] ?? "";
+			if (framingLine.trim() && /[ \t]+$/.test(framingLine)) return [];
+			const label = framingLabel(framingLine);
 			if (!label || canonicalField(label.field) !== expected.toLowerCase()) return [];
 			cursor++;
 			let value = label.value;
 			if (label.kind === "heading") {
 				const valueLine = lines[cursor] ?? "";
-				if (!valueLine || !valueLine.trim() || /^[ \t]/.test(valueLine) || CONTAINER_PREFIX.test(valueLine) || isReservedContractLine(valueLine)) return [];
+				if (!valueLine || !valueLine.trim() || /[ \t]+$/.test(valueLine) || /^[ \t]/.test(valueLine) || CONTAINER_PREFIX.test(valueLine) || isReservedContractLine(valueLine)) return [];
 				value = valueLine;
 				cursor++;
 			}

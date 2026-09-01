@@ -122,6 +122,8 @@ describe("validated retained lane candidates", () => {
 			prRelated: true,
 			confidence: 0.9,
 		}]);
+		expect(extractValidatedReviewLaneCandidates(`${integratedCandidate()}\n\ntitle: [P1] unfinished `)).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
 	});
 
 	test("recovers integrated candidates only after exact trusted framing", () => {
