@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.4](https://github.com/10ego/pi-pr-review/compare/v1.17.3...v1.17.4) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** default heavy attempts to twelve minutes ([#130](https://github.com/10ego/pi-pr-review/issues/130)) ([7a3af3b](https://github.com/10ego/pi-pr-review/commit/7a3af3b3bf9f5beb0a8c309c3e7524f782a1d88f))
+
 ## [1.17.3](https://github.com/10ego/pi-pr-review/compare/v1.17.2...v1.17.3) (2026-08-31)
 
 
