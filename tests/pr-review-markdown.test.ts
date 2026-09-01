@@ -794,6 +794,55 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain("Candidate evidence retained from the lane.");
 	});
 
+	test("promotes complete validated candidate blocks from timed-out lanes into concise findings", () => {
+		const rawText = [
+			"title: [P1] Keep timed-out review findings",
+			"severity: P1",
+			"why: The publication path currently drops every completed candidate when synthesis times out.",
+			"location: lib/pr-review-markdown.ts:480-481",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.91",
+			"",
+			"title: [P2] Truncated candidate",
+			"severity: P2",
+		].join("\n");
+		const lane = {
+			generation: 1,
+			key: "correctness:0",
+			passId: "correctness",
+			tier: "heavy",
+			rawText,
+			exitCode: 143,
+			stopReason: "timeout",
+			lifecycle: "timed_out",
+			attempts: [],
+			fallbackUsed: false,
+			elapsedMs: 900_000,
+			toolElapsedMs: 0,
+			toolCallCount: 1,
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "",
+			...binding,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" }],
+		});
+		expect(artifact.quality).toBe("lane_fallback");
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+		expect(artifact.review.verdict).toBe("request_changes");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]).toMatchObject({
+			title: "[P1] Keep timed-out review findings",
+			confidence_score: 0.91,
+			code_location: { absolute_file_path: "lib/pr-review-markdown.ts", commentable: true },
+		});
+		expect(artifact.body).toContain("Keep timed-out review findings");
+		expect(artifact.body).not.toContain("### [P2] Truncated candidate");
+	});
+
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
 		const lane = {
 			generation: 1,
