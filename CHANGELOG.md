@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.5](https://github.com/10ego/pi-pr-review/compare/v1.17.4...v1.17.5) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** intercept manual publish requests ([#132](https://github.com/10ego/pi-pr-review/issues/132)) ([d251827](https://github.com/10ego/pi-pr-review/commit/d251827485de78deea93fbb4d5b90adedb5e5423))
+
 ## [1.17.4](https://github.com/10ego/pi-pr-review/compare/v1.17.3...v1.17.4) (2026-09-01)
 
 
