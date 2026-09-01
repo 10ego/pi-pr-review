@@ -432,16 +432,6 @@ type ReviewPublicationOrigin =
 	| { readonly kind: "publish-command"; readonly stalePolicy: "frozen" | "allow-stale" }
 	| { readonly kind: "direct-request" };
 
-function conciseDegradedPublicationNotice(record: CompletedReviewRecord): string | undefined {
-	if (record.completeness === "incomplete") {
-		return "> [!WARNING]\n> Review coverage was incomplete. This COMMENT is not evidence of a clean review.";
-	}
-	if (record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed") {
-		return "> [!WARNING]\n> The review output was not fully structured. This COMMENT is not evidence of a clean review.";
-	}
-	return undefined;
-}
-
 async function publishCompletedReview(
 	record: CompletedReviewRecord,
 	origin: ReviewPublicationOrigin,
@@ -471,7 +461,6 @@ async function publishCompletedReview(
 	}
 	const degradedPublication = record.completeness === "incomplete" ||
 		(record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed");
-	const publicationNotice = conciseDegradedPublicationNotice(record);
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: record.invocation.prNumber,
@@ -482,7 +471,6 @@ async function publishCompletedReview(
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
-		...(publicationNotice ? { publicationNotice } : {}),
 		// Every review publishes only the concise host-rendered body plus validated
 		// inline findings. Retained raw synthesis and lane evidence remain private
 		// completion diagnostics, including for degraded/incomplete COMMENT runs.
