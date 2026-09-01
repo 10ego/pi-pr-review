@@ -461,6 +461,14 @@ async function publishCompletedReview(
 	}
 	const degradedPublication = record.completeness === "incomplete" ||
 		(record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed");
+	const findings = Array.isArray(record.review.findings) ? record.review.findings : [];
+	if (degradedPublication && findings.length === 0) {
+		// A result-less degraded record remains cached for private diagnostics and a
+		// later rerun, but must not create a verdict-only GitHub review. Incomplete
+		// reviews with any validated synthesis/lane/extraction finding still publish.
+		ctx.ui.notify("PR review was not posted: the incomplete review retained no validated findings", "warning");
+		return undefined;
+	}
 	const result = await publishPullReview({
 		cwd: ctx.cwd,
 		prNumber: record.invocation.prNumber,
@@ -475,9 +483,6 @@ async function publishCompletedReview(
 		// inline findings. Retained raw synthesis and lane evidence remain private
 		// completion diagnostics, including for degraded/incomplete COMMENT runs.
 		// If the concise payload cannot fit, publication fails closed.
-		forceBodyOnly: record.synthesisQuality !== undefined &&
-			record.synthesisQuality !== "fully_parsed" &&
-			!(Array.isArray(record.review.findings) && record.review.findings.length > 0),
 		// A publication body identifies Markdown-derived or degraded synthesis.
 		// Enforce COMMENT again at the final publication boundary so restored
 		// canonical artifacts created by an older parser cannot inherit APPROVE.
@@ -1076,7 +1081,7 @@ export default function registerReviewTable(
 			}
 		}
 		const publishResult = await publishCompletedReview(pending.record, { kind: "frozen-invocation" }, ctx);
-		if (pending.extraction) {
+		if (pending.extraction && publishResult) {
 			try {
 				// `published` decorates exactly the attempt whose merged event it
 				// follows: the spread carries that attempt's identity, so tooling can

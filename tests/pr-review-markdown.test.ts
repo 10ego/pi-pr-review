@@ -989,6 +989,62 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.body).toContain('- "overview-shard-1" — `partial`');
 	});
 
+	test("recovers validated findings from an earlier attempt when the terminal fallback is malformed", () => {
+		const candidate = [
+			"title: [P2] Preserve the earlier attempt result",
+			"severity: P2",
+			"why: The fallback failed after the primary attempt completed this validated finding.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.88",
+		].join("\n");
+		const lane = {
+			generation: 1, key: "security:0", passId: "security", tier: "heavy",
+			rawText: "Fallback provider failed before producing review output.",
+			exitCode: 1, lifecycle: "failed", fallbackUsed: true, elapsedMs: 10,
+			toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: "Fallback provider failed before producing review output.", exitCode: 1, lifecycle: "failed", retryable: false, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "", ...binding, laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: "heavy", minorHygiene: false }],
+		});
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]).toMatchObject({
+			title: "[P2] Preserve the earlier attempt result",
+			confidence_score: 0.88,
+		});
+	});
+
+	test("does not resurrect an earlier finding after a later exact clean result", () => {
+		const candidate = [
+			"title: [P2] Superseded provisional result",
+			"severity: P2",
+			"why: A later successful retry determined that this provisional result does not apply.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.80",
+		].join("\n");
+		const lane = {
+			generation: 1, key: "security:0", passId: "security", tier: "heavy",
+			rawText: "NO FINDINGS.", exitCode: 143, lifecycle: "timed_out", fallbackUsed: true,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: "NO FINDINGS.", exitCode: 143, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
+		expect(artifact.review.findings).toEqual([]);
+	});
+
 	test("retains earlier partial attempt text when the terminal fallback is empty", () => {
 		const lane = {
 			generation: 1,

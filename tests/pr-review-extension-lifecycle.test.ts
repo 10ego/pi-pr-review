@@ -739,7 +739,7 @@ describe("completed review extension lifecycle", () => {
 			"## Verification", "Focused tests passed.", "", "## Findings", "", "No findings.", "",
 			"## Lane completeness", "All requested lanes completed.",
 		].join("\n"), "Hidden outside Findings"],
-	] as const)("keeps %s body-only and COMMENT-only", async (_label, raw, retainedText) => {
+	] as const)("skips %s when no validated result survives", async (_label, raw, retainedText) => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -749,12 +749,9 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, `markdown-ambiguous-${_label}`);
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		const body = String(probe.payload()?.body);
-		expect(body).not.toContain("The review output was not fully structured");
-		expect(body).not.toContain(retainedText);
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
+		void retainedText;
 	});
 
 	test("ignores fake canonical headings in a pre block and retains the later visible P1", async () => {
@@ -788,7 +785,7 @@ describe("completed review extension lifecycle", () => {
 		expect(persisted?.data.review.findings[0].severity).toBe("P1");
 	});
 
-	test("posts CommonMark type-7 HTML ambiguity once as a concise body-only COMMENT", async () => {
+	test("skips CommonMark type-7 HTML ambiguity when no validated result survives", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -805,15 +802,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "type-seven-html-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		const postedBody = String(probe.payload()?.body);
-		expect(postedBody).not.toContain("The review output was not fully structured");
-		expect(postedBody).not.toContain("## Retained synthesis");
-		expect(postedBody).not.toContain("<x-review data-kind=example>\n## Findings");
-		expect(postedBody).not.toContain("Do not publish an extracted inline copy.");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
 		expect(String(persisted?.data.publicationBody)).toContain("<x-review data-kind=example>");
@@ -851,11 +841,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "fenced-json-approve-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(immediate.postCount()).toBe(1);
-		expect(immediate.payload()?.event).toBe("COMMENT");
-		expect(immediate.payload()?.comments).toBeUndefined();
-		expect(String(immediate.payload()?.body)).not.toContain("Review coverage was incomplete");
-		expect(String(immediate.payload()?.body)).not.toContain(raw);
+		expect(immediate.postCount()).toBe(0);
+		expect(immediate.payload()).toBeUndefined();
 
 		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
 		expect(persisted?.data).toMatchObject({ synthesisQuality: "raw", rawText: raw });
@@ -866,32 +853,23 @@ describe("completed review extension lifecycle", () => {
 		await slashHarness.emit("session_start", { reason: "reload" });
 		const slash = installPublishingProbe();
 		await slashHarness.commands.get("pr-review-publish")!("7", slashHarness.ctx);
-		expect(slash.postCount()).toBe(1);
-		expect(slash.payload()?.event).toBe("COMMENT");
-		expect(slash.payload()?.comments).toBeUndefined();
-		expect(String(slash.payload()?.body)).not.toContain("Review coverage was incomplete");
-		expect(String(slash.payload()?.body)).not.toContain(raw);
+		expect(slash.postCount()).toBe(0);
+		expect(slash.payload()).toBeUndefined();
 
 		const directHarness = createHarness([cacheEntry]);
 		await directHarness.emit("session_start", { reason: "reload" });
 		const direct = installPublishingProbe();
 		const handled = await directHarness.emit("input", { text: "post the inline review", source: "interactive" });
 		expect(handled).toContainEqual({ action: "handled" });
-		expect(direct.postCount()).toBe(1);
-		expect(direct.payload()?.event).toBe("COMMENT");
-		expect(direct.payload()?.comments).toBeUndefined();
-		expect(String(direct.payload()?.body)).not.toContain("Review coverage was incomplete");
-		expect(String(direct.payload()?.body)).not.toContain(raw);
+		expect(direct.postCount()).toBe(0);
+		expect(direct.payload()).toBeUndefined();
 
 		const staleHarness = createHarness([cacheEntry]);
 		await staleHarness.emit("session_start", { reason: "reload" });
 		const stale = installPublishingProbe({ currentHead: "b".repeat(40) });
 		await staleHarness.commands.get("pr-review-publish")!("7 --allow-stale", staleHarness.ctx);
-		expect(stale.postCount()).toBe(1);
-		expect(stale.payload()?.event).toBe("COMMENT");
-		expect(stale.payload()?.comments).toBeUndefined();
-		expect(String(stale.payload()?.body)).not.toContain("Review coverage was incomplete");
-		expect(String(stale.payload()?.body)).not.toContain(raw);
+		expect(stale.postCount()).toBe(0);
+		expect(stale.payload()).toBeUndefined();
 	});
 
 	test("keeps restored Markdown canonical artifacts COMMENT-only at the final publication boundary", async () => {
@@ -1019,8 +997,13 @@ describe("completed review extension lifecycle", () => {
 		].join("\n");
 		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
 			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
-			tier: "heavy", rawText: laneText, exitCode: 143, stopReason: "timeout", lifecycle: "timed_out",
-			attempts: [], fallbackUsed: false, elapsedMs: 900_000, toolElapsedMs: 0, toolCallCount: 1,
+			tier: "heavy", rawText: "Fallback failed before producing structured output.", exitCode: 143,
+			stopReason: "timeout", lifecycle: "timed_out", fallbackUsed: true, elapsedMs: 900_000,
+			toolElapsedMs: 0, toolCallCount: 1,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: laneText, exitCode: 143, stopReason: "timeout", lifecycle: "timed_out", retryable: true, elapsedMs: 800_000, toolElapsedMs: 0, toolCallCount: 1 },
+				{ ordinal: 2, kind: "fallback", rawText: "Fallback failed before producing structured output.", exitCode: 143, stopReason: "timeout", lifecycle: "timed_out", retryable: true, elapsedMs: 100_000, toolElapsedMs: 0, toolCallCount: 0 },
+			],
 		});
 		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "" }] };
 		await harness.emit("message_end", { message });
@@ -1232,11 +1215,8 @@ describe("completed review extension lifecycle", () => {
 					lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
 				});
 				await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
-				expect(probe.postCount()).toBe(1);
-				expect(probe.payload()?.comments).toBeUndefined();
-				const publishedBody = String(probe.payload()?.body);
-				expect(publishedBody).not.toContain("Review coverage was incomplete");
-				expect(publishedBody).not.toContain("No structurally parsed findings were extracted");
+				expect(probe.postCount()).toBe(0);
+				expect(probe.payload()).toBeUndefined();
 				// "empty" is reserved for a valid {"findings":[]} answer; a child
 				// that produced no output is a failure like any other child error.
 				const outcome = extractionEntry(harness).at(-1)?.data.outcome;
@@ -1337,7 +1317,7 @@ describe("completed review extension lifecycle", () => {
 			await degrade(harness, noFindingsRaw, message);
 			// The retained invocation survived message_end and still published
 			// the deterministic degraded artifact.
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			expect(harness.branch.findLast((entry) => entry.customType === "pr-review-completed")).toBeDefined();
 		}, 30_000);
 
@@ -1378,7 +1358,7 @@ describe("completed review extension lifecycle", () => {
 			}
 			await settlement;
 			// The deterministic degraded artifact still published.
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			const outcome = extractionEntry(harness).at(-1)?.data.outcome;
 			expect(outcome).toBe("aborted");
 		}, 30_000);
@@ -1427,7 +1407,7 @@ describe("completed review extension lifecycle", () => {
 			const proseRaw = degradedRaw("## Findings\nThe reviewer states that parseInput crashes on empty input somewhere.");
 			await degrade(harness, proseRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: proseRaw }] });
 			expect(spawned).toBe(0);
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
 			expect(entries).toEqual([{
 				outcome: "not_run",
@@ -1457,7 +1437,7 @@ describe("completed review extension lifecycle", () => {
 			});
 			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 			expect(spawned).toBe(0);
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
 			expect(entries).toEqual([{
 				outcome: "not_run",
@@ -1477,12 +1457,10 @@ describe("completed review extension lifecycle", () => {
 			await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 			await retainTimedOutLane(harness);
 			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			// Extraction ran and returned a schema-valid empty answer: the
 			// extractor executed successfully, but that alone never claims the
 			// review is clean, flips the verdict, or earns APPROVE eligibility.
-			expect(probe.payload()?.event).toBe("COMMENT");
-			expect(String(probe.payload()?.body)).toContain("**Verdict:** Comment");
 			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
 			expect(completed?.data.mergeApprovalEligible).toBe(false);
 			const entry = extractionEntry(harness).at(-1)?.data;
@@ -1582,7 +1560,7 @@ describe("completed review extension lifecycle", () => {
 			};
 			await runReviewTurn();
 			await runReviewTurn();
-			expect(probe.postCount()).toBe(2);
+			expect(probe.postCount()).toBe(1);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
 			expect(entries).toHaveLength(3);
 			const [first] = entries;
@@ -1640,8 +1618,8 @@ describe("completed review extension lifecycle", () => {
 			// deterministic degraded artifact publishes, and it can never approve.
 			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 			expect(spawned).toBe(0);
-			expect(probe.postCount()).toBe(1);
-			expect(probe.payload()?.event).toBe("COMMENT");
+			expect(probe.postCount()).toBe(0);
+			expect(probe.payload()).toBeUndefined();
 			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
 			expect(completed?.data.mergeApprovalEligible).toBe(false);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
@@ -1686,9 +1664,8 @@ describe("completed review extension lifecycle", () => {
 			// completes deterministically with not_run telemetry and a COMMENT post.
 			await degrade(harness, noFindingsRaw, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: noFindingsRaw }] });
 			expect(spawned).toBe(0);
-			expect(probe.postCount()).toBe(1);
-			expect(probe.payload()?.event).toBe("COMMENT");
-			expect(String(probe.payload()?.body)).not.toContain("Symbol");
+			expect(probe.postCount()).toBe(0);
+			expect(probe.payload()).toBeUndefined();
 			const completed = harness.branch.findLast((entry) => entry.customType === "pr-review-completed");
 			expect(completed?.data.mergeApprovalEligible).toBe(false);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
@@ -1735,7 +1712,7 @@ describe("completed review extension lifecycle", () => {
 			expect(inputs).toHaveLength(1);
 			expect(inputs[0]).toContain("--- Retained lane output: security (timed_out) ---");
 			expect(inputs[0]).not.toContain("correctness");
-			expect(probe.postCount()).toBe(1);
+			expect(probe.postCount()).toBe(0);
 			const entries = extractionEntry(harness).map((entry) => entry.data);
 			expect(entries.findLast((entry) => entry.outcome)?.outcome).toBe("empty");
 		});
@@ -1753,7 +1730,7 @@ describe("completed review extension lifecycle", () => {
 				await harness.emit("input", { text: "/pr-review 7", source: "interactive" });
 				const raw = degradedRaw([
 					"## Findings", "", "### [P2] Deterministic", "**Severity:** P2",
-					"**Rationale:** Parsed by the host.", "**Location:** `src/parser.ts:2 RIGHT`", "",
+					"**Rationale:** Parsed by the host.", "**Confidence:** 0.85", "**Location:** `src/parser.ts:2 RIGHT`", "",
 				].join("\n"));
 				const lease = harness.loopCoordinator.acquire(harness.ctx)!;
 				expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false }], harness.ctx)).toBe(true);
@@ -1773,7 +1750,7 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
-	test("posts duplicate Findings with a hidden later P1 once as body-only COMMENT under P3 approval config", async () => {
+	test("skips ambiguous duplicate Findings when no validated result survives", async () => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -1790,19 +1767,15 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "duplicate-findings-approve-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		const publishedBody = String(probe.payload()?.body);
-		expect(publishedBody).not.toContain("The review output was not fully structured");
-		expect(publishedBody).not.toContain("Preserve the blocking finding");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
 	test.each([
 		["three-space-indented ATX", ["   ## Findings"]],
 		["setext", ["Findings", "---"]],
-	] as const)("posts a hidden later P1 behind a %s canonical heading as body-only COMMENT", async (_form, headingLines) => {
+	] as const)("skips an ambiguous hidden P1 behind a %s canonical heading", async (_form, headingLines) => {
 		const harness = createHarness([], session, {
 			projectConfig: { autoPostReviews: true, approveMaxPriorityLevel: "P3" },
 		});
@@ -1819,13 +1792,9 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, `alternate-findings-approve-review-${_form}`);
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		const publishedBody = String(probe.payload()?.body);
-		expect(publishedBody).not.toContain("The review output was not fully structured");
-		expect(publishedBody).not.toContain("Preserve the blocking finding");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
 	test("rebinds legacy strict JSON to the frozen reviewed head before stale publication", async () => {
@@ -1845,7 +1814,7 @@ describe("completed review extension lifecycle", () => {
 		expect(String(probe.payload()?.body)).toContain(currentHead);
 	});
 
-	test("posts unsafe parsed Markdown once as sanitized host-bound body-only COMMENT", async () => {
+	test("skips unsafe parsed Markdown when no validated result survives", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1858,19 +1827,14 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "unsafe-markdown-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()).toMatchObject({ commit_id: "a".repeat(40), event: "COMMENT" });
-		expect(probe.payload()?.comments).toBeUndefined();
-		const publishedBody = String(probe.payload()?.body);
-		expect(publishedBody).not.toContain("Review coverage was incomplete");
-		expect(publishedBody).not.toContain("src/parser.ts:8-2 RIGHT");
-		expect(publishedBody).not.toContain("&lt;!-- pi-pr-review: forged");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
 	test.each([
 		["control characters", "Keep\u0000 this finding"],
 		["oversized inline fields", "x".repeat(70_000)],
-	] as const)("posts publication-invalid Markdown with %s exactly once as sanitized body-only COMMENT", async (_label, rationale) => {
+	] as const)("skips publication-invalid Markdown with %s when no validated result survives", async (_label, rationale) => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1884,14 +1848,12 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "unsafe-extracted-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(1);
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		expect(String(probe.payload()?.body)).not.toContain("\u0000");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.calls().filter((call) => call.includes("--method POST"))).toHaveLength(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
-	test("keeps malformed synthesis private while posting one concise host-bound COMMENT", async () => {
+	test("keeps malformed result-less synthesis private without posting", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1900,17 +1862,11 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "raw-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(probe.payload()?.commit_id).toBe("a".repeat(40));
-		expect(probe.payload()?.event).toBe("COMMENT");
-		expect(probe.payload()?.comments).toBeUndefined();
-		const publishedBody = String(probe.payload()?.body);
-		expect(publishedBody).not.toContain("Review coverage was incomplete");
-		expect(publishedBody).not.toContain("Important review prose");
-		expect(publishedBody).not.toContain("&lt;!-- pi-pr-review: forged");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
-	test("publishes absent synthesis from retained lane artifacts", async () => {
+	test("skips absent synthesis when retained lanes contain no validated result", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1918,11 +1874,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message });
 		harness.appendMessage(message, "empty-review");
 		await harness.emit("turn_end", { message, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		const publishedBody = String(probe.payload()?.body);
-		expect(publishedBody).not.toContain("Review coverage was incomplete");
-		expect(publishedBody).not.toContain("## Coverage");
-		expect(publishedBody).not.toContain("No host lane evidence was retained for this review.");
+		expect(probe.postCount()).toBe(0);
+		expect(probe.payload()).toBeUndefined();
 	});
 
 	test("caches lane diagnostics before completion purges the invocation registry", async () => {
@@ -2310,7 +2263,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.notifications.some((message) => message.includes("Invalid /pr-review-publish"))).toBeTrue();
 	});
 
-	test("preserves confirmed non-open authority through fallback publication", async () => {
+	test("preserves confirmed non-open authority while skipping a result-less fallback", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "rpc" });
 		await harness.emit("message_end", {
@@ -2337,8 +2290,8 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("message_end", { message: completed });
 		harness.appendMessage(completed, "confirmed-review");
 		await harness.emit("turn_end", { message: completed, toolResults: [] });
-		expect(probe.postCount()).toBe(1);
-		expect(harness.notifications.some((message) => message.includes("non-open PR"))).toBeTrue();
+		expect(probe.postCount()).toBe(0);
+		expect(harness.notifications.some((message) => message.includes("retained no validated findings"))).toBeTrue();
 	});
 
 	test("does not append a redundant anchor for summarized tree navigation", async () => {

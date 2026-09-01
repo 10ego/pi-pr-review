@@ -480,6 +480,15 @@ function parseIntegratedCompletion(text: string): boolean {
  * output. A timed-out final block may be truncated; earlier complete blocks
  * remain usable, while arbitrary prose and unsafe containers recover nothing.
  */
+export function isValidatedReviewLaneNoFindings(
+	rawText: string,
+	expectedOutput: "review_lane" | "nonempty" = "review_lane",
+): boolean {
+	const text = normalizeReviewText(rawText);
+	if (expectedOutput === "review_lane") return /^NO FINDINGS\.?$/.test(text.trim());
+	return parseIntegratedCompletion(text) && text.split("\n").some((line) => line === NO_FINDINGS_SENTINEL);
+}
+
 export function extractValidatedReviewLaneCandidates(
 	rawText: string,
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
