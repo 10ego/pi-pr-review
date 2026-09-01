@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.7](https://github.com/10ego/pi-pr-review/compare/v1.17.6...v1.17.7) (2026-09-01)
+
+
+### Bug Fixes
+
+* **review:** omit degraded publication warnings ([#136](https://github.com/10ego/pi-pr-review/issues/136)) ([d6f8716](https://github.com/10ego/pi-pr-review/commit/d6f87166b4775b92df68f36aa9ac42add87006d6))
+
 ## [1.17.6](https://github.com/10ego/pi-pr-review/compare/v1.17.5...v1.17.6) (2026-09-01)
 
 
