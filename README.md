@@ -175,7 +175,7 @@ Example:
   },
   "tools": ["read", "bash", "grep", "find", "ls"],
   "deadlines": {
-    "attemptMs": { "light": 180000, "medium": 360000, "heavy": 480000 },
+    "attemptMs": { "light": 180000, "medium": 360000, "heavy": 720000 },
     "fallbackAttemptMs": 180000,
     "batchMs": 720000,
     "synthesisMs": 60000,
@@ -191,7 +191,7 @@ Example:
 }
 ```
 
-Every invocation has a host-owned monotonic 15-minute hard cap, including the two GitHub identity/lifecycle preflights, parent orchestration, synthesis, termination grace, and reserved cleanup. The dependent preflight calls share the one invocation budget, so they cannot each add an independent command timeout before review timing begins. The reviewer batch window activates once, at the first reviewer dispatch: preflight and diff capture remain charged to the total cap but cannot exhaust `batchMs` before any reviewer starts. The activated batch is still truncated by the original total deadline and its synthesis/termination/cleanup reserves. Defaults bound light/medium/heavy attempts to 3/6/8 minutes, a fallback attempt to 3 minutes, and the concurrent batch to 12 minutes. The complete `deadlines` object may be replaced at user scope or by a trusted project; partial, malformed, non-integer, out-of-range, or internally inconsistent objects are rejected as a unit and the last valid/default finite budget remains active. Supported inclusive ranges are: attempts 30–720 seconds, fallback 30–360 seconds, batch 60–840 seconds, synthesis 10–120 seconds, total 120–1200 seconds, TERM grace 0.1–15 seconds, cleanup reserve 1–30 seconds, and minimum useful fallback 10–120 seconds. Minimum fallback must not exceed its attempt cap, and batch + synthesis + termination grace + cleanup must fit inside total.
+Every invocation has a host-owned monotonic 15-minute hard cap, including the two GitHub identity/lifecycle preflights, parent orchestration, synthesis, termination grace, and reserved cleanup. The dependent preflight calls share the one invocation budget, so they cannot each add an independent command timeout before review timing begins. The reviewer batch window activates once, at the first reviewer dispatch: preflight and diff capture remain charged to the total cap but cannot exhaust `batchMs` before any reviewer starts. The activated batch is still truncated by the original total deadline and its synthesis/termination/cleanup reserves. Defaults bound light/medium/heavy attempts to 3/6/12 minutes, a fallback attempt to 3 minutes, and the concurrent batch to 12 minutes. The complete `deadlines` object may be replaced at user scope or by a trusted project; partial, malformed, non-integer, out-of-range, or internally inconsistent objects are rejected as a unit and the last valid/default finite budget remains active. Supported inclusive ranges are: attempts 30–720 seconds, fallback 30–360 seconds, batch 60–840 seconds, synthesis 10–120 seconds, total 120–1200 seconds, TERM grace 0.1–15 seconds, cleanup reserve 1–30 seconds, and minimum useful fallback 10–120 seconds. Minimum fallback must not exceed its attempt cap, and batch + synthesis + termination grace + cleanup must fit inside total.
 
 A timed-out or retryable quota/rate-limit/capacity lane may start at most one configured fallback attempt. It starts only when at least `minimumFallbackMs` plus cleanup reserve remains; the host never changes the configured model, thinking level, or tool policy to save time. If a tier is unset, its existing nearest-configured-tier/Pi-default behavior is unchanged.
 

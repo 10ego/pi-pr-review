@@ -20,7 +20,8 @@ const configured = {
 };
 
 describe("review deadline configuration", () => {
-	test("provides a finite hard cap below thirty minutes", () => {
+	test("provides a finite hard cap below thirty minutes with twelve-minute heavy attempts", () => {
+		expect(DEFAULT_REVIEW_DEADLINES.attemptMs.heavy).toBe(12 * 60_000);
 		expect(DEFAULT_REVIEW_DEADLINES.totalMs).toBeLessThan(30 * 60_000);
 		const budget = createReviewBudget(resolveReviewDeadlines(undefined), () => 7);
 		expect(budget.totalDeadlineMs).toBe(7 + DEFAULT_REVIEW_DEADLINES.totalMs);
