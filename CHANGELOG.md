@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.9](https://github.com/10ego/pi-pr-review/compare/v1.17.8...v1.17.9) (2026-09-02)
+
+
+### Bug Fixes
+
+* **review:** publish omitted lane candidates ([#140](https://github.com/10ego/pi-pr-review/issues/140)) ([846c85a](https://github.com/10ego/pi-pr-review/commit/846c85a38a0b2f54becef74c5e35b11487701963))
+
 ## [1.17.8](https://github.com/10ego/pi-pr-review/compare/v1.17.7...v1.17.8) (2026-09-01)
 
 
