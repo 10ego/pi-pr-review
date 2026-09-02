@@ -1190,6 +1190,42 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toEqual([]);
 	});
 
+	test("does not let trimmed malformed deep output suppress an earlier candidate", () => {
+		const framing = [
+			"Review status: COMPLETE",
+			"Overview: The review inspected the complete change.",
+			"Strengths: Focused implementation keeps the scope bounded.",
+			"Risk areas: Retry chronology remains the relevant boundary.",
+		].join("\n");
+		const candidate = [
+			framing,
+			"title: [P1] Preserve exact retained output",
+			"severity: P1",
+			"why: Trimming malformed output can suppress an earlier blocking candidate.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const malformedClean = `  ${framing}\nNO FINDINGS.`;
+		const lane = {
+			generation: 1, key: "deep:0", passId: "deep-review", tier: "heavy",
+			rawText: malformedClean, exitCode: 1, lifecycle: "partial", fallbackUsed: true,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: malformedClean, exitCode: 1, lifecycle: "partial", retryable: false, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "", ...binding, laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+		});
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve exact retained output");
+	});
+
 	test("retains earlier partial attempt text when the terminal fallback is empty", () => {
 		const lane = {
 			generation: 1,

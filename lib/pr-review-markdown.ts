@@ -500,9 +500,9 @@ function retainedLaneCandidateTexts(
 	const texts: string[] = [];
 	const seen = new Set<string>();
 	const retain = (value: string): "continue" | "stop" => {
-		const text = value.trim();
-		if (!text || seen.has(text)) return "continue";
-		seen.add(text);
+		if (!value.trim() || seen.has(value)) return "continue";
+		seen.add(value);
+		const text = value;
 		// A later exact clean contract supersedes provisional findings from older
 		// attempts. Malformed or empty later output does not.
 		if (isValidatedReviewLaneNoFindings(text, contract)) return "stop";
