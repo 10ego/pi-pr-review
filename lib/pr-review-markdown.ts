@@ -876,7 +876,12 @@ export function synthesizeReviewArtifact(input: {
 			// Rebind every target field to the frozen host snapshot so an assistant
 			// cannot substitute the final head and bypass stale-head handling.
 			review: bodyFallback
-				? syntheticReview(input.prNumber, input.prTitle, input.headSha, body, strictFindings)
+				? safe && input.strictJsonReview.disposition === "skipped" && !recoveredOverridesSkip
+					? {
+							...input.strictJsonReview,
+							pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
+						}
+					: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, strictFindings)
 				: {
 						...input.strictJsonReview,
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
