@@ -236,6 +236,16 @@ function candidateLabel(line: string): MarkdownLabel | undefined {
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
 
+/** Parse either top-level fields or conventional YAML list continuation fields. */
+function candidateBlockLabel(line: string, yamlList: boolean): MarkdownLabel | undefined {
+	if (!yamlList || line.startsWith("- ")) return candidateLabel(line);
+	// In conventional YAML form the title owns the list marker and subsequent
+	// fields use exactly two spaces. Broader indentation remains unavailable to
+	// arbitrary Markdown containers. Repeated `- ` markers remain compatible.
+	if (!/^ {2}\S/.test(line) || /^ {3}/.test(line)) return undefined;
+	return candidateLabel(line.slice(2));
+}
+
 function canonicalField(field: string): string {
 	return field.toLowerCase();
 }
@@ -402,11 +412,15 @@ function parseCandidatePrefix(
 		if (cursor >= lines.length) return { candidates, consumedAll: true };
 		const start = cursor;
 		const fields = new Map<string, string>();
+		let yamlList = false;
 		for (const expected of CANDIDATE_FIELDS) {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 			const fieldLine = lines[cursor] ?? "";
 			if (fieldLine.trim() && /[ \t]+$/.test(fieldLine)) return { candidates, consumedAll: false };
-			const field = candidateLabel(fieldLine);
+			if (expected === "title") yamlList = fieldLine.startsWith("- ");
+			const field = expected === "title"
+				? candidateLabel(fieldLine)
+				: candidateBlockLabel(fieldLine, yamlList);
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) {
 				return { candidates, consumedAll: false };
 			}
@@ -419,12 +433,18 @@ function parseCandidatePrefix(
 				const continuation = lines[cursor]!;
 				if (!continuation.trim()) break;
 				if (/[ \t]+$/.test(continuation)) return { candidates, consumedAll: false };
+				const nextField = candidateBlockLabel(continuation, yamlList);
+				if (nextField && canonicalField(nextField.field) === "location") break;
 				if (isReservedContractLine(continuation)) break;
-				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) {
+				const continuationIndent = yamlList ? 4 : 2;
+				const prefix = " ".repeat(continuationIndent);
+				if (!continuation.startsWith(prefix) || continuation.startsWith(`${prefix} `) ||
+					new RegExp(`^ {${continuationIndent}}(?:[-*+>]|#{1,6})[ \\t]+`).test(continuation)) {
 					return { candidates, consumedAll: false };
 				}
-				if (hasReservedCandidateProduction("why", continuation.slice(2))) return { candidates, consumedAll: false };
-				whyLines.push(continuation.slice(2));
+				const continuationValue = continuation.slice(continuationIndent);
+				if (hasReservedCandidateProduction("why", continuationValue)) return { candidates, consumedAll: false };
+				whyLines.push(continuationValue);
 				cursor++;
 			}
 			fields.set("why", whyLines.join("\n"));

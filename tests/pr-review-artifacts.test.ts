@@ -128,6 +128,30 @@ describe("validated retained lane candidates", () => {
 		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
 	});
 
+	test("recovers conventional YAML-list candidate fields accepted by lane completion", () => {
+		const yamlCandidate = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: yamlCandidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(yamlCandidate)).toEqual([{
+			title: "[P1] Restore static rendering for public pages",
+			severity: "P1",
+			why: "The root layout disables caching for every public page.",
+			location: "apps/web/src/app/layout.tsx:12-12",
+			side: "RIGHT",
+			inDiff: true,
+			prRelated: true,
+			confidence: 0.99,
+		}]);
+	});
+
 	test("recognizes only exact validated clean lane contracts", () => {
 		expect(isValidatedReviewLaneNoFindings("NO FINDINGS.")).toBeTrue();
 		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();

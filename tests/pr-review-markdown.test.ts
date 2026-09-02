@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
+import { validateInlineComments } from "../lib/pr-review-publish.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
 
 const binding = { prNumber: 57, prTitle: "Markdown publication", headSha: "a".repeat(40) };
@@ -855,6 +856,77 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(artifact.body).toContain("Keep timed-out review findings");
 		expect(artifact.body).not.toContain("### [P2] Truncated candidate");
+	});
+
+	test("publishes omitted completed-lane candidates with an independent-validation advisory", () => {
+		const candidate = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		const performance = {
+			...completeLane,
+			key: "performance-resources:0",
+			passId: "performance-resources",
+			rawText: candidate,
+		} satisfies ReviewLaneArtifact;
+		const overview = {
+			...completeLane,
+			key: "overview:0",
+			passId: "overview",
+			tier: "light",
+			rawText: "Partial overview evidence.",
+			stopReason: "length",
+			lifecycle: "partial",
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [overview, performance],
+			expectedLaneDescriptors: [
+				{ key: overview.key, tier: "light", minorHygiene: true, expectedOutput: "review_lane" },
+				{ key: performance.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" },
+			],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]).toMatchObject({
+			title: "[P1] Restore static rendering for public pages",
+			severity: "P1",
+			blocking: true,
+			body: "The root layout disables caching for every public page.\n\n_Recommend validating this comment independently._",
+			code_location: { absolute_file_path: "apps/web/src/app/layout.tsx", commentable: true },
+		});
+		expect(artifact.review.verdict).toBe("request_changes");
+		const inline = validateInlineComments(artifact.review, [{
+			filename: "apps/web/src/app/layout.tsx",
+			patch: "@@ -11,2 +11,2 @@\n old\n+changed",
+		}]);
+		expect(inline.errors).toEqual([]);
+		expect(inline.comments).toHaveLength(1);
+		expect(inline.comments[0]?.body).toContain("[P1] Restore static rendering for public pages");
+		expect(inline.comments[0]?.body).toContain("Recommend validating this comment independently.");
+
+		// A structurally complete synthesis may disagree semantically, but it still
+		// cannot erase a complete host-validated lane candidate.
+		const completeArtifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [performance],
+			expectedLaneDescriptors: [
+				{ key: performance.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" },
+			],
+		});
+		expect(completeArtifact.quality).toBe("fully_parsed");
+		expect(completeArtifact.completeness).toBe("complete");
+		expect(completeArtifact.review.findings).toHaveLength(2);
+		expect(completeArtifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
+		expect(completeArtifact.review.verdict).toBe("request_changes");
 	});
 
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {

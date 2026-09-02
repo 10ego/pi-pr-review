@@ -567,6 +567,8 @@ function retainedLaneFindings(
 	return findings;
 }
 
+const INDEPENDENT_VALIDATION_ADVISORY = "_Recommend validating this comment independently._";
+
 function mergeUniqueFindings(
 	primary: readonly ReviewFindingLike[],
 	additional: readonly ReviewFindingLike[],
@@ -593,7 +595,14 @@ function mergeUniqueFindings(
 		]);
 		if (keys.has(key)) continue;
 		keys.add(key);
-		merged.push(finding);
+		// These are complete, host-validated lane candidate blocks, but the
+		// terminal synthesizer did not independently confirm them. Keep their
+		// normal severity and inline eligibility while making that provenance
+		// explicit to the reader.
+		merged.push({
+			...finding,
+			body: `${finding.body?.trim() ?? ""}\n\n${INDEPENDENT_VALIDATION_ADVISORY}`.trim(),
+		});
 	}
 	return merged;
 }
@@ -828,7 +837,7 @@ export function synthesizeReviewArtifact(input: {
 		const bodyFallback = !safe || completeness === "incomplete";
 		const strictFindings = mergeUniqueFindings(
 			safe ? (input.strictJsonReview.findings ?? []) : [],
-			bodyFallback ? validatedLaneFindings : [],
+			validatedLaneFindings,
 		);
 		const body = bodyFallback
 			? buildDegradedReviewBody({
@@ -854,6 +863,10 @@ export function synthesizeReviewArtifact(input: {
 				: {
 						...input.strictJsonReview,
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
+						findings: strictFindings,
+						...(strictFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1")
+							? { verdict: "request_changes", overall_correctness: "patch is incorrect" }
+							: {}),
 					},
 			laneArtifacts: lanes,
 			expectedLaneDescriptors,
@@ -870,12 +883,13 @@ export function synthesizeReviewArtifact(input: {
 	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
+		const recoveredLaneFindings = mergeUniqueFindings([], validatedLaneFindings);
 		// Retained lane output is bounded by the host-owned body cap so an early
 		// large lane cannot truncate away the coverage disclosure above it.
 		const body = buildDegradedReviewBody({
 			rawText: "",
 			lanes,
-			findings: validatedLaneFindings,
+			findings: recoveredLaneFindings,
 			expectedLaneCount,
 			exactCoverage: exactLaneCoverage,
 			reason: "terminal synthesis was absent",
@@ -884,7 +898,7 @@ export function synthesizeReviewArtifact(input: {
 			quality: "lane_fallback" as const,
 			rawText: input.rawText,
 			body,
-			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, validatedLaneFindings),
+			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, recoveredLaneFindings),
 			laneArtifacts: lanes,
 			expectedLaneDescriptors,
 			expectedLaneCount,
@@ -934,7 +948,10 @@ export function synthesizeReviewArtifact(input: {
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	const recoveredLaneFindings = quality === "fully_parsed" ? [] : validatedLaneFindings;
+	// Terminal semantic validation may confirm a candidate, but it may not erase
+	// a complete host-validated lane block. Omitted candidates retain ordinary
+	// finding behavior with an explicit independent-validation advisory.
+	const recoveredLaneFindings = validatedLaneFindings;
 	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
