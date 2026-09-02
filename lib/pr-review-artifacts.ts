@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type { ReviewDeadlineKind } from "./pr-review-deadlines.ts";
 
 export type ReviewLaneLifecycle = "complete" | "partial" | "timed_out" | "failed";
@@ -137,6 +138,8 @@ const CANDIDATE_SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const FRAMING_LABELS = ["Overview", "Strengths", "Risk areas"] as const;
 const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|review complete|no findings|nothing to review)(?:\s+(?:identified|found|available|present))?[.!]?$/i;
 const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
+const MAX_CANDIDATE_TITLE_BYTES = 1_024;
+const MAX_CANDIDATE_WHY_BYTES = 16 * 1_024;
 const CODE_FENCE = /^ {0,3}(?:`{3,}|~{3,})/m;
 const COMMONMARK_HTML_BLOCK_TAGS = [
 	"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
@@ -356,8 +359,9 @@ function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 	const inDiff = fields.get("in_diff")!.trim();
 	const prRelated = fields.get("pr_related")!.trim();
 	return !!titleMatch && meaningfulValue(titleMatch[2]!) &&
+		Buffer.byteLength(title, "utf8") <= MAX_CANDIDATE_TITLE_BYTES &&
 		CANDIDATE_SEVERITIES.has(severity) && titleMatch[1] === severity &&
-		meaningfulValue(why) && safeLocation(location) &&
+		meaningfulValue(why) && Buffer.byteLength(why, "utf8") <= MAX_CANDIDATE_WHY_BYTES && safeLocation(location) &&
 		/^(?:RIGHT|LEFT)$/.test(side) &&
 		/^(?:yes|no)$/.test(inDiff) &&
 		/^(?:yes|no)$/.test(prRelated) &&
@@ -451,7 +455,9 @@ function parseCandidatePrefix(
 					return { candidates, consumedAll: false };
 				}
 				const continuationValue = continuation.slice(continuationIndent);
-				if (hasReservedCandidateProduction("why", continuationValue)) return { candidates, consumedAll: false };
+				if (continuationValue.startsWith("\t") || hasReservedCandidateProduction("why", continuationValue)) {
+					return { candidates, consumedAll: false };
+				}
 				whyLines.push(continuationValue);
 				cursor++;
 			}

@@ -486,7 +486,7 @@ describe("review tool execution gate", () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-deadline-batch-"));
 		const child = path.join(root, "child.mjs");
 		const complete = [
-			"- title: [P2] Complete bounded lane", "- severity: P2", "- why: fixture",
+			"- title: [P2] Complete bounded lane", "- severity: P2", "- why: The bounded lane found a concrete fixture issue.",
 			"- location: file.ts:1-1", "- side: RIGHT", "- in_diff: yes",
 			"- pr_related: yes", "- confidence: 0.9",
 		].join("\n");

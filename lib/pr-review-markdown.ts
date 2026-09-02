@@ -531,7 +531,7 @@ function retainedLaneFindings(
 	expected: readonly ExpectedReviewLane[],
 ): ReviewFindingLike[] {
 	const findings: ReviewFindingLike[] = [];
-	const seen = new Set<string>();
+	const seen = new Map<string, number>();
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
 		for (const text of retainedLaneCandidateTexts(lane, contract)) {
@@ -551,8 +551,18 @@ function retainedLaneFindings(
 					candidate.location,
 					candidate.side,
 				]);
-				if (seen.has(key)) continue;
-				seen.add(key);
+				const duplicateIndex = seen.get(key);
+				if (duplicateIndex !== undefined) {
+					const existing = findings[duplicateIndex];
+					if (candidate.inDiff && existing?.code_location && !existing.code_location.commentable) {
+						findings[duplicateIndex] = {
+							...existing,
+							code_location: { ...existing.code_location, commentable: true },
+						};
+					}
+					continue;
+				}
+				seen.set(key, findings.length);
 				findings.push({
 					title: candidate.title,
 					severity: candidate.severity,
@@ -574,7 +584,7 @@ function mergeUniqueFindings(
 	additional: readonly ReviewFindingLike[],
 ): ReviewFindingLike[] {
 	const merged = [...primary];
-	const keys = new Set(merged.map((finding) => JSON.stringify([
+	const findingKey = (finding: ReviewFindingLike) => JSON.stringify([
 		finding.severity,
 		finding.title,
 		finding.body,
@@ -582,19 +592,22 @@ function mergeUniqueFindings(
 		finding.code_location?.line_range?.start,
 		finding.code_location?.line_range?.end,
 		finding.code_location?.side,
-	])));
+	]);
+	const keys = new Map(merged.map((finding, index) => [findingKey(finding), index]));
 	for (const finding of additional) {
-		const key = JSON.stringify([
-			finding.severity,
-			finding.title,
-			finding.body,
-			finding.code_location?.absolute_file_path,
-			finding.code_location?.line_range?.start,
-			finding.code_location?.line_range?.end,
-			finding.code_location?.side,
-		]);
-		if (keys.has(key)) continue;
-		keys.add(key);
+		const key = findingKey(finding);
+		const duplicateIndex = keys.get(key);
+		if (duplicateIndex !== undefined) {
+			const existing = merged[duplicateIndex];
+			if (finding.code_location?.commentable && existing?.code_location && !existing.code_location.commentable) {
+				merged[duplicateIndex] = {
+					...existing,
+					code_location: { ...existing.code_location, commentable: true },
+				};
+			}
+			continue;
+		}
+		keys.set(key, merged.length);
 		// These are complete, host-validated lane candidate blocks, but the
 		// terminal synthesizer did not independently confirm them. Keep their
 		// normal severity and inline eligibility while making that provenance

@@ -596,7 +596,7 @@ export interface CompletedReviewSessionIdentity {
 }
 
 export interface PersistedCompletedReview {
-	schemaVersion: 3;
+	schemaVersion: 4;
 	session: CompletedReviewSessionIdentity;
 	invocation: ReviewInvocation;
 	repository: RepositoryBinding;
@@ -819,7 +819,7 @@ export class CompletedReviewCache {
 		const digest = reviewHash(record.review);
 		const useReference = !!reviewEntryId && !!referencedReview && reviewHash(referencedReview) === digest;
 		return {
-			schemaVersion: 3,
+			schemaVersion: 4,
 			session: { ...session },
 			invocation: { ...record.invocation, autoPost: { ...record.invocation.autoPost } },
 			repository: { ...record.repository },
@@ -849,7 +849,7 @@ export class CompletedReviewCache {
 	): boolean {
 		if (
 			!isObject(value) ||
-			value.schemaVersion !== 3 ||
+			value.schemaVersion !== 4 ||
 			!validSessionIdentity(value.session) ||
 			!sameSessionIdentity(value.session, session) ||
 			!validRepositoryBinding(value.repository)

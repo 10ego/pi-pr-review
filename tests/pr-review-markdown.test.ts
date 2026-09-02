@@ -929,6 +929,40 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(completeArtifact.review.verdict).toBe("request_changes");
 	});
 
+	test("deduplicates identical lane candidates while preserving inline eligibility", () => {
+		const candidate = [
+			"title: [P2] Preserve the strongest candidate anchor",
+			"severity: P2",
+			"why: Two lanes report the same concrete changed-line defect.",
+			"location: src/review.ts:10-10",
+			"side: RIGHT",
+			"in_diff: no",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const first = { ...completeLane, key: "first:0", passId: "first", rawText: candidate } satisfies ReviewLaneArtifact;
+		const second = {
+			...completeLane,
+			key: "second:0",
+			passId: "second",
+			rawText: candidate.replace("in_diff: no", "in_diff: yes"),
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [first, second],
+			expectedLaneDescriptors: [first, second].map((lane) => ({
+				key: lane.key,
+				tier: lane.tier,
+				minorHygiene: false,
+				expectedOutput: "review_lane" as const,
+			})),
+		});
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]?.code_location?.commentable).toBeTrue();
+		expect(artifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
+	});
+
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
 		const lane = {
 			generation: 1,

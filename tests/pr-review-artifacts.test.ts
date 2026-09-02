@@ -182,6 +182,26 @@ describe("validated retained lane candidates", () => {
 		}
 	});
 
+	test("rejects tab continuations and oversized candidate rationales", () => {
+		const topLevelTab = integratedCandidate("The changed path drops a required result.\n  \tTabbed continuation is malformed.");
+		const yamlTab = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"    \tTabbed continuation is malformed.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		const oversized = integratedCandidate(`This rationale is concrete but oversized ${"word ".repeat(4_000)}`);
+		for (const malformed of [topLevelTab, yamlTab, oversized]) {
+			expect(extractValidatedReviewLaneCandidates(malformed), malformed.slice(0, 80)).toEqual([]);
+			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
 	test("recognizes only exact validated clean lane contracts", () => {
 		expect(isValidatedReviewLaneNoFindings("NO FINDINGS.")).toBeTrue();
 		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();

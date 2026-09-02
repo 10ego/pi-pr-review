@@ -680,11 +680,13 @@ describe("auto-approve priority gate", () => {
 			diagnostics: synthesis.diagnostics,
 		}).record;
 		const persisted = cache.persist(record, session);
-		expect(persisted.schemaVersion).toBe(3);
+		expect(persisted.schemaVersion).toBe(4);
 		expect(persisted).not.toHaveProperty("publicationBody");
 		expect(persisted.expectedLaneDescriptors?.[0]).toMatchObject({ expectedOutput: "nonempty" });
 		const preConfidenceFix = { ...persisted, schemaVersion: 2 };
 		expect(new CompletedReviewCache().restore(preConfidenceFix, session)).toBeFalse();
+		const preLaneCandidateRetention = { ...persisted, schemaVersion: 3 };
+		expect(new CompletedReviewCache().restore(preLaneCandidateRetention, session)).toBeFalse();
 		expect(persisted.invocation.reviewBinding).toMatchObject({ invocationGeneration: 1, sessionId: session.id });
 
 		const restored = new CompletedReviewCache();
