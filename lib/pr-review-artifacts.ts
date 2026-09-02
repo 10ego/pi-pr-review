@@ -240,14 +240,15 @@ type CandidateBlockStyle = "top-level" | "list-undecided" | "repeated-list" | "y
 
 /** Parse top-level, repeated-list-marker, or conventional YAML-list fields. */
 function candidateBlockLabel(line: string, style: CandidateBlockStyle): MarkdownLabel | undefined {
-	if (style === "top-level" || style === "list-undecided" || style === "repeated-list") {
-		return candidateLabel(line);
-	}
+	if (style === "top-level") return line.startsWith("- ") ? undefined : candidateLabel(line);
+	if (style === "repeated-list") return line.startsWith("- ") ? candidateLabel(line) : undefined;
+	if (style === "list-undecided") return undefined;
 	// In conventional YAML form the title owns the list marker and subsequent
-	// fields use exactly two spaces. Broader indentation remains unavailable to
-	// arbitrary Markdown containers.
+	// fields use exactly two spaces with no nested marker. Broader indentation
+	// remains unavailable to arbitrary Markdown containers.
 	if (!/^ {2}\S/.test(line) || /^ {3}/.test(line)) return undefined;
-	return candidateLabel(line.slice(2));
+	const unindented = line.slice(2);
+	return unindented.startsWith("- ") ? undefined : candidateLabel(unindented);
 }
 
 function canonicalField(field: string): string {
@@ -596,7 +597,24 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	// into expensive replacement passes. Integrated/deep `nonempty` output keeps
 	// its exact byte contract in parseIntegratedCompletion().
 	if (/^NO FINDINGS\.?$/.test(text)) return true;
-	return CANDIDATE_FIELDS.every((field) => hasMeaningfulField(text, field));
+	return parseOrdinaryCandidateCompletion(normalized);
+}
+
+function parseOrdinaryCandidateCompletion(rawText: string): boolean {
+	const text = normalizeReviewText(rawText);
+	if (
+		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
+		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
+		/<!--\s*pi-pr-review:/i.test(text)
+	) return false;
+	const lines = text.split("\n");
+	if (lines.some((line) => hasReservedStatusProduction(line) || line.trim() === NO_FINDINGS_SENTINEL || line.trim() === "NO FINDINGS")) {
+		return false;
+	}
+	let cursor = 0;
+	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+	const parsed = parseCandidatePrefix(lines, cursor);
+	return parsed.consumedAll && parsed.candidates.length > 0;
 }
 
 /** Process exit is necessary but insufficient: only a terminal stop with valid lane output is complete. */

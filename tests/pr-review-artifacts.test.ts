@@ -163,6 +163,25 @@ describe("validated retained lane candidates", () => {
 		expect(extractValidatedReviewLaneCandidates(repeated)[0]?.why).toContain("This second sentence");
 	});
 
+	test("rejects mixed and nested candidate list grammars", () => {
+		const repeated = integratedCandidate(undefined, "bold");
+		const missingMarker = repeated.replace("- **severity:**", "**severity:**");
+		const nestedYamlMarker = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  - severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		for (const malformed of [missingMarker, nestedYamlMarker]) {
+			expect(extractValidatedReviewLaneCandidates(malformed), malformed).toEqual([]);
+			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop" }), malformed).toBe("partial");
+		}
+	});
+
 	test("recognizes only exact validated clean lane contracts", () => {
 		expect(isValidatedReviewLaneNoFindings("NO FINDINGS.")).toBeTrue();
 		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();
@@ -511,7 +530,7 @@ declared prose\nNO FINDINGS.`,
 			const rawText = ordered.map((field) => `${field}:${field === emptyField ? "" : ` ${field} value`}`).join("\n");
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop" }), emptyField).toBe("partial");
 		}
-		expect(classifyReviewLane({ tier: "heavy", rawText: fields.map((field) => `${field}: ${field} value`).join("\n"), exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: integratedCandidate(), exitCode: 0, stopReason: "stop" })).toBe("complete");
 	});
 
 	test("classifies token limits, timeout, and process failure without erasing raw text", () => {
