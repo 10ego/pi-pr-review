@@ -847,7 +847,7 @@ export function synthesizeReviewArtifact(input: {
 			batchEvidence ? lanes.every((lane) => lane.lifecycle === "complete") && (expectedLaneCount === 0 || exactLaneCoverage) : true,
 		);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
-		const recoveredOverridesSkip = safe && input.strictJsonReview.disposition === "skipped" &&
+		const recoveredOverridesSkip = input.strictJsonReview.disposition === "skipped" &&
 			validatedLaneFindings.length > 0;
 		const bodyFallback = !safe || completeness === "incomplete" || recoveredOverridesSkip;
 		const strictFindings = mergeUniqueFindings(
@@ -876,7 +876,7 @@ export function synthesizeReviewArtifact(input: {
 			// Rebind every target field to the frozen host snapshot so an assistant
 			// cannot substitute the final head and bypass stale-head handling.
 			review: bodyFallback
-				? safe && input.strictJsonReview.disposition === "skipped" && !recoveredOverridesSkip
+				? input.strictJsonReview.disposition === "skipped" && !recoveredOverridesSkip
 					? {
 							...input.strictJsonReview,
 							pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },

@@ -785,6 +785,15 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(skippedWithIncompleteLane.completeness).toBe("incomplete");
 		expect(skippedWithIncompleteLane.review.disposition).toBe("skipped");
+		const unsafeSkipped = { ...strictJsonReview, overview: "x".repeat(70_000) };
+		const unsafeSkippedWithIncompleteLane = synthesizeReviewArtifact({
+			rawText: JSON.stringify(unsafeSkipped),
+			...binding,
+			strictJsonReview: unsafeSkipped,
+			laneArtifacts: [{ ...completeLane, rawText: "Partial lane prose.", lifecycle: "partial" }],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(unsafeSkippedWithIncompleteLane.review.disposition).toBe("skipped");
 
 		const candidate = [
 			"title: [P1] Preserve retained blockers",
