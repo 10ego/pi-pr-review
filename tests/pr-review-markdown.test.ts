@@ -763,6 +763,23 @@ describe("Markdown-first canonical review artifacts", () => {
 			overall_explanation: "No model findings.",
 			overall_confidence_score: 0.9,
 		};
+		const skippedWithOwnFinding = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview),
+			...binding,
+			strictJsonReview: {
+				...strictJsonReview,
+				findings: [{
+					title: "[P2] Keep the model skip private",
+					body: "A skipped strict result must not become publishable by itself.",
+					severity: "P2",
+					blocking: false,
+					confidence_score: 0.8,
+					code_location: null,
+				}],
+			},
+		});
+		expect(skippedWithOwnFinding.review.disposition).toBe("skipped");
+
 		const candidate = [
 			"title: [P1] Preserve retained blockers",
 			"severity: P1",
