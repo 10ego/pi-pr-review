@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
+import { validateInlineComments } from "../lib/pr-review-publish.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
 
 const binding = { prNumber: 57, prTitle: "Markdown publication", headSha: "a".repeat(40) };
@@ -748,6 +749,78 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(missingExpected.mergeApprovalEligible).toBe(false);
 	});
 
+	test("does not let a strict skipped disposition suppress retained lane candidates", () => {
+		const strictJsonReview = {
+			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
+			disposition: "skipped" as const,
+			verification: "Passed.",
+			overview: "The model elected to skip.",
+			strengths: [],
+			findings: [{
+				title: "[P2] Keep the model skip private",
+				body: "A skipped strict result must not become publishable by itself.",
+				severity: "P2",
+				blocking: false,
+				confidence_score: 0.8,
+				code_location: null,
+			}],
+			notes: { correctness: "", security: "", performance: "" },
+			verdict: "approve",
+			overall_correctness: "patch is correct",
+			overall_explanation: "No model findings.",
+			overall_confidence_score: 0.9,
+		};
+		const skippedWithOwnFinding = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview),
+			...binding,
+			strictJsonReview,
+		});
+		expect(skippedWithOwnFinding.review.disposition).toBe("skipped");
+		const skippedWithIncompleteLane = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview),
+			...binding,
+			strictJsonReview,
+			laneArtifacts: [{ ...completeLane, rawText: "Partial lane prose.", lifecycle: "partial" }],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(skippedWithIncompleteLane.completeness).toBe("incomplete");
+		expect(skippedWithIncompleteLane.review.disposition).toBe("skipped");
+		const unsafeSkipped = { ...strictJsonReview, overview: "x".repeat(70_000) };
+		const unsafeSkippedWithIncompleteLane = synthesizeReviewArtifact({
+			rawText: JSON.stringify(unsafeSkipped),
+			...binding,
+			strictJsonReview: unsafeSkipped,
+			laneArtifacts: [{ ...completeLane, rawText: "Partial lane prose.", lifecycle: "partial" }],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(unsafeSkippedWithIncompleteLane.review.disposition).toBe("skipped");
+
+		const candidate = [
+			"title: [P1] Preserve retained blockers",
+			"severity: P1",
+			"why: A complete host lane retained this blocking candidate.",
+			"location: src/review.ts:10-10",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const lane = { ...completeLane, rawText: candidate } satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview),
+			...binding,
+			strictJsonReview,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.review.disposition).toBe("reviewed");
+		expect(artifact.review.verdict).toBe("request_changes");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve retained blockers");
+		expect(artifact.review.findings?.[0]?.body).toContain("Recommend validating this comment independently.");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+	});
+
 	test("omits the retained-output note when nothing was retained", () => {
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding });
 		expect(artifact.body).toContain("No host lane evidence was retained for this review.");
@@ -855,6 +928,111 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(artifact.body).toContain("Keep timed-out review findings");
 		expect(artifact.body).not.toContain("### [P2] Truncated candidate");
+	});
+
+	test("publishes omitted completed-lane candidates with an independent-validation advisory", () => {
+		const candidate = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		const performance = {
+			...completeLane,
+			key: "performance-resources:0",
+			passId: "performance-resources",
+			rawText: candidate,
+		} satisfies ReviewLaneArtifact;
+		const overview = {
+			...completeLane,
+			key: "overview:0",
+			passId: "overview",
+			tier: "light",
+			rawText: "Partial overview evidence.",
+			stopReason: "length",
+			lifecycle: "partial",
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [overview, performance],
+			expectedLaneDescriptors: [
+				{ key: overview.key, tier: "light", minorHygiene: true, expectedOutput: "review_lane" },
+				{ key: performance.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" },
+			],
+		});
+		expect(artifact.completeness).toBe("incomplete");
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]).toMatchObject({
+			title: "[P1] Restore static rendering for public pages",
+			severity: "P1",
+			blocking: true,
+			body: "The root layout disables caching for every public page.\n\n_Recommend validating this comment independently._",
+			code_location: { absolute_file_path: "apps/web/src/app/layout.tsx", commentable: true },
+		});
+		expect(artifact.review.verdict).toBe("request_changes");
+		const inline = validateInlineComments(artifact.review, [{
+			filename: "apps/web/src/app/layout.tsx",
+			patch: "@@ -11,2 +11,2 @@\n old\n+changed",
+		}]);
+		expect(inline.errors).toEqual([]);
+		expect(inline.comments).toHaveLength(1);
+		expect(inline.comments[0]?.body).toContain("[P1] Restore static rendering for public pages");
+		expect(inline.comments[0]?.body).toContain("Recommend validating this comment independently.");
+
+		// A structurally complete synthesis may disagree semantically, but it still
+		// cannot erase a complete host-validated lane candidate.
+		const completeArtifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [performance],
+			expectedLaneDescriptors: [
+				{ key: performance.key, tier: "heavy", minorHygiene: false, expectedOutput: "review_lane" },
+			],
+		});
+		expect(completeArtifact.quality).toBe("fully_parsed");
+		expect(completeArtifact.completeness).toBe("complete");
+		expect(completeArtifact.review.findings).toHaveLength(2);
+		expect(completeArtifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
+		expect(completeArtifact.review.verdict).toBe("request_changes");
+	});
+
+	test("deduplicates identical lane candidates while preserving inline eligibility", () => {
+		const candidate = [
+			"title: [P2] Preserve the strongest candidate anchor",
+			"severity: P2",
+			"why: Two lanes report the same concrete changed-line defect.",
+			"location: src/review.ts:10-10",
+			"side: RIGHT",
+			"in_diff: no",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const first = { ...completeLane, key: "first:0", passId: "first", rawText: candidate } satisfies ReviewLaneArtifact;
+		const second = {
+			...completeLane,
+			key: "second:0",
+			passId: "second",
+			rawText: candidate.replace("in_diff: no", "in_diff: yes"),
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [first, second],
+			expectedLaneDescriptors: [first, second].map((lane) => ({
+				key: lane.key,
+				tier: lane.tier,
+				minorHygiene: false,
+				expectedOutput: "review_lane" as const,
+			})),
+		});
+		expect(artifact.review.findings).toHaveLength(2);
+		expect(artifact.review.findings?.[1]?.code_location?.commentable).toBeTrue();
+		expect(artifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
 	});
 
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
@@ -1044,6 +1222,67 @@ describe("Markdown-first canonical review artifacts", () => {
 		} satisfies ReviewLaneArtifact;
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
 		expect(artifact.review.findings).toEqual([]);
+	});
+
+	test("does not let a padded ordinary clean sentinel suppress an earlier candidate", () => {
+		const candidate = [
+			"title: [P1] Preserve ordinary retained output",
+			"severity: P1",
+			"why: A padded clean sentinel is not an exact superseding contract.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const paddedClean = "  NO FINDINGS.  ";
+		const lane = {
+			generation: 1, key: "security:0", passId: "security", tier: "heavy",
+			rawText: paddedClean, exitCode: 1, lifecycle: "partial", fallbackUsed: true,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: paddedClean, exitCode: 1, lifecycle: "partial", retryable: false, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve ordinary retained output");
+	});
+
+	test("does not let trimmed malformed deep output suppress an earlier candidate", () => {
+		const framing = [
+			"Review status: COMPLETE",
+			"Overview: The review inspected the complete change.",
+			"Strengths: Focused implementation keeps the scope bounded.",
+			"Risk areas: Retry chronology remains the relevant boundary.",
+		].join("\n");
+		const candidate = [
+			framing,
+			"title: [P1] Preserve exact retained output",
+			"severity: P1",
+			"why: Trimming malformed output can suppress an earlier blocking candidate.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const malformedClean = `  ${framing}\nNO FINDINGS.`;
+		const lane = {
+			generation: 1, key: "deep:0", passId: "deep-review", tier: "heavy",
+			rawText: malformedClean, exitCode: 1, lifecycle: "partial", fallbackUsed: true,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: malformedClean, exitCode: 1, lifecycle: "partial", retryable: false, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: "", ...binding, laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }],
+		});
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve exact retained output");
 	});
 
 	test("retains earlier partial attempt text when the terminal fallback is empty", () => {

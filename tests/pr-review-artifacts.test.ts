@@ -128,6 +128,81 @@ describe("validated retained lane candidates", () => {
 		expect(extractValidatedReviewLaneCandidates(integratedCandidate().replace("confidence: 0.9", "confidence: 0.9 "))).toEqual([]);
 	});
 
+	test("recovers conventional YAML-list candidate fields accepted by lane completion", () => {
+		const yamlCandidate = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"    This repeats server work for ordinary requests.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: yamlCandidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(yamlCandidate)).toEqual([{
+			title: "[P1] Restore static rendering for public pages",
+			severity: "P1",
+			why: "The root layout disables caching for every public page.\nThis repeats server work for ordinary requests.",
+			location: "apps/web/src/app/layout.tsx:12-12",
+			side: "RIGHT",
+			inDiff: true,
+			prRelated: true,
+			confidence: 0.99,
+		}]);
+	});
+
+	test("retains two-space why continuations for repeated list-marker candidates", () => {
+		const repeated = integratedCandidate(
+			"The changed path drops a required result.\n  This second sentence supplies the triggering context.",
+			"bold",
+		);
+		expect(classifyReviewLane({ tier: "heavy", rawText: repeated, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(repeated)).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(repeated)[0]?.why).toContain("This second sentence");
+	});
+
+	test("rejects mixed and nested candidate list grammars", () => {
+		const repeated = integratedCandidate(undefined, "bold");
+		const missingMarker = repeated.replace("- **severity:**", "**severity:**");
+		const nestedYamlMarker = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  - severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		for (const malformed of [missingMarker, nestedYamlMarker]) {
+			expect(extractValidatedReviewLaneCandidates(malformed), malformed).toEqual([]);
+			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop" }), malformed).toBe("partial");
+		}
+	});
+
+	test("rejects tab continuations and oversized candidate rationales", () => {
+		const topLevelTab = integratedCandidate("The changed path drops a required result.\n  \tTabbed continuation is malformed.");
+		const yamlTab = [
+			"- title: [P1] Restore static rendering for public pages",
+			"  severity: P1",
+			"  why: The root layout disables caching for every public page.",
+			"    \tTabbed continuation is malformed.",
+			"  location: apps/web/src/app/layout.tsx:12-12",
+			"  side: RIGHT",
+			"  in_diff: yes",
+			"  pr_related: yes",
+			"  confidence: 0.99",
+		].join("\n");
+		const oversized = integratedCandidate(`This rationale is concrete but oversized ${"word ".repeat(4_000)}`);
+		const oversizedPath = integratedCandidate().replace("src/a.ts:10-12", `${"nested/".repeat(700)}file.ts:10-12`);
+		for (const malformed of [topLevelTab, yamlTab, oversized, oversizedPath]) {
+			expect(extractValidatedReviewLaneCandidates(malformed), malformed.slice(0, 80)).toEqual([]);
+			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
 	test("recognizes only exact validated clean lane contracts", () => {
 		expect(isValidatedReviewLaneNoFindings("NO FINDINGS.")).toBeTrue();
 		expect(isValidatedReviewLaneNoFindings("No findings.")).toBeFalse();
@@ -476,7 +551,7 @@ declared prose\nNO FINDINGS.`,
 			const rawText = ordered.map((field) => `${field}:${field === emptyField ? "" : ` ${field} value`}`).join("\n");
 			expect(classifyReviewLane({ tier: "heavy", rawText, exitCode: 0, stopReason: "stop" }), emptyField).toBe("partial");
 		}
-		expect(classifyReviewLane({ tier: "heavy", rawText: fields.map((field) => `${field}: ${field} value`).join("\n"), exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: integratedCandidate(), exitCode: 0, stopReason: "stop" })).toBe("complete");
 	});
 
 	test("classifies token limits, timeout, and process failure without erasing raw text", () => {

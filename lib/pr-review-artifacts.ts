@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type { ReviewDeadlineKind } from "./pr-review-deadlines.ts";
 
 export type ReviewLaneLifecycle = "complete" | "partial" | "timed_out" | "failed";
@@ -137,6 +138,9 @@ const CANDIDATE_SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const FRAMING_LABELS = ["Overview", "Strengths", "Risk areas"] as const;
 const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|review complete|no findings|nothing to review)(?:\s+(?:identified|found|available|present))?[.!]?$/i;
 const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
+const MAX_CANDIDATE_TITLE_BYTES = 1_024;
+const MAX_CANDIDATE_WHY_BYTES = 16 * 1_024;
+const MAX_CANDIDATE_PATH_BYTES = 4_096;
 const CODE_FENCE = /^ {0,3}(?:`{3,}|~{3,})/m;
 const COMMONMARK_HTML_BLOCK_TAGS = [
 	"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
@@ -236,6 +240,21 @@ function candidateLabel(line: string): MarkdownLabel | undefined {
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
 
+type CandidateBlockStyle = "top-level" | "list-undecided" | "repeated-list" | "yaml-list";
+
+/** Parse top-level, repeated-list-marker, or conventional YAML-list fields. */
+function candidateBlockLabel(line: string, style: CandidateBlockStyle): MarkdownLabel | undefined {
+	if (style === "top-level") return line.startsWith("- ") ? undefined : candidateLabel(line);
+	if (style === "repeated-list") return line.startsWith("- ") ? candidateLabel(line) : undefined;
+	if (style === "list-undecided") return undefined;
+	// In conventional YAML form the title owns the list marker and subsequent
+	// fields use exactly two spaces with no nested marker. Broader indentation
+	// remains unavailable to arbitrary Markdown containers.
+	if (!/^ {2}\S/.test(line) || /^ {3}/.test(line)) return undefined;
+	const unindented = line.slice(2);
+	return unindented.startsWith("- ") ? undefined : candidateLabel(unindented);
+}
+
 function canonicalField(field: string): string {
 	return field.toLowerCase();
 }
@@ -285,7 +304,8 @@ function safeLocation(value: string): boolean {
 	const start = Number(match[2]);
 	const end = match[3] === undefined ? start : Number(match[3]);
 	if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(end) || end < start) return false;
-	if (!locationPath || locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
+	if (!locationPath || Buffer.byteLength(locationPath, "utf8") > MAX_CANDIDATE_PATH_BYTES ||
+		locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
 	if (/[\\\u0000-\u001f\u007f]/.test(locationPath)) return false;
 	const segments = locationPath.split("/");
 	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
@@ -341,8 +361,9 @@ function validCandidateFields(fields: ReadonlyMap<string, string>): boolean {
 	const inDiff = fields.get("in_diff")!.trim();
 	const prRelated = fields.get("pr_related")!.trim();
 	return !!titleMatch && meaningfulValue(titleMatch[2]!) &&
+		Buffer.byteLength(title, "utf8") <= MAX_CANDIDATE_TITLE_BYTES &&
 		CANDIDATE_SEVERITIES.has(severity) && titleMatch[1] === severity &&
-		meaningfulValue(why) && safeLocation(location) &&
+		meaningfulValue(why) && Buffer.byteLength(why, "utf8") <= MAX_CANDIDATE_WHY_BYTES && safeLocation(location) &&
 		/^(?:RIGHT|LEFT)$/.test(side) &&
 		/^(?:yes|no)$/.test(inDiff) &&
 		/^(?:yes|no)$/.test(prRelated) &&
@@ -402,11 +423,18 @@ function parseCandidatePrefix(
 		if (cursor >= lines.length) return { candidates, consumedAll: true };
 		const start = cursor;
 		const fields = new Map<string, string>();
+		let style: CandidateBlockStyle = "top-level";
 		for (const expected of CANDIDATE_FIELDS) {
 			while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
 			const fieldLine = lines[cursor] ?? "";
 			if (fieldLine.trim() && /[ \t]+$/.test(fieldLine)) return { candidates, consumedAll: false };
-			const field = candidateLabel(fieldLine);
+			if (expected === "title" && fieldLine.startsWith("- ")) style = "list-undecided";
+			if (expected === "severity" && style === "list-undecided") {
+				style = fieldLine.startsWith("- ") ? "repeated-list" : "yaml-list";
+			}
+			const field = expected === "title"
+				? candidateLabel(fieldLine)
+				: candidateBlockLabel(fieldLine, style);
 			if (!field || canonicalField(field.field) !== expected || fields.has(expected)) {
 				return { candidates, consumedAll: false };
 			}
@@ -419,12 +447,20 @@ function parseCandidatePrefix(
 				const continuation = lines[cursor]!;
 				if (!continuation.trim()) break;
 				if (/[ \t]+$/.test(continuation)) return { candidates, consumedAll: false };
+				const nextField = candidateBlockLabel(continuation, style);
+				if (nextField && canonicalField(nextField.field) === "location") break;
 				if (isReservedContractLine(continuation)) break;
-				if (!/^ {2}\S/.test(continuation) || /^ {2}(?:[-*+>]|#{1,6})[ \t]+/.test(continuation)) {
+				const continuationIndent = style === "yaml-list" ? 4 : 2;
+				const prefix = " ".repeat(continuationIndent);
+				if (!continuation.startsWith(prefix) || continuation.startsWith(`${prefix} `) ||
+					new RegExp(`^ {${continuationIndent}}(?:[-*+>]|#{1,6})[ \\t]+`).test(continuation)) {
 					return { candidates, consumedAll: false };
 				}
-				if (hasReservedCandidateProduction("why", continuation.slice(2))) return { candidates, consumedAll: false };
-				whyLines.push(continuation.slice(2));
+				const continuationValue = continuation.slice(continuationIndent);
+				if (continuationValue.startsWith("\t") || hasReservedCandidateProduction("why", continuationValue)) {
+					return { candidates, consumedAll: false };
+				}
+				whyLines.push(continuationValue);
 				cursor++;
 			}
 			fields.set("why", whyLines.join("\n"));
@@ -485,7 +521,7 @@ export function isValidatedReviewLaneNoFindings(
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
 ): boolean {
 	const text = normalizeReviewText(rawText);
-	if (expectedOutput === "review_lane") return /^NO FINDINGS\.?$/.test(text.trim());
+	if (expectedOutput === "review_lane") return /^NO FINDINGS\.?$/.test(text);
 	return parseIntegratedCompletion(text) && text.split("\n").some((line) => line === NO_FINDINGS_SENTINEL);
 }
 
@@ -568,8 +604,25 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	// missing final period carries no semantic uncertainty and must not amplify
 	// into expensive replacement passes. Integrated/deep `nonempty` output keeps
 	// its exact byte contract in parseIntegratedCompletion().
-	if (/^NO FINDINGS\.?$/.test(text)) return true;
-	return CANDIDATE_FIELDS.every((field) => hasMeaningfulField(text, field));
+	if (/^NO FINDINGS\.?$/.test(normalized)) return true;
+	return parseOrdinaryCandidateCompletion(normalized);
+}
+
+function parseOrdinaryCandidateCompletion(rawText: string): boolean {
+	const text = normalizeReviewText(rawText);
+	if (
+		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
+		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
+		/<!--\s*pi-pr-review:/i.test(text)
+	) return false;
+	const lines = text.split("\n");
+	if (lines.some((line) => hasReservedStatusProduction(line) || line.trim() === NO_FINDINGS_SENTINEL || line.trim() === "NO FINDINGS")) {
+		return false;
+	}
+	let cursor = 0;
+	while (cursor < lines.length && !lines[cursor]!.trim()) cursor++;
+	const parsed = parseCandidatePrefix(lines, cursor);
+	return parsed.consumedAll && parsed.candidates.length > 0;
 }
 
 /** Process exit is necessary but insufficient: only a terminal stop with valid lane output is complete. */

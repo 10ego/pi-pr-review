@@ -500,9 +500,9 @@ function retainedLaneCandidateTexts(
 	const texts: string[] = [];
 	const seen = new Set<string>();
 	const retain = (value: string): "continue" | "stop" => {
-		const text = value.trim();
-		if (!text || seen.has(text)) return "continue";
-		seen.add(text);
+		if (!value.trim() || seen.has(value)) return "continue";
+		seen.add(value);
+		const text = value;
 		// A later exact clean contract supersedes provisional findings from older
 		// attempts. Malformed or empty later output does not.
 		if (isValidatedReviewLaneNoFindings(text, contract)) return "stop";
@@ -531,7 +531,7 @@ function retainedLaneFindings(
 	expected: readonly ExpectedReviewLane[],
 ): ReviewFindingLike[] {
 	const findings: ReviewFindingLike[] = [];
-	const seen = new Set<string>();
+	const seen = new Map<string, number>();
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
 		for (const text of retainedLaneCandidateTexts(lane, contract)) {
@@ -551,8 +551,18 @@ function retainedLaneFindings(
 					candidate.location,
 					candidate.side,
 				]);
-				if (seen.has(key)) continue;
-				seen.add(key);
+				const duplicateIndex = seen.get(key);
+				if (duplicateIndex !== undefined) {
+					const existing = findings[duplicateIndex];
+					if (candidate.inDiff && existing?.code_location && !existing.code_location.commentable) {
+						findings[duplicateIndex] = {
+							...existing,
+							code_location: { ...existing.code_location, commentable: true },
+						};
+					}
+					continue;
+				}
+				seen.set(key, findings.length);
 				findings.push({
 					title: candidate.title,
 					severity: candidate.severity,
@@ -567,12 +577,14 @@ function retainedLaneFindings(
 	return findings;
 }
 
+const INDEPENDENT_VALIDATION_ADVISORY = "_Recommend validating this comment independently._";
+
 function mergeUniqueFindings(
 	primary: readonly ReviewFindingLike[],
 	additional: readonly ReviewFindingLike[],
 ): ReviewFindingLike[] {
 	const merged = [...primary];
-	const keys = new Set(merged.map((finding) => JSON.stringify([
+	const findingKey = (finding: ReviewFindingLike) => JSON.stringify([
 		finding.severity,
 		finding.title,
 		finding.body,
@@ -580,20 +592,30 @@ function mergeUniqueFindings(
 		finding.code_location?.line_range?.start,
 		finding.code_location?.line_range?.end,
 		finding.code_location?.side,
-	])));
+	]);
+	const keys = new Map(merged.map((finding, index) => [findingKey(finding), index]));
 	for (const finding of additional) {
-		const key = JSON.stringify([
-			finding.severity,
-			finding.title,
-			finding.body,
-			finding.code_location?.absolute_file_path,
-			finding.code_location?.line_range?.start,
-			finding.code_location?.line_range?.end,
-			finding.code_location?.side,
-		]);
-		if (keys.has(key)) continue;
-		keys.add(key);
-		merged.push(finding);
+		const key = findingKey(finding);
+		const duplicateIndex = keys.get(key);
+		if (duplicateIndex !== undefined) {
+			const existing = merged[duplicateIndex];
+			if (finding.code_location?.commentable && existing?.code_location && !existing.code_location.commentable) {
+				merged[duplicateIndex] = {
+					...existing,
+					code_location: { ...existing.code_location, commentable: true },
+				};
+			}
+			continue;
+		}
+		keys.set(key, merged.length);
+		// These are complete, host-validated lane candidate blocks, but the
+		// terminal synthesizer did not independently confirm them. Keep their
+		// normal severity and inline eligibility while making that provenance
+		// explicit to the reader.
+		merged.push({
+			...finding,
+			body: `${finding.body?.trim() ?? ""}\n\n${INDEPENDENT_VALIDATION_ADVISORY}`.trim(),
+		});
 	}
 	return merged;
 }
@@ -825,10 +847,12 @@ export function synthesizeReviewArtifact(input: {
 			batchEvidence ? lanes.every((lane) => lane.lifecycle === "complete") && (expectedLaneCount === 0 || exactLaneCoverage) : true,
 		);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
-		const bodyFallback = !safe || completeness === "incomplete";
+		const recoveredOverridesSkip = input.strictJsonReview.disposition === "skipped" &&
+			validatedLaneFindings.length > 0;
+		const bodyFallback = !safe || completeness === "incomplete" || recoveredOverridesSkip;
 		const strictFindings = mergeUniqueFindings(
-			safe ? (input.strictJsonReview.findings ?? []) : [],
-			bodyFallback ? validatedLaneFindings : [],
+			safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [],
+			validatedLaneFindings,
 		);
 		const body = bodyFallback
 			? buildDegradedReviewBody({
@@ -837,9 +861,11 @@ export function synthesizeReviewArtifact(input: {
 				findings: strictFindings,
 				expectedLaneCount,
 				exactCoverage: exactLaneCoverage || expectedLaneCount === 0,
-				reason: safe
-						? "incomplete lane evidence degraded this synthesis"
-						: "publication-invalid extracted content degraded this synthesis",
+				reason: recoveredOverridesSkip
+						? "retained lane findings overrode a skipped model synthesis"
+						: safe
+							? "incomplete lane evidence degraded this synthesis"
+							: "publication-invalid extracted content degraded this synthesis",
 			})
 			: "";
 		return Object.freeze({
@@ -850,10 +876,21 @@ export function synthesizeReviewArtifact(input: {
 			// Rebind every target field to the frozen host snapshot so an assistant
 			// cannot substitute the final head and bypass stale-head handling.
 			review: bodyFallback
-				? syntheticReview(input.prNumber, input.prTitle, input.headSha, body, strictFindings)
+				? input.strictJsonReview.disposition === "skipped" && !recoveredOverridesSkip
+					? {
+							...input.strictJsonReview,
+							pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
+						}
+					: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, strictFindings)
 				: {
 						...input.strictJsonReview,
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
+						// A model-level skip cannot suppress complete host-retained findings.
+						disposition: validatedLaneFindings.length > 0 ? "reviewed" : input.strictJsonReview.disposition,
+						findings: strictFindings,
+						...(strictFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1")
+							? { verdict: "request_changes", overall_correctness: "patch is incorrect" }
+							: {}),
 					},
 			laneArtifacts: lanes,
 			expectedLaneDescriptors,
@@ -861,21 +898,24 @@ export function synthesizeReviewArtifact(input: {
 			completeness,
 			mergeApprovalEligible: !bodyFallback,
 			diagnostics: Object.freeze(bodyFallback
-				? [safe
-					? "incomplete lane evidence degraded this synthesis"
-					: "publication-invalid extracted content degraded this synthesis"]
+				? [recoveredOverridesSkip
+					? "retained lane findings overrode a skipped model synthesis"
+					: safe
+						? "incomplete lane evidence degraded this synthesis"
+						: "publication-invalid extracted content degraded this synthesis"]
 				: []),
 		});
 	}
 	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
+		const recoveredLaneFindings = mergeUniqueFindings([], validatedLaneFindings);
 		// Retained lane output is bounded by the host-owned body cap so an early
 		// large lane cannot truncate away the coverage disclosure above it.
 		const body = buildDegradedReviewBody({
 			rawText: "",
 			lanes,
-			findings: validatedLaneFindings,
+			findings: recoveredLaneFindings,
 			expectedLaneCount,
 			exactCoverage: exactLaneCoverage,
 			reason: "terminal synthesis was absent",
@@ -884,7 +924,7 @@ export function synthesizeReviewArtifact(input: {
 			quality: "lane_fallback" as const,
 			rawText: input.rawText,
 			body,
-			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, validatedLaneFindings),
+			review: syntheticReview(input.prNumber, input.prTitle, input.headSha, body, recoveredLaneFindings),
 			laneArtifacts: lanes,
 			expectedLaneDescriptors,
 			expectedLaneCount,
@@ -934,7 +974,10 @@ export function synthesizeReviewArtifact(input: {
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	const recoveredLaneFindings = quality === "fully_parsed" ? [] : validatedLaneFindings;
+	// Terminal semantic validation may confirm a candidate, but it may not erase
+	// a complete host-validated lane block. Omitted candidates retain ordinary
+	// finding behavior with an explicit independent-validation advisory.
+	const recoveredLaneFindings = validatedLaneFindings;
 	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
