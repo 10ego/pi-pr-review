@@ -749,6 +749,44 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(missingExpected.mergeApprovalEligible).toBe(false);
 	});
 
+	test("does not let a strict skipped disposition suppress retained lane candidates", () => {
+		const strictJsonReview = {
+			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
+			disposition: "skipped" as const,
+			verification: "Passed.",
+			overview: "The model elected to skip.",
+			strengths: [],
+			findings: [],
+			notes: { correctness: "", security: "", performance: "" },
+			verdict: "approve",
+			overall_correctness: "patch is correct",
+			overall_explanation: "No model findings.",
+			overall_confidence_score: 0.9,
+		};
+		const candidate = [
+			"title: [P1] Preserve retained blockers",
+			"severity: P1",
+			"why: A complete host lane retained this blocking candidate.",
+			"location: src/review.ts:10-10",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const lane = { ...completeLane, rawText: candidate } satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview),
+			...binding,
+			strictJsonReview,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.review.disposition).toBe("reviewed");
+		expect(artifact.review.verdict).toBe("request_changes");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.body).toContain("Recommend validating this comment independently.");
+	});
+
 	test("omits the retained-output note when nothing was retained", () => {
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding });
 		expect(artifact.body).toContain("No host lane evidence was retained for this review.");

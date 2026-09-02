@@ -196,7 +196,8 @@ describe("validated retained lane candidates", () => {
 			"  confidence: 0.99",
 		].join("\n");
 		const oversized = integratedCandidate(`This rationale is concrete but oversized ${"word ".repeat(4_000)}`);
-		for (const malformed of [topLevelTab, yamlTab, oversized]) {
+		const oversizedPath = integratedCandidate().replace("src/a.ts:10-12", `${"nested/".repeat(700)}file.ts:10-12`);
+		for (const malformed of [topLevelTab, yamlTab, oversized, oversizedPath]) {
 			expect(extractValidatedReviewLaneCandidates(malformed), malformed.slice(0, 80)).toEqual([]);
 			expect(classifyReviewLane({ tier: "heavy", rawText: malformed, exitCode: 0, stopReason: "stop" })).toBe("partial");
 		}

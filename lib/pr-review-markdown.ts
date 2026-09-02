@@ -876,6 +876,8 @@ export function synthesizeReviewArtifact(input: {
 				: {
 						...input.strictJsonReview,
 						pr: { number: input.prNumber, title: input.prTitle, head_sha: input.headSha },
+						// A model-level skip cannot suppress complete host-retained findings.
+						disposition: strictFindings.length > 0 ? "reviewed" : input.strictJsonReview.disposition,
 						findings: strictFindings,
 						...(strictFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1")
 							? { verdict: "request_changes", overall_correctness: "patch is incorrect" }

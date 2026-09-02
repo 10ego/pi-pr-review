@@ -140,6 +140,7 @@ const PLACEHOLDER_ONLY = /^(?:none|n\/?a|na|unavailable|unknown|skipped|error|re
 const NO_FINDINGS_SENTINEL = "NO FINDINGS.";
 const MAX_CANDIDATE_TITLE_BYTES = 1_024;
 const MAX_CANDIDATE_WHY_BYTES = 16 * 1_024;
+const MAX_CANDIDATE_PATH_BYTES = 4_096;
 const CODE_FENCE = /^ {0,3}(?:`{3,}|~{3,})/m;
 const COMMONMARK_HTML_BLOCK_TAGS = [
 	"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col",
@@ -303,7 +304,8 @@ function safeLocation(value: string): boolean {
 	const start = Number(match[2]);
 	const end = match[3] === undefined ? start : Number(match[3]);
 	if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(end) || end < start) return false;
-	if (!locationPath || locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
+	if (!locationPath || Buffer.byteLength(locationPath, "utf8") > MAX_CANDIDATE_PATH_BYTES ||
+		locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
 	if (/[\\\u0000-\u001f\u007f]/.test(locationPath)) return false;
 	const segments = locationPath.split("/");
 	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
