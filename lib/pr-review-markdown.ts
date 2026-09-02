@@ -847,9 +847,11 @@ export function synthesizeReviewArtifact(input: {
 			batchEvidence ? lanes.every((lane) => lane.lifecycle === "complete") && (expectedLaneCount === 0 || exactLaneCoverage) : true,
 		);
 		const safe = publicationSafeStrictReview(input.strictJsonReview);
-		const bodyFallback = !safe || completeness === "incomplete";
+		const recoveredOverridesSkip = safe && input.strictJsonReview.disposition === "skipped" &&
+			validatedLaneFindings.length > 0;
+		const bodyFallback = !safe || completeness === "incomplete" || recoveredOverridesSkip;
 		const strictFindings = mergeUniqueFindings(
-			safe ? (input.strictJsonReview.findings ?? []) : [],
+			safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [],
 			validatedLaneFindings,
 		);
 		const body = bodyFallback
@@ -859,9 +861,11 @@ export function synthesizeReviewArtifact(input: {
 				findings: strictFindings,
 				expectedLaneCount,
 				exactCoverage: exactLaneCoverage || expectedLaneCount === 0,
-				reason: safe
-						? "incomplete lane evidence degraded this synthesis"
-						: "publication-invalid extracted content degraded this synthesis",
+				reason: recoveredOverridesSkip
+						? "retained lane findings overrode a skipped model synthesis"
+						: safe
+							? "incomplete lane evidence degraded this synthesis"
+							: "publication-invalid extracted content degraded this synthesis",
 			})
 			: "";
 		return Object.freeze({
@@ -889,9 +893,11 @@ export function synthesizeReviewArtifact(input: {
 			completeness,
 			mergeApprovalEligible: !bodyFallback,
 			diagnostics: Object.freeze(bodyFallback
-				? [safe
-					? "incomplete lane evidence degraded this synthesis"
-					: "publication-invalid extracted content degraded this synthesis"]
+				? [recoveredOverridesSkip
+					? "retained lane findings overrode a skipped model synthesis"
+					: safe
+						? "incomplete lane evidence degraded this synthesis"
+						: "publication-invalid extracted content degraded this synthesis"]
 				: []),
 		});
 	}

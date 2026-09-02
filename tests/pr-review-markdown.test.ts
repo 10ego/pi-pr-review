@@ -756,7 +756,14 @@ describe("Markdown-first canonical review artifacts", () => {
 			verification: "Passed.",
 			overview: "The model elected to skip.",
 			strengths: [],
-			findings: [],
+			findings: [{
+				title: "[P2] Keep the model skip private",
+				body: "A skipped strict result must not become publishable by itself.",
+				severity: "P2",
+				blocking: false,
+				confidence_score: 0.8,
+				code_location: null,
+			}],
 			notes: { correctness: "", security: "", performance: "" },
 			verdict: "approve",
 			overall_correctness: "patch is correct",
@@ -766,17 +773,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		const skippedWithOwnFinding = synthesizeReviewArtifact({
 			rawText: JSON.stringify(strictJsonReview),
 			...binding,
-			strictJsonReview: {
-				...strictJsonReview,
-				findings: [{
-					title: "[P2] Keep the model skip private",
-					body: "A skipped strict result must not become publishable by itself.",
-					severity: "P2",
-					blocking: false,
-					confidence_score: 0.8,
-					code_location: null,
-				}],
-			},
+			strictJsonReview,
 		});
 		expect(skippedWithOwnFinding.review.disposition).toBe("skipped");
 
@@ -801,7 +798,9 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.disposition).toBe("reviewed");
 		expect(artifact.review.verdict).toBe("request_changes");
 		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve retained blockers");
 		expect(artifact.review.findings?.[0]?.body).toContain("Recommend validating this comment independently.");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
 	});
 
 	test("omits the retained-output note when nothing was retained", () => {
@@ -1205,6 +1204,31 @@ describe("Markdown-first canonical review artifacts", () => {
 		} satisfies ReviewLaneArtifact;
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
 		expect(artifact.review.findings).toEqual([]);
+	});
+
+	test("does not let a padded ordinary clean sentinel suppress an earlier candidate", () => {
+		const candidate = [
+			"title: [P1] Preserve ordinary retained output",
+			"severity: P1",
+			"why: A padded clean sentinel is not an exact superseding contract.",
+			"location: src/security.ts:7",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const paddedClean = "  NO FINDINGS.  ";
+		const lane = {
+			generation: 1, key: "security:0", passId: "security", tier: "heavy",
+			rawText: paddedClean, exitCode: 1, lifecycle: "partial", fallbackUsed: true,
+			elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+			attempts: [
+				{ ordinal: 1, kind: "primary", rawText: candidate, exitCode: 1, lifecycle: "timed_out", retryable: true, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+				{ ordinal: 2, kind: "fallback", rawText: paddedClean, exitCode: 1, lifecycle: "partial", retryable: false, elapsedMs: 5, toolElapsedMs: 0, toolCallCount: 0 },
+			],
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
+		expect(artifact.review.findings?.[0]?.title).toBe("[P1] Preserve ordinary retained output");
 	});
 
 	test("does not let trimmed malformed deep output suppress an earlier candidate", () => {

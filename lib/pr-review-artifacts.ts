@@ -521,7 +521,7 @@ export function isValidatedReviewLaneNoFindings(
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
 ): boolean {
 	const text = normalizeReviewText(rawText);
-	if (expectedOutput === "review_lane") return /^NO FINDINGS\.?$/.test(text.trim());
+	if (expectedOutput === "review_lane") return /^NO FINDINGS\.?$/.test(text);
 	return parseIntegratedCompletion(text) && text.split("\n").some((line) => line === NO_FINDINGS_SENTINEL);
 }
 
@@ -604,7 +604,7 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 	// missing final period carries no semantic uncertainty and must not amplify
 	// into expensive replacement passes. Integrated/deep `nonempty` output keeps
 	// its exact byte contract in parseIntegratedCompletion().
-	if (/^NO FINDINGS\.?$/.test(text)) return true;
+	if (/^NO FINDINGS\.?$/.test(normalized)) return true;
 	return parseOrdinaryCandidateCompletion(normalized);
 }
 
