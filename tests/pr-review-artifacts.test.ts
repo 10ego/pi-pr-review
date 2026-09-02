@@ -133,6 +133,7 @@ describe("validated retained lane candidates", () => {
 			"- title: [P1] Restore static rendering for public pages",
 			"  severity: P1",
 			"  why: The root layout disables caching for every public page.",
+			"    This repeats server work for ordinary requests.",
 			"  location: apps/web/src/app/layout.tsx:12-12",
 			"  side: RIGHT",
 			"  in_diff: yes",
@@ -143,13 +144,23 @@ describe("validated retained lane candidates", () => {
 		expect(extractValidatedReviewLaneCandidates(yamlCandidate)).toEqual([{
 			title: "[P1] Restore static rendering for public pages",
 			severity: "P1",
-			why: "The root layout disables caching for every public page.",
+			why: "The root layout disables caching for every public page.\nThis repeats server work for ordinary requests.",
 			location: "apps/web/src/app/layout.tsx:12-12",
 			side: "RIGHT",
 			inDiff: true,
 			prRelated: true,
 			confidence: 0.99,
 		}]);
+	});
+
+	test("retains two-space why continuations for repeated list-marker candidates", () => {
+		const repeated = integratedCandidate(
+			"The changed path drops a required result.\n  This second sentence supplies the triggering context.",
+			"bold",
+		);
+		expect(classifyReviewLane({ tier: "heavy", rawText: repeated, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(repeated)).toHaveLength(1);
+		expect(extractValidatedReviewLaneCandidates(repeated)[0]?.why).toContain("This second sentence");
 	});
 
 	test("recognizes only exact validated clean lane contracts", () => {
