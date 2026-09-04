@@ -786,8 +786,8 @@ describe("host-owned malformed-output publication", () => {
 			bodyOnly: "Fallback review body",
 			reviewsJson: JSON.stringify([{ body: marker, user: { login: "reviewer" } }]),
 		});
-		expect(sameIdentity.result.status).toBe("skipped_duplicate");
-		expect(sameIdentity.postCount).toBe(0);
+		expect(sameIdentity.result.status).toBe("posted");
+		expect(sameIdentity.postCount).toBe(1);
 	});
 
 	test("rejects reserved markers before any fallback write", async () => {
@@ -1452,7 +1452,7 @@ describe("non-open publication authorization", () => {
 	});
 });
 
-describe("duplicate publication preflight", () => {
+describe("repeat publication and failure reconciliation", () => {
 	const authored = (body: string | null, login: string | null) => ({
 		body,
 		user: login === null ? null : { login },
@@ -1475,7 +1475,7 @@ describe("duplicate publication preflight", () => {
 		}
 	});
 
-	test("recognizes matching markers in valid flat reviews and slurped comments", async () => {
+	test("allows another review when the same identity already marked this head", async () => {
 		const marker = canonicalReviewMarker("a".repeat(40));
 		for (const responses of [
 			{
@@ -1488,13 +1488,26 @@ describe("duplicate publication preflight", () => {
 			},
 		]) {
 			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
-			expect(diagnostic.result.status).toBe("skipped_duplicate");
-			expect(diagnostic.postCount).toBe(0);
-			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+			expect(diagnostic.result.status).toBe("posted");
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+			expect(diagnostic.calls.some((call) => call.includes("reviews?per_page"))).toBeFalse();
+			expect(diagnostic.calls.some((call) => call.includes("comments?per_page"))).toBeFalse();
 		}
 	});
 
-	test("fails closed on malformed duplicate response shapes before any POST", async () => {
+	test("uses an existing marker only to reconcile an uncertain write", async () => {
+		const marker = canonicalReviewMarker("a".repeat(40));
+		const diagnostic = await diagnosePullPublication(review, changedFiles, {
+			postFailure: "gh: HTTP 500: uncertain response",
+			reviewsJson: JSON.stringify([authored(marker, "reviewer")]),
+		});
+		expect(diagnostic.postCount).toBe(1);
+		expect(diagnostic.result.status).toBe("posted");
+		expect(diagnostic.result.reconciled).toBeTrue();
+	});
+
+	test("fails closed on malformed reconciliation response shapes after one POST", async () => {
 		for (const responses of [
 			{ reviewsJson: "not-json" },
 			{ commentsJson: JSON.stringify({ body: "not an array" }) },
@@ -1503,11 +1516,14 @@ describe("duplicate publication preflight", () => {
 			{ reviewsJson: JSON.stringify([[{ body: false, user: { login: "another-user" } }]]) },
 			{ commentsJson: JSON.stringify([{}]) },
 		]) {
-			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
-			expect(diagnostic.result.status).toBe("failed");
-			expect(diagnostic.result.message).toContain("GitHub preflight failed");
-			expect(diagnostic.postCount).toBe(0);
-			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+			const diagnostic = await diagnosePullPublication(review, changedFiles, {
+				...responses,
+				postFailure: "gh: HTTP 500: uncertain response",
+			});
+			expect(diagnostic.result.status).toBe("indeterminate");
+			expect(diagnostic.result.message).toContain("uncertain response");
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		}
 	});
 });

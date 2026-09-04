@@ -2081,9 +2081,6 @@ export async function publishPullReviewBody(input: {
 			const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
 			isOpen = lifecycle.lifecycle === "open";
-			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
-				return { status: "skipped_duplicate", message: "same head already reviewed by this GitHub identity" };
-			}
 		} catch (error) {
 			return { status: "failed", message: `GitHub preflight failed: ${String(error)}` };
 		}
@@ -2246,9 +2243,6 @@ export async function publishPullReview(input: {
 			if (pull.draft) return { status: "failed", message: "draft PR reviews are not automatically published" };
 			const lifecycle = authorizePullLifecycle(pull.state, pull.merged_at, allowNonOpen);
 			if (!lifecycle.lifecycle) return { status: "failed", message: lifecycle.error ?? "invalid PR lifecycle" };
-			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
-				return { status: "skipped_duplicate", message: "same head already reviewed by this GitHub identity" };
-			}
 		} catch (error) {
 			return { status: "failed", message: `GitHub preflight failed: ${String(error)}` };
 		}
