@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.10](https://github.com/10ego/pi-pr-review/compare/v1.17.9...v1.17.10) (2026-09-04)
+
+
+### Bug Fixes
+
+* **review:** allow repeat review publication ([#142](https://github.com/10ego/pi-pr-review/issues/142)) ([0fed87e](https://github.com/10ego/pi-pr-review/commit/0fed87e5da3f6e2cc6a18c6d048e934149190376))
+
 ## [1.17.9](https://github.com/10ego/pi-pr-review/compare/v1.17.8...v1.17.9) (2026-09-02)
 
 
