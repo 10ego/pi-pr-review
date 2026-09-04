@@ -228,6 +228,7 @@ async function diagnosePullPublication(
 		filesJson?: string;
 		reviewsJson?: string;
 		commentsJson?: string;
+		reconcilePostedPayload?: boolean;
 		state?: string;
 		mergedAt?: string | null;
 		allowNonOpen?: boolean;
@@ -274,7 +275,11 @@ elif [[ "$args" == *"--method POST"* ]]; then
   fi
   echo '{"id":44,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-44"}'
 elif [[ "$args" == *"pulls/7/reviews?per_page=100"* ]]; then
-  cat "$GH_FAKE_REVIEWS"
+  if [[ "\${GH_FAKE_RECONCILE_POSTED:-}" == "1" ]]; then
+    jq -n --arg body "$(jq -r .body "$GH_FAKE_PAYLOAD")" '[{"body":$body,"user":{"login":"reviewer"}}]'
+  else
+    cat "$GH_FAKE_REVIEWS"
+  fi
 elif [[ "$args" == *"issues/7/comments?per_page=100"* ]]; then
   cat "$GH_FAKE_COMMENTS"
 elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
@@ -299,6 +304,7 @@ fi
 		GH_FAKE_FILES_FAILURE: process.env.GH_FAKE_FILES_FAILURE,
 		GH_FAKE_REVIEWS: process.env.GH_FAKE_REVIEWS,
 		GH_FAKE_COMMENTS: process.env.GH_FAKE_COMMENTS,
+		GH_FAKE_RECONCILE_POSTED: process.env.GH_FAKE_RECONCILE_POSTED,
 		GH_FAKE_PAYLOAD: process.env.GH_FAKE_PAYLOAD,
 		GH_FAKE_POST_FAILURE: process.env.GH_FAKE_POST_FAILURE,
 		GH_FAKE_POST_SENTINEL: process.env.GH_FAKE_POST_SENTINEL,
@@ -314,6 +320,8 @@ fi
 	else process.env.GH_FAKE_FILES_FAILURE = options.filesFailure;
 	process.env.GH_FAKE_REVIEWS = reviewsPath;
 	process.env.GH_FAKE_COMMENTS = commentsPath;
+	if (options.reconcilePostedPayload) process.env.GH_FAKE_RECONCILE_POSTED = "1";
+	else delete process.env.GH_FAKE_RECONCILE_POSTED;
 	process.env.GH_FAKE_PAYLOAD = payloadPath;
 	if (options.postFailure === undefined) delete process.env.GH_FAKE_POST_FAILURE;
 	else process.env.GH_FAKE_POST_FAILURE = options.postFailure;
@@ -1496,15 +1504,23 @@ describe("repeat publication and failure reconciliation", () => {
 		}
 	});
 
-	test("uses an existing marker only to reconcile an uncertain write", async () => {
-		const marker = canonicalReviewMarker("a".repeat(40));
-		const diagnostic = await diagnosePullPublication(review, changedFiles, {
+	test("reconciles only the unique marker from the uncertain write", async () => {
+		const reconciled = await diagnosePullPublication(review, changedFiles, {
 			postFailure: "gh: HTTP 500: uncertain response",
-			reviewsJson: JSON.stringify([authored(marker, "reviewer")]),
+			reconcilePostedPayload: true,
 		});
-		expect(diagnostic.postCount).toBe(1);
-		expect(diagnostic.result.status).toBe("posted");
-		expect(diagnostic.result.reconciled).toBeTrue();
+		expect(reconciled.postCount).toBe(1);
+		expect(reconciled.result.status).toBe("posted");
+		expect(reconciled.result.reconciled).toBeTrue();
+
+		const olderMarker = canonicalReviewMarker("a".repeat(40));
+		const notReconciled = await diagnosePullPublication(review, changedFiles, {
+			postFailure: "gh: HTTP 500: uncertain response",
+			reviewsJson: JSON.stringify([authored(olderMarker, "reviewer")]),
+		});
+		expect(notReconciled.postCount).toBe(1);
+		expect(notReconciled.result.status).toBe("indeterminate");
+		expect(notReconciled.result.reconciled).toBeUndefined();
 	});
 
 	test("fails closed on malformed reconciliation response shapes after one POST", async () => {

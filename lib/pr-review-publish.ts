@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { classifyReviewLane, type ExpectedReviewLane, type ReviewLaneArtifact } from "./pr-review-artifacts.ts";
 import { synthesizeReviewArtifact, type ReviewSynthesisCompleteness } from "./pr-review-markdown.ts";
 import { monotonicNow, type MonotonicNow } from "./pr-review-telemetry.ts";
@@ -489,6 +489,10 @@ export class ReviewInvocationGate {
 
 export function canonicalReviewMarker(headSha: string): string {
 	return `<!-- pi-pr-review: {"schema":1,"headRefOid":"${headSha.toLowerCase()}"} -->`;
+}
+
+function canonicalPublicationAttemptMarker(headSha: string, attemptId: string): string {
+	return `<!-- pi-pr-review: {"schema":2,"headRefOid":"${headSha.toLowerCase()}","publicationAttemptId":"${attemptId}"} -->`;
 }
 
 export function githubApiArgs(hostname: string, ...args: string[]): string[] {
@@ -1514,6 +1518,7 @@ function buildLosslessReviewPayload(input: {
 	review: ReviewLike;
 	commitId: string;
 	markerHeadSha: string;
+	publicationAttemptId: string;
 	allowInlineComments: boolean;
 	changedFiles?: readonly ChangedFileLike[];
 	bodyPreamble?: string;
@@ -1553,7 +1558,10 @@ function buildLosslessReviewPayload(input: {
 		content = `${content}\n\n${input.publicationNotice.trim()}`;
 	}
 	if (input.bodyPreamble?.trim()) content = `${input.bodyPreamble.trim()}\n\n${content}`;
-	const marker = canonicalReviewMarker(markerHeadSha);
+	const marker = [
+		canonicalReviewMarker(markerHeadSha),
+		canonicalPublicationAttemptMarker(markerHeadSha, input.publicationAttemptId),
+	].join("\n");
 	const bodyError = validateReviewBody(content);
 	if (bodyError) return { diagnostics, errors: [bodyError] };
 	const body = `${content}\n\n${marker}`;
@@ -1858,6 +1866,19 @@ export function bodyHasHeadMarker(body: string | null | undefined, normalizedHea
 	return false;
 }
 
+function bodyHasPublicationAttemptMarker(
+	body: string | null | undefined,
+	normalizedHeadSha: string,
+	publicationAttemptId: string,
+): boolean {
+	if (!body) return false;
+	const marker = /<!-- pi-pr-review: \{"schema":2,"headRefOid":"([0-9a-f]{40}(?:[0-9a-f]{24})?)","publicationAttemptId":"([0-9a-f-]{36})"\} -->/gi;
+	for (const match of body.matchAll(marker)) {
+		if (match[1]?.toLowerCase() === normalizedHeadSha && match[2] === publicationAttemptId) return true;
+	}
+	return false;
+}
+
 async function hasExistingMarker(
 	cwd: string,
 	hostname: string,
@@ -1865,6 +1886,7 @@ async function hasExistingMarker(
 	prNumber: number,
 	identity: string,
 	normalizedHeadSha: string,
+	publicationAttemptId: string,
 ): Promise<boolean> {
 	const reviewPages = await ghJson<unknown>(
 		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/pulls/${prNumber}/reviews?per_page=100`),
@@ -1881,7 +1903,7 @@ async function hasExistingMarker(
 	return [...reviews, ...comments].some(
 		(item) =>
 			item.user?.login?.toLowerCase() === identity.toLowerCase() &&
-			bodyHasHeadMarker(item.body, normalizedHeadSha),
+			bodyHasPublicationAttemptMarker(item.body, normalizedHeadSha, publicationAttemptId),
 	);
 }
 
@@ -2069,6 +2091,7 @@ export async function publishPullReviewBody(input: {
 
 	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
 	return withPublishLock(lockKey, async () => {
+		const publicationAttemptId = randomUUID();
 		let pull: PullState;
 		let headPlan: HeadPublicationPlan;
 		let isOpen: boolean;
@@ -2088,7 +2111,7 @@ export async function publishPullReviewBody(input: {
 		const content = headPlan.stale
 			? `${buildStaleReviewNotice(headPlan.reviewedHeadSha, headPlan.currentHeadSha)}\n\n${body.trim()}`
 			: body.trim();
-		const finalBody = `${content}\n\n${canonicalReviewMarker(normalizedHeadSha)}`;
+		const finalBody = `${content}\n\n${canonicalReviewMarker(normalizedHeadSha)}\n${canonicalPublicationAttemptMarker(normalizedHeadSha, publicationAttemptId)}`;
 		if (Buffer.byteLength(finalBody, "utf8") > MAX_BODY_BYTES) {
 			return { status: "failed", message: "publication planning failed: final review body exceeds 65536 UTF-8 bytes" };
 		}
@@ -2140,7 +2163,7 @@ export async function publishPullReviewBody(input: {
 		}
 
 		try {
-			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
+			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha, publicationAttemptId)) {
 				return {
 					status: degraded ? "posted_degraded" : "posted",
 					message: "GitHub COMMENT review found during failure reconciliation",
@@ -2233,6 +2256,7 @@ export async function publishPullReview(input: {
 
 	const lockKey = `${hostname}:${repository}:${prNumber}:${normalizedHeadSha}:${identity.toLowerCase()}`;
 	return withPublishLock(lockKey, async () => {
+		const publicationAttemptId = randomUUID();
 		let pull: PullState;
 		let headPlan: HeadPublicationPlan;
 		try {
@@ -2282,6 +2306,7 @@ export async function publishPullReview(input: {
 			review: validatedReview,
 			commitId: headPlan.commitId,
 			markerHeadSha: normalizedHeadSha,
+			publicationAttemptId,
 			allowInlineComments,
 			changedFiles,
 			...(publicationBody ? { bodyOverride: publicationBody } : {}),
@@ -2355,7 +2380,7 @@ export async function publishPullReview(input: {
 		}
 
 		try {
-			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha)) {
+			if (await hasExistingMarker(cwd, hostname, repository, prNumber, identity, normalizedHeadSha, publicationAttemptId)) {
 				return {
 					status: degraded ? "posted_degraded" : "posted",
 					message: `GitHub ${eventLabel} review found during failure reconciliation${inlineWarning}`,

@@ -328,7 +328,7 @@ Configure it with `/pr-review-config approve_max_priority_level=P2`. To permit a
 - GitHub writes require `--comment`, an effective `autoPostReviews: true` setting, the model-free `/pr-review-publish` command, or a narrowly matched direct interactive/RPC publish request handled by the extension before an agent turn. `allowStalePublish` controls whether an invocation/config-authorized write may be stale; it does not independently authorize a write.
 - Publication authority is captured before review or optional verification begins, so PR code cannot enable it mid-run.
 - Multiple model calls run per PR. Use a cheaper `light` model and reserve stronger models for `heavy` passes to control cost.
-- Same-head review markers prevent duplicate publication by the same GitHub identity.
+- Same-head reviews may be repeated; a unique per-publication marker reconciles only the exact attempted write after an uncertain response.
 
 ## Development
 
