@@ -1508,6 +1508,7 @@ describe("repeat publication and failure reconciliation", () => {
 		const reconciled = await diagnosePullPublication(review, changedFiles, {
 			postFailure: "gh: HTTP 500: uncertain response",
 			reconcilePostedPayload: true,
+			commentsJson: "not-json-and-must-not-be-read",
 		});
 		expect(reconciled.postCount).toBe(1);
 		expect(reconciled.result.status).toBe("posted");
@@ -1526,11 +1527,11 @@ describe("repeat publication and failure reconciliation", () => {
 	test("fails closed on malformed reconciliation response shapes after one POST", async () => {
 		for (const responses of [
 			{ reviewsJson: "not-json" },
-			{ commentsJson: JSON.stringify({ body: "not an array" }) },
+			{ reviewsJson: JSON.stringify({ body: "not an array" }) },
 			{ reviewsJson: JSON.stringify([[], authored("mixed", "another-user")]) },
-			{ commentsJson: JSON.stringify([42]) },
+			{ reviewsJson: JSON.stringify([42]) },
 			{ reviewsJson: JSON.stringify([[{ body: false, user: { login: "another-user" } }]]) },
-			{ commentsJson: JSON.stringify([{}]) },
+			{ reviewsJson: JSON.stringify([{}]) },
 		]) {
 			const diagnostic = await diagnosePullPublication(review, changedFiles, {
 				...responses,

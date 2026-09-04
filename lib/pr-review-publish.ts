@@ -1894,13 +1894,10 @@ async function hasExistingMarker(
 	);
 	const reviews = normalizeAuthoredBodyPages(reviewPages);
 	if (!reviews) throw new Error("invalid paginated pull review response");
-	const commentPages = await ghJson<unknown>(
-		githubApiArgs(hostname, "--paginate", "--slurp", `repos/${repository}/issues/${prNumber}/comments?per_page=100`),
-		cwd,
-	);
-	const comments = normalizeAuthoredBodyPages(commentPages);
-	if (!comments) throw new Error("invalid paginated issue comment response");
-	return [...reviews, ...comments].some(
+	// The attempted write targets the formal review endpoint. Issue comments
+	// cannot prove that POST succeeded and must not make reconciliation depend on
+	// an unrelated API read.
+	return reviews.some(
 		(item) =>
 			item.user?.login?.toLowerCase() === identity.toLowerCase() &&
 			bodyHasPublicationAttemptMarker(item.body, normalizedHeadSha, publicationAttemptId),
