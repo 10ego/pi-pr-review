@@ -421,7 +421,9 @@ function notifyPublishResult(
 	} else if (result.status === "posted_degraded") {
 		ctx.ui.notify(`PR review posted (${source}): ${result.message}${result.url ? ` ${result.url}` : ""}`, "warning");
 	} else if (result.status === "skipped_duplicate") {
-		ctx.ui.notify("PR review not reposted: this reviewed head was already posted by the current GitHub identity", "info");
+		// Compatibility for restored historical telemetry/results; current
+		// publication permits deliberate repeat reviews of the same head.
+		ctx.ui.notify("PR review not reposted: historical duplicate result", "info");
 	} else {
 		ctx.ui.notify(`PR review publish ${result.status}: ${result.message}`, "error");
 	}
@@ -1174,7 +1176,7 @@ export default function registerReviewTable(
 				// invocation retained actual review-lane evidence for this generation
 				// AND the assembled degraded Markdown input is nonempty. Eligibility
 				// is never inferred from assistant prose: absent-synthesis sessions
-				// and same-head skip notices have no lane evidence and must not run.
+				// and other no-lane terminal records must not run.
 				const eligibility = decideExtractionEligibility(artifact.rawText, laneArtifacts);
 				if (!eligibility.eligible) {
 					// Privacy-safe not-run telemetry: an explicit stable reason, never

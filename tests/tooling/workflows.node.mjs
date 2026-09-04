@@ -58,9 +58,24 @@ describe("release workflow trust boundaries", () => {
 		rejects({ release: replaceOnce(release, "    permissions:\n      contents: read\n    outputs:\n      artifact_digest:", "    permissions:\n      contents: read\n      id-token: write\n    outputs:\n      artifact_digest:") }, /package must not receive OIDC/);
 	});
 
+	test("requires one lifecycle-script-disabled locked install in test boundaries", () => {
+		const command = "run: npm ci --ignore-scripts --no-audit --fund=false";
+		rejects({ pullRequest: replaceOnce(pullRequest, command, "run: npm install") }, /locked dependencies|dependency installation/);
+		rejects({ release: replaceOnce(release, command, "run: npm ci") }, /locked dependencies/);
+		rejects({ pullRequest: replaceOnce(pullRequest, command, `${command}\n\n      - name: Unsafe second install\n        run: npm ci`) }, /exactly one dependency installation/);
+		const installStep = "      - name: Install locked test dependencies without lifecycle scripts\n        run: npm ci --ignore-scripts --no-audit --fund=false\n\n";
+		const testStep = "      - name: Run tests in isolated Bun processes\n        run: node scripts/run-bun-tests.mjs";
+		const reordered = replaceOnce(pullRequest, installStep, "").replace(testStep, `${testStep}\n\n${installStep.trimEnd()}`);
+		rejects({ pullRequest: reordered }, /install must precede tests/);
+	});
+
 	test("rejects unreviewed Node or Bun versions", () => {
 		rejects({ pullRequest: replaceOnce(pullRequest, "node-version: 24.18.0", "node-version: 24") }, /reviewed Node 24 release/);
 		rejects({ release: replaceFirst(release, "bun-version: 1.3.14", "bun-version: latest") }, /reviewed Bun release/);
+	});
+
+	test("keeps isolated release validators aligned with the Pi peer contract", () => {
+		rejects({ release: replaceFirst(release, '"@earendil-works/pi-tui": ">=0.84.4"', '"@earendil-works/pi-tui": "*"') }, /release package boundaries must require/);
 	});
 
 	test("rejects repository execution in the fresh package boundary", () => {

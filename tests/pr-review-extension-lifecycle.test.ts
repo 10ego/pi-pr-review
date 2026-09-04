@@ -2347,9 +2347,16 @@ describe("end-to-end review posting invariants", () => {
 			payloads[postingPath] = payload!;
 		}
 
-		expect(payloads.comment).toEqual(payloads.automatic);
-		expect(payloads.slash).toEqual(payloads.automatic);
-		expect(payloads.direct).toEqual(payloads.automatic);
+		const normalizeAttemptMarker = (payload: Record<string, unknown>) => ({
+			...payload,
+			body: String(payload.body).replace(
+				/"publicationAttemptId":"[0-9a-f-]{36}"/,
+				'"publicationAttemptId":"<attempt>"',
+			),
+		});
+		expect(normalizeAttemptMarker(payloads.comment)).toEqual(normalizeAttemptMarker(payloads.automatic));
+		expect(normalizeAttemptMarker(payloads.slash)).toEqual(normalizeAttemptMarker(payloads.automatic));
+		expect(normalizeAttemptMarker(payloads.direct)).toEqual(normalizeAttemptMarker(payloads.automatic));
 		expect(payloads.automatic.event).toBe("COMMENT");
 		expect(payloads.automatic.body).toContain("**Verdict:** Approve");
 		expect(payloads.automatic.body).not.toContain("Checks lifecycle persistence.");
@@ -2466,7 +2473,7 @@ describe("end-to-end review posting invariants", () => {
 			expect(probe.postCount()).toBe(1);
 			expect(postIndexes).toHaveLength(1);
 			expect(reconciliationCalls.some((call) => call.includes("pulls/7/reviews?per_page=100"))).toBeTrue();
-			expect(reconciliationCalls.some((call) => call.includes("issues/7/comments?per_page=100"))).toBeTrue();
+			expect(reconciliationCalls.some((call) => call.includes("issues/7/comments?per_page=100"))).toBeFalse();
 			expect(harness.notifications.some((message) => message.includes("publish failed"))).toBeTrue();
 		}
 	});

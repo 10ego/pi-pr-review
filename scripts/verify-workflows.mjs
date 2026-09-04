@@ -53,7 +53,14 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	assertIncludes(pullRequest, "persist-credentials: false", "pull-request checkout must not persist its token");
 	invariant(occurrences(pullRequest, /^\s+node-version: 24\.18\.0$/gm) === 1, "pull-request CI must use the reviewed Node 24 release");
 	invariant(occurrences(pullRequest, /^\s+bun-version: 1\.3\.14$/gm) === 1, "pull-request CI must use the reviewed Bun release");
-	assertIncludes(pullRequest, "run: bun test", "pull-request CI must run the Bun test suite");
+	assertIncludes(pullRequest, "run: node scripts/verify-test-lockfile.mjs", "pull-request CI must verify lock integrity before installation");
+	assertIncludes(pullRequest, "run: npm ci --ignore-scripts --no-audit --fund=false", "pull-request CI must install only locked dependencies with lifecycle scripts disabled");
+	invariant(occurrences(pullRequest, /\bnpm\s+(?:ci|install)\b/g) === 1, "pull-request CI must perform exactly one dependency installation");
+	assertIncludes(pullRequest, "run: node scripts/run-bun-tests.mjs", "pull-request CI must run isolated Bun test processes");
+	const pullLockIndex = pullRequest.indexOf("run: node scripts/verify-test-lockfile.mjs");
+	const pullInstallIndex = pullRequest.indexOf("run: npm ci --ignore-scripts --no-audit --fund=false");
+	const pullTestIndex = pullRequest.indexOf("run: node scripts/run-bun-tests.mjs");
+	invariant(pullLockIndex !== -1 && pullLockIndex < pullInstallIndex && pullInstallIndex < pullTestIndex, "pull-request lock verification and install must precede tests");
 	assertIncludes(pullRequest, "npm run test:tooling", "pull-request CI must run tooling policy tests");
 	assertIncludes(pullRequest, "npm run verify:workflows", "pull-request CI must verify workflow policy");
 	assertIncludes(pullRequest, "npm run verify:package", "pull-request CI must inspect the package with scripts disabled");
@@ -83,17 +90,29 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	invariant(occurrences(release, /\bsecrets(?:\.|\[)/g) === 1, "only release may reference one environment secret");
 	invariant(occurrences(release, /actions\/create-github-app-token@/g) === 1, "only release may create an App token");
 	invariant(!/(?:steps\.release|needs\.release)\.outputs\.version/.test(release), "workflow must derive versions from documented tag_name output");
+	for (const [name, range] of Object.entries({
+		"@earendil-works/pi-ai": ">=0.84.4",
+		"@earendil-works/pi-coding-agent": ">=0.84.4",
+		"@earendil-works/pi-tui": ">=0.84.4",
+	})) {
+		const serialized = `"${name}": "${range}"`;
+		invariant(occurrences(release, new RegExp(serialized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) === 2, `release package boundaries must require ${serialized} exactly twice`);
+	}
 
 	invariant(!/\benvironment:/.test(validate), "validate must not enter an environment");
 	invariant(!/\bid-token:/.test(validate), "validate must not receive OIDC");
 	invariant(!/\bsecrets(?:\.|\[)/.test(validate), "validate must not reference secrets");
 	assertIncludes(validate, "persist-credentials: false", "validate checkout must not persist credentials");
-	assertIncludes(validate, "run: bun test", "validate must run the Bun test suite");
+	assertIncludes(validate, "run: node scripts/verify-test-lockfile.mjs", "validate must verify lock integrity before installation");
+	assertIncludes(validate, "run: npm ci --ignore-scripts --no-audit --fund=false", "validate must install only locked dependencies with lifecycle scripts disabled");
+	invariant(occurrences(validate, /\bnpm\s+(?:ci|install)\b/g) === 1, "validate must perform exactly one dependency installation");
+	assertIncludes(validate, "run: node scripts/run-bun-tests.mjs", "validate must run isolated Bun test processes");
 	assertIncludes(validate, "npm run verify:package", "validate must inspect the release package");
-	invariant(!/\bnpm\s+(?:ci|install)\b/.test(validate), "validate must not install npm packages");
 	const ancestryIndex = validate.indexOf("Verify tag identity and main ancestry before source execution");
-	const testIndex = validate.indexOf("run: bun test");
-	invariant(ancestryIndex !== -1 && testIndex > ancestryIndex, "tag identity and ancestry must be verified before source execution");
+	const lockIndex = validate.indexOf("run: node scripts/verify-test-lockfile.mjs");
+	const installIndex = validate.indexOf("run: npm ci --ignore-scripts --no-audit --fund=false");
+	const testIndex = validate.indexOf("run: node scripts/run-bun-tests.mjs");
+	invariant(ancestryIndex !== -1 && ancestryIndex < lockIndex && lockIndex < installIndex && installIndex < testIndex, "tag identity, lock verification, and install must precede tests in order");
 
 	invariant(!/\benvironment:/.test(packageJob), "package must not enter an environment");
 	invariant(!/\bid-token:/.test(packageJob), "package must not receive OIDC");

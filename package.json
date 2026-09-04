@@ -51,19 +51,26 @@
   },
   "scripts": {
     "test": "bun test",
-    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/extraction-tally.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/pr-review-dogfood-report.node.mjs tests/tooling/review-semantic-benchmark.node.mjs tests/tooling/workflows.node.mjs",
+    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/extraction-tally.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/pr-review-dogfood-report.node.mjs tests/tooling/review-semantic-benchmark.node.mjs tests/tooling/test-lockfile.node.mjs tests/tooling/workflows.node.mjs",
     "dogfood:report": "node tests/tooling/pr-review-dogfood-report.mjs",
     "benchmark:review": "node tests/tooling/review-semantic-benchmark.mjs",
     "benchmark:review:collect": "bun tests/tooling/review-semantic-collect.mjs",
     "verify:release-version": "node scripts/verify-release-version.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
-    "verify:workflows": "node scripts/verify-workflows.mjs"
+    "verify:workflows": "node scripts/verify-workflows.mjs",
+    "verify:test-lockfile": "node scripts/verify-test-lockfile.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=0.80.5",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.84.4",
+    "@earendil-works/pi-coding-agent": ">=0.84.4",
+    "@earendil-works/pi-tui": ">=0.84.4",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
+    "typebox": "1.3.7"
   },
   "pi": {
     "extensions": [

@@ -228,6 +228,7 @@ async function diagnosePullPublication(
 		filesJson?: string;
 		reviewsJson?: string;
 		commentsJson?: string;
+		reconcilePostedPayload?: boolean;
 		state?: string;
 		mergedAt?: string | null;
 		allowNonOpen?: boolean;
@@ -274,7 +275,11 @@ elif [[ "$args" == *"--method POST"* ]]; then
   fi
   echo '{"id":44,"html_url":"https://github.com/owner/repo/pull/7#pullrequestreview-44"}'
 elif [[ "$args" == *"pulls/7/reviews?per_page=100"* ]]; then
-  cat "$GH_FAKE_REVIEWS"
+  if [[ "\${GH_FAKE_RECONCILE_POSTED:-}" == "1" ]]; then
+    jq -n --arg body "$(jq -r .body "$GH_FAKE_PAYLOAD")" '[{"body":$body,"user":{"login":"reviewer"}}]'
+  else
+    cat "$GH_FAKE_REVIEWS"
+  fi
 elif [[ "$args" == *"issues/7/comments?per_page=100"* ]]; then
   cat "$GH_FAKE_COMMENTS"
 elif [[ "$args" == *"pulls/7/files?per_page=100"* ]]; then
@@ -299,6 +304,7 @@ fi
 		GH_FAKE_FILES_FAILURE: process.env.GH_FAKE_FILES_FAILURE,
 		GH_FAKE_REVIEWS: process.env.GH_FAKE_REVIEWS,
 		GH_FAKE_COMMENTS: process.env.GH_FAKE_COMMENTS,
+		GH_FAKE_RECONCILE_POSTED: process.env.GH_FAKE_RECONCILE_POSTED,
 		GH_FAKE_PAYLOAD: process.env.GH_FAKE_PAYLOAD,
 		GH_FAKE_POST_FAILURE: process.env.GH_FAKE_POST_FAILURE,
 		GH_FAKE_POST_SENTINEL: process.env.GH_FAKE_POST_SENTINEL,
@@ -314,6 +320,8 @@ fi
 	else process.env.GH_FAKE_FILES_FAILURE = options.filesFailure;
 	process.env.GH_FAKE_REVIEWS = reviewsPath;
 	process.env.GH_FAKE_COMMENTS = commentsPath;
+	if (options.reconcilePostedPayload) process.env.GH_FAKE_RECONCILE_POSTED = "1";
+	else delete process.env.GH_FAKE_RECONCILE_POSTED;
 	process.env.GH_FAKE_PAYLOAD = payloadPath;
 	if (options.postFailure === undefined) delete process.env.GH_FAKE_POST_FAILURE;
 	else process.env.GH_FAKE_POST_FAILURE = options.postFailure;
@@ -786,8 +794,8 @@ describe("host-owned malformed-output publication", () => {
 			bodyOnly: "Fallback review body",
 			reviewsJson: JSON.stringify([{ body: marker, user: { login: "reviewer" } }]),
 		});
-		expect(sameIdentity.result.status).toBe("skipped_duplicate");
-		expect(sameIdentity.postCount).toBe(0);
+		expect(sameIdentity.result.status).toBe("posted");
+		expect(sameIdentity.postCount).toBe(1);
 	});
 
 	test("rejects reserved markers before any fallback write", async () => {
@@ -1452,7 +1460,7 @@ describe("non-open publication authorization", () => {
 	});
 });
 
-describe("duplicate publication preflight", () => {
+describe("repeat publication and failure reconciliation", () => {
 	const authored = (body: string | null, login: string | null) => ({
 		body,
 		user: login === null ? null : { login },
@@ -1475,7 +1483,7 @@ describe("duplicate publication preflight", () => {
 		}
 	});
 
-	test("recognizes matching markers in valid flat reviews and slurped comments", async () => {
+	test("allows another review when the same identity already marked this head", async () => {
 		const marker = canonicalReviewMarker("a".repeat(40));
 		for (const responses of [
 			{
@@ -1488,26 +1496,51 @@ describe("duplicate publication preflight", () => {
 			},
 		]) {
 			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
-			expect(diagnostic.result.status).toBe("skipped_duplicate");
-			expect(diagnostic.postCount).toBe(0);
-			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+			expect(diagnostic.result.status).toBe("posted");
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
+			expect(diagnostic.calls.some((call) => call.includes("reviews?per_page"))).toBeFalse();
+			expect(diagnostic.calls.some((call) => call.includes("comments?per_page"))).toBeFalse();
 		}
 	});
 
-	test("fails closed on malformed duplicate response shapes before any POST", async () => {
+	test("reconciles only the unique marker from the uncertain write", async () => {
+		const reconciled = await diagnosePullPublication(review, changedFiles, {
+			postFailure: "gh: HTTP 500: uncertain response",
+			reconcilePostedPayload: true,
+			commentsJson: "not-json-and-must-not-be-read",
+		});
+		expect(reconciled.postCount).toBe(1);
+		expect(reconciled.result.status).toBe("posted");
+		expect(reconciled.result.reconciled).toBeTrue();
+
+		const olderMarker = canonicalReviewMarker("a".repeat(40));
+		const notReconciled = await diagnosePullPublication(review, changedFiles, {
+			postFailure: "gh: HTTP 500: uncertain response",
+			reviewsJson: JSON.stringify([authored(olderMarker, "reviewer")]),
+		});
+		expect(notReconciled.postCount).toBe(1);
+		expect(notReconciled.result.status).toBe("indeterminate");
+		expect(notReconciled.result.reconciled).toBeUndefined();
+	});
+
+	test("fails closed on malformed reconciliation response shapes after one POST", async () => {
 		for (const responses of [
 			{ reviewsJson: "not-json" },
-			{ commentsJson: JSON.stringify({ body: "not an array" }) },
+			{ reviewsJson: JSON.stringify({ body: "not an array" }) },
 			{ reviewsJson: JSON.stringify([[], authored("mixed", "another-user")]) },
-			{ commentsJson: JSON.stringify([42]) },
+			{ reviewsJson: JSON.stringify([42]) },
 			{ reviewsJson: JSON.stringify([[{ body: false, user: { login: "another-user" } }]]) },
-			{ commentsJson: JSON.stringify([{}]) },
+			{ reviewsJson: JSON.stringify([{}]) },
 		]) {
-			const diagnostic = await diagnosePullPublication(review, changedFiles, responses);
-			expect(diagnostic.result.status).toBe("failed");
-			expect(diagnostic.result.message).toContain("GitHub preflight failed");
-			expect(diagnostic.postCount).toBe(0);
-			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toEqual([]);
+			const diagnostic = await diagnosePullPublication(review, changedFiles, {
+				...responses,
+				postFailure: "gh: HTTP 500: uncertain response",
+			});
+			expect(diagnostic.result.status).toBe("indeterminate");
+			expect(diagnostic.result.message).toContain("uncertain response");
+			expect(diagnostic.postCount).toBe(1);
+			expect(diagnostic.calls.filter((call) => call.includes("--method POST"))).toHaveLength(1);
 		}
 	});
 });

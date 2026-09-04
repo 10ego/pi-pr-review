@@ -288,8 +288,7 @@ function buildExtractionInputFromSnapshots(
  * start only when the invocation has actual retained host review-lane
  * evidence AND the assembled degraded Markdown input is nonempty after
  * trim. Eligibility is never inferred from assistant prose: absent-synthesis
- * sessions and same-head skip notices have no lane evidence and must not
- * launch the child. Malformed lane artifacts (non-string rawText, null
+ * sessions and other no-lane terminal records must not launch the child. Malformed lane artifacts (non-string rawText, null
  * entries, throwing getters) are evidence-less and never abort the decision.
  * The decision returns the assembled input only when eligible, so the caller
  * never builds a second copy.
