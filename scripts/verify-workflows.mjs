@@ -53,6 +53,9 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	assertIncludes(pullRequest, "persist-credentials: false", "pull-request checkout must not persist its token");
 	invariant(occurrences(pullRequest, /^\s+node-version: 24\.18\.0$/gm) === 1, "pull-request CI must use the reviewed Node 24 release");
 	invariant(occurrences(pullRequest, /^\s+bun-version: 1\.3\.14$/gm) === 1, "pull-request CI must use the reviewed Bun release");
+	assertIncludes(pullRequest, "run: npm ci --ignore-scripts --no-audit --fund=false", "pull-request CI must install only locked dependencies with lifecycle scripts disabled");
+	invariant(occurrences(pullRequest, /^\s+run: npm ci --ignore-scripts --no-audit --fund=false$/gm) === 1, "pull-request CI must perform exactly one reviewed locked install");
+	invariant(!/\bnpm\s+install\b/.test(pullRequest), "pull-request CI must not use an unlocked npm install");
 	assertIncludes(pullRequest, "run: bun test", "pull-request CI must run the Bun test suite");
 	assertIncludes(pullRequest, "npm run test:tooling", "pull-request CI must run tooling policy tests");
 	assertIncludes(pullRequest, "npm run verify:workflows", "pull-request CI must verify workflow policy");
@@ -88,9 +91,11 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	invariant(!/\bid-token:/.test(validate), "validate must not receive OIDC");
 	invariant(!/\bsecrets(?:\.|\[)/.test(validate), "validate must not reference secrets");
 	assertIncludes(validate, "persist-credentials: false", "validate checkout must not persist credentials");
+	assertIncludes(validate, "run: npm ci --ignore-scripts --no-audit --fund=false", "validate must install only locked dependencies with lifecycle scripts disabled");
+	invariant(occurrences(validate, /^\s+run: npm ci --ignore-scripts --no-audit --fund=false$/gm) === 1, "validate must perform exactly one reviewed locked install");
+	invariant(!/\bnpm\s+install\b/.test(validate), "validate must not use an unlocked npm install");
 	assertIncludes(validate, "run: bun test", "validate must run the Bun test suite");
 	assertIncludes(validate, "npm run verify:package", "validate must inspect the release package");
-	invariant(!/\bnpm\s+(?:ci|install)\b/.test(validate), "validate must not install npm packages");
 	const ancestryIndex = validate.indexOf("Verify tag identity and main ancestry before source execution");
 	const testIndex = validate.indexOf("run: bun test");
 	invariant(ancestryIndex !== -1 && testIndex > ancestryIndex, "tag identity and ancestry must be verified before source execution");

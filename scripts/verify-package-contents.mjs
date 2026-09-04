@@ -46,6 +46,13 @@ const EXPECTED_PEER_DEPENDENCIES = Object.freeze({
 	typebox: "*",
 });
 
+const EXPECTED_DEV_DEPENDENCIES = Object.freeze({
+	"@earendil-works/pi-ai": "0.84.4",
+	"@earendil-works/pi-coding-agent": "0.84.4",
+	"@earendil-works/pi-tui": "0.84.4",
+	typebox: "1.3.7",
+});
+
 const FORBIDDEN_SEGMENTS = new Set([
 	".git",
 	".github",
@@ -133,6 +140,7 @@ export function assertPackageMetadata(packageData, packageJson, pathCount) {
 	invariant(JSON.stringify(packageJson.pi?.extensions) === JSON.stringify(EXPECTED_EXTENSIONS), "Pi extension entries must remain exact");
 	invariant(JSON.stringify(packageJson.pi?.prompts) === JSON.stringify(EXPECTED_PROMPTS), "Pi prompt entries must remain exact");
 	invariant(JSON.stringify(packageJson.peerDependencies) === JSON.stringify(EXPECTED_PEER_DEPENDENCIES), "peer dependencies must remain exact");
+	invariant(JSON.stringify(packageJson.devDependencies) === JSON.stringify(EXPECTED_DEV_DEPENDENCIES), "development dependencies must remain exact");
 	invariant(packageJson.engines?.node === ">=20", "Node engine must remain >=20");
 	invariant(packageJson.repository?.url === "git+https://github.com/10ego/pi-pr-review.git", "repository URL must be canonical");
 	invariant(packageJson.homepage === "https://github.com/10ego/pi-pr-review#readme", "homepage must be canonical");

@@ -1,7 +1,8 @@
 # Dependencies
 node_modules/
 npm-debug.log*
-package-lock.json
+# The root lockfile pins lifecycle-script-disabled CI dependencies.
+!package-lock.json
 
 # Build output
 dist/

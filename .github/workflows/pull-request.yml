@@ -55,6 +55,9 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      - name: Install locked test dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --fund=false
+
       - name: Verify release version metadata
         run: npm run verify:release-version
 
