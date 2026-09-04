@@ -64,8 +64,8 @@ jobs:
       - name: Verify release version metadata
         run: npm run verify:release-version
 
-      - name: Run tests
-        run: bun test
+      - name: Run tests in isolated Bun processes
+        run: node scripts/run-bun-tests.mjs
 
       - name: Run tooling policy tests
         run: npm run test:tooling

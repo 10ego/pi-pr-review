@@ -64,7 +64,8 @@ describe("release workflow trust boundaries", () => {
 		rejects({ release: replaceOnce(release, command, "run: npm ci") }, /locked dependencies/);
 		rejects({ pullRequest: replaceOnce(pullRequest, command, `${command}\n\n      - name: Unsafe second install\n        run: npm ci`) }, /exactly one dependency installation/);
 		const installStep = "      - name: Install locked test dependencies without lifecycle scripts\n        run: npm ci --ignore-scripts --no-audit --fund=false\n\n";
-		const reordered = replaceOnce(pullRequest, installStep, "").replace("      - name: Run tests\n        run: bun test", `      - name: Run tests\n        run: bun test\n\n${installStep.trimEnd()}`);
+		const testStep = "      - name: Run tests in isolated Bun processes\n        run: node scripts/run-bun-tests.mjs";
+		const reordered = replaceOnce(pullRequest, installStep, "").replace(testStep, `${testStep}\n\n${installStep.trimEnd()}`);
 		rejects({ pullRequest: reordered }, /install must precede tests/);
 	});
 

@@ -216,8 +216,8 @@ jobs:
           console.log(`Verified bundled npm ${actual.join(".")}.`);
           NODE
 
-      - name: Run Bun tests
-        run: bun test
+      - name: Run tests in isolated Bun processes
+        run: node scripts/run-bun-tests.mjs
 
       - name: Run release policy checks
         env:

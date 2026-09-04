@@ -56,10 +56,10 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	assertIncludes(pullRequest, "run: node scripts/verify-test-lockfile.mjs", "pull-request CI must verify lock integrity before installation");
 	assertIncludes(pullRequest, "run: npm ci --ignore-scripts --no-audit --fund=false", "pull-request CI must install only locked dependencies with lifecycle scripts disabled");
 	invariant(occurrences(pullRequest, /\bnpm\s+(?:ci|install)\b/g) === 1, "pull-request CI must perform exactly one dependency installation");
-	assertIncludes(pullRequest, "run: bun test", "pull-request CI must run the Bun test suite");
+	assertIncludes(pullRequest, "run: node scripts/run-bun-tests.mjs", "pull-request CI must run isolated Bun test processes");
 	const pullLockIndex = pullRequest.indexOf("run: node scripts/verify-test-lockfile.mjs");
 	const pullInstallIndex = pullRequest.indexOf("run: npm ci --ignore-scripts --no-audit --fund=false");
-	const pullTestIndex = pullRequest.indexOf("run: bun test");
+	const pullTestIndex = pullRequest.indexOf("run: node scripts/run-bun-tests.mjs");
 	invariant(pullLockIndex !== -1 && pullLockIndex < pullInstallIndex && pullInstallIndex < pullTestIndex, "pull-request lock verification and install must precede tests");
 	assertIncludes(pullRequest, "npm run test:tooling", "pull-request CI must run tooling policy tests");
 	assertIncludes(pullRequest, "npm run verify:workflows", "pull-request CI must verify workflow policy");
@@ -106,12 +106,12 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	assertIncludes(validate, "run: node scripts/verify-test-lockfile.mjs", "validate must verify lock integrity before installation");
 	assertIncludes(validate, "run: npm ci --ignore-scripts --no-audit --fund=false", "validate must install only locked dependencies with lifecycle scripts disabled");
 	invariant(occurrences(validate, /\bnpm\s+(?:ci|install)\b/g) === 1, "validate must perform exactly one dependency installation");
-	assertIncludes(validate, "run: bun test", "validate must run the Bun test suite");
+	assertIncludes(validate, "run: node scripts/run-bun-tests.mjs", "validate must run isolated Bun test processes");
 	assertIncludes(validate, "npm run verify:package", "validate must inspect the release package");
 	const ancestryIndex = validate.indexOf("Verify tag identity and main ancestry before source execution");
 	const lockIndex = validate.indexOf("run: node scripts/verify-test-lockfile.mjs");
 	const installIndex = validate.indexOf("run: npm ci --ignore-scripts --no-audit --fund=false");
-	const testIndex = validate.indexOf("run: bun test");
+	const testIndex = validate.indexOf("run: node scripts/run-bun-tests.mjs");
 	invariant(ancestryIndex !== -1 && ancestryIndex < lockIndex && lockIndex < installIndex && installIndex < testIndex, "tag identity, lock verification, and install must precede tests in order");
 
 	invariant(!/\benvironment:/.test(packageJob), "package must not enter an environment");
