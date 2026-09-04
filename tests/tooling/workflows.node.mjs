@@ -73,6 +73,10 @@ describe("release workflow trust boundaries", () => {
 		rejects({ release: replaceFirst(release, "bun-version: 1.3.14", "bun-version: latest") }, /reviewed Bun release/);
 	});
 
+	test("keeps isolated release validators aligned with the Pi peer contract", () => {
+		rejects({ release: replaceFirst(release, '"@earendil-works/pi-tui": ">=0.84.4"', '"@earendil-works/pi-tui": "*"') }, /release package boundaries must require/);
+	});
+
 	test("rejects repository execution in the fresh package boundary", () => {
 		rejects({ release: replaceOnce(release, "      - name: Build one lifecycle-script-disabled tarball", "      - name: Run untrusted code\n        run: bun test\n\n      - name: Build one lifecycle-script-disabled tarball") }, /must not execute repository code with Bun/);
 	});

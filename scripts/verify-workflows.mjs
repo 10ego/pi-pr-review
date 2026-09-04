@@ -90,6 +90,14 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	invariant(occurrences(release, /\bsecrets(?:\.|\[)/g) === 1, "only release may reference one environment secret");
 	invariant(occurrences(release, /actions\/create-github-app-token@/g) === 1, "only release may create an App token");
 	invariant(!/(?:steps\.release|needs\.release)\.outputs\.version/.test(release), "workflow must derive versions from documented tag_name output");
+	for (const [name, range] of Object.entries({
+		"@earendil-works/pi-ai": ">=0.84.4",
+		"@earendil-works/pi-coding-agent": ">=0.84.4",
+		"@earendil-works/pi-tui": ">=0.84.4",
+	})) {
+		const serialized = `"${name}": "${range}"`;
+		invariant(occurrences(release, new RegExp(serialized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) === 2, `release package boundaries must require ${serialized} exactly twice`);
+	}
 
 	invariant(!/\benvironment:/.test(validate), "validate must not enter an environment");
 	invariant(!/\bid-token:/.test(validate), "validate must not receive OIDC");

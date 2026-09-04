@@ -377,9 +377,9 @@ jobs:
           const expectedExtensions = ["./extensions/index.ts"];
           const expectedPrompts = ["./prompts"];
           const expectedPeers = {
-            "@earendil-works/pi-ai": "*",
-            "@earendil-works/pi-coding-agent": ">=0.80.5",
-            "@earendil-works/pi-tui": "*",
+            "@earendil-works/pi-ai": ">=0.84.4",
+            "@earendil-works/pi-coding-agent": ">=0.84.4",
+            "@earendil-works/pi-tui": ">=0.84.4",
             typebox: "*",
           };
           const forbiddenScripts = ["preinstall", "install", "postinstall", "prepack", "prepare", "postpack", "prepublish", "prepublishOnly", "publish", "postpublish"];
@@ -606,9 +606,9 @@ jobs:
           expected_extensions = ["./extensions/index.ts"]
           expected_prompts = ["./prompts"]
           expected_peers = {
-              "@earendil-works/pi-ai": "*",
-              "@earendil-works/pi-coding-agent": ">=0.80.5",
-              "@earendil-works/pi-tui": "*",
+              "@earendil-works/pi-ai": ">=0.84.4",
+              "@earendil-works/pi-coding-agent": ">=0.84.4",
+              "@earendil-works/pi-tui": ">=0.84.4",
               "typebox": "*",
           }
 
