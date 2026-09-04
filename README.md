@@ -14,7 +14,7 @@ The default review prioritizes P0–P2 defects and allows up to three minor find
 
 ## Requirements
 
-- Pi `0.80.5` or newer (the first release with the terminal `agent_settled` lifecycle event).
+- Pi `0.84.4` or newer (the first mutually compatible release line for the coding-agent, AI, and TUI peer APIs used here).
 - [`gh`](https://cli.github.com/) installed and authenticated with `gh auth login`.
 - Pi running inside the repository that owns the PR.
 

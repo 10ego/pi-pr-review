@@ -11,7 +11,9 @@ const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.me
 describe("PR review prompt scheduling policy", () => {
 	test("registers review tools and publication behind one shared loop coordinator", () => {
 		expect(packageJson.pi.extensions).toEqual(["./extensions/index.ts"]);
-		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.80.5");
+		expect(packageJson.peerDependencies["@earendil-works/pi-ai"]).toBe(">=0.84.4");
+		expect(packageJson.peerDependencies["@earendil-works/pi-coding-agent"]).toBe(">=0.84.4");
+		expect(packageJson.peerDependencies["@earendil-works/pi-tui"]).toBe(">=0.84.4");
 		expect(entrypoint).toContain("const loopCoordinator = new ReviewLoopCoordinator(pi)");
 		expect(entrypoint).toContain("const selfReviewCoordinator = new SelfReviewPermitCoordinator");
 		expect(entrypoint).toContain("registerPrReviewSubagents(pi, loopCoordinator, selfReviewCoordinator)");

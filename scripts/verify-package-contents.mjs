@@ -40,9 +40,9 @@ const REQUIRED_PACKAGE_PATHS = Object.freeze([
 ]);
 
 const EXPECTED_PEER_DEPENDENCIES = Object.freeze({
-	"@earendil-works/pi-ai": "*",
-	"@earendil-works/pi-coding-agent": ">=0.80.5",
-	"@earendil-works/pi-tui": "*",
+	"@earendil-works/pi-ai": ">=0.84.4",
+	"@earendil-works/pi-coding-agent": ">=0.84.4",
+	"@earendil-works/pi-tui": ">=0.84.4",
 	typebox: "*",
 });
 
