@@ -1866,7 +1866,7 @@ describe("completed review extension lifecycle", () => {
 		expect(probe.payload()).toBeUndefined();
 	});
 
-	test("skips absent synthesis when retained lanes contain no validated result", async () => {
+	test("skips absent synthesis when no reviewer result was retained", async () => {
 		const harness = createHarness();
 		const probe = installPublishingProbe();
 		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
@@ -1876,6 +1876,29 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("turn_end", { message, toolResults: [] });
 		expect(probe.postCount()).toBe(0);
 		expect(probe.payload()).toBeUndefined();
+	});
+
+	test("posts a conservative COMMENT when reviewer output was retained without findings", async () => {
+		const harness = createHarness();
+		const probe = installPublishingProbe();
+		await harness.emit("input", { text: "/pr-review 7 --comment", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "correctness:0", tier: "heavy", minorHygiene: false },
+		], harness.ctx)).toBe(true);
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", requestedPassOrdinal: 0,
+			tier: "heavy", rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete",
+			attempts: [], fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		});
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "" }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "retained-empty-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(probe.postCount()).toBe(1);
+		expect(probe.payload()?.event).toBe("COMMENT");
+		expect(probe.payload()?.comments).toBeUndefined();
+		expect(String(probe.payload()?.body)).toContain("No validated findings were available from the retained reviewer output.");
 	});
 
 	test("caches lane diagnostics before completion purges the invocation registry", async () => {
