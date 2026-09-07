@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.11](https://github.com/10ego/pi-pr-review/compare/v1.17.10...v1.17.11) (2026-09-07)
+
+
+### Bug Fixes
+
+* **review:** comment on finding-free lane fallback ([#144](https://github.com/10ego/pi-pr-review/issues/144)) ([d51bee5](https://github.com/10ego/pi-pr-review/commit/d51bee5f18daef75c52f21d64e02d51a7a846e33))
+
 ## [1.17.10](https://github.com/10ego/pi-pr-review/compare/v1.17.9...v1.17.10) (2026-09-04)
 
 
