@@ -464,10 +464,12 @@ async function publishCompletedReview(
 	const degradedPublication = record.completeness === "incomplete" ||
 		(record.synthesisQuality !== undefined && record.synthesisQuality !== "fully_parsed");
 	const findings = Array.isArray(record.review.findings) ? record.review.findings : [];
-	if (degradedPublication && findings.length === 0) {
-		// A result-less degraded record remains cached for private diagnostics and a
-		// later rerun, but must not create a verdict-only GitHub review. Incomplete
-		// reviews with any validated synthesis/lane/extraction finding still publish.
+	const retainedLaneFallback = record.synthesisQuality === "lane_fallback" &&
+		(record.laneArtifacts?.length ?? 0) > 0;
+	if (degradedPublication && findings.length === 0 && !retainedLaneFallback) {
+		// A genuinely result-less degraded record remains private. When reviewer
+		// output was retained but synthesis produced no finding, still acknowledge
+		// the requested publication with a conservative body-only COMMENT.
 		ctx.ui.notify("PR review was not posted: the incomplete review retained no validated findings", "warning");
 		return undefined;
 	}
@@ -481,6 +483,9 @@ async function publishCompletedReview(
 		approveMaxPriorityLevel: record.invocation.approveMaxPriorityLevel,
 		expectedRepository: record.repository,
 		review: record.review,
+		...(retainedLaneFallback && findings.length === 0
+			? { publicationNotice: "No validated findings were available from the retained reviewer output." }
+			: {}),
 		// Every review publishes only the concise host-rendered body plus validated
 		// inline findings. Retained raw synthesis and lane evidence remain private
 		// completion diagnostics, including for degraded/incomplete COMMENT runs.
