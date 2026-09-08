@@ -66,6 +66,23 @@ test("versioned corpus pins every diff, covers all heavy lenses, cross-file find
 	const boundary = info.corpus.cases.find((item) => item.id === "boundary-nonfinite-timeout"), boundaryDiff = fs.readFileSync(path.join(info.root, boundary.diff), "utf8"); assert.match(boundaryDiff, /Number\.isFinite\(timeout\).*Number\.isSafeInteger\(timeout\)/); assert.doesNotMatch(boundaryDiff, /^\+.*if \(timeout <= 0\)/m);
 });
 
+test("corpus schema v2 pins prior-state diffs, authored findings, and relationship invariants", () => {
+	const source = loadCorpus(CORPUS), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-corpus-v2-")), value = structuredClone(source.corpus);
+	value.schemaVersion = 2; value.corpusId = "pi-pr-review-semantic-v7-test";
+	for (const item of value.cases) {
+		const bytes = fs.readFileSync(path.join(source.root, item.diff)), local = `${item.id}.diff`; fs.writeFileSync(path.join(root, local), bytes); item.diff = local;
+		item.priorState = { relationship: "none", priorDiff: null, incrementalDiff: null, review: null, expectedStatuses: [] };
+	}
+	const first = value.cases[0], phaseBytes = fs.readFileSync(path.join(root, first.diff)), phase = { path: first.diff, sha256: sha256(phaseBytes), bytes: phaseBytes.length };
+	first.priorState = { relationship: "incremental", priorDiff: phase, incrementalDiff: phase, review: { id: 71, submittedAt: "2026-09-08T00:00:00Z", body: "# PR Review\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->", comments: [{ id: 72, path: first.changedFiles[0], line: 1, side: "RIGHT", body: "[P1] Preserve the exported request contract" }] }, expectedStatuses: [{ title: "Preserve the exported request contract", status: "still open" }] };
+	const corpusFile = path.join(root, "corpus-v2.json"); fs.writeFileSync(corpusFile, `${JSON.stringify(value, null, 2)}\n`); const loaded = loadCorpus(corpusFile); assert.equal(loaded.corpus.schemaVersion, 2); assert.equal(loaded.corpus.cases[0].priorState.relationship, "incremental");
+	const reject = (mutate, pattern) => { const candidate = structuredClone(value); mutate(candidate); const file = path.join(root, `invalid-${crypto.randomBytes(4).toString("hex")}.json`); fs.writeFileSync(file, JSON.stringify(candidate)); assert.throws(() => loadCorpus(file), pattern); };
+	reject((candidate) => { candidate.cases[0].priorState.relationship = "none"; }, /none state/);
+	reject((candidate) => { candidate.cases[0].priorState.review.body = "missing marker"; }, /prior review/);
+	reject((candidate) => { candidate.cases[0].priorState.expectedStatuses[0].title = "unmentioned title"; }, /must name an authored prior finding/);
+	reject((candidate) => { candidate.cases[0].priorState.priorDiff.bytes += 1; }, /prior diff hash\/bytes/);
+});
+
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
 	const info = loadCorpus(CORPUS), one = createPlan(info, ["balanced", "full"], 3), two = createPlan(info, ["balanced", "full"], 3);
 	assert.deepEqual(one, two); assert.equal(one.entries.length, 72); assert.equal(new Set(one.entries.map((entry) => entry.entryId)).size, 72);

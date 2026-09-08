@@ -159,13 +159,15 @@ function changedDiffLines(text) {
 export function loadCorpus(file) {
 	const corpusFile = path.resolve(file), root = path.dirname(corpusFile), { bytes, value } = readJson(corpusFile);
 	invariant(exactKeys(value, ["schemaVersion", "corpusId", "description", "lenses", "cases"]), "corpus schema");
-	invariant(value.schemaVersion === 1 && typeof value.corpusId === "string" && value.corpusId.length > 0, "corpus identity");
+	invariant((value.schemaVersion === 1 || value.schemaVersion === 2) && typeof value.corpusId === "string" && value.corpusId.length > 0, "corpus identity");
 	invariant(Array.isArray(value.lenses) && value.lenses.length > 0 && new Set(value.lenses).size === value.lenses.length && value.lenses.every((lens) => typeof lens === "string" && lens.length > 0), "corpus lenses");
 	invariant(Array.isArray(value.cases) && value.cases.length > 0, "corpus cases");
 	const ids = new Set(), expectedIds = new Set();
 	let cleanControls = 0, crossFileExpected = 0;
 	for (const item of value.cases) {
-		invariant(exactKeys(item, ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
+		invariant(exactKeys(item, value.schemaVersion === 2
+			? ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings", "priorState"]
+			: ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
 		invariant(typeof item.id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id) && !ids.has(item.id), `case id ${item.id}`); ids.add(item.id);
 		invariant(typeof item.title === "string" && item.title.length >= 8 && item.title.length <= 120, `case ${item.id} title`);
 		invariant(typeof item.cleanControl === "boolean" && typeof item.crossFile === "boolean", `case ${item.id} flags`);
@@ -196,6 +198,40 @@ export function loadCorpus(file) {
 				invariant(item.changedFiles.includes(location.path) && (location.side === "RIGHT" || location.side === "LEFT") && Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) && location.start > 0 && location.end >= location.start && [...changedLines.get(location.path)[location.side]].some((line) => line >= location.start && line <= location.end), `expected ${expected.id} location must overlap a changed line`);
 			}
 			if (expected.crossFile) crossFileExpected++;
+		}
+		if (value.schemaVersion === 2) {
+			const prior = item.priorState, relationship = prior?.relationship;
+			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"]), `case ${item.id} prior state schema`);
+			invariant(["incremental", "same_head", "none", "diverged"].includes(relationship), `case ${item.id} prior relationship`);
+			const validatePhaseDiff = (metadata, phase) => {
+				if (metadata === null) return null;
+				invariant(exactKeys(metadata, ["path", "sha256", "bytes"]), `case ${item.id} ${phase} diff schema`);
+				const phaseFile = resolveContainedRegular(root, metadata.path, `case ${item.id} ${phase} diff`), phaseBytes = fs.readFileSync(phaseFile), phaseText = phaseBytes.toString("utf8");
+				invariant(SHA256.test(metadata.sha256) && sha256(phaseBytes) === metadata.sha256 && Number.isSafeInteger(metadata.bytes) && metadata.bytes === phaseBytes.length && phaseText.length > 0, `case ${item.id} ${phase} diff hash/bytes`);
+				invariant(!phaseText.includes(item.id), `case ${item.id} reviewer-visible ${phase} diff leaks its benchmark id`);
+				parseDiffFiles(phaseText);
+				return phaseText;
+			};
+			const priorDiffText = validatePhaseDiff(prior.priorDiff, "prior"), incrementalDiffText = validatePhaseDiff(prior.incrementalDiff, "incremental");
+			if (relationship === "incremental") invariant(priorDiffText !== null && incrementalDiffText !== null && prior.review !== null, `case ${item.id} incremental state`);
+			if (relationship === "same_head" || relationship === "diverged") invariant(priorDiffText !== null && incrementalDiffText === null && prior.review !== null, `case ${item.id} ${relationship} state`);
+			if (relationship === "none") invariant(priorDiffText === null && incrementalDiffText === null && prior.review === null, `case ${item.id} none state`);
+			invariant(Array.isArray(prior.expectedStatuses) && new Set(prior.expectedStatuses.map((status) => status.title)).size === prior.expectedStatuses.length, `case ${item.id} expected prior statuses`);
+			for (const status of prior.expectedStatuses) invariant(exactKeys(status, ["title", "status"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+			if (prior.review === null) invariant(prior.expectedStatuses.length === 0, `case ${item.id} none state has prior statuses`);
+			else {
+				const review = prior.review;
+				invariant(exactKeys(review, ["id", "submittedAt", "body", "comments"]) && Number.isSafeInteger(review.id) && review.id > 0 && typeof review.submittedAt === "string" && Number.isFinite(Date.parse(review.submittedAt)) && typeof review.body === "string" && review.body.includes("<!-- pi-pr-review:head={{PRIOR_HEAD}} -->") && Array.isArray(review.comments), `case ${item.id} prior review`);
+				invariant(!review.body.includes(item.id) && review.body.length <= 64 * 1024, `case ${item.id} reviewer-visible prior body`);
+				const commentIds = new Set();
+				for (const comment of review.comments) {
+					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
+					if (Object.hasOwn(comment, "startLine")) invariant(Number.isSafeInteger(comment.startLine) && comment.startLine > 0 && comment.startLine < comment.line, `case ${item.id} prior comment start line`);
+					invariant(!comment.body.includes(item.id), `case ${item.id} reviewer-visible prior comment leaks its benchmark id`);
+				}
+				const authoredText = `${review.body}\n${review.comments.map((comment) => comment.body).join("\n")}`.toLocaleLowerCase("en-US");
+				invariant(prior.expectedStatuses.length > 0 && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
+			}
 		}
 	}
 	invariant(cleanControls >= 2, "corpus requires at least two clean controls");
