@@ -247,6 +247,7 @@ export interface PublishModeParseResult {
 	reviewMode?: ReviewMode;
 	prNumber?: number;
 	allowNonOpen?: boolean;
+	incremental?: boolean;
 	error?: string;
 }
 
@@ -286,6 +287,7 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 						: {}),
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
+		...(tokens.includes("--incremental") ? { incremental: true } : {}),
 	};
 }
 

@@ -79,7 +79,7 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	test("offers quick mode and retains major-only as its compatibility alias", () => {
-		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep]"');
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep] [--incremental]"');
 		expect(prompt).toContain("**Quick (`--quick`, with `--major-only` retained as a compatibility alias):** exactly three concurrent heavy reviewers");
 		expect(prompt).toContain("`correctness`, `correctness-contracts`, and `security-performance`");
 		expect(prompt).toContain("security/performance reviewer also owns performance, resource, cleanup, and scalability risks");
@@ -122,6 +122,33 @@ describe("PR review prompt scheduling policy", () => {
 		expect(prompt).toContain("error propagation/handling defects");
 		expect(prompt).toContain("resource ownership/cleanup leaks");
 		expect(prompt).toContain("Treat definite resource leaks as correctness findings");
+	});
+
+	describe("incremental re-review contract", () => {
+		test("documents the flag and registers prior discovery in the first turn", () => {
+			expect(prompt).toContain('--incremental]\"');
+			expect(prompt).toContain("`--incremental` opts into incremental re-review");
+			expect(prompt).toContain('also emit `pr_review_prior` with `{ "pr_number": $1 }` in that same turn');
+		});
+
+		test("selects the review path from the prior relationship", () => {
+			expect(prompt).toContain("**Re-review selection (only when `--incremental` is present).**");
+			expect(prompt).toContain("run the normal full review below and, for `diverged`");
+			expect(prompt).toContain("**revalidation-only review**");
+			expect(prompt).toContain("**incremental re-review**");
+			expect(prompt).toContain("hunt-scope `context_file`");
+			expect(prompt).toContain("never receive the prior findings list");
+			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
+		});
+
+		test("revalidates prior findings in Step 7 and reports them without new headings", () => {
+			expect(prompt).toContain("additional pre-registered candidates");
+			expect(prompt).toContain("classify each as `resolved`");
+			expect(prompt).toContain("it re-enters `## Findings` as a normal finding");
+			expect(prompt).toContain("Never mark a finding resolved without evidence from the new commits");
+			expect(prompt).toContain("## Prior findings");
+			expect(prompt).toContain("Never use severity-tagged headings here.");
+		});
 	});
 
 	test("discovers user-level names concurrently with independent initial context", () => {

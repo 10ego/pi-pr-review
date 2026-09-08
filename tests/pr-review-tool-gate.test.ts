@@ -77,7 +77,7 @@ const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 function harness() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
-	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "self_review_subagent"];
+	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "self_review_subagent"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
@@ -143,12 +143,29 @@ describe("review tool execution gate", () => {
 
 	test("all review tools fail before processing parameters outside /pr-review", async () => {
 		const h = harness();
-		for (const name of ["review_subagent", "review_subagents", "pr_review_verify"]) {
+		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior"]) {
 			const result = await h.tools.get(name).execute("call-1", {}, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details).toEqual({ authorized: false });
 			expect(result.content[0].text).toContain("active user-initiated /pr-review loop");
 		}
+	});
+
+	test("prior discovery rejects a PR number that differs from the active invocation", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7 --incremental"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const tool = h.tools.get("pr_review_prior");
+		const mismatch = await tool.execute("prior-1", { pr_number: 8 }, undefined, undefined, h.ctx);
+		expect(mismatch).toMatchObject({
+			isError: true,
+			details: { authorized: false, reason: "pr_mismatch" },
+		});
+		expect(mismatch.content[0].text).toContain("does not match the active /pr-review invocation");
 	});
 
 	test("verification reports action-specific argument errors after flat-schema validation", async () => {

@@ -279,18 +279,31 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toHaveLength(1);
 	});
 
-	test.each(["Overview", "Verification", "Findings", "Lane completeness", "Strengths and notes"] as const)(
+	test.each(["Overview", "Verification", "Prior findings", "Findings", "Lane completeness", "Strengths and notes"] as const)(
 		"rejects an out-of-contract canonical %s heading level",
 		(name) => {
 			const source = name === "Strengths and notes"
 				? `${markdown}\n\n## Strengths and notes\nUseful notes.`
-				: markdown;
+				: name === "Prior findings"
+					? `${markdown.replace("## Findings", "## Prior findings\n- resolved: [P1] prior guard verified.\n\n## Findings")}`
+					: markdown;
 			const rawText = source.replace(`## ${name}`, `### ${name}`);
 			const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 			expect(artifact.quality).toBe("raw");
 			expect(artifact.review.findings).toEqual([]);
 		},
 	);
+
+	test("accepts a canonical Prior findings section without degrading extraction", () => {
+		const withPrior = markdown.replace(
+			"## Findings",
+			"## Prior findings\n- resolved: [P1] prior guard verified in the delta commits.\n- still open: [P2] retry loop unchanged — src/a.ts:40.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({ rawText: withPrior, ...binding });
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.body).toContain("prior guard verified");
+	});
 
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;

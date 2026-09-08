@@ -46,6 +46,7 @@ const UNSAFE_TEXT_CONTROL = /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const CANONICAL_SECTION_NAMES = new Set([
 	"overview",
 	"verification",
+	"prior findings",
 	"findings",
 	"lane completeness",
 	"strengths and notes",
