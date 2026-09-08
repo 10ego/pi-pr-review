@@ -413,24 +413,41 @@ describe("Markdown-first canonical review artifacts", () => {
 		}
 	});
 
-	test("blocks approval when the host required prior disclosure but the section is absent or vacuous", () => {
+	test("blocks approval when the host required prior disclosure but the section is absent, vacuous, or undercounted", () => {
 		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
-		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] };
-		const omitted = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes, priorRevalidationRequired: true });
+		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] } as const;
+		const omitted = synthesizeReviewArtifact({
+			rawText: approve, ...binding, ...lanes, priorRevalidationRequired: 2,
+		});
 		expect(omitted.quality).toBe("fully_parsed");
 		expect(omitted.mergeApprovalEligible).toBeFalse();
 		const vacuous = synthesizeReviewArtifact({
 			rawText: approve.replace("## Findings", "## Prior findings\nNone.\n\n## Findings"),
 			...binding,
 			...lanes,
-			priorRevalidationRequired: true,
+			priorRevalidationRequired: 2,
 		});
 		expect(vacuous.mergeApprovalEligible).toBeFalse();
-		const disclosed = synthesizeReviewArtifact({
-			rawText: approve.replace("## Findings", "## Prior findings\n- resolved: [P1] prior blocker verified in the delta.\n\n## Findings"),
+		// Fewer status lines than prior findings cannot satisfy the gate, and
+		// markdown variants of the status list count normally.
+		const undercount = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] one verified fix only.\n\n## Findings",
+			),
 			...binding,
 			...lanes,
-			priorRevalidationRequired: true,
+			priorRevalidationRequired: 2,
+		});
+		expect(undercount.mergeApprovalEligible).toBeFalse();
+		const disclosed = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] prior blocker verified in the delta.\n+ still open: [P2] follow-up note kept open.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequired: 2,
 		});
 		expect(disclosed.quality).toBe("fully_parsed");
 		expect(disclosed.mergeApprovalEligible).toBeTrue();

@@ -223,6 +223,16 @@ export class ReviewLoopCoordinator {
 		return binding.generation;
 	}
 
+	/** Generation of a retained binding even after a deadline abort. Deadline
+	 * handling deliberately keeps the invocation and artifacts for degraded
+	 * synthesis; consumers that must survive that retention (such as the
+	 * prior-finding disclosure gate) use this instead of activeGeneration. */
+	retainedGeneration(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): number | undefined {
+		const binding = this.binding;
+		if (!binding || !sameBinding(binding, ctx)) return undefined;
+		return binding.generation;
+	}
+
 	phase(): ReviewInvocationPhase | undefined {
 		return this.invocationGate.phase();
 	}

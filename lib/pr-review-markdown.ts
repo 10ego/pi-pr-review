@@ -42,6 +42,22 @@ const MAX_INLINE_BODY_BYTES = 65_536;
 const MAX_PATH_BYTES = 4_096;
 const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
 const FINDING_HEADING = /^(#{3,6})\s+(\[(?:P[0-3]|nit)\]\s+.+?)\s*$/gim;
+const PRIOR_STATUS_LINE = /^(?:resolved|still open|obsolete)\b/i;
+
+/** Normalize a Prior findings status line: strip blockquote, list, and bold
+ * prefixes and collapse whitespace so markdown variants cannot evade matching. */
+function normalizePriorStatusLine(line: string): string {
+	let normalized = line;
+	for (;;) {
+		const stripped = normalized
+			.replace(/^\s*(?:>\s*)+/, "")
+			.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+			.replace(/^\*\*/, "");
+		if (stripped === normalized) break;
+		normalized = stripped;
+	}
+	return normalized.replace(/\s+/g, " ").trim();
+}
 const UNSAFE_TEXT_CONTROL = /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const CANONICAL_SECTION_NAMES = new Set([
 	"overview",
@@ -823,8 +839,8 @@ export function synthesizeReviewArtifact(input: {
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	strictJsonReview?: ReviewLike;
-	/** Host-recorded requirement to disclose prior-finding statuses this run. */
-	priorRevalidationRequired?: boolean;
+	/** Host-recorded count of prior-finding statuses this run must disclose. */
+	priorRevalidationRequired?: number;
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -840,6 +856,20 @@ export function synthesizeReviewArtifact(input: {
 			expected.key === lane.key && expected.tier === lane.tier &&
 			expected.minorHygiene === !!lane.minorHygiene));
 	const validatedLaneFindings = retainedLaneFindings(lanes, expectedLaneDescriptors);
+	// The prior-finding disclosure gate must be computed before the strict JSON
+	// branch returns: a legacy JSON envelope is raw text without the section,
+	// so a required-but-absent disclosure blocks approval there too.
+	const rawForPrior = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
+	const priorDisclosureSatisfied = (() => {
+		const requiredCount = input.priorRevalidationRequired ?? 0;
+		if (requiredCount <= 0) return true;
+		const disclosure = priorFindingsDisclosureEarly?.trim();
+		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
+		const statusLines = disclosure.split(/\r?\n/).filter((line) =>
+			PRIOR_STATUS_LINE.test(normalizePriorStatusLine(line)));
+		return statusLines.length >= requiredCount;
+	})();
 	if (input.strictJsonReview) {
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
@@ -899,7 +929,7 @@ export function synthesizeReviewArtifact(input: {
 			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
-			mergeApprovalEligible: !bodyFallback,
+			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied,
 			diagnostics: Object.freeze(bodyFallback
 				? [recoveredOverridesSkip
 					? "retained lane findings overrode a skipped model synthesis"
@@ -962,26 +992,13 @@ export function synthesizeReviewArtifact(input: {
 	// mentioning a blocking tag downgrades publication to COMMENT) against an
 	// unrecoverable false negative (an unresolved blocker APPROVing); the
 	// output contract therefore restricts this section to status lines only.
-	// When the host recorded that this invocation must disclose prior-finding
-	// statuses, approval additionally requires a present, non-"None." Prior
-	// findings section. A model that omits the section or writes a vacuous
-	// "None." while prior findings existed cannot upgrade to APPROVE.
-	const priorDisclosureSatisfied = (() => {
-		if (!input.priorRevalidationRequired) return true;
-		const disclosure = priorFindingsDisclosure?.trim();
-		return !!disclosure && !/^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure);
-	})();
+	// The host-computed priorDisclosureSatisfied (above the strict JSON branch)
+	// additionally requires a present, non-vacuous section carrying at least
+	// one status line per prior finding; omitting the section, writing a bare
+	// "None.", or padding with fewer status lines than prior findings cannot
+	// upgrade to APPROVE.
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
-		let normalized = line;
-		for (;;) {
-			const stripped = normalized
-				.replace(/^\s*(?:>\s*)+/, "")
-				.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
-				.replace(/^\*\*/, "");
-			if (stripped === normalized) break;
-			normalized = stripped;
-		}
-		normalized = normalized.replace(/\s+/g, " ").trim();
+		const normalized = normalizePriorStatusLine(line);
 		if (/^resolved\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
 		if (/^still open\b/i.test(normalized)) {
 			const tagged = /\[(P[0-3]|nit)\]/i.exec(normalized);

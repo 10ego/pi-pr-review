@@ -210,15 +210,23 @@ describe("other notes reconstruction", () => {
 });
 
 describe("prior revalidation registry", () => {
-	test("records disclosure requirements per generation", () => {
+	test("records per-generation disclosure counts and prunes to a bound", () => {
 		const registry = new PriorRevalidationRegistry();
-		expect(registry.isRequired(1)).toBeFalse();
-		registry.mark(1, true);
-		expect(registry.isRequired(1)).toBeTrue();
-		expect(registry.isRequired(2)).toBeFalse();
-		expect(registry.isRequired(undefined)).toBeFalse();
-		registry.mark(1, false);
-		expect(registry.isRequired(1)).toBeFalse();
+		expect(registry.isRequired(1)).toBeUndefined();
+		registry.mark(1, 3);
+		expect(registry.isRequired(1)).toBe(3);
+		expect(registry.isRequired(2)).toBeUndefined();
+		expect(registry.isRequired(undefined)).toBeUndefined();
+		registry.mark(1, 0);
+		expect(registry.isRequired(1)).toBe(0);
+		registry.mark(1, 2);
+		registry.mark(2, 1);
+		expect(registry.isRequired(1)).toBe(2);
+		expect(registry.isRequired(2)).toBe(1);
+		for (let generation = 10; generation < 30; generation++) registry.mark(generation, 1);
+		// Pruning keeps the map bounded; recent generations survive.
+		expect(registry.isRequired(29)).toBe(1);
+		expect(registry.isRequired(1)).toBeUndefined();
 	});
 });
 

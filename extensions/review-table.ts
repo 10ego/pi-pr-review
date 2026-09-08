@@ -1150,6 +1150,7 @@ export default function registerReviewTable(
 			!validateReviewInvocation(strict.review, active)
 			? strict.review
 			: undefined;
+		const priorRequiredCount = priorRevalidationRegistry.isRequired(loopCoordinator.retainedGeneration(ctx)) ?? 0;
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1159,9 +1160,7 @@ export default function registerReviewTable(
 				laneArtifacts,
 				expectedLaneDescriptors,
 				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
-				...(priorRevalidationRegistry.isRequired(loopCoordinator.activeGeneration(ctx))
-					? { priorRevalidationRequired: true }
-					: {}),
+				...(priorRequiredCount > 0 ? { priorRevalidationRequired: priorRequiredCount } : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;

@@ -99,14 +99,22 @@ const EXCERPT_MAX_CHARS = 500;
 
 const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`([^`]+)`)?\s*$/;
 
-/** Host-side record that an invocation must disclose prior-finding statuses. */
+/** Host-side record of how many prior-finding statuses an invocation must disclose. */
 export class PriorRevalidationRegistry {
-	private readonly required = new Map<number, boolean>();
-	mark(generation: number, required: boolean): void {
-		this.required.set(generation, required);
+	private readonly required = new Map<number, number>();
+	/** Record the required disclosure count; 0 clears the requirement. Prunes
+	 * to the eight most recent generations so long-lived processes stay bounded. */
+	mark(generation: number, count: number): void {
+		this.required.delete(generation);
+		this.required.set(generation, count);
+		while (this.required.size > 8) {
+			const oldest = this.required.keys().next().value;
+			if (oldest === undefined) break;
+			this.required.delete(oldest);
+		}
 	}
-	isRequired(generation: number | undefined): boolean {
-		return generation !== undefined && this.required.get(generation) === true;
+	isRequired(generation: number | undefined): number | undefined {
+		return generation === undefined ? undefined : this.required.get(generation);
 	}
 }
 
