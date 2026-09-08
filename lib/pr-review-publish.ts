@@ -308,6 +308,8 @@ export interface ReviewInvocation {
 	readonly reviewMode?: ReviewMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Trusted `--incremental` flag captured before review execution; gates pr_review_prior. */
+	readonly incremental?: boolean;
 	/** Host-resolved target captured before review execution; assistant output cannot override it. */
 	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
@@ -438,6 +440,7 @@ export class ReviewInvocationGate {
 			reviewMode: parsed.reviewMode ?? "balanced",
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			...(parsed.incremental ? { incremental: true } : {}),
 			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,
@@ -668,6 +671,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		Number(value.prNumber) <= 0 ||
 		(value.reviewMode !== undefined && !new Set(["quick", "balanced", "full", "deep"]).has(String(value.reviewMode))) ||
 		typeof value.allowNonOpen !== "boolean" ||
+		(value.incremental !== undefined && typeof value.incremental !== "boolean") ||
 		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean") ||
 		(value.allowStaleApprovals !== undefined && typeof value.allowStaleApprovals !== "boolean")
 	) {
@@ -707,6 +711,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		...(value.reviewMode === undefined ? {} : { reviewMode: value.reviewMode as ReviewMode }),
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		...(value.incremental === true ? { incremental: true } : {}),
 		...(parsedBinding ? { reviewBinding: parsedBinding } : {}),
 		// Schema v2 records created before this setting existed inherit the new
 		// safe default: stale publication is body-only with both SHAs disclosed.

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	classifyPriorHead,
+	commentExcerpt,
 	discoverPriorReview,
 	parseInlineFindingBody,
 	parsePriorReviewMarker,
@@ -47,6 +48,13 @@ describe("prior inline finding body parsing", () => {
 			severity: "P1",
 			title: "Guard against nil map before write",
 		});
+	});
+
+	test("builds a bounded rationale excerpt from the body beyond the title line", () => {
+		expect(commentExcerpt("**[P1] Title**\n\ntrigger: nil map\n\nimpact: panic")).toBe("trigger: nil map impact: panic");
+		expect(commentExcerpt("**[P1] Title**")).toBeUndefined();
+		expect(commentExcerpt(undefined)).toBeUndefined();
+		expect(commentExcerpt(`**[P1] Title**\n\n${"x".repeat(900)}`)?.length).toBe(500);
 	});
 
 	test("falls back to a plain first line and truncates oversized titles", () => {
@@ -114,6 +122,8 @@ elif [[ "$args" == *"repos/acme/widget/pulls/7/commits?per_page="* ]]; then
   cat "$PRIOR_FAKE_COMMITS"
 elif [[ "$args" == *"repos/acme/widget/pulls/7" ]]; then
   cat "$PRIOR_FAKE_PULL"
+elif [[ "$args" == *"user --jq .login"* ]]; then
+  echo 'reviewer'
 else
   echo "unexpected gh args: $args" >&2
   exit 1
@@ -177,6 +187,7 @@ describe("prior review discovery", () => {
 				side: "RIGHT",
 				severity: "P1",
 				title: "Guard against nil map before write",
+				excerpt: "rationale",
 			},
 			{
 				threadId: 103,
@@ -223,6 +234,31 @@ describe("prior review discovery", () => {
 		expect(snapshot.relationship).toBe("none");
 		expect(snapshot.prior).toBeUndefined();
 		expect(snapshot.message).toContain("full review");
+	});
+
+	test("resolves the identity through the unquoted ghText login path", async () => {
+		const fixture = installFakeGh({
+			reviewsJson: JSON.stringify([{ id: 22, user: { login: "reviewer" }, body: marker(HEAD_C), state: "COMMENTED" }]),
+		});
+		const snapshot = await discoverPriorReview(fixture.cwd, 7, { repository: fixture.repository });
+		expect(snapshot.identity).toBe("reviewer");
+		expect(snapshot.relationship).toBe("same_head");
+	});
+
+	test("fails open to a full review when discovery is truncated by pagination bounds", async () => {
+		const many = Array.from({ length: 100 }, (_value, index) => ({
+			id: 1000 + index,
+			user: { login: "reviewer" },
+			body: marker(index === 99 ? HEAD_B : HEAD_A),
+			state: "COMMENTED",
+		}));
+		const fixture = installFakeGh({ reviewsJson: JSON.stringify(many) });
+		const snapshot = await discoverPriorReview(fixture.cwd, 7, { ...fixture, identity: "reviewer" });
+		expect(snapshot.truncated).toBeTrue();
+		expect(snapshot.relationship).toBe("none");
+		expect(snapshot.incrementalRange).toBeUndefined();
+		expect(snapshot.prior?.head).toBe(HEAD_B);
+		expect(snapshot.message).toContain("Run a full review");
 	});
 
 	test("fails closed on malformed PR metadata", async () => {

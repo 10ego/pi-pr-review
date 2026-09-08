@@ -151,6 +151,22 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("prior discovery requires the --incremental flag on the active invocation", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const result = await h.tools.get("pr_review_prior").execute("prior-flag", { pr_number: 7 }, undefined, undefined, h.ctx);
+		expect(result).toMatchObject({
+			isError: true,
+			details: { authorized: false, reason: "not_incremental" },
+		});
+		expect(result.content[0].text).toContain("requires the --incremental flag");
+	});
+
 	test("prior discovery rejects a PR number that differs from the active invocation", async () => {
 		const h = harness();
 		h.coordinator.begin(

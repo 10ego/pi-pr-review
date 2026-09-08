@@ -1,6 +1,7 @@
 import {
 	githubApiArgs,
 	ghJson,
+	ghText,
 	resolveRepositoryBinding,
 } from "./pr-review-publish.ts";
 
@@ -31,6 +32,8 @@ export interface PriorReviewFinding {
 	side: "LEFT" | "RIGHT";
 	severity?: "P0" | "P1" | "P2" | "P3" | "nit";
 	title: string;
+	/** Bounded rationale excerpt from the original inline comment body. */
+	excerpt?: string;
 }
 
 export interface PriorReviewSnapshot {
@@ -86,6 +89,16 @@ export function parseInlineFindingBody(body: string | null | undefined): {
 		...(severity && SEVERITIES.has(severity) ? { severity } : {}),
 		...(title ? { title: title.slice(0, TITLE_MAX_CHARS) } : {}),
 	};
+}
+
+const EXCERPT_MAX_CHARS = 500;
+
+/** Build a bounded rationale excerpt from an inline comment body. */
+export function commentExcerpt(body: string | null | undefined): string | undefined {
+	if (typeof body !== "string") return undefined;
+	const rest = body.split(/\r?\n/).slice(1).join("\n").replace(/\s+/g, " ").trim();
+	if (!rest) return undefined;
+	return rest.slice(0, EXCERPT_MAX_CHARS);
 }
 
 /** Classify a prior/current head pairing against the PR commit history. */
@@ -170,11 +183,12 @@ export async function discoverPriorReview(
 	if (!Number.isInteger(prNumber) || prNumber <= 0) throw new Error("invalid PR number");
 
 	const binding = options.repository ?? await resolveRepositoryBinding(cwd);
-	const identity = options.identity ??
-		(await ghJson<{ login?: unknown }>(githubApiArgs(binding.hostname, "user", "--jq", ".login"), cwd, undefined, {
+	// `gh api user --jq .login` emits a bare unquoted login, so this must go
+	// through ghText; JSON.parse of the raw login would always throw.
+	const identityLogin = options.identity ??
+		(await ghText(githubApiArgs(binding.hostname, "user", "--jq", ".login"), cwd, undefined, {
 			signal: options.signal,
-		}));
-	const identityLogin = typeof identity === "string" ? identity : String((identity as { login?: unknown }).login ?? "");
+		})).replace(/\s+/g, "");
 	if (!identityLogin) throw new Error("GitHub identity lookup returned no login");
 
 	const pullsPath = `repos/${binding.repository}/pulls/${prNumber}`;
@@ -224,10 +238,10 @@ export async function discoverPriorReview(
 		};
 	}
 
-	const [commentPages, commitPages] = await Promise.all([
-		fetchBoundedPages(cwd, binding.hostname, [pullsPath + "/comments"], PRIOR_REVIEW_MAX_PAGES, options),
-		fetchBoundedPages(cwd, binding.hostname, [pullsPath + "/commits"], PRIOR_COMMIT_MAX_PAGES, options),
-	]);
+	// Fetch sequentially: a failing read must never leave an unawaited sibling
+	// paginated gh process running in the background past the tool call.
+	const commentPages = await fetchBoundedPages(cwd, binding.hostname, [pullsPath + "/comments"], PRIOR_REVIEW_MAX_PAGES, options);
+	const commitPages = await fetchBoundedPages(cwd, binding.hostname, [pullsPath + "/commits"], PRIOR_COMMIT_MAX_PAGES, options);
 
 	const findings: PriorReviewFinding[] = [];
 	let findingsTruncated = false;
@@ -248,6 +262,7 @@ export async function discoverPriorReview(
 			findingsTruncated = true;
 			break;
 		}
+		const excerpt = commentExcerpt(comment.body);
 		findings.push({
 			threadId: comment.id,
 			inReplyToId: typeof comment.in_reply_to_id === "number" ? comment.in_reply_to_id : null,
@@ -257,6 +272,7 @@ export async function discoverPriorReview(
 			side,
 			...(parsed.severity ? { severity: parsed.severity } : {}),
 			title: parsed.title ?? "Untitled prior finding",
+			...(excerpt ? { excerpt } : {}),
 		});
 	}
 
@@ -271,16 +287,22 @@ export async function discoverPriorReview(
 	});
 
 	const truncated = findingsTruncated || reviewPages.truncated || commentPages.truncated || commitPages.truncated;
+	// Truncated discovery cannot prove which review is latest or that every
+	// prior finding was retained; fail open to a full review instead of letting
+	// a capped read silently skip fresh hunting or prior blockers.
+	const failOpenRelationship: PriorReviewRelationship = truncated ? "none" : relationship;
 	const snapshot: PriorReviewSnapshot = {
 		...base,
 		truncated,
-		relationship,
+		relationship: failOpenRelationship,
 		prior: {
 			...prior,
 			findings,
 		},
-		...(incrementalRange ? { incrementalRange } : {}),
-		message: priorReviewMessage(relationship, truncated),
+		...(!truncated && incrementalRange ? { incrementalRange } : {}),
+		message: truncated
+			? "Discovery was truncated by pagination or finding bounds; prior state is retained for diagnostics only. Run a full review."
+			: priorReviewMessage(relationship, truncated),
 	};
 	return snapshot;
 }

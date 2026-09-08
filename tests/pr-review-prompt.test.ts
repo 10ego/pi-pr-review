@@ -139,6 +139,10 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("hunt-scope `context_file`");
 			expect(prompt).toContain("never receive the prior findings list");
 			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
+			expect(prompt).toContain("pins the resolved GitHub hostname");
+			expect(prompt).toContain("caps files at 300");
+			expect(prompt).toContain("published review is always a `COMMENT`");
+			expect(prompt).toContain("including truncated discovery");
 		});
 
 		test("revalidates prior findings in Step 7 and reports them without new headings", () => {

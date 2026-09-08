@@ -297,12 +297,49 @@ describe("Markdown-first canonical review artifacts", () => {
 	test("accepts a canonical Prior findings section without degrading extraction", () => {
 		const withPrior = markdown.replace(
 			"## Findings",
-			"## Prior findings\n- resolved: [P1] prior guard verified in the delta commits.\n- still open: [P2] retry loop unchanged — src/a.ts:40.\n\n## Findings",
+			"## Prior findings\n- resolved: [P1] prior guard verified in the delta commits.\n- obsolete: [P2] removed code path no longer exists.\n\n## Findings",
 		);
-		const artifact = synthesizeReviewArtifact({ rawText: withPrior, ...binding });
+		const artifact = synthesizeReviewArtifact({
+			rawText: withPrior,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.review.findings).toHaveLength(1);
 		expect(artifact.body).toContain("prior guard verified");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("blocks approval when Prior findings discloses a still-open finding Findings does not carry", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",
+			"## Findings\nNo findings.",
+		);
+		const withUnresolved = approve.replace(
+			"## Findings",
+			"## Prior findings\n- still open: [P1] nil map guard still missing — src/a.ts:12.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: withUnresolved,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+		// The same artifact without the still-open disclosure stays eligible.
+		const clean = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] nil map guard verified in the delta commits.\n\n## Findings",
+			),
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(clean.quality).toBe("fully_parsed");
+		expect(clean.mergeApprovalEligible).toBeTrue();
 	});
 
 	test("rejects out-of-contract level-two sections", () => {

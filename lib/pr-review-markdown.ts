@@ -943,6 +943,13 @@ export function synthesizeReviewArtifact(input: {
 	const overview = section(raw, "Overview");
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
+	const priorFindingsDisclosure = section(raw, "Prior findings");
+	// An explicit unresolved prior finding in prose is contradictory evidence
+	// when Findings does not carry it as a parsed finding. It must never stay
+	// approval-eligible: the contract requires every still-open finding to
+	// re-enter Findings, and an approve-verdict artifact that discloses an
+	// unresolved blocker only in prose cannot be trusted to approve.
+	const disclosesUnresolvedPrior = !!priorFindingsDisclosure && /\bstill open\b/i.test(priorFindingsDisclosure);
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
 	// Host lane artifacts are authoritative whenever a batch ran: they already
 	// stop a false complete claim from upgrading incomplete lanes, and they must
@@ -1042,8 +1049,10 @@ export function synthesizeReviewArtifact(input: {
 		expectedLaneCount,
 		completeness,
 		// Markdown approval requires exact host evidence for every registered
-		// dispatch; a nonempty subset cannot establish requested coverage.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
+		// dispatch; a nonempty subset cannot establish requested coverage. An
+		// unresolved prior-finding disclosure additionally blocks approval even
+		// when parsing otherwise succeeded.
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !disclosesUnresolvedPrior,
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }

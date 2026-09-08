@@ -1788,7 +1788,7 @@ export default function registerPrReviewSubagents(
 			].join(" "),
 		promptSnippet: "Detect prior review state for a PR to select full, incremental, or revalidate-only review mode",
 		promptGuidelines: [
-			"Call with the PR number during Step 1 discovery, concurrently with PR metadata and diff capture.",
+			"Call with the PR number during Step 1 discovery when the invocation carries --incremental, concurrently with PR metadata and diff capture.",
 			"Use the returned relationship to pick the review mode; treat discovery failure as no prior state and run a full review.",
 			"Never fabricate prior findings; every prior finding must come from this tool's findings array.",
 		],
@@ -1803,6 +1803,13 @@ export default function registerPrReviewSubagents(
 					content: [{ type: "text", text: "pr_review_prior PR number does not match the active /pr-review invocation." }],
 					isError: true,
 					details: { authorized: false, reason: "pr_mismatch" },
+				};
+			}
+			if (loopCoordinator.peek()?.incremental !== true) {
+				return {
+					content: [{ type: "text", text: "pr_review_prior requires the --incremental flag on the active /pr-review invocation." }],
+					isError: true,
+					details: { authorized: false, reason: "not_incremental" },
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_prior");
