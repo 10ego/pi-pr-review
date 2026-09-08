@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
-import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
+import { collectSessionResult, createIncrementalFixtureRepository, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
@@ -338,6 +338,14 @@ test("every corpus diff is syntactically applicable to its materialized base", (
 		const before = new Map(); for (const changed of item.changedFiles) { const source = fs.readFileSync(path.join(root, changed), "utf8"); before.set(changed, source); assert.ok(source.trim().length > 0, `${item.id}/${changed} source context`); if (item.id === "sharded-registry-contract") assert.equal((source.match(/\{/g) ?? []).length, (source.match(/\}/g) ?? []).length, `${item.id}/${changed} braces`); }
 		const check = spawnSync("git", ["apply", "--check", diff], { cwd: root, encoding: "utf8" }); assert.equal(check.status, 0, `${item.id}: ${check.stderr}`); const apply = spawnSync("git", ["apply", diff], { cwd: root, encoding: "utf8" }); assert.equal(apply.status, 0, `${item.id}: ${apply.stderr}`); assert.deepEqual(item.changedFiles.filter((changed) => fs.readFileSync(path.join(root, changed), "utf8") !== before.get(changed)), item.changedFiles, `${item.id}: every advertised file must change at head`);
 	}
+});
+
+test("incremental fixtures materialize exact ancestor, same-head, and diverged histories", () => {
+	const full = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1,2 @@\n-export const value = 1;\n+export const value = safe();\n+export const added = true;\n", prior = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1 @@\n-export const value = 1;\n+export const value = unsafe();\n", incremental = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1,2 @@\n-export const value = unsafe();\n+export const value = safe();\n+export const added = true;\n";
+	const materialize = (relationship) => { const root = fs.mkdtempSync(path.join(os.tmpdir(), `pi-review-history-${relationship}-`)); fs.writeFileSync(path.join(root, "full.diff"), full); fs.writeFileSync(path.join(root, "prior.diff"), relationship === "same_head" ? full : prior); fs.writeFileSync(path.join(root, "incremental.diff"), incremental); const metadata = (name) => { const bytes = fs.readFileSync(path.join(root, name)); return { path: name, sha256: sha256(bytes), bytes: bytes.length }; }, item = { id: "phase-history", diff: "full.diff", priorState: { relationship, priorDiff: relationship === "none" ? null : metadata("prior.diff"), incrementalDiff: relationship === "incremental" ? metadata("incremental.diff") : null, review: relationship === "none" ? null : {}, expectedStatuses: [] } }, corpusInfo = { root, corpus: { schemaVersion: 2 } }; return createIncrementalFixtureRepository(corpusInfo, item, root); };
+	const ancestor = materialize("incremental"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", ancestor.priorHeadSha, ancestor.headSha], { cwd: ancestor.repo }).status, 0); assert.match(ancestor.compareOutput, /INC_EMPTY=0/); assert.equal(fs.readFileSync(path.join(ancestor.repo, "src/value.ts"), "utf8"), "export const value = safe();\nexport const added = true;\n");
+	const same = materialize("same_head"); assert.equal(same.priorHeadSha, same.headSha); assert.equal(same.compareOutput, "");
+	const diverged = materialize("diverged"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", diverged.priorHeadSha, diverged.headSha], { cwd: diverged.repo }).status, 1); assert.equal(diverged.compareOutput, "");
 });
 
 test("session collection maps host lanes, telemetry, findings, and failure fallback", async () => {
