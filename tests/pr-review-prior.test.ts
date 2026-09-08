@@ -57,6 +57,18 @@ describe("prior inline finding body parsing", () => {
 		expect(commentExcerpt(`**[P1] Title**\n\n${"x".repeat(900)}`)?.length).toBe(500);
 	});
 
+	test("recovers titles with nested bold spans and empty tag-only titles", () => {
+		expect(parseInlineFindingBody("**[P1] Fix **foo** handling**\n\nrationale")).toEqual({
+			severity: "P1",
+			title: "Fix **foo** handling",
+		});
+		expect(parseInlineFindingBody("**[P2]**")).toEqual({ severity: "P2" });
+		expect(parseInlineFindingBody("**[P1] Guard against nil map before write**\n\nrationale")).toEqual({
+			severity: "P1",
+			title: "Guard against nil map before write",
+		});
+	});
+
 	test("falls back to a plain first line and truncates oversized titles", () => {
 		expect(parseInlineFindingBody("plain note")).toEqual({ title: "plain note" });
 		const long = "x".repeat(500);
@@ -259,6 +271,21 @@ describe("prior review discovery", () => {
 		expect(snapshot.incrementalRange).toBeUndefined();
 		expect(snapshot.prior?.head).toBe(HEAD_B);
 		expect(snapshot.message).toContain("Run a full review");
+	});
+
+	test("preserves the truncation diagnostic when no marker review was found at the cap", async () => {
+		const many = Array.from({ length: 100 }, (_value, index) => ({
+			id: 2000 + index,
+			user: { login: "reviewer" },
+			body: "manual review without marker",
+			state: "COMMENTED",
+		}));
+		const fixture = installFakeGh({ reviewsJson: JSON.stringify(many) });
+		const snapshot = await discoverPriorReview(fixture.cwd, 7, { ...fixture, identity: "reviewer" });
+		expect(snapshot.truncated).toBeTrue();
+		expect(snapshot.relationship).toBe("none");
+		expect(snapshot.prior).toBeUndefined();
+		expect(snapshot.message).toContain("truncated by pagination bounds");
 	});
 
 	test("fails closed on malformed PR metadata", async () => {

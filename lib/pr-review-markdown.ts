@@ -945,16 +945,35 @@ export function synthesizeReviewArtifact(input: {
 	const laneDisclosure = section(raw, "Lane completeness");
 	const priorFindingsDisclosure = section(raw, "Prior findings");
 	// An unresolved prior finding disclosed in prose is contradictory evidence
-	// when Findings does not carry it as a parsed finding. Only a contractual
-	// `still open` list line blocks approval, and only when it is tagged with a
-	// blocking severity or deviates from the tag grammar — a still-open P2/P3/
-	// nit that legitimately re-entered Findings keeps a valid approve eligible,
-	// and incidental prose like "window still open" inside a resolved line never
-	// blocks.
+	// when Findings does not carry it as a parsed finding. A contractual
+	// `still open` list line blocks approval when it is tagged with a blocking
+	// severity or deviates from the tag grammar — a still-open P2/P3/nit that
+	// legitimately re-entered Findings keeps a valid approve eligible. The
+	// status prefix is matched only after stripping CommonMark blockquote,
+	// list (`-`, `*`, `+`, ordered), and bold prefixes and collapsing internal
+	// whitespace, so `+ still open`, `1. still open`, `> - still open`, and
+	// `- still  open` cannot bypass the gate. Any *unrecognized* status line
+	// that still carries a [P0]/[P1] tag fails closed: the section exists
+	// precisely to disclose prior severity, and a blocking tag without an
+	// explicit `resolved`/`obsolete` status is ambiguous evidence.
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
-		if (!/^\s*(?:[-*]\s*)?(?:\*\*)?still open\b/i.test(line)) return false;
-		const tagged = /\[(P[0-3]|nit)\]/i.exec(line);
-		return !tagged || /^p[01]$/i.test(tagged[1]!);
+		let normalized = line;
+		for (;;) {
+			const stripped = normalized
+				.replace(/^\s*(?:>\s*)+/, "")
+				.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+				.replace(/^\*\*/, "");
+			if (stripped === normalized) break;
+			normalized = stripped;
+		}
+		normalized = normalized.replace(/\s+/g, " ").trim();
+		if (/^resolved\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
+		if (/^still open\b/i.test(normalized)) {
+			const tagged = /\[(P[0-3]|nit)\]/i.exec(normalized);
+			return !tagged || /^p[01]$/i.test(tagged[1]!);
+		}
+		const blocking = /\[P[01]\]/i.exec(normalized);
+		return !!blocking;
 	});
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
 	// Host lane artifacts are authoritative whenever a batch ran: they already

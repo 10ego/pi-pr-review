@@ -17,8 +17,7 @@ export const PRIOR_COMMIT_MAX_PAGES = 3;
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SCHEMA_ONE_MARKER = /<!-- pi-pr-review: \{"schema":1,"headRefOid":"([0-9a-f]{40}(?:[0-9a-f]{24})?)"\} -->/gi;
-const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
-const INLINE_TITLE = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.+?)\*\*/;
+const INLINE_TITLE = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\s*\*\*\s*$/;
 const TITLE_MAX_CHARS = 200;
 
 export type PriorReviewRelationship = "none" | "same_head" | "incremental" | "diverged";
@@ -81,14 +80,19 @@ export function parseInlineFindingBody(body: string | null | undefined): {
 } {
 	if (typeof body !== "string" || !body.trim()) return {};
 	const firstLine = body.split(/\r?\n/, 1)[0] ?? "";
+	// Anchor to the outer closing delimiter so a title that itself contains
+	// bold spans (`**[P1] Fix **foo** handling**`) is recovered whole.
 	const match = INLINE_TITLE.exec(firstLine);
-	const severity = match?.[1] as PriorReviewFinding["severity"] | undefined;
-	const title = (match?.[2] ?? firstLine.replace(/^\*\*(.*)\*\*$/, "$1")).trim();
-	if (!title) return severity ? { severity } : {};
-	return {
-		...(severity && SEVERITIES.has(severity) ? { severity } : {}),
-		...(title ? { title: title.slice(0, TITLE_MAX_CHARS) } : {}),
-	};
+	if (match) {
+		const severity = match[1] as PriorReviewFinding["severity"];
+		const title = (match[2] ?? "").trim();
+		return {
+			severity,
+			...(title ? { title: title.slice(0, TITLE_MAX_CHARS) } : {}),
+		};
+	}
+	const title = firstLine.replace(/^\*\*(.*)\*\*$/, "$1").trim();
+	return title ? { title: title.slice(0, TITLE_MAX_CHARS) } : {};
 }
 
 const EXCERPT_MAX_CHARS = 500;
@@ -231,10 +235,16 @@ export async function discoverPriorReview(
 	}
 
 	if (!prior) {
+		// A capped review search cannot prove no marker review exists beyond the
+		// bound; preserve the truncation flag and its fail-open guidance instead
+		// of claiming definitively that no prior review exists.
 		return {
 			...base,
+			...(reviewPages.truncated ? { truncated: true } : {}),
 			relationship: "none",
-			message: "No prior pi-pr-review review by the current identity on this PR; run a full review.",
+			message: reviewPages.truncated
+				? "Review discovery was truncated by pagination bounds before any marker review was found; run a full review."
+				: "No prior pi-pr-review review by the current identity on this PR; run a full review.",
 		};
 	}
 

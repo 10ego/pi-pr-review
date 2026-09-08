@@ -374,6 +374,45 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(blocked.mergeApprovalEligible).toBeFalse();
 	});
 
+	test("blocks approval for bypass spellings of still-open blocking priors", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",
+			"## Findings\nNo findings.",
+		);
+		for (const variant of [
+			"- still open: [P1] guard missing",
+			"- still  open: [P1] guard missing",
+			"+ still open: [P1] guard missing",
+			"1. still open: [P1] guard missing",
+			"> - still open: [P1] guard missing",
+			"- still-open: [P1] guard missing",
+			"- unresolved: [P1] guard missing",
+		]) {
+			const artifact = synthesizeReviewArtifact({
+				rawText: approve.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
+				...binding,
+				laneArtifacts: [completeLane],
+				expectedLaneDescriptors: [completeExpectedLane],
+			});
+			expect(artifact.mergeApprovalEligible, variant).toBeFalse();
+		}
+		// The same spellings at non-blocking severities stay eligible, and an
+		// unrecognized line without a blocking tag never blocks.
+		for (const variant of [
+			"+ still open: [P2] minor note",
+			"1. still open: [nit] naming",
+			"- unclear status without tags",
+		]) {
+			const artifact = synthesizeReviewArtifact({
+				rawText: approve.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
+				...binding,
+				laneArtifacts: [completeLane],
+				expectedLaneDescriptors: [completeExpectedLane],
+			});
+			expect(artifact.mergeApprovalEligible, variant).toBeTrue();
+		}
+	});
+
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });
