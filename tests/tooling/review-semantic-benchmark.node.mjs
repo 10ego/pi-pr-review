@@ -336,6 +336,19 @@ test("read-only gh shim rejects every supported API write-method spelling", { sk
 	const records = fs.readFileSync(audit, "utf8").trim().split("\n").map(JSON.parse); assert.equal(records.length, 10); assert.ok(records.every((record) => record.allowed === false && record.write === true));
 });
 
+test("read-only gh shim serves bounded prior-review discovery and compare data", { skip: process.platform === "win32" }, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-gh-prior-shim-")), audit = path.join(root, "audit.jsonl"), config = path.join(root, "config.json"), wrapper = installGhShim(root), env = { ...process.env, BENCHMARK_GH_AUDIT: audit, BENCHMARK_GH_CONFIG: config };
+	const priorHead = "1".repeat(40), currentHead = "2".repeat(40), reviews = [{ id: 7, body: `<!-- pi-pr-review:head=${priorHead} -->`, state: "COMMENTED", user: { login: "reviewer" } }], reviewComments = [{ id: 8, pull_request_review_id: 7, path: "src/a.ts", line: 2, side: "RIGHT", body: "[P1] preserve the guard" }], commits = [{ sha: priorHead }, { sha: currentHead }], compareOutput = "diff --git a/src/a.ts b/src/a.ts\n";
+	fs.writeFileSync(audit, ""); fs.writeFileSync(config, JSON.stringify({ login: "reviewer", repo: { nameWithOwner: "benchmark/repo", url: "https://github.com/benchmark/repo" }, pullApi: { head: { sha: currentHead } }, prView: {}, diffFile: path.join(root, "diff"), reviews, reviewComments, commits, compareOutput })); fs.writeFileSync(path.join(root, "diff"), "diff");
+	const invoke = (endpoint, extra = []) => spawnSync(wrapper, ["api", "--hostname", "github.com", endpoint, ...extra], { env, encoding: "utf8" });
+	const reviewPage = invoke("repos/benchmark/repo/pulls/1/reviews?per_page=1&page=1"); assert.equal(reviewPage.status, 0); assert.deepEqual(JSON.parse(reviewPage.stdout), reviews);
+	const reviewPastEnd = invoke("repos/benchmark/repo/pulls/1/reviews?per_page=1&page=2"); assert.equal(reviewPastEnd.status, 0); assert.deepEqual(JSON.parse(reviewPastEnd.stdout), []);
+	const commentsPage = invoke("repos/benchmark/repo/pulls/1/comments?per_page=100&page=1"); assert.deepEqual(JSON.parse(commentsPage.stdout), reviewComments);
+	const commitsPage = invoke("repos/benchmark/repo/pulls/1/commits?per_page=100&page=1"); assert.deepEqual(JSON.parse(commitsPage.stdout), commits);
+	const compare = invoke(`repos/benchmark/repo/compare/${priorHead}...${currentHead}`, ["--jq", ".files"]); assert.equal(compare.status, 0); assert.equal(compare.stdout, compareOutput);
+	const records = fs.readFileSync(audit, "utf8").trim().split("\n").map(JSON.parse); assert.equal(records.length, 5); assert.ok(records.every((record) => record.allowed === true && record.write === false));
+});
+
 test("collector hard timeout terminates the detached Pi process group", async () => {
 	const started = Date.now(), outcome = await spawnPi(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: process.cwd(), env: process.env }, 25); assert.equal(outcome.error, "collector-hard-timeout"); assert.equal(outcome.signal, "SIGTERM"); assert.ok(Date.now() - started < 2_000);
 });
