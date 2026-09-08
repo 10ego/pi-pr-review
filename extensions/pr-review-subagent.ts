@@ -1819,15 +1819,26 @@ export default function registerPrReviewSubagents(
 				});
 				// Record host-side that this invocation owes a Prior findings
 				// disclosure: approval eligibility will require the section to
-				// carry at least one status line per prior finding.
+				// carry one distinct status line per prior title. Write against
+				// the acquired lease generation and only while the lease still
+				// owns the binding, so a late discovery cannot mark or clear a
+				// successor invocation. A truncated prior set also registers its
+				// known (partial) titles: the full review still re-hunts, but
+				// known blockers must be disclosed.
 				const revalidationTitles = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
 					? (snapshot.prior?.findings ?? []).map((finding) => finding.title)
 					: [];
-				priorRevalidationRegistry.mark(
-					ctx.sessionManager.getSessionId(),
-					loopCoordinator.retainedGeneration(ctx) ?? -1,
-					revalidationTitles,
-				);
+				const truncatedTitles = snapshot.truncated
+					? (snapshot.prior?.findings ?? []).map((finding) => finding.title)
+					: [];
+				const titlesToMark = revalidationTitles.length > 0 ? revalidationTitles : truncatedTitles;
+				if (titlesToMark.length > 0 && loopCoordinator.isLeaseActive(lease, ctx)) {
+					priorRevalidationRegistry.mark(
+						ctx.sessionManager.getSessionId(),
+						lease.generation,
+						titlesToMark,
+					);
+				}
 				return {
 					content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
 					details: snapshot,

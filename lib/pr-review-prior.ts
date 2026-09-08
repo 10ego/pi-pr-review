@@ -14,6 +14,9 @@ export const PRIOR_REVIEW_MAX_PAGES = 5;
 export const PRIOR_REVIEW_PER_PAGE = 100;
 export const PRIOR_REVIEW_MAX_FINDINGS = 200;
 export const PRIOR_COMMIT_MAX_PAGES = 3;
+/** Per-call accumulated-stdout cap; beyond it parsing fails closed to a full
+ * review instead of spiking extension-process memory. */
+export const PRIOR_GH_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SCHEMA_ONE_MARKER = /<!-- pi-pr-review: \{"schema":1,"headRefOid":"([0-9a-f]{40}(?:[0-9a-f]{24})?)"\} -->/gi;
@@ -233,7 +236,7 @@ async function fetchBoundedPages(
 		const anchor = firstArgs[firstArgs.length - 1]!;
 		const separator = anchor.includes("?") ? "&" : "?";
 		const args = [...firstArgs.slice(0, -1), `${anchor}${separator}per_page=${PRIOR_REVIEW_PER_PAGE}&page=${page}`];
-		const value = await ghJson<unknown>(githubApiArgs(hostname, ...args), cwd, undefined, { signal: options.signal });
+		const value = await ghJson<unknown>(githubApiArgs(hostname, ...args), cwd, undefined, { signal: options.signal }, PRIOR_GH_OUTPUT_MAX_BYTES);
 		if (!Array.isArray(value)) throw new Error("GitHub returned a malformed paginated list");
 		entries.push(...value);
 		if (value.length < PRIOR_REVIEW_PER_PAGE) break;
@@ -281,7 +284,7 @@ export async function discoverPriorReview(
 	const identityLogin = options.identity ??
 		(await ghText(githubApiArgs(binding.hostname, "user", "--jq", ".login"), cwd, undefined, {
 			signal: options.signal,
-		})).replace(/\s+/g, "");
+		}, 65_536)).replace(/\s+/g, "");
 	if (!identityLogin) throw new Error("GitHub identity lookup returned no login");
 
 	const pullsPath = `repos/${binding.repository}/pulls/${prNumber}`;
@@ -290,6 +293,7 @@ export async function discoverPriorReview(
 		cwd,
 		undefined,
 		{ signal: options.signal },
+		PRIOR_GH_OUTPUT_MAX_BYTES,
 	);
 	const currentHead = pull?.head?.sha;
 	if (!validSha(currentHead)) throw new Error("GitHub PR metadata omitted a valid head SHA");

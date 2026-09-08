@@ -44,6 +44,10 @@ const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
 const FINDING_HEADING = /^(#{3,6})\s+(\[(?:P[0-3]|nit)\]\s+.+?)\s*$/gim;
 const PRIOR_STATUS_LINE = /^(?:resolved|still open|obsolete)\b/i;
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Normalize a Prior findings status line: strip blockquote, list, and bold
  * prefixes and collapse whitespace so markdown variants cannot evade matching. */
 function normalizePriorStatusLine(line: string): string {
@@ -867,10 +871,12 @@ export function synthesizeReviewArtifact(input: {
 		if (requiredTitles.length === 0) return true;
 		const disclosure = priorFindingsDisclosureEarly?.trim();
 		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
-		// Each prior finding must be disclosed by title in some status line:
-		// counting lines alone is satisfiable by repeating one status while
-		// omitting an unresolved blocker. Comparison is case- and
-		// whitespace-insensitive over the normalized status text.
+		// Each prior finding must be disclosed by title in some distinct
+		// status line: counting lines alone is satisfiable by repeating one
+		// status while omitting an unresolved blocker. Matching uses word
+		// boundaries so an unrelated token ("Trace") cannot stand in for a
+		// required title ("Race"); comparison is case- and whitespace-
+		// insensitive over the normalized status text.
 		const normalizedLines = disclosure.split(/\r?\n/)
 			.map((line) => normalizePriorStatusLine(line).toLowerCase());
 		// The matching line must itself be a contractual status line, and each
@@ -880,8 +886,14 @@ export function synthesizeReviewArtifact(input: {
 		const usedLines = new Set<number>();
 		return requiredTitles.every((title) => {
 			const normalizedTitle = title.replace(/\s+/g, " ").trim().toLowerCase();
+			let pattern: RegExp;
+			try {
+				pattern = new RegExp(`\\b${escapeRegExp(normalizedTitle)}\\b`, "i");
+			} catch {
+				pattern = new RegExp(escapeRegExp(normalizedTitle), "i");
+			}
 			const matched = normalizedLines.findIndex((line, index) =>
-				!usedLines.has(index) && PRIOR_STATUS_LINE.test(line) && line.includes(normalizedTitle));
+				!usedLines.has(index) && PRIOR_STATUS_LINE.test(line) && pattern.test(line));
 			if (matched === -1) return false;
 			usedLines.add(matched);
 			return true;
@@ -1061,6 +1073,29 @@ export function synthesizeReviewArtifact(input: {
 	// finding behavior with an explicit independent-validation advisory.
 	const recoveredLaneFindings = validatedLaneFindings;
 	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
+	// A still-open prior finding must re-enter Findings as a normal finding
+	// (the published concise body omits the Prior findings section, so a
+	// still-open entry that never re-enters would be invisible to readers
+	// while an approve verdict shipped). Every still-open status line must
+	// therefore name a parsed finding; otherwise approval is blocked. This
+	// preserves a legitimate approve whose still-open non-blocking priors did
+	// re-enter, while refusing an approve that silently drops them.
+	const priorStillOpenReentered = (() => {
+		if (!priorFindingsDisclosure) return true;
+		const stillOpenLines = priorFindingsDisclosure.split(/\r?\n/)
+			.map((line) => normalizePriorStatusLine(line))
+			.filter((line) => /^still open\b/i.test(line));
+		if (stillOpenLines.length === 0) return true;
+		const normalizedFindingTitles = safeFindings.map((finding) =>
+			String(finding.title ?? "")
+				// Reassessed severity may differ between the status line and the
+				// re-entered finding; compare tag-stripped titles.
+				.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "")
+				.replace(/\s+/g, " ").trim().toLowerCase());
+		return stillOpenLines.every((line) =>
+			normalizedFindingTitles.some((findingTitle) =>
+				findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
+	})();
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
 			return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
@@ -1126,7 +1161,7 @@ export function synthesizeReviewArtifact(input: {
 		// dispatch; a nonempty subset cannot establish requested coverage. An
 		// unresolved prior-finding disclosure additionally blocks approval even
 		// when parsing otherwise succeeded.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking && priorDisclosureSatisfied,
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking && priorDisclosureSatisfied && priorStillOpenReentered,
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }

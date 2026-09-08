@@ -147,7 +147,7 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("INC_EMPTY=1");
 			expect(prompt).toContain("run the revalidation-only path exactly as for `same_head`");
 			expect(prompt).toContain("revalidation only when the relationship is `same_head` or `incremental`");
-			expect(prompt).toContain("including truncated discovery");
+			expect(prompt).toContain("When `none` follows truncated discovery");
 		});
 
 		test("revalidates prior findings in Step 7 and reports them without new headings", () => {

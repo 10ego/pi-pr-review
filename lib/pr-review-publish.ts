@@ -1609,6 +1609,9 @@ function runGh(
 	input?: string,
 	timeoutMs = GH_COMMAND_TIMEOUT_MS,
 	lifecycle: GhCommandLifecycle = {},
+	/** Optional accumulated-stdout cap; beyond it further output is dropped so
+	 * downstream JSON parsing fails closed instead of spiking memory. */
+	outputMaxBytes = Number.POSITIVE_INFINITY,
 ): Promise<GhResult> {
 	return new Promise((resolve) => {
 		let settled = false;
@@ -1731,7 +1734,10 @@ function runGh(
 				finishPending();
 			}, graceMs + reserveMs);
 		};
-		proc.stdout.on("data", (data) => (stdout += data.toString()));
+		proc.stdout.on("data", (data) => {
+			if (stdout.length >= outputMaxBytes) return;
+			stdout += data.toString().slice(0, Math.max(0, outputMaxBytes - stdout.length));
+		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
 			const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -1768,14 +1774,14 @@ function runGh(
 	});
 }
 
-export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
-	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle);
+export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle, outputMaxBytes);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
 	return result.stdout.trim();
 }
 
-export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
-	const text = await ghText(args, cwd, timeoutMs, lifecycle);
+export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<T> {
+	const text = await ghText(args, cwd, timeoutMs, lifecycle, outputMaxBytes);
 	return JSON.parse(text) as T;
 }
 

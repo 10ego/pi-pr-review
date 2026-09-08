@@ -396,15 +396,17 @@ describe("Markdown-first canonical review artifacts", () => {
 			});
 			expect(artifact.mergeApprovalEligible, variant).toBeFalse();
 		}
-		// The same spellings at non-blocking severities stay eligible, and an
-		// unrecognized line without a blocking tag never blocks.
+		// The same spellings at non-blocking severities stay eligible when the
+		// prior finding re-enters Findings (title matched by the parsed P2), and
+		// an unrecognized line without a blocking tag never blocks.
+		const approveKeepsFinding = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		for (const variant of [
-			"+ still open: [P2] minor note",
-			"1. still open: [nit] naming",
+			"+ still open: [P2] Keep the raw synthesis",
+			"1. still open: [nit] Keep the raw synthesis",
 			"- unclear status without tags",
 		]) {
 			const artifact = synthesizeReviewArtifact({
-				rawText: approve.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
+				rawText: approveKeepsFinding.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
 				...binding,
 				laneArtifacts: [completeLane],
 				expectedLaneDescriptors: [completeExpectedLane],
@@ -444,7 +446,7 @@ describe("Markdown-first canonical review artifacts", () => {
 		const disclosed = synthesizeReviewArtifact({
 			rawText: approve.replace(
 				"## Findings",
-				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost — reconstructed above.\n+ still open: [P2] Discard untrusted replies from authored findings remains open.\n\n## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost — reconstructed above.\n- resolved: [P2] Discard untrusted replies from authored findings — replies skipped.\n\n## Findings",
 			),
 			...binding,
 			...lanes,
@@ -475,9 +477,45 @@ describe("Markdown-first canonical review artifacts", () => {
 			priorRevalidationRequiredTitles: titles,
 		});
 		expect(combined.mergeApprovalEligible).toBeFalse();
+		// Word-boundary matching: an unrelated token cannot stand in for a
+		// required title ("resolved: fixed the Trace issue" cannot satisfy a
+		// required "Race" title).
+		const boundary = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P2] fixed the Trace handling in the delta.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: ["Race handling"],
+		});
+		expect(boundary.mergeApprovalEligible).toBeFalse();
 		// Without the host requirement the same omitted section stays eligible.
 		const unrequired = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes });
 		expect(unrequired.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("blocks approval when a still-open prior never re-enters Findings", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] } as const;
+		// A still-open non-blocking prior that is disclosed but never re-entered
+		// would be invisible in the published concise body; block approval.
+		const dropped = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- still open: [P2] retry loop unchanged\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+		});
+		expect(dropped.quality).toBe("fully_parsed");
+		expect(dropped.mergeApprovalEligible).toBeFalse();
+		// The same still-open prior re-entered as the parsed P2 finding stays
+		// approval-eligible.
+		const reentered = synthesizeReviewArtifact({
+			rawText: approve, ...binding, ...lanes,
+		});
+		expect(reentered.mergeApprovalEligible).toBeTrue();
 	});
 
 	test("rejects out-of-contract level-two sections", () => {
