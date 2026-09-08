@@ -203,6 +203,26 @@ describe("other notes reconstruction", () => {
 		]);
 	});
 
+	test("does not truncate later entries at headings inside a prior finding body", () => {
+		const body = [
+			"**Verdict:** comment",
+			"### Other Notes",
+			"",
+			"**[P2] Guard unbounded retry loop** — `src/a.ts:40-44 RIGHT`",
+			"",
+			"The loop grows unbounded. See ### design notes below for context.",
+			"",
+			"**[P1] Caller contract drift** — `src/callers.ts:7 LEFT`",
+			"",
+			"The caller no longer accepts the returned shape.",
+		].join("\n");
+		const findings = parseOtherNotesFindings(body);
+		expect(findings.map((finding) => finding.title)).toEqual([
+			"Guard unbounded retry loop",
+			"Caller contract drift",
+		]);
+	});
+
 	test("returns nothing without an Other Notes section", () => {
 		expect(parseOtherNotesFindings("no structured body")).toEqual([]);
 		expect(parseOtherNotesFindings(undefined)).toEqual([]);
@@ -210,22 +230,22 @@ describe("other notes reconstruction", () => {
 });
 
 describe("prior revalidation registry", () => {
-	test("records per-generation disclosure counts and prunes to a bound", () => {
+	test("records per-generation disclosure titles and prunes to a bound", () => {
 		const registry = new PriorRevalidationRegistry();
 		expect(registry.isRequired(1)).toBeUndefined();
-		registry.mark(1, 3);
-		expect(registry.isRequired(1)).toBe(3);
+		registry.mark(1, ["a", "b"]);
+		expect(registry.isRequired(1)).toEqual(["a", "b"]);
 		expect(registry.isRequired(2)).toBeUndefined();
 		expect(registry.isRequired(undefined)).toBeUndefined();
-		registry.mark(1, 0);
-		expect(registry.isRequired(1)).toBe(0);
-		registry.mark(1, 2);
-		registry.mark(2, 1);
-		expect(registry.isRequired(1)).toBe(2);
-		expect(registry.isRequired(2)).toBe(1);
-		for (let generation = 10; generation < 30; generation++) registry.mark(generation, 1);
+		registry.mark(1, []);
+		expect(registry.isRequired(1)).toEqual([]);
+		registry.mark(1, ["x"]);
+		registry.mark(2, ["y"]);
+		expect(registry.isRequired(1)).toEqual(["x"]);
+		expect(registry.isRequired(2)).toEqual(["y"]);
+		for (let generation = 10; generation < 30; generation++) registry.mark(generation, ["g"]);
 		// Pruning keeps the map bounded; recent generations survive.
-		expect(registry.isRequired(29)).toBe(1);
+		expect(registry.isRequired(29)).toEqual(["g"]);
 		expect(registry.isRequired(1)).toBeUndefined();
 	});
 });

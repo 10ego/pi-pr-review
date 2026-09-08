@@ -839,8 +839,9 @@ export function synthesizeReviewArtifact(input: {
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	strictJsonReview?: ReviewLike;
-	/** Host-recorded count of prior-finding statuses this run must disclose. */
-	priorRevalidationRequired?: number;
+	/** Host-recorded prior-finding titles this run's Prior findings section
+	 * must each disclose in one status line. */
+	priorRevalidationRequiredTitles?: readonly string[];
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -862,13 +863,20 @@ export function synthesizeReviewArtifact(input: {
 	const rawForPrior = input.rawText.trim().replace(/\r\n?/g, "\n");
 	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
 	const priorDisclosureSatisfied = (() => {
-		const requiredCount = input.priorRevalidationRequired ?? 0;
-		if (requiredCount <= 0) return true;
+		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
+		if (requiredTitles.length === 0) return true;
 		const disclosure = priorFindingsDisclosureEarly?.trim();
 		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
-		const statusLines = disclosure.split(/\r?\n/).filter((line) =>
-			PRIOR_STATUS_LINE.test(normalizePriorStatusLine(line)));
-		return statusLines.length >= requiredCount;
+		// Each prior finding must be disclosed by title in some status line:
+		// counting lines alone is satisfiable by repeating one status while
+		// omitting an unresolved blocker. Comparison is case- and
+		// whitespace-insensitive over the normalized status text.
+		const normalizedLines = disclosure.split(/\r?\n/)
+			.map((line) => normalizePriorStatusLine(line).toLowerCase());
+		return requiredTitles.every((title) => {
+			const normalizedTitle = title.replace(/\s+/g, " ").trim().toLowerCase();
+			return normalizedLines.some((line) => line.includes(normalizedTitle));
+		});
 	})();
 	if (input.strictJsonReview) {
 		// Strict JSON carries no assistant disclosure line; host lane evidence is

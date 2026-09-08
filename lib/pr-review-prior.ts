@@ -99,21 +99,22 @@ const EXCERPT_MAX_CHARS = 500;
 
 const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`([^`]+)`)?\s*$/;
 
-/** Host-side record of how many prior-finding statuses an invocation must disclose. */
+/** Host-side record of the prior-finding titles an invocation must disclose. */
 export class PriorRevalidationRegistry {
-	private readonly required = new Map<number, number>();
-	/** Record the required disclosure count; 0 clears the requirement. Prunes
-	 * to the eight most recent generations so long-lived processes stay bounded. */
-	mark(generation: number, count: number): void {
+	private readonly required = new Map<number, readonly string[]>();
+	/** Record the prior titles that must each appear in one status line; an
+	 * empty list clears the requirement. Prunes to the eight most recent
+	 * generations so long-lived processes stay bounded. */
+	mark(generation: number, titles: readonly string[]): void {
 		this.required.delete(generation);
-		this.required.set(generation, count);
+		this.required.set(generation, titles);
 		while (this.required.size > 8) {
 			const oldest = this.required.keys().next().value;
 			if (oldest === undefined) break;
 			this.required.delete(oldest);
 		}
 	}
-	isRequired(generation: number | undefined): number | undefined {
+	isRequired(generation: number | undefined): readonly string[] | undefined {
 		return generation === undefined ? undefined : this.required.get(generation);
 	}
 }
@@ -142,7 +143,7 @@ function parseOtherNotesLocation(
 /** Reconstruct the prior publisher's body-only findings from Other Notes. */
 export function parseOtherNotesFindings(body: string | null | undefined): PriorReviewFinding[] {
 	if (typeof body !== "string") return [];
-	const sectionMatch = /###\s*Other Notes\s*\n([\s\S]*?)(?=\n#{2,4}\s|$)/i.exec(body);
+	const sectionMatch = /###\s*Other Notes\s*\n([\s\S]*)$/i.exec(body);
 	const section = sectionMatch?.[1];
 	if (!section) return [];
 	const lines = section.split(/\r?\n/);
@@ -156,10 +157,10 @@ export function parseOtherNotesFindings(body: string | null | undefined): PriorR
 		const rationale: string[] = [];
 		for (let next = index + 1; next < lines.length; next++) {
 			const line = lines[next]!.trim();
-			if (!line) {
+			if (!line || line.startsWith("<!-- pi-pr-review")) {
 				// The publisher separates each entry with a blank line; a blank
 				// after collected rationale ends the entry, a blank right after
-				// the title line precedes its body.
+				// the title line precedes its body. Canonical markers end the body.
 				if (rationale.length > 0) break;
 				continue;
 			}

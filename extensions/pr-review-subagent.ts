@@ -1820,10 +1820,10 @@ export default function registerPrReviewSubagents(
 				// Record host-side that this invocation owes a Prior findings
 				// disclosure: approval eligibility will require the section to
 				// carry at least one status line per prior finding.
-				const revalidationCount = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
-					? (snapshot.prior?.findings.length ?? 0)
-					: 0;
-				priorRevalidationRegistry.mark(loopCoordinator.activeGeneration(ctx) ?? -1, revalidationCount);
+				const revalidationTitles = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
+					? (snapshot.prior?.findings ?? []).map((finding) => finding.title)
+					: [];
+				priorRevalidationRegistry.mark(loopCoordinator.activeGeneration(ctx) ?? -1, revalidationTitles);
 				return {
 					content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
 					details: snapshot,

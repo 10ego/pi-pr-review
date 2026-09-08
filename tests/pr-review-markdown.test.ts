@@ -413,11 +413,12 @@ describe("Markdown-first canonical review artifacts", () => {
 		}
 	});
 
-	test("blocks approval when the host required prior disclosure but the section is absent, vacuous, or undercounted", () => {
+	test("blocks approval when the host required prior disclosure is absent, vacuous, or does not cover every title", () => {
 		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
 		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] } as const;
+		const titles = ["Body-only prior findings are lost", "Discard untrusted replies from authored findings"];
 		const omitted = synthesizeReviewArtifact({
-			rawText: approve, ...binding, ...lanes, priorRevalidationRequired: 2,
+			rawText: approve, ...binding, ...lanes, priorRevalidationRequiredTitles: titles,
 		});
 		expect(omitted.quality).toBe("fully_parsed");
 		expect(omitted.mergeApprovalEligible).toBeFalse();
@@ -425,29 +426,29 @@ describe("Markdown-first canonical review artifacts", () => {
 			rawText: approve.replace("## Findings", "## Prior findings\nNone.\n\n## Findings"),
 			...binding,
 			...lanes,
-			priorRevalidationRequired: 2,
+			priorRevalidationRequiredTitles: titles,
 		});
 		expect(vacuous.mergeApprovalEligible).toBeFalse();
-		// Fewer status lines than prior findings cannot satisfy the gate, and
-		// markdown variants of the status list count normally.
-		const undercount = synthesizeReviewArtifact({
+		// Repeating one finding's status cannot satisfy distinct-title coverage:
+		// the omitted unresolved blocker stays undetected by the count.
+		const duplicated = synthesizeReviewArtifact({
 			rawText: approve.replace(
 				"## Findings",
-				"## Prior findings\n- resolved: [P1] one verified fix only.\n\n## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost, so incremental runs can approve blockers.\n- resolved: [P2] Body-only prior findings are lost, so incremental runs can approve blockers.\n\n## Findings",
 			),
 			...binding,
 			...lanes,
-			priorRevalidationRequired: 2,
+			priorRevalidationRequiredTitles: titles,
 		});
-		expect(undercount.mergeApprovalEligible).toBeFalse();
+		expect(duplicated.mergeApprovalEligible).toBeFalse();
 		const disclosed = synthesizeReviewArtifact({
 			rawText: approve.replace(
 				"## Findings",
-				"## Prior findings\n- resolved: [P1] prior blocker verified in the delta.\n+ still open: [P2] follow-up note kept open.\n\n## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost — reconstructed above.\n+ still open: [P2] Discard untrusted replies from authored findings remains open.\n\n## Findings",
 			),
 			...binding,
 			...lanes,
-			priorRevalidationRequired: 2,
+			priorRevalidationRequiredTitles: titles,
 		});
 		expect(disclosed.quality).toBe("fully_parsed");
 		expect(disclosed.mergeApprovalEligible).toBeTrue();
