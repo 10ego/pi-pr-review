@@ -1823,7 +1823,11 @@ export default function registerPrReviewSubagents(
 				const revalidationTitles = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
 					? (snapshot.prior?.findings ?? []).map((finding) => finding.title)
 					: [];
-				priorRevalidationRegistry.mark(loopCoordinator.activeGeneration(ctx) ?? -1, revalidationTitles);
+				priorRevalidationRegistry.mark(
+					ctx.sessionManager.getSessionId(),
+					loopCoordinator.retainedGeneration(ctx) ?? -1,
+					revalidationTitles,
+				);
 				return {
 					content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
 					details: snapshot,

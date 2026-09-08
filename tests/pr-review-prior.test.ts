@@ -244,23 +244,27 @@ describe("other notes reconstruction", () => {
 });
 
 describe("prior revalidation registry", () => {
-	test("records per-generation disclosure titles and prunes to a bound", () => {
+	test("records per-session disclosure titles and prunes to a bound", () => {
 		const registry = new PriorRevalidationRegistry();
-		expect(registry.isRequired(1)).toBeUndefined();
-		registry.mark(1, ["a", "b"]);
-		expect(registry.isRequired(1)).toEqual(["a", "b"]);
-		expect(registry.isRequired(2)).toBeUndefined();
-		expect(registry.isRequired(undefined)).toBeUndefined();
-		registry.mark(1, []);
-		expect(registry.isRequired(1)).toEqual([]);
-		registry.mark(1, ["x"]);
-		registry.mark(2, ["y"]);
-		expect(registry.isRequired(1)).toEqual(["x"]);
-		expect(registry.isRequired(2)).toEqual(["y"]);
-		for (let generation = 10; generation < 30; generation++) registry.mark(generation, ["g"]);
-		// Pruning keeps the map bounded; recent generations survive.
-		expect(registry.isRequired(29)).toEqual(["g"]);
-		expect(registry.isRequired(1)).toBeUndefined();
+		expect(registry.isRequired("s1", 1)).toBeUndefined();
+		registry.mark("s1", 1, ["a", "b"]);
+		expect(registry.isRequired("s1", 1)).toEqual(["a", "b"]);
+		// Session scoping: another coordinator's generation cannot collide.
+		expect(registry.isRequired("s2", 1)).toBeUndefined();
+		registry.mark("s2", 1, ["c"]);
+		expect(registry.isRequired("s2", 1)).toEqual(["c"]);
+		expect(registry.isRequired("s1", 2)).toBeUndefined();
+		expect(registry.isRequired("s1", undefined)).toBeUndefined();
+		registry.mark("s1", 1, []);
+		expect(registry.isRequired("s1", 1)).toEqual([]);
+		registry.mark("s1", 1, ["x"]);
+		registry.mark("s1", 2, ["y"]);
+		expect(registry.isRequired("s1", 1)).toEqual(["x"]);
+		expect(registry.isRequired("s1", 2)).toEqual(["y"]);
+		for (let generation = 10; generation < 30; generation++) registry.mark("s1", generation, ["g"]);
+		// Pruning keeps the map bounded; recent entries survive.
+		expect(registry.isRequired("s1", 29)).toEqual(["g"]);
+		expect(registry.isRequired("s1", 1)).toBeUndefined();
 	});
 });
 

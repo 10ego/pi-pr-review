@@ -99,23 +99,26 @@ const EXCERPT_MAX_CHARS = 500;
 
 const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`(.+)`)?\s*$/;
 
-/** Host-side record of the prior-finding titles an invocation must disclose. */
+/** Host-side record of the prior-finding titles an invocation must disclose.
+ * Keys are scoped by session id and generation so concurrent coordinators in
+ * one process cannot collide on per-coordinator generation counters. */
 export class PriorRevalidationRegistry {
-	private readonly required = new Map<number, readonly string[]>();
-	/** Record the prior titles that must each appear in one status line; an
-	 * empty list clears the requirement. Prunes to the eight most recent
-	 * generations so long-lived processes stay bounded. */
-	mark(generation: number, titles: readonly string[]): void {
-		this.required.delete(generation);
-		this.required.set(generation, titles);
+	private readonly required = new Map<string, readonly string[]>();
+	/** Record the prior titles that must each appear in one distinct status
+	 * line; an empty list clears the requirement. Prunes to the eight most
+	 * recent entries so long-lived processes stay bounded. */
+	mark(sessionId: string, generation: number, titles: readonly string[]): void {
+		const key = `${sessionId}:${generation}`;
+		this.required.delete(key);
+		this.required.set(key, titles);
 		while (this.required.size > 8) {
 			const oldest = this.required.keys().next().value;
 			if (oldest === undefined) break;
 			this.required.delete(oldest);
 		}
 	}
-	isRequired(generation: number | undefined): readonly string[] | undefined {
-		return generation === undefined ? undefined : this.required.get(generation);
+	isRequired(sessionId: string, generation: number | undefined): readonly string[] | undefined {
+		return generation === undefined ? undefined : this.required.get(`${sessionId}:${generation}`);
 	}
 }
 
@@ -143,7 +146,7 @@ function parseOtherNotesLocation(
 /** Reconstruct the prior publisher's body-only findings from Other Notes. */
 export function parseOtherNotesFindings(body: string | null | undefined): PriorReviewFinding[] {
 	if (typeof body !== "string") return [];
-	const sectionMatch = /###\s*Other Notes\s*\n([\s\S]*)$/i.exec(body);
+	const sectionMatch = /###\s*Other Notes\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(body);
 	const section = sectionMatch?.[1];
 	if (!section) return [];
 	const lines = section.split(/\r?\n/);

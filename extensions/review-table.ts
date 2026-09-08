@@ -1150,7 +1150,10 @@ export default function registerReviewTable(
 			!validateReviewInvocation(strict.review, active)
 			? strict.review
 			: undefined;
-		const priorRequiredTitles = priorRevalidationRegistry.isRequired(loopCoordinator.retainedGeneration(ctx)) ?? [];
+		const priorRequiredTitles = priorRevalidationRegistry.isRequired(
+			ctx.sessionManager.getSessionId(),
+			loopCoordinator.retainedGeneration(ctx),
+		) ?? [];
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
