@@ -875,7 +875,10 @@ export function synthesizeReviewArtifact(input: {
 			.map((line) => normalizePriorStatusLine(line).toLowerCase());
 		return requiredTitles.every((title) => {
 			const normalizedTitle = title.replace(/\s+/g, " ").trim().toLowerCase();
-			return normalizedLines.some((line) => line.includes(normalizedTitle));
+			// The matching line must itself be a contractual status line: a title
+			// mentioned in prose ("checked <title>") discloses nothing about the
+			// prior finding's resolution state.
+			return normalizedLines.some((line) => PRIOR_STATUS_LINE.test(line) && line.includes(normalizedTitle));
 		});
 	})();
 	if (input.strictJsonReview) {

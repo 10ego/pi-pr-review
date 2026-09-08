@@ -452,6 +452,17 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(disclosed.quality).toBe("fully_parsed");
 		expect(disclosed.mergeApprovalEligible).toBeTrue();
+		// A title mentioned in prose without a status prefix discloses nothing.
+		const proseOnly = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- checked Body-only prior findings are lost during reconstruction.\n- checked Discard untrusted replies from authored findings.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(proseOnly.mergeApprovalEligible).toBeFalse();
 		// Without the host requirement the same omitted section stays eligible.
 		const unrequired = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes });
 		expect(unrequired.mergeApprovalEligible).toBeTrue();
