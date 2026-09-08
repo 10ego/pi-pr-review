@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const MODES = new Set(["quick", "balanced", "full", "major-only", "deep"]);
+const REVIEW_STRATEGIES = new Set(["fresh", "incremental"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
@@ -204,22 +205,30 @@ export function loadCorpus(file) {
 }
 
 export function validatePlan(plan, corpusInfo) {
-	invariant(exactKeys(plan, ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "repetitions", "entries"]), "plan schema");
-	invariant(plan.schemaVersion === 1 && plan.corpusId === corpusInfo.corpus.corpusId && plan.corpusSha256 === corpusInfo.sha256 && SHA256.test(plan.planId), "plan identity");
+	const version = plan?.schemaVersion;
+	invariant(version === 1 || version === 2, "plan schema version");
+	const strategyPlan = version === 2;
+	invariant(exactKeys(plan, strategyPlan
+		? ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "strategies", "repetitions", "entries"]
+		: ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "repetitions", "entries"]), "plan schema");
+	invariant((strategyPlan ? corpusInfo.corpus.schemaVersion === 2 : corpusInfo.corpus.schemaVersion === 1) && plan.corpusId === corpusInfo.corpus.corpusId && plan.corpusSha256 === corpusInfo.sha256 && SHA256.test(plan.planId), "plan identity");
 	invariant(Array.isArray(plan.modes) && plan.modes.length > 0 && new Set(plan.modes).size === plan.modes.length && plan.modes.every((mode) => MODES.has(mode)), "plan modes");
+	if (strategyPlan) invariant(Array.isArray(plan.strategies) && plan.strategies.length > 0 && new Set(plan.strategies).size === plan.strategies.length && plan.strategies.every((strategy) => REVIEW_STRATEGIES.has(strategy)), "plan strategies");
 	invariant(Number.isSafeInteger(plan.repetitions) && plan.repetitions >= 1 && plan.repetitions <= 100, "plan repetitions");
-	const expectedCount = corpusInfo.corpus.cases.length * plan.modes.length * plan.repetitions;
+	const strategies = strategyPlan ? plan.strategies : [null], expectedCount = corpusInfo.corpus.cases.length * plan.modes.length * strategies.length * plan.repetitions;
 	invariant(Array.isArray(plan.entries) && plan.entries.length === expectedCount, "plan entry count");
 	const ids = new Set(), tuples = new Set();
 	for (const entry of plan.entries) {
-		invariant(exactKeys(entry, ["entryId", "caseId", "mode", "repetition"]), "plan entry schema");
+		invariant(exactKeys(entry, strategyPlan ? ["entryId", "caseId", "mode", "strategy", "repetition"] : ["entryId", "caseId", "mode", "repetition"]), "plan entry schema");
 		invariant(typeof entry.entryId === "string" && /^[0-9a-f]{24}$/.test(entry.entryId) && !ids.has(entry.entryId), `plan entry id ${entry.entryId}`); ids.add(entry.entryId);
-		invariant(corpusInfo.corpus.cases.some((item) => item.id === entry.caseId) && plan.modes.includes(entry.mode) && Number.isSafeInteger(entry.repetition) && entry.repetition >= 1 && entry.repetition <= plan.repetitions, `plan entry ${entry.entryId}`);
-		const tuple = `${entry.mode}\0${entry.repetition}\0${entry.caseId}`;
-		invariant(!tuples.has(tuple), `duplicate plan tuple ${entry.mode}/${entry.repetition}/${entry.caseId}`); tuples.add(tuple);
+		invariant(corpusInfo.corpus.cases.some((item) => item.id === entry.caseId) && plan.modes.includes(entry.mode) && (!strategyPlan || plan.strategies.includes(entry.strategy)) && Number.isSafeInteger(entry.repetition) && entry.repetition >= 1 && entry.repetition <= plan.repetitions, `plan entry ${entry.entryId}`);
+		const tuple = `${entry.mode}\0${strategyPlan ? entry.strategy : ""}\0${entry.repetition}\0${entry.caseId}`;
+		invariant(!tuples.has(tuple), `duplicate plan tuple ${entry.mode}/${entry.strategy ?? "legacy"}/${entry.repetition}/${entry.caseId}`); tuples.add(tuple);
 	}
-	for (const mode of plan.modes) for (let repetition = 1; repetition <= plan.repetitions; repetition++) for (const item of corpusInfo.corpus.cases) invariant(tuples.has(`${mode}\0${repetition}\0${item.id}`), `missing plan tuple ${mode}/${repetition}/${item.id}`);
-	const identity = { schemaVersion: plan.schemaVersion, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, repetitions: plan.repetitions, entries: plan.entries };
+	for (const mode of plan.modes) for (const strategy of strategies) for (let repetition = 1; repetition <= plan.repetitions; repetition++) for (const item of corpusInfo.corpus.cases) invariant(tuples.has(`${mode}\0${strategy ?? ""}\0${repetition}\0${item.id}`), `missing plan tuple ${mode}/${strategy ?? "legacy"}/${repetition}/${item.id}`);
+	const identity = strategyPlan
+		? { schemaVersion: version, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, strategies: plan.strategies, repetitions: plan.repetitions, entries: plan.entries }
+		: { schemaVersion: version, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, repetitions: plan.repetitions, entries: plan.entries };
 	invariant(sha256(Buffer.from(canonical(identity))) === plan.planId, "planId does not bind canonical plan");
 	return plan;
 }
@@ -237,20 +246,28 @@ export function expectedModeTopology(mode, item, options = {}) {
 	return { passIds, shardCount, maxParallel: base.maxParallel * shardCount };
 }
 
-export function createPlan(corpusInfo, modes, repetitions) {
+export function createPlan(corpusInfo, modes, repetitions, strategies) {
 	invariant(Array.isArray(modes) && modes.length > 0 && new Set(modes).size === modes.length && modes.every((mode) => MODES.has(mode)), "requested modes");
 	invariant(Number.isSafeInteger(repetitions) && repetitions >= 1 && repetitions <= 100, "requested repetitions");
-	const entries = [];
-	// Interleave modes per case and rotate the first mode across repetitions/cases.
-	// This avoids running an entire mode during one provider/time window.
+	const strategyPlan = corpusInfo.corpus.schemaVersion === 2;
+	invariant(strategyPlan || strategies === undefined, "strategies require corpus schema v2");
+	if (strategyPlan) invariant(Array.isArray(strategies) && strategies.length > 0 && new Set(strategies).size === strategies.length && strategies.every((strategy) => REVIEW_STRATEGIES.has(strategy)), "requested strategies");
+	const entries = [], dimensions = strategyPlan ? modes.flatMap((mode) => strategies.map((strategy) => ({ mode, strategy }))) : modes.map((mode) => ({ mode }));
+	// Interleave mode/strategy dimensions per case and rotate the first dimension
+	// across repetitions/cases. This avoids assigning one provider window to one
+	// complete strategy or mode.
 	for (let repetition = 1; repetition <= repetitions; repetition++) for (let caseIndex = 0; caseIndex < corpusInfo.corpus.cases.length; caseIndex++) {
-		const item = corpusInfo.corpus.cases[caseIndex], offset = (repetition - 1 + caseIndex) % modes.length;
-		for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
-			const mode = modes[(offset + modeIndex) % modes.length], key = `${corpusInfo.sha256}\0${mode}\0${repetition}\0${item.id}`;
-			entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode, repetition });
+		const item = corpusInfo.corpus.cases[caseIndex], offset = (repetition - 1 + caseIndex) % dimensions.length;
+		for (let dimensionIndex = 0; dimensionIndex < dimensions.length; dimensionIndex++) {
+			const dimension = dimensions[(offset + dimensionIndex) % dimensions.length], key = strategyPlan
+				? `${corpusInfo.sha256}\0${dimension.mode}\0${dimension.strategy}\0${repetition}\0${item.id}`
+				: `${corpusInfo.sha256}\0${dimension.mode}\0${repetition}\0${item.id}`;
+			entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode: dimension.mode, ...(strategyPlan ? { strategy: dimension.strategy } : {}), repetition });
 		}
 	}
-	const identity = { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, repetitions, entries };
+	const identity = strategyPlan
+		? { schemaVersion: 2, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, strategies, repetitions, entries }
+		: { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, repetitions, entries };
 	return { ...identity, planId: sha256(Buffer.from(canonical(identity))) };
 }
 
@@ -601,7 +618,7 @@ function parseArgs(argv) {
 		invariant(/^--[a-z-]+$/.test(key ?? "") && value !== undefined && !value.startsWith("--") && options[key] === undefined, `invalid argument near ${key ?? "end"}`);
 		options[key] = value;
 	}
-	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates", "--baseline-report"]);
+	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--strategies", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates", "--baseline-report"]);
 	invariant(Object.keys(options).every((key) => allowed.has(key)), "unknown argument");
 	for (const required of command === "plan" ? ["--corpus", "--modes", "--repetitions", "--output"] : ["--corpus", "--plan", "--results", "--output"]) invariant(options[required] !== undefined, `missing ${required}`);
 	return { command, options };
@@ -614,8 +631,8 @@ function writeExclusive(file, value) {
 async function main() {
 	const { command, options } = parseArgs(process.argv.slice(2)), corpusInfo = loadCorpus(options["--corpus"]);
 	if (command === "plan") {
-		const repetitions = Number(options["--repetitions"]), modes = options["--modes"].split(",");
-		const plan = createPlan(corpusInfo, modes, repetitions); writeExclusive(options["--output"], plan);
+		const repetitions = Number(options["--repetitions"]), modes = options["--modes"].split(","), strategies = options["--strategies"]?.split(",");
+		const plan = createPlan(corpusInfo, modes, repetitions, strategies); writeExclusive(options["--output"], plan);
 		console.log(`Wrote ${plan.entries.length}-run semantic benchmark plan ${plan.planId}.`); return;
 	}
 	const plan = readJson(path.resolve(options["--plan"])).value, gates = options["--gates"] ? readJson(path.resolve(options["--gates"])).value : null; invariant(!gates || options["--baseline-report"], "--gates requires --baseline-report"); const baselineRead = options["--baseline-report"] ? readJson(path.resolve(options["--baseline-report"])) : null, baselineReport = baselineRead ? { sha256: sha256(baselineRead.bytes), value: baselineRead.value } : null;

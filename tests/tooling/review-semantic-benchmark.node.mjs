@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
@@ -72,6 +72,18 @@ test("plan is deterministic and spans the same corpus for every mode and repetit
 	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 36);
 	assert.notEqual(one.entries[0].mode, one.entries[1].mode);
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
+});
+
+test("schema-v1 planning remains byte-compatible while schema-v2 interleaves review strategies", () => {
+	const info = loadCorpus(CORPUS), historical = JSON.parse(fs.readFileSync("tests/benchmarks/review-semantic/topology-v6/plan.json", "utf8"));
+	assert.deepEqual(createPlan(info, historical.modes, historical.repetitions), historical);
+	assert.throws(() => createPlan(info, ["balanced"], 1, ["fresh"]), /strategies require corpus schema v2/);
+	const v2Info = { ...info, sha256: "f".repeat(64), corpus: { ...info.corpus, schemaVersion: 2, corpusId: "pi-pr-review-semantic-v7" } }, plan = createPlan(v2Info, ["balanced"], 2, ["fresh", "incremental"]);
+	assert.equal(plan.schemaVersion, 2); assert.deepEqual(plan.strategies, ["fresh", "incremental"]); assert.equal(plan.entries.length, 48); assert.equal(new Set(plan.entries.map((entry) => entry.entryId)).size, 48); assert.deepEqual(validatePlan(plan, v2Info), plan);
+	for (const strategy of plan.strategies) for (let repetition = 1; repetition <= 2; repetition++) assert.equal(plan.entries.filter((entry) => entry.strategy === strategy && entry.repetition === repetition).length, 12);
+	assert.notEqual(plan.entries[0].strategy, plan.entries[1].strategy); assert.throws(() => createPlan(v2Info, ["balanced"], 1), /requested strategies/);
+	const missingStrategy = structuredClone(plan); delete missingStrategy.entries[0].strategy; assert.throws(() => validatePlan(missingStrategy, v2Info), /plan entry schema/);
+	const wrongCorpusVersion = { ...v2Info, corpus: { ...v2Info.corpus, schemaVersion: 1 } }; assert.throws(() => validatePlan(plan, wrongCorpusVersion), /plan identity/);
 });
 
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {
