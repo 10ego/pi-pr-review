@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/10ego/pi-pr-review/compare/v1.17.11...v1.18.0) (2026-09-08)
+
+
+### Features
+
+* incremental re-reviews via pr_review_prior discovery ([#146](https://github.com/10ego/pi-pr-review/issues/146)) ([c402a8d](https://github.com/10ego/pi-pr-review/commit/c402a8d7aa14b564a69b085593443f43c808395c))
+
 ## [1.17.11](https://github.com/10ego/pi-pr-review/compare/v1.17.10...v1.17.11) (2026-09-07)
 
 
