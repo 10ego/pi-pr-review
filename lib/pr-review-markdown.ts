@@ -955,7 +955,11 @@ export function synthesizeReviewArtifact(input: {
 	// `- still  open` cannot bypass the gate. Any *unrecognized* status line
 	// that still carries a [P0]/[P1] tag fails closed: the section exists
 	// precisely to disclose prior severity, and a blocking tag without an
-	// explicit `resolved`/`obsolete` status is ambiguous evidence.
+	// explicit `resolved`/`obsolete` status is ambiguous evidence. This
+	// deliberately trades a recoverable false positive (off-contract prose
+	// mentioning a blocking tag downgrades publication to COMMENT) against an
+	// unrecoverable false negative (an unresolved blocker APPROVing); the
+	// output contract therefore restricts this section to status lines only.
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
 		let normalized = line;
 		for (;;) {

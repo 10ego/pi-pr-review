@@ -227,7 +227,7 @@ Return Markdown using these stable headings. Do not emit a GitHub API payload an
 <what ran and the result, or why verification was limited>
 
 ## Prior findings
-<only when `--incremental` revalidated prior findings: one line per prior finding in `- resolved`/`- still open`/`- obsolete` form with its title, location, and decisive evidence; write `None.` when `--incremental` returned no prior findings; omit the whole section otherwise. Never use severity-tagged headings here.>
+<only when `--incremental` revalidated prior findings: exactly one status line per prior finding in `- resolved`/`- still open`/`- obsolete` form with its title, location, and decisive evidence — no additional prose, summary lines, or wrapped paragraphs in this section (off-contract lines mentioning `[P0]`/`[P1]` make the review publish as `COMMENT`); write `None.` when `--incremental` returned no prior findings; omit the whole section otherwise. Never use severity-tagged headings here.>
 
 ## Findings
 

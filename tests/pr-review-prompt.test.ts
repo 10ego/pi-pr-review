@@ -155,6 +155,7 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("Never mark a finding resolved without evidence from the new commits");
 			expect(prompt).toContain("## Prior findings");
 			expect(prompt).toContain("Never use severity-tagged headings here.");
+			expect(prompt).toContain("no additional prose, summary lines, or wrapped paragraphs in this section");
 		});
 	});
 
