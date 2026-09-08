@@ -463,6 +463,18 @@ describe("Markdown-first canonical review artifacts", () => {
 			priorRevalidationRequiredTitles: titles,
 		});
 		expect(proseOnly.mergeApprovalEligible).toBeFalse();
+		// One combined line cannot satisfy two titles: a status prefix on a
+		// single line claiming both would hide a still-open blocker.
+		const combined = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost, and Discard untrusted replies from authored findings.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(combined.mergeApprovalEligible).toBeFalse();
 		// Without the host requirement the same omitted section stays eligible.
 		const unrequired = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes });
 		expect(unrequired.mergeApprovalEligible).toBeTrue();

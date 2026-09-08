@@ -97,7 +97,7 @@ export function parseInlineFindingBody(body: string | null | undefined): {
 
 const EXCERPT_MAX_CHARS = 500;
 
-const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`([^`]+)`)?\s*$/;
+const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`(.+)`)?\s*$/;
 
 /** Host-side record of the prior-finding titles an invocation must disclose. */
 export class PriorRevalidationRegistry {

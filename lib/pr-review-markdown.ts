@@ -873,12 +873,18 @@ export function synthesizeReviewArtifact(input: {
 		// whitespace-insensitive over the normalized status text.
 		const normalizedLines = disclosure.split(/\r?\n/)
 			.map((line) => normalizePriorStatusLine(line).toLowerCase());
+		// The matching line must itself be a contractual status line, and each
+		// prior title must match a distinct line: a single combined line can
+		// claim resolution for several findings while omitting an unresolved
+		// blocker. Greedy injective assignment (first match wins per title).
+		const usedLines = new Set<number>();
 		return requiredTitles.every((title) => {
 			const normalizedTitle = title.replace(/\s+/g, " ").trim().toLowerCase();
-			// The matching line must itself be a contractual status line: a title
-			// mentioned in prose ("checked <title>") discloses nothing about the
-			// prior finding's resolution state.
-			return normalizedLines.some((line) => PRIOR_STATUS_LINE.test(line) && line.includes(normalizedTitle));
+			const matched = normalizedLines.findIndex((line, index) =>
+				!usedLines.has(index) && PRIOR_STATUS_LINE.test(line) && line.includes(normalizedTitle));
+			if (matched === -1) return false;
+			usedLines.add(matched);
+			return true;
 		});
 	})();
 	if (input.strictJsonReview) {

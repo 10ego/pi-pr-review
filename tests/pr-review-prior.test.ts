@@ -223,6 +223,20 @@ describe("other notes reconstruction", () => {
 		]);
 	});
 
+	test("keeps entries whose location path contains backticks", () => {
+		const body = [
+			"### Other Notes",
+			"",
+			"**[P2] Odd path** — `src/`tick`.ts:3 RIGHT`",
+			"",
+			"Body text.",
+		].join("\n");
+		const findings = parseOtherNotesFindings(body);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]!.severity).toBe("P2");
+		expect(findings[0]!.title).toBe("Odd path");
+	});
+
 	test("returns nothing without an Other Notes section", () => {
 		expect(parseOtherNotesFindings("no structured body")).toEqual([]);
 		expect(parseOtherNotesFindings(undefined)).toEqual([]);
