@@ -1,5 +1,7 @@
 # Deferred ideas
 
+- Prior-disclosure gate residuals (self-dogfood rounds 1-6 on PR #146): a model that fabricates `resolved: <title>` lines for findings it never re-read cannot be detected without host-side code re-verification; the gate forces disclosure structure and per-title coverage, not truthfulness. If a future hardening round is warranted, consider retaining per-finding thread evidence in the registry for spot-checking the highest-severity prior.
+
 - Incremental re-review follow-ups (shipped: `--incremental` flag, `pr_review_prior` discovery tool, `## Prior findings` synthesis section; review dispatch run_51a073390de7):
   - Wire the session `CompletedReviewCache` into `pr_review_prior` as a fast path so same-session re-reviews skip the GitHub reviews/comments/commits reads; the durable GitHub path stays authoritative for cross-session state.
   - Flip re-review auto-detection on by default (plain `/pr-review N` calls `pr_review_prior` and picks the mode itself) and add a `--fresh` flag to force a full review; requires a seeded semantic-benchmark corpus v7 re-review scenario first per the topology-change gate.
