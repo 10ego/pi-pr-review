@@ -3,7 +3,8 @@
 - Incremental re-review follow-ups (shipped: `--incremental` flag, `pr_review_prior` discovery tool, `## Prior findings` synthesis section; review dispatch run_51a073390de7):
   - Wire the session `CompletedReviewCache` into `pr_review_prior` as a fast path so same-session re-reviews skip the GitHub reviews/comments/commits reads; the durable GitHub path stays authoritative for cross-session state.
   - Flip re-review auto-detection on by default (plain `/pr-review N` calls `pr_review_prior` and picks the mode itself) and add a `--fresh` flag to force a full review; requires a seeded semantic-benchmark corpus v7 re-review scenario first per the topology-change gate.
-  - Optional publication v2: reply "Resolved \u2713" / "Still open" on the original prior review threads instead of only duplicating still-open findings as new inline comments in the new review; needs a new extension-owned GitHub write path with the same one-POST reconciliation gates.
+  - Publication v2 for revalidation-only (`same_head`) runs: they dispatch zero lanes, so approval eligibility (which requires positive exact lane evidence) forces a COMMENT event; documented in the prompt for now. Making them approve-eligible requires binding the discovered relationship host-side at invocation time.
+  - Thread replies v2: reply "Resolved \u2713" / "Still open" on the original prior review threads instead of only duplicating still-open findings as new inline comments in the new review; needs a new extension-owned GitHub write path with the same one-POST reconciliation gates.
 
 - Add adaptive large-diff sharding that balances files by changed-line weight while preserving a cross-file manifest for every specialist.
 - Add a read-only context-gathering extension tool that fetches PR metadata, diff, identity, duplicate markers, convention paths, and baseline discovery concurrently in one orchestrator turn.
