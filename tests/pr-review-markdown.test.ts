@@ -342,6 +342,38 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(clean.mergeApprovalEligible).toBeTrue();
 	});
 
+	test("keeps approval eligible for non-blocking still-open priors and ignores incidental prose", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		// A still-open P2 that legitimately re-entered Findings (the one parsed
+		// P2 finding) must not block a valid approve, and "still open" words
+		// inside a resolved line's rationale never match the list grammar.
+		const withNonBlocking = approve.replace(
+			"## Findings",
+			"## Prior findings\n- resolved: [P1] window still open after close is now guarded.\n- still open: [P2] Keep the raw synthesis — re-entered above.\n\n## Findings",
+		);
+		const eligible = synthesizeReviewArtifact({
+			rawText: withNonBlocking,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(eligible.quality).toBe("fully_parsed");
+		expect(eligible.mergeApprovalEligible).toBeTrue();
+		// An untagged still-open line deviates from the contract grammar and
+		// fails closed.
+		const withUntagged = approve.replace(
+			"## Findings",
+			"## Prior findings\n- still open: retry loop unchanged\n\n## Findings",
+		);
+		const blocked = synthesizeReviewArtifact({
+			rawText: withUntagged,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(blocked.mergeApprovalEligible).toBeFalse();
+	});
+
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });

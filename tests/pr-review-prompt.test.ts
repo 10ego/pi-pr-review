@@ -142,6 +142,9 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("pins the resolved GitHub hostname");
 			expect(prompt).toContain("caps files at 300");
 			expect(prompt).toContain("published review is always a `COMMENT`");
+			expect(prompt).toContain("never depend on a system `jq`");
+			expect(prompt).toContain("null/empty file lists degrade to an empty hunt scope");
+			expect(prompt).toContain("revalidation only when the relationship is `same_head` or `incremental`");
 			expect(prompt).toContain("including truncated discovery");
 		});
 

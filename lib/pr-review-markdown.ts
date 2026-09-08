@@ -944,12 +944,18 @@ export function synthesizeReviewArtifact(input: {
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
 	const priorFindingsDisclosure = section(raw, "Prior findings");
-	// An explicit unresolved prior finding in prose is contradictory evidence
-	// when Findings does not carry it as a parsed finding. It must never stay
-	// approval-eligible: the contract requires every still-open finding to
-	// re-enter Findings, and an approve-verdict artifact that discloses an
-	// unresolved blocker only in prose cannot be trusted to approve.
-	const disclosesUnresolvedPrior = !!priorFindingsDisclosure && /\bstill open\b/i.test(priorFindingsDisclosure);
+	// An unresolved prior finding disclosed in prose is contradictory evidence
+	// when Findings does not carry it as a parsed finding. Only a contractual
+	// `still open` list line blocks approval, and only when it is tagged with a
+	// blocking severity or deviates from the tag grammar — a still-open P2/P3/
+	// nit that legitimately re-entered Findings keeps a valid approve eligible,
+	// and incidental prose like "window still open" inside a resolved line never
+	// blocks.
+	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
+		if (!/^\s*(?:[-*]\s*)?(?:\*\*)?still open\b/i.test(line)) return false;
+		const tagged = /\[(P[0-3]|nit)\]/i.exec(line);
+		return !tagged || /^p[01]$/i.test(tagged[1]!);
+	});
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
 	// Host lane artifacts are authoritative whenever a batch ran: they already
 	// stop a false complete claim from upgrading incomplete lanes, and they must
@@ -1052,7 +1058,7 @@ export function synthesizeReviewArtifact(input: {
 		// dispatch; a nonempty subset cannot establish requested coverage. An
 		// unresolved prior-finding disclosure additionally blocks approval even
 		// when parsing otherwise succeeded.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !disclosesUnresolvedPrior,
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking,
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }
