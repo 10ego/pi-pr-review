@@ -6,7 +6,9 @@ import {
 	classifyPriorHead,
 	commentExcerpt,
 	discoverPriorReview,
+	PriorRevalidationRegistry,
 	parseInlineFindingBody,
+	parseOtherNotesFindings,
 	parsePriorReviewMarker,
 } from "../lib/pr-review-prior.ts";
 
@@ -151,6 +153,75 @@ fi
 	return { cwd: dir, repository: { repository: "acme/widget", hostname: "github.example" } };
 }
 
+describe("other notes reconstruction", () => {
+	test("recovers body-only findings with locations and rationale", () => {
+		const body = [
+			"**Verdict:** comment",
+			"See the inline review comments for the primary findings.",
+			"### Other Notes",
+			"",
+			"**[nit] Rename tmp to buf for clarity**",
+			"",
+			"**[P2] Guard unbounded retry loop** — `src/a.ts:40-44 RIGHT`",
+			"",
+			"The retry loop grows without bound when the queue stays full.",
+			"**[P1] Caller contract drift** — `src/callers.ts:7 LEFT`",
+			"",
+			"The caller no longer accepts the returned shape.",
+		].join("\n");
+		expect(parseOtherNotesFindings(body)).toEqual([
+			{
+				threadId: -1,
+				inReplyToId: null,
+				path: "(summary-only)",
+				line: 0,
+				side: "RIGHT",
+				severity: "nit",
+				title: "Rename tmp to buf for clarity",
+			},
+			{
+				threadId: -1,
+				inReplyToId: null,
+				path: "src/a.ts",
+				startLine: 40,
+				line: 44,
+				side: "RIGHT",
+				severity: "P2",
+				title: "Guard unbounded retry loop",
+				excerpt: "The retry loop grows without bound when the queue stays full.",
+			},
+			{
+				threadId: -1,
+				inReplyToId: null,
+				path: "src/callers.ts",
+				line: 7,
+				side: "LEFT",
+				severity: "P1",
+				title: "Caller contract drift",
+				excerpt: "The caller no longer accepts the returned shape.",
+			},
+		]);
+	});
+
+	test("returns nothing without an Other Notes section", () => {
+		expect(parseOtherNotesFindings("no structured body")).toEqual([]);
+		expect(parseOtherNotesFindings(undefined)).toEqual([]);
+	});
+});
+
+describe("prior revalidation registry", () => {
+	test("records disclosure requirements per generation", () => {
+		const registry = new PriorRevalidationRegistry();
+		expect(registry.isRequired(1)).toBeFalse();
+		registry.mark(1, true);
+		expect(registry.isRequired(1)).toBeTrue();
+		expect(registry.isRequired(2)).toBeFalse();
+		expect(registry.isRequired(undefined)).toBeFalse();
+		registry.mark(1, false);
+		expect(registry.isRequired(1)).toBeFalse();
+	});
+});
+
 describe("prior review discovery", () => {
 	test("finds the latest marker review and its inline findings at an ancestor head", async () => {
 		const fixture = installFakeGh({
@@ -200,14 +271,6 @@ describe("prior review discovery", () => {
 				severity: "P1",
 				title: "Guard against nil map before write",
 				excerpt: "rationale",
-			},
-			{
-				threadId: 103,
-				inReplyToId: 101,
-				path: "src/a.ts",
-				line: 12,
-				side: "RIGHT",
-				title: "follow-up",
 			},
 		]);
 		expect(snapshot.message).toContain("incremental re-review");

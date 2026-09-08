@@ -61,7 +61,7 @@ import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext } from "../lib/pr-review-context.ts";
-import { discoverPriorReview } from "../lib/pr-review-prior.ts";
+import { discoverPriorReview, priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
@@ -1816,11 +1816,18 @@ export default function registerPrReviewSubagents(
 			try {
 				const snapshot = await discoverPriorReview(ctx.cwd, params.pr_number, {
 					signal: executionSignal ?? undefined,
-			});
+				});
+				// Record host-side that this invocation owes a Prior findings
+				// disclosure: approval eligibility will require the section.
+				priorRevalidationRegistry.mark(
+					loopCoordinator.activeGeneration(ctx) ?? -1,
+					(snapshot.relationship === "same_head" || snapshot.relationship === "incremental") &&
+						(snapshot.prior?.findings.length ?? 0) > 0,
+				);
 				return {
 					content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
-				details: snapshot,
-			};
+					details: snapshot,
+				};
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `pr_review_prior failed: ${errMessage(error)}` }],

@@ -413,6 +413,32 @@ describe("Markdown-first canonical review artifacts", () => {
 		}
 	});
 
+	test("blocks approval when the host required prior disclosure but the section is absent or vacuous", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] };
+		const omitted = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes, priorRevalidationRequired: true });
+		expect(omitted.quality).toBe("fully_parsed");
+		expect(omitted.mergeApprovalEligible).toBeFalse();
+		const vacuous = synthesizeReviewArtifact({
+			rawText: approve.replace("## Findings", "## Prior findings\nNone.\n\n## Findings"),
+			...binding,
+			...lanes,
+			priorRevalidationRequired: true,
+		});
+		expect(vacuous.mergeApprovalEligible).toBeFalse();
+		const disclosed = synthesizeReviewArtifact({
+			rawText: approve.replace("## Findings", "## Prior findings\n- resolved: [P1] prior blocker verified in the delta.\n\n## Findings"),
+			...binding,
+			...lanes,
+			priorRevalidationRequired: true,
+		});
+		expect(disclosed.quality).toBe("fully_parsed");
+		expect(disclosed.mergeApprovalEligible).toBeTrue();
+		// Without the host requirement the same omitted section stays eligible.
+		const unrequired = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes });
+		expect(unrequired.mergeApprovalEligible).toBeTrue();
+	});
+
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });

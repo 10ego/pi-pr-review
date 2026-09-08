@@ -823,6 +823,8 @@ export function synthesizeReviewArtifact(input: {
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	strictJsonReview?: ReviewLike;
+	/** Host-recorded requirement to disclose prior-finding statuses this run. */
+	priorRevalidationRequired?: boolean;
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -960,6 +962,15 @@ export function synthesizeReviewArtifact(input: {
 	// mentioning a blocking tag downgrades publication to COMMENT) against an
 	// unrecoverable false negative (an unresolved blocker APPROVing); the
 	// output contract therefore restricts this section to status lines only.
+	// When the host recorded that this invocation must disclose prior-finding
+	// statuses, approval additionally requires a present, non-"None." Prior
+	// findings section. A model that omits the section or writes a vacuous
+	// "None." while prior findings existed cannot upgrade to APPROVE.
+	const priorDisclosureSatisfied = (() => {
+		if (!input.priorRevalidationRequired) return true;
+		const disclosure = priorFindingsDisclosure?.trim();
+		return !!disclosure && !/^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure);
+	})();
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
 		let normalized = line;
 		for (;;) {
@@ -1081,7 +1092,7 @@ export function synthesizeReviewArtifact(input: {
 		// dispatch; a nonempty subset cannot establish requested coverage. An
 		// unresolved prior-finding disclosure additionally blocks approval even
 		// when parsing otherwise succeeded.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking,
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking && priorDisclosureSatisfied,
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }

@@ -97,6 +97,83 @@ export function parseInlineFindingBody(body: string | null | undefined): {
 
 const EXCERPT_MAX_CHARS = 500;
 
+const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`([^`]+)`)?\s*$/;
+
+/** Host-side record that an invocation must disclose prior-finding statuses. */
+export class PriorRevalidationRegistry {
+	private readonly required = new Map<number, boolean>();
+	mark(generation: number, required: boolean): void {
+		this.required.set(generation, required);
+	}
+	isRequired(generation: number | undefined): boolean {
+		return generation !== undefined && this.required.get(generation) === true;
+	}
+}
+
+export const priorRevalidationRegistry = new PriorRevalidationRegistry();
+
+function parseOtherNotesLocation(
+	value: string | undefined,
+): { path: string; startLine?: number; line: number; side: "LEFT" | "RIGHT" } | undefined {
+	if (!value) return undefined;
+	const located = /^(.+?):(\d+)(?:-(\d+))?\s+(RIGHT|LEFT)$/i.exec(value.trim());
+	if (located) {
+		const start = Number(located[2]);
+		const end = Number(located[3] ?? located[2]);
+		return {
+			path: located[1]!,
+			...(start < end ? { startLine: start } : {}),
+			line: end,
+			side: located[4]!.toUpperCase() as "LEFT" | "RIGHT",
+		};
+	}
+	// A path-only or summary-only entry carries no usable line anchor.
+	return { path: value.trim(), line: 0, side: "RIGHT" };
+}
+
+/** Reconstruct the prior publisher's body-only findings from Other Notes. */
+export function parseOtherNotesFindings(body: string | null | undefined): PriorReviewFinding[] {
+	if (typeof body !== "string") return [];
+	const sectionMatch = /###\s*Other Notes\s*\n([\s\S]*?)(?=\n#{2,4}\s|$)/i.exec(body);
+	const section = sectionMatch?.[1];
+	if (!section) return [];
+	const lines = section.split(/\r?\n/);
+	const findings: PriorReviewFinding[] = [];
+	for (let index = 0; index < lines.length; index++) {
+		const entry = OTHER_NOTES_ENTRY.exec(lines[index]!.trim());
+		if (!entry) continue;
+		const severity = entry[1] as PriorReviewFinding["severity"];
+		const title = (entry[2] ?? "").trim();
+		const location = parseOtherNotesLocation(entry[3]);
+		const rationale: string[] = [];
+		for (let next = index + 1; next < lines.length; next++) {
+			const line = lines[next]!.trim();
+			if (!line) {
+				// The publisher separates each entry with a blank line; a blank
+				// after collected rationale ends the entry, a blank right after
+				// the title line precedes its body.
+				if (rationale.length > 0) break;
+				continue;
+			}
+			if (OTHER_NOTES_ENTRY.test(line)) break;
+			rationale.push(line);
+		}
+		const rationaleText = rationale.join("\n").replace(/\s+/g, " ").trim();
+		findings.push({
+			threadId: -1,
+			inReplyToId: null,
+			path: location?.path ?? "(summary-only)",
+			...(location?.startLine !== undefined && location.line > location.startLine ? { startLine: location.startLine } : {}),
+			line: location?.line ?? 0,
+			side: location?.side ?? "RIGHT",
+			severity,
+			title: (title || "Untitled prior finding").slice(0, TITLE_MAX_CHARS),
+			...(rationaleText ? { excerpt: rationaleText.slice(0, EXCERPT_MAX_CHARS) } : {}),
+		});
+	}
+	return findings;
+}
+
 /** Build a bounded rationale excerpt from an inline comment body. */
 export function commentExcerpt(body: string | null | undefined): string | undefined {
 	if (typeof body !== "string") return undefined;
@@ -216,7 +293,7 @@ export async function discoverPriorReview(
 	};
 
 	const reviewPages = await fetchBoundedPages(cwd, binding.hostname, [pullsPath + "/reviews"], PRIOR_REVIEW_MAX_PAGES, options);
-	let prior: { head: string; reviewId: number; submittedAt?: string } | undefined;
+	let prior: { head: string; reviewId: number; submittedAt?: string; body?: string } | undefined;
 	for (const entry of [...reviewPages.entries].reverse()) {
 		if (!isObject(entry)) continue;
 		const review = entry as unknown as GhPullReview;
@@ -230,6 +307,7 @@ export async function discoverPriorReview(
 			head,
 			reviewId: review.id,
 			...(typeof review.submitted_at === "string" && review.submitted_at ? { submittedAt: review.submitted_at } : {}),
+			...(typeof review.body === "string" ? { body: review.body } : {}),
 		};
 		break;
 	}
@@ -259,6 +337,10 @@ export async function discoverPriorReview(
 		if (!isObject(entry)) continue;
 		const comment = entry as unknown as GhPullComment;
 		if (comment.pull_request_review_id !== prior.reviewId) continue;
+		// Replies are discussion by any participant, never the review's own
+		// finding set; accepting them would elevate untrusted reply text into
+		// trusted-looking prior findings (prompt injection into revalidation).
+		if (typeof comment.in_reply_to_id === "number") continue;
 		if (typeof comment.path !== "string" || !comment.path) continue;
 		const line = comment.line ?? comment.original_line;
 		if (!Number.isInteger(line) || (line as number) < 1) continue;
@@ -275,7 +357,7 @@ export async function discoverPriorReview(
 		const excerpt = commentExcerpt(comment.body);
 		findings.push({
 			threadId: comment.id,
-			inReplyToId: typeof comment.in_reply_to_id === "number" ? comment.in_reply_to_id : null,
+			inReplyToId: null,
 			path: comment.path,
 			...(startLine !== undefined && startLine >= 1 && startLine < (line as number) ? { startLine } : {}),
 			line: line as number,
@@ -284,6 +366,18 @@ export async function discoverPriorReview(
 			title: parsed.title ?? "Untitled prior finding",
 			...(excerpt ? { excerpt } : {}),
 		});
+	}
+
+	// Body-only findings (nits, off-diff, duplicate-anchor, and overflow
+	// entries) were retained by the prior publisher only in the review body's
+	// Other Notes; inline threads alone cannot reconstruct them, and dropping
+	// them would let an incremental run miss a known still-open blocker.
+	for (const finding of parseOtherNotesFindings(prior.body)) {
+		if (findings.length >= PRIOR_REVIEW_MAX_FINDINGS) {
+			findingsTruncated = true;
+			break;
+		}
+		findings.push(finding);
 	}
 
 	const commitShas = commitPages.entries
@@ -301,12 +395,13 @@ export async function discoverPriorReview(
 	// prior finding was retained; fail open to a full review instead of letting
 	// a capped read silently skip fresh hunting or prior blockers.
 	const failOpenRelationship: PriorReviewRelationship = truncated ? "none" : relationship;
+	const { body: _priorBody, ...priorPublic } = prior;
 	const snapshot: PriorReviewSnapshot = {
 		...base,
 		truncated,
 		relationship: failOpenRelationship,
 		prior: {
-			...prior,
+			...priorPublic,
 			findings,
 		},
 		...(!truncated && incrementalRange ? { incrementalRange } : {}),
