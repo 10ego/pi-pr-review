@@ -943,6 +943,14 @@ describe("trusted invocation mode", () => {
 		expect(parsePublishMode("/pr-review 11 --balanced --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "balanced", prNumber: 11 });
 		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "full", prNumber: 12 });
 		expect(parsePublishMode("/pr-review 13 --deep --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "deep", prNumber: 13 });
+		expect(parsePublishMode("/pr-review 14 --incremental")).toMatchObject({ mode: "auto", prNumber: 14, incremental: true });
+		expect(parsePublishMode("/pr-review 15 --quick --incremental --no-comment")).toMatchObject({
+			mode: "disabled",
+			reviewMode: "quick",
+			prNumber: 15,
+			incremental: true,
+		});
+		expect(parsePublishMode("/pr-review 7")).not.toHaveProperty("incremental");
 	});
 
 	test("resolves the configured default with trusted project precedence", () => {

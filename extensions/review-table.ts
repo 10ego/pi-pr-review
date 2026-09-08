@@ -54,6 +54,7 @@ import {
 	type ReviewModeResolution,
 } from "../lib/pr-review-publish.ts";
 import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
 import {
@@ -1149,6 +1150,10 @@ export default function registerReviewTable(
 			!validateReviewInvocation(strict.review, active)
 			? strict.review
 			: undefined;
+		const priorRequiredTitles = priorRevalidationRegistry.isRequired(
+			ctx.sessionManager.getSessionId(),
+			loopCoordinator.retainedGeneration(ctx),
+		) ?? [];
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1158,6 +1163,7 @@ export default function registerReviewTable(
 				laneArtifacts,
 				expectedLaneDescriptors,
 				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
+				...(priorRequiredTitles.length > 0 ? { priorRevalidationRequiredTitles: priorRequiredTitles } : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;

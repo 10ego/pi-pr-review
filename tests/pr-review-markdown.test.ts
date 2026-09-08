@@ -279,18 +279,244 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings).toHaveLength(1);
 	});
 
-	test.each(["Overview", "Verification", "Findings", "Lane completeness", "Strengths and notes"] as const)(
+	test.each(["Overview", "Verification", "Prior findings", "Findings", "Lane completeness", "Strengths and notes"] as const)(
 		"rejects an out-of-contract canonical %s heading level",
 		(name) => {
 			const source = name === "Strengths and notes"
 				? `${markdown}\n\n## Strengths and notes\nUseful notes.`
-				: markdown;
+				: name === "Prior findings"
+					? `${markdown.replace("## Findings", "## Prior findings\n- resolved: [P1] prior guard verified.\n\n## Findings")}`
+					: markdown;
 			const rawText = source.replace(`## ${name}`, `### ${name}`);
 			const artifact = synthesizeReviewArtifact({ rawText, ...binding });
 			expect(artifact.quality).toBe("raw");
 			expect(artifact.review.findings).toEqual([]);
 		},
 	);
+
+	test("accepts a canonical Prior findings section without degrading extraction", () => {
+		const withPrior = markdown.replace(
+			"## Findings",
+			"## Prior findings\n- resolved: [P1] prior guard verified in the delta commits.\n- obsolete: [P2] removed code path no longer exists.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: withPrior,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.body).toContain("prior guard verified");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("blocks approval when Prior findings discloses a still-open finding Findings does not carry", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",
+			"## Findings\nNo findings.",
+		);
+		const withUnresolved = approve.replace(
+			"## Findings",
+			"## Prior findings\n- still open: [P1] nil map guard still missing — src/a.ts:12.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: withUnresolved,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+		// The same artifact without the still-open disclosure stays eligible.
+		const clean = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] nil map guard verified in the delta commits.\n\n## Findings",
+			),
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(clean.quality).toBe("fully_parsed");
+		expect(clean.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("keeps approval eligible for non-blocking still-open priors and ignores incidental prose", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		// A still-open P2 that legitimately re-entered Findings (the one parsed
+		// P2 finding) must not block a valid approve, and "still open" words
+		// inside a resolved line's rationale never match the list grammar.
+		const withNonBlocking = approve.replace(
+			"## Findings",
+			"## Prior findings\n- resolved: [P1] window still open after close is now guarded.\n- still open: [P2] Keep the raw synthesis — re-entered above.\n\n## Findings",
+		);
+		const eligible = synthesizeReviewArtifact({
+			rawText: withNonBlocking,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(eligible.quality).toBe("fully_parsed");
+		expect(eligible.mergeApprovalEligible).toBeTrue();
+		// An untagged still-open line deviates from the contract grammar and
+		// fails closed.
+		const withUntagged = approve.replace(
+			"## Findings",
+			"## Prior findings\n- still open: retry loop unchanged\n\n## Findings",
+		);
+		const blocked = synthesizeReviewArtifact({
+			rawText: withUntagged,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+		});
+		expect(blocked.mergeApprovalEligible).toBeFalse();
+	});
+
+	test("blocks approval for bypass spellings of still-open blocking priors", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",
+			"## Findings\nNo findings.",
+		);
+		for (const variant of [
+			"- still open: [P1] guard missing",
+			"- still  open: [P1] guard missing",
+			"+ still open: [P1] guard missing",
+			"1. still open: [P1] guard missing",
+			"> - still open: [P1] guard missing",
+			"- still-open: [P1] guard missing",
+			"- unresolved: [P1] guard missing",
+		]) {
+			const artifact = synthesizeReviewArtifact({
+				rawText: approve.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
+				...binding,
+				laneArtifacts: [completeLane],
+				expectedLaneDescriptors: [completeExpectedLane],
+			});
+			expect(artifact.mergeApprovalEligible, variant).toBeFalse();
+		}
+		// The same spellings at non-blocking severities stay eligible when the
+		// prior finding re-enters Findings (title matched by the parsed P2), and
+		// an unrecognized line without a blocking tag never blocks.
+		const approveKeepsFinding = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		for (const variant of [
+			"+ still open: [P2] Keep the raw synthesis",
+			"1. still open: [nit] Keep the raw synthesis",
+			"- unclear status without tags",
+		]) {
+			const artifact = synthesizeReviewArtifact({
+				rawText: approveKeepsFinding.replace("## Findings", `## Prior findings\n${variant}\n\n## Findings`),
+				...binding,
+				laneArtifacts: [completeLane],
+				expectedLaneDescriptors: [completeExpectedLane],
+			});
+			expect(artifact.mergeApprovalEligible, variant).toBeTrue();
+		}
+	});
+
+	test("blocks approval when the host required prior disclosure is absent, vacuous, or does not cover every title", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] } as const;
+		const titles = ["Body-only prior findings are lost", "Discard untrusted replies from authored findings"];
+		const omitted = synthesizeReviewArtifact({
+			rawText: approve, ...binding, ...lanes, priorRevalidationRequiredTitles: titles,
+		});
+		expect(omitted.quality).toBe("fully_parsed");
+		expect(omitted.mergeApprovalEligible).toBeFalse();
+		const vacuous = synthesizeReviewArtifact({
+			rawText: approve.replace("## Findings", "## Prior findings\nNone.\n\n## Findings"),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(vacuous.mergeApprovalEligible).toBeFalse();
+		// Repeating one finding's status cannot satisfy distinct-title coverage:
+		// the omitted unresolved blocker stays undetected by the count.
+		const duplicated = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost, so incremental runs can approve blockers.\n- resolved: [P2] Body-only prior findings are lost, so incremental runs can approve blockers.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(duplicated.mergeApprovalEligible).toBeFalse();
+		const disclosed = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost — reconstructed above.\n- resolved: [P2] Discard untrusted replies from authored findings — replies skipped.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(disclosed.quality).toBe("fully_parsed");
+		expect(disclosed.mergeApprovalEligible).toBeTrue();
+		// A title mentioned in prose without a status prefix discloses nothing.
+		const proseOnly = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- checked Body-only prior findings are lost during reconstruction.\n- checked Discard untrusted replies from authored findings.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(proseOnly.mergeApprovalEligible).toBeFalse();
+		// One combined line cannot satisfy two titles: a status prefix on a
+		// single line claiming both would hide a still-open blocker.
+		const combined = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P1] Body-only prior findings are lost, and Discard untrusted replies from authored findings.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+		});
+		expect(combined.mergeApprovalEligible).toBeFalse();
+		// Word-boundary matching: an unrelated token cannot stand in for a
+		// required title ("resolved: fixed the Trace issue" cannot satisfy a
+		// required "Race" title).
+		const boundary = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- resolved: [P2] fixed the Trace handling in the delta.\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: ["Race handling"],
+		});
+		expect(boundary.mergeApprovalEligible).toBeFalse();
+		// Without the host requirement the same omitted section stays eligible.
+		const unrequired = synthesizeReviewArtifact({ rawText: approve, ...binding, ...lanes });
+		expect(unrequired.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("blocks approval when a still-open prior never re-enters Findings", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const lanes = { laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane] } as const;
+		// A still-open non-blocking prior that is disclosed but never re-entered
+		// would be invisible in the published concise body; block approval.
+		const dropped = synthesizeReviewArtifact({
+			rawText: approve.replace(
+				"## Findings",
+				"## Prior findings\n- still open: [P2] retry loop unchanged\n\n## Findings",
+			),
+			...binding,
+			...lanes,
+		});
+		expect(dropped.quality).toBe("fully_parsed");
+		expect(dropped.mergeApprovalEligible).toBeFalse();
+		// The same still-open prior re-entered as the parsed P2 finding stays
+		// approval-eligible.
+		const reentered = synthesizeReviewArtifact({
+			rawText: approve, ...binding, ...lanes,
+		});
+		expect(reentered.mergeApprovalEligible).toBeTrue();
+	});
 
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;

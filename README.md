@@ -58,10 +58,22 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 | `/pr-review 123 --full` | Six reviewers, adding conventions/maintainability and reporting all qualifying severities. |
 | `/pr-review 123 --deep` | One integrated heavy reviewer for the whole PR. |
 | `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
+| `/pr-review 123 --incremental` | Re-review: revalidates prior findings and hunts only the new commits. |
 
 `--quick`, `--major-only`, `--balanced`, `--full`, and `--deep` are mutually exclusive. When no mode flag is supplied, `/pr-review` uses the configured default mode; this is `balanced` until changed with `/pr-review-config`.
 
 `--deep` trades parallel lens coverage for holistic judgment: a single heavy-tier reviewer receives the complete diff plus repository tools and reviews the change as one story—intent, approach, cross-file behavior, and test fit. It uses the same deadline, artifact, degradation, extraction, and publication machinery as every other mode. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
+
+## Incremental re-reviews
+
+`--incremental` is orthogonal to the mode flags and composes with any of them. It adds one read-only `pr_review_prior` discovery call to Step 1: the host reads the PR's GitHub reviews, finds the latest marker-bearing review by your authenticated identity, extracts its inline findings, and classifies the prior head against the current head using the PR commit history. Four relationships are possible:
+
+- **`incremental`** — the prior head is an ancestor of the current head. The orchestrator captures the prior-head→current-head diff and uses it as the hunt scope for every reviewer lane: fresh hunting covers only the new commits (a broken fix is caught here as a new finding), and previously reviewed hunks are not re-derived. Prior findings are revalidated in the validation step and classified `resolved` (fix verified in the new commits), `still open` (re-enters the findings list as a normal finding; unresolved blocking findings still block), or `obsolete` (cited code no longer exists). The output adds a `## Prior findings` section with these statuses. Inline anchors always come from the full base→head diff, never the incremental one.
+- **`same_head`** — no new commits. A revalidation-only run skips reviewer lanes entirely and revalidates the prior findings as-is.
+- **`diverged`** — force-push or rebase removed the prior head from the commit history; anchors are unreliable, so the run falls back to a normal full review with a note.
+- **`none`** or a failed discovery call — normal full review, identical to running without the flag.
+
+Discovery is bounded (paginated reads capped, at most 200 prior findings) and read-only; it never writes to GitHub. Prior state comes from durable GitHub data, so re-reviews work across sessions and machines. Only reviews carrying the package's canonical head marker are used; manual reviews by the same login are ignored.
 
 A review uses five focused passes by default:
 

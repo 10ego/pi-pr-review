@@ -247,6 +247,7 @@ export interface PublishModeParseResult {
 	reviewMode?: ReviewMode;
 	prNumber?: number;
 	allowNonOpen?: boolean;
+	incremental?: boolean;
 	error?: string;
 }
 
@@ -286,6 +287,7 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 						: {}),
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
+		...(tokens.includes("--incremental") ? { incremental: true } : {}),
 	};
 }
 
@@ -306,6 +308,8 @@ export interface ReviewInvocation {
 	readonly reviewMode?: ReviewMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
+	/** Trusted `--incremental` flag captured before review execution; gates pr_review_prior. */
+	readonly incremental?: boolean;
 	/** Host-resolved target captured before review execution; assistant output cannot override it. */
 	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
@@ -436,6 +440,7 @@ export class ReviewInvocationGate {
 			reviewMode: parsed.reviewMode ?? "balanced",
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
+			...(parsed.incremental ? { incremental: true } : {}),
 			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,
@@ -666,6 +671,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		Number(value.prNumber) <= 0 ||
 		(value.reviewMode !== undefined && !new Set(["quick", "balanced", "full", "deep"]).has(String(value.reviewMode))) ||
 		typeof value.allowNonOpen !== "boolean" ||
+		(value.incremental !== undefined && typeof value.incremental !== "boolean") ||
 		(value.allowStalePublish !== undefined && typeof value.allowStalePublish !== "boolean") ||
 		(value.allowStaleApprovals !== undefined && typeof value.allowStaleApprovals !== "boolean")
 	) {
@@ -705,6 +711,7 @@ function parsePersistedInvocation(value: unknown): ReviewInvocation | undefined 
 		...(value.reviewMode === undefined ? {} : { reviewMode: value.reviewMode as ReviewMode }),
 		prNumber: Number(value.prNumber),
 		allowNonOpen: value.allowNonOpen,
+		...(value.incremental === true ? { incremental: true } : {}),
 		...(parsedBinding ? { reviewBinding: parsedBinding } : {}),
 		// Schema v2 records created before this setting existed inherit the new
 		// safe default: stale publication is body-only with both SHAs disclosed.
@@ -1590,7 +1597,7 @@ interface GhResult {
 
 const GH_COMMAND_TIMEOUT_MS = 60_000;
 
-interface GhCommandLifecycle {
+export interface GhCommandLifecycle {
 	readonly signal?: AbortSignal;
 	readonly terminationGraceMs?: number;
 	readonly cleanupReserveMs?: number;
@@ -1602,6 +1609,9 @@ function runGh(
 	input?: string,
 	timeoutMs = GH_COMMAND_TIMEOUT_MS,
 	lifecycle: GhCommandLifecycle = {},
+	/** Optional accumulated-stdout cap; beyond it further output is dropped so
+	 * downstream JSON parsing fails closed instead of spiking memory. */
+	outputMaxBytes = Number.POSITIVE_INFINITY,
 ): Promise<GhResult> {
 	return new Promise((resolve) => {
 		let settled = false;
@@ -1724,7 +1734,10 @@ function runGh(
 				finishPending();
 			}, graceMs + reserveMs);
 		};
-		proc.stdout.on("data", (data) => (stdout += data.toString()));
+		proc.stdout.on("data", (data) => {
+			if (stdout.length >= outputMaxBytes) return;
+			stdout += data.toString().slice(0, Math.max(0, outputMaxBytes - stdout.length));
+		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
 			const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
@@ -1761,14 +1774,14 @@ function runGh(
 	});
 }
 
-async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
-	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle);
+export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle, outputMaxBytes);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
 	return result.stdout.trim();
 }
 
-async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
-	const text = await ghText(args, cwd, timeoutMs, lifecycle);
+export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<T> {
+	const text = await ghText(args, cwd, timeoutMs, lifecycle, outputMaxBytes);
 	return JSON.parse(text) as T;
 }
 

@@ -42,10 +42,31 @@ const MAX_INLINE_BODY_BYTES = 65_536;
 const MAX_PATH_BYTES = 4_096;
 const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
 const FINDING_HEADING = /^(#{3,6})\s+(\[(?:P[0-3]|nit)\]\s+.+?)\s*$/gim;
+const PRIOR_STATUS_LINE = /^(?:resolved|still open|obsolete)\b/i;
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Normalize a Prior findings status line: strip blockquote, list, and bold
+ * prefixes and collapse whitespace so markdown variants cannot evade matching. */
+function normalizePriorStatusLine(line: string): string {
+	let normalized = line;
+	for (;;) {
+		const stripped = normalized
+			.replace(/^\s*(?:>\s*)+/, "")
+			.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+			.replace(/^\*\*/, "");
+		if (stripped === normalized) break;
+		normalized = stripped;
+	}
+	return normalized.replace(/\s+/g, " ").trim();
+}
 const UNSAFE_TEXT_CONTROL = /[\0-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const CANONICAL_SECTION_NAMES = new Set([
 	"overview",
 	"verification",
+	"prior findings",
 	"findings",
 	"lane completeness",
 	"strengths and notes",
@@ -822,6 +843,9 @@ export function synthesizeReviewArtifact(input: {
 	laneArtifacts?: readonly ReviewLaneArtifact[];
 	expectedLaneDescriptors?: readonly ExpectedReviewLane[];
 	strictJsonReview?: ReviewLike;
+	/** Host-recorded prior-finding titles this run's Prior findings section
+	 * must each disclose in one status line. */
+	priorRevalidationRequiredTitles?: readonly string[];
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -837,6 +861,44 @@ export function synthesizeReviewArtifact(input: {
 			expected.key === lane.key && expected.tier === lane.tier &&
 			expected.minorHygiene === !!lane.minorHygiene));
 	const validatedLaneFindings = retainedLaneFindings(lanes, expectedLaneDescriptors);
+	// The prior-finding disclosure gate must be computed before the strict JSON
+	// branch returns: a legacy JSON envelope is raw text without the section,
+	// so a required-but-absent disclosure blocks approval there too.
+	const rawForPrior = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
+	const priorDisclosureSatisfied = (() => {
+		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
+		if (requiredTitles.length === 0) return true;
+		const disclosure = priorFindingsDisclosureEarly?.trim();
+		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
+		// Each prior finding must be disclosed by title in some distinct
+		// status line: counting lines alone is satisfiable by repeating one
+		// status while omitting an unresolved blocker. Matching uses word
+		// boundaries so an unrelated token ("Trace") cannot stand in for a
+		// required title ("Race"); comparison is case- and whitespace-
+		// insensitive over the normalized status text.
+		const normalizedLines = disclosure.split(/\r?\n/)
+			.map((line) => normalizePriorStatusLine(line).toLowerCase());
+		// The matching line must itself be a contractual status line, and each
+		// prior title must match a distinct line: a single combined line can
+		// claim resolution for several findings while omitting an unresolved
+		// blocker. Greedy injective assignment (first match wins per title).
+		const usedLines = new Set<number>();
+		return requiredTitles.every((title) => {
+			const normalizedTitle = title.replace(/\s+/g, " ").trim().toLowerCase();
+			let pattern: RegExp;
+			try {
+				pattern = new RegExp(`\\b${escapeRegExp(normalizedTitle)}\\b`, "i");
+			} catch {
+				pattern = new RegExp(escapeRegExp(normalizedTitle), "i");
+			}
+			const matched = normalizedLines.findIndex((line, index) =>
+				!usedLines.has(index) && PRIOR_STATUS_LINE.test(line) && pattern.test(line));
+			if (matched === -1) return false;
+			usedLines.add(matched);
+			return true;
+		});
+	})();
 	if (input.strictJsonReview) {
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
@@ -896,7 +958,7 @@ export function synthesizeReviewArtifact(input: {
 			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
-			mergeApprovalEligible: !bodyFallback,
+			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied,
 			diagnostics: Object.freeze(bodyFallback
 				? [recoveredOverridesSkip
 					? "retained lane findings overrode a skipped model synthesis"
@@ -942,6 +1004,38 @@ export function synthesizeReviewArtifact(input: {
 	const overview = section(raw, "Overview");
 	const verification = section(raw, "Verification");
 	const laneDisclosure = section(raw, "Lane completeness");
+	const priorFindingsDisclosure = section(raw, "Prior findings");
+	// An unresolved prior finding disclosed in prose is contradictory evidence
+	// when Findings does not carry it as a parsed finding. A contractual
+	// `still open` list line blocks approval when it is tagged with a blocking
+	// severity or deviates from the tag grammar — a still-open P2/P3/nit that
+	// legitimately re-entered Findings keeps a valid approve eligible. The
+	// status prefix is matched only after stripping CommonMark blockquote,
+	// list (`-`, `*`, `+`, ordered), and bold prefixes and collapsing internal
+	// whitespace, so `+ still open`, `1. still open`, `> - still open`, and
+	// `- still  open` cannot bypass the gate. Any *unrecognized* status line
+	// that still carries a [P0]/[P1] tag fails closed: the section exists
+	// precisely to disclose prior severity, and a blocking tag without an
+	// explicit `resolved`/`obsolete` status is ambiguous evidence. This
+	// deliberately trades a recoverable false positive (off-contract prose
+	// mentioning a blocking tag downgrades publication to COMMENT) against an
+	// unrecoverable false negative (an unresolved blocker APPROVing); the
+	// output contract therefore restricts this section to status lines only.
+	// The host-computed priorDisclosureSatisfied (above the strict JSON branch)
+	// additionally requires a present, non-vacuous section carrying at least
+	// one status line per prior finding; omitting the section, writing a bare
+	// "None.", or padding with fewer status lines than prior findings cannot
+	// upgrade to APPROVE.
+	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
+		const normalized = normalizePriorStatusLine(line);
+		if (/^resolved\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
+		if (/^still open\b/i.test(normalized)) {
+			const tagged = /\[(P[0-3]|nit)\]/i.exec(normalized);
+			return !tagged || /^p[01]$/i.test(tagged[1]!);
+		}
+		const blocking = /\[P[01]\]/i.exec(normalized);
+		return !!blocking;
+	});
 	const laneDisclosureClaimsComplete = /^all requested lanes completed\.?$/i.test(laneDisclosure?.trim() ?? "");
 	// Host lane artifacts are authoritative whenever a batch ran: they already
 	// stop a false complete claim from upgrading incomplete lanes, and they must
@@ -979,6 +1073,29 @@ export function synthesizeReviewArtifact(input: {
 	// finding behavior with an explicit independent-validation advisory.
 	const recoveredLaneFindings = validatedLaneFindings;
 	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
+	// A still-open prior finding must re-enter Findings as a normal finding
+	// (the published concise body omits the Prior findings section, so a
+	// still-open entry that never re-enters would be invisible to readers
+	// while an approve verdict shipped). Every still-open status line must
+	// therefore name a parsed finding; otherwise approval is blocked. This
+	// preserves a legitimate approve whose still-open non-blocking priors did
+	// re-enter, while refusing an approve that silently drops them.
+	const priorStillOpenReentered = (() => {
+		if (!priorFindingsDisclosure) return true;
+		const stillOpenLines = priorFindingsDisclosure.split(/\r?\n/)
+			.map((line) => normalizePriorStatusLine(line))
+			.filter((line) => /^still open\b/i.test(line));
+		if (stillOpenLines.length === 0) return true;
+		const normalizedFindingTitles = safeFindings.map((finding) =>
+			String(finding.title ?? "")
+				// Reassessed severity may differ between the status line and the
+				// re-entered finding; compare tag-stripped titles.
+				.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "")
+				.replace(/\s+/g, " ").trim().toLowerCase());
+		return stillOpenLines.every((line) =>
+			normalizedFindingTitles.some((findingTitle) =>
+				findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
+	})();
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
 			return ["unsafe Markdown fields were preserved in the sanitized body and inline extraction was disabled"];
@@ -1041,8 +1158,10 @@ export function synthesizeReviewArtifact(input: {
 		expectedLaneCount,
 		completeness,
 		// Markdown approval requires exact host evidence for every registered
-		// dispatch; a nonempty subset cannot establish requested coverage.
-		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage,
+		// dispatch; a nonempty subset cannot establish requested coverage. An
+		// unresolved prior-finding disclosure additionally blocks approval even
+		// when parsing otherwise succeeded.
+		mergeApprovalEligible: quality === "fully_parsed" && completeness === "complete" && exactLaneCoverage && !priorStillOpenBlocking && priorDisclosureSatisfied && priorStillOpenReentered,
 		diagnostics: Object.freeze(degradationReasons),
 	});
 }
