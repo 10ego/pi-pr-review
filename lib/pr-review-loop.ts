@@ -28,6 +28,7 @@ export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagent",
 	"review_subagents",
 	"pr_review_verify",
+	"pr_review_prior",
 ] as const;
 
 const REVIEW_LOOP_TOOL_SET = new Set<string>(REVIEW_LOOP_TOOL_NAMES);

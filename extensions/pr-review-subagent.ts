@@ -14,6 +14,8 @@
  *   parallelism, returning deterministic per-pass results.
  * - Tool: `pr_review_verify` discovers and runs trusted user-level named
  *   baselines in a detached worktree with bounded process-group lifecycle.
+ * - Tool: `pr_review_prior` discovers prior marker-bearing review state from
+ *   GitHub so re-reviews can revalidate prior findings and hunt incrementally.
  * - Command: `/pr-review-config` shows or edits the tier→model mapping.
  *
  * The orchestrating /pr-review prompt dispatches passes by tier label:
@@ -59,6 +61,7 @@ import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext } from "../lib/pr-review-context.ts";
+import { discoverPriorReview } from "../lib/pr-review-prior.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
@@ -1537,6 +1540,16 @@ const PrReviewVerifyParams = Type.Object(
 	{ additionalProperties: false },
 );
 
+const PrReviewPriorParams = Type.Object(
+	{
+		pr_number: Type.Integer({
+			minimum: 1,
+			description: "GitHub pull request number whose prior pi-pr-review state should be discovered.",
+		}),
+	},
+	{ additionalProperties: false },
+);
+
 const ReviewSubagentParams = Type.Object({
 	tier: StringEnum(["light", "medium", "heavy"] as const, {
 		description:
@@ -1763,6 +1776,51 @@ export default function registerPrReviewSubagents(
 				...(verificationLifecycleFailed(result) ? { isError: true } : {}),
 				details: result,
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "pr_review_prior",
+		label: "PR Review Prior",
+		description: [
+			"Discover prior review state for one PR from GitHub: the latest marker-bearing review by the current identity, its inline findings, and the prior/current head relationship.",
+			"Read-only and bounded. Returns relationship none (full review), same_head (revalidate only), incremental (re-review new commits), or diverged (full review after force-push).",
+			].join(" "),
+		promptSnippet: "Detect prior review state for a PR to select full, incremental, or revalidate-only review mode",
+		promptGuidelines: [
+			"Call with the PR number during Step 1 discovery, concurrently with PR metadata and diff capture.",
+			"Use the returned relationship to pick the review mode; treat discovery failure as no prior state and run a full review.",
+			"Never fabricate prior findings; every prior finding must come from this tool's findings array.",
+		],
+		parameters: PrReviewPriorParams,
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("pr_review_prior");
+			const executionSignal = combineAbortSignals(signal, lease.signal);
+			if (params.pr_number !== loopCoordinator.peek()?.prNumber) {
+				return {
+					content: [{ type: "text", text: "pr_review_prior PR number does not match the active /pr-review invocation." }],
+					isError: true,
+					details: { authorized: false, reason: "pr_mismatch" },
+				};
+			}
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_prior");
+			try {
+				const snapshot = await discoverPriorReview(ctx.cwd, params.pr_number, {
+					signal: executionSignal ?? undefined,
+			});
+				return {
+					content: [{ type: "text", text: JSON.stringify(snapshot, null, 2) }],
+				details: snapshot,
+			};
+			} catch (error) {
+				return {
+					content: [{ type: "text", text: `pr_review_prior failed: ${errMessage(error)}` }],
+					isError: true,
+					details: { authorized: true, reason: "discovery_failed" },
+			};
+		}
 		},
 	});
 

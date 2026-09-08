@@ -146,7 +146,7 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("exposes a flat strict list/run schema and rejects legacy run overrides", () => {
 		const start = extension.indexOf("const PrReviewVerifyParams");
-		const end = extension.indexOf("const ReviewSubagentParams");
+		const end = extension.indexOf("const PrReviewPriorParams");
 		const schema = extension.slice(start, end);
 		expect(schema).toContain("const PrReviewVerifyParams = Type.Object");
 		expect(schema).toContain('StringEnum(["list", "run"]');

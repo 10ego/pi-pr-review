@@ -1590,7 +1590,7 @@ interface GhResult {
 
 const GH_COMMAND_TIMEOUT_MS = 60_000;
 
-interface GhCommandLifecycle {
+export interface GhCommandLifecycle {
 	readonly signal?: AbortSignal;
 	readonly terminationGraceMs?: number;
 	readonly cleanupReserveMs?: number;
@@ -1761,13 +1761,13 @@ function runGh(
 	});
 }
 
-async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
+export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<string> {
 	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
 	return result.stdout.trim();
 }
 
-async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
+export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle): Promise<T> {
 	const text = await ghText(args, cwd, timeoutMs, lifecycle);
 	return JSON.parse(text) as T;
 }
