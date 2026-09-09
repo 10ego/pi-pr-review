@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.1](https://github.com/10ego/pi-pr-review/compare/v1.18.0...v1.18.1) (2026-09-09)
+
+
+### Tests
+
+* **benchmark:** prepare incremental re-review corpus v7 ([#148](https://github.com/10ego/pi-pr-review/issues/148)) ([78cfc3e](https://github.com/10ego/pi-pr-review/commit/78cfc3e410c407d8fe03a63eee3267870a3213ab))
+
 ## [1.18.0](https://github.com/10ego/pi-pr-review/compare/v1.17.11...v1.18.0) (2026-09-08)
 
 
