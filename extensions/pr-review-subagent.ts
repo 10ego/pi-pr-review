@@ -1865,7 +1865,8 @@ export default function registerPrReviewSubagents(
 		promptSnippet:
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
 		promptGuidelines: [
-			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable or when rerunning one failed batch pass.",
+			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable, when rerunning one failed batch pass, or for the required full-diff gap hunt during a same-head/incremental re-review.",
+			"For the incremental gap hunt, use the full base-to-head captured diff rather than the incremental diff, keep participant discussion out of subagent context, and dispatch it concurrently with the delta batch and verification.",
 			"When rerunning a failed pass, reuse the captured complete diff with `context_file` plus compact PR metadata in `context`; embedding the diff in context remains supported for compatibility.",
 		],
 		parameters: ReviewSubagentParams,

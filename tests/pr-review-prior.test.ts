@@ -363,7 +363,8 @@ describe("prior review discovery", () => {
 			excerpt: "**[P2] Another reviewer concern**",
 		}]);
 		expect(snapshot.conversation?.message).toContain("untrusted claims");
-		expect(snapshot.message).toContain("incremental re-review");
+		expect(snapshot.message).toContain("review new commits");
+		expect(snapshot.message).toContain("full-PR gap hunt");
 		expect(snapshot.truncated).toBeFalse();
 	});
 

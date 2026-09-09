@@ -218,7 +218,7 @@ export function loadCorpus(file) {
 			if (relationship === "none") invariant(priorDiffText === null && incrementalDiffText === null && prior.review === null, `case ${item.id} none state`);
 			invariant(Array.isArray(prior.expectedStatuses) && new Set(prior.expectedStatuses.map((status) => status.title)).size === prior.expectedStatuses.length, `case ${item.id} expected prior statuses`);
 			for (const status of prior.expectedStatuses) {
-				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "rejected", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
 				if (status.status === "still open") invariant(typeof status.currentFindingId === "string" && item.expectedFindings.some((finding) => finding.id === status.currentFindingId), `case ${item.id} still-open status current finding binding`);
 				else invariant(!Object.hasOwn(status, "currentFindingId"), `case ${item.id} non-open status current finding binding`);
 			}
@@ -348,7 +348,7 @@ function normalizePersistedFindings(review) {
 function parsePriorStatuses(markdown) {
 	if (typeof markdown !== "string") return [];
 	const body = /(?:^|\n)## Prior findings\s*\n([\s\S]*?)(?=\n## (?!#)|$)/iu.exec(markdown)?.[1] ?? "", statuses = [];
-	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
+	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|rejected|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
 	return statuses;
 }
 function parsePriorRelationship(records) {
@@ -441,7 +441,7 @@ export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	if (strategyRun) {
 		const outcome = run.reviewOutcome;
 		invariant(exactKeys(outcome, ["observedRelationship", "priorStatuses", "mergeApprovalEligible"]) && (outcome.observedRelationship === null || ["incremental", "same_head", "none", "diverged"].includes(outcome.observedRelationship)) && Array.isArray(outcome.priorStatuses) && outcome.priorStatuses.length <= 200 && (outcome.mergeApprovalEligible === null || typeof outcome.mergeApprovalEligible === "boolean"), `${label} review outcome`);
-		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
+		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "rejected", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
 		if (run.strategy === "fresh") invariant(outcome.observedRelationship === null && outcome.priorStatuses.length === 0, `${label} fresh strategy prior evidence`);
 	}
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);

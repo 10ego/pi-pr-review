@@ -555,9 +555,9 @@ function priorReviewMessage(relationship: PriorReviewRelationship, truncated: bo
 	const suffix = truncated ? " Results were truncated by discovery bounds." : "";
 	switch (relationship) {
 		case "same_head":
-			return "Prior review of this exact head found; revalidate prior findings without re-hunting." + suffix;
+			return "Prior review of this exact head found; revalidate its discussion and run a full-PR gap hunt for missed defects." + suffix;
 		case "incremental":
-			return "Prior review found at an ancestor head; run an incremental re-review of the new commits." + suffix;
+			return "Prior review found at an ancestor head; review new commits, revalidate discussion, and run a full-PR gap hunt." + suffix;
 		case "diverged":
 			return "Prior review head is no longer in the PR commit history (force-push or rebase); run a full review." + suffix;
 		default:

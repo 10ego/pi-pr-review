@@ -311,6 +311,23 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.mergeApprovalEligible).toBeTrue();
 	});
 
+	test("accepts a source-verified rejected prior status as non-blocking", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const rejected = approve.replace(
+			"## Findings",
+			"## Prior findings\n- rejected: [P1] nil map guard — src/a.ts:12 is unreachable because construction validates the map before publication.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: rejected,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["nil map guard"],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
 	test("blocks approval when Prior findings discloses a still-open finding Findings does not carry", () => {
 		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
 			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",

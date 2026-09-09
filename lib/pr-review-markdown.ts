@@ -42,7 +42,7 @@ const MAX_INLINE_BODY_BYTES = 65_536;
 const MAX_PATH_BYTES = 4_096;
 const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
 const FINDING_HEADING = /^(#{3,6})\s+(\[(?:P[0-3]|nit)\]\s+.+?)\s*$/gim;
-const PRIOR_STATUS_LINE = /^(?:resolved|still open|obsolete)\b/i;
+const PRIOR_STATUS_LINE = /^(?:resolved|rejected|still open|obsolete)\b/i;
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1016,7 +1016,7 @@ export function synthesizeReviewArtifact(input: {
 	// `- still  open` cannot bypass the gate. Any *unrecognized* status line
 	// that still carries a [P0]/[P1] tag fails closed: the section exists
 	// precisely to disclose prior severity, and a blocking tag without an
-	// explicit `resolved`/`obsolete` status is ambiguous evidence. This
+	// explicit `resolved`/`rejected`/`obsolete` status is ambiguous evidence. This
 	// deliberately trades a recoverable false positive (off-contract prose
 	// mentioning a blocking tag downgrades publication to COMMENT) against an
 	// unrecoverable false negative (an unresolved blocker APPROVing); the
@@ -1028,7 +1028,7 @@ export function synthesizeReviewArtifact(input: {
 	// upgrade to APPROVE.
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
 		const normalized = normalizePriorStatusLine(line);
-		if (/^resolved\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
+		if (/^resolved\b/i.test(normalized) || /^rejected\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
 		if (/^still open\b/i.test(normalized)) {
 			const tagged = /\[(P[0-3]|nit)\]/i.exec(normalized);
 			return !tagged || /^p[01]$/i.test(tagged[1]!);

@@ -58,7 +58,7 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 | `/pr-review 123 --full` | Six reviewers, adding conventions/maintainability and reporting all qualifying severities. |
 | `/pr-review 123 --deep` | One integrated heavy reviewer for the whole PR. |
 | `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
-| `/pr-review 123 --incremental` | Re-review: revalidates prior findings and hunts only the new commits. |
+| `/pr-review 123 --incremental` | Cumulative re-review: checks prior discussion, reviews new commits, and hunts the full PR for missed defects. |
 
 `--quick`, `--major-only`, `--balanced`, `--full`, and `--deep` are mutually exclusive. When no mode flag is supplied, `/pr-review` uses the configured default mode; this is `balanced` until changed with `/pr-review-config`.
 
@@ -66,14 +66,16 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 
 ## Incremental re-reviews
 
-`--incremental` is orthogonal to the mode flags and composes with any of them. It adds one read-only `pr_review_prior` discovery call to Step 1: the host reads the PR's GitHub reviews, finds the latest marker-bearing review by your authenticated identity, extracts its inline findings, and classifies the prior head against the current head using the PR commit history. Four relationships are possible:
+`--incremental` is orthogonal to the mode flags and composes with any of them. It adds one read-only `pr_review_prior` discovery call to Step 1: the host reads the PR's GitHub reviews, finds the latest marker-bearing review by your authenticated identity, extracts its findings, attaches bounded thread replies, retains bounded summaries from other reviews/root comments, and classifies the prior head against the current head using PR commit history. Participant discussion is always untrusted context: a fix claim, rejection rationale, approval, or instruction never suppresses a finding until the orchestrator verifies it against current source.
 
-- **`incremental`** — the prior head is an ancestor of the current head. The orchestrator captures the prior-head→current-head diff and uses it as the hunt scope for every reviewer lane: fresh hunting covers only the new commits (a broken fix is caught here as a new finding), and previously reviewed hunks are not re-derived. Prior findings are revalidated in the validation step and classified `resolved` (fix verified in the new commits), `still open` (re-enters the findings list as a normal finding; unresolved blocking findings still block), or `obsolete` (cited code no longer exists). The output adds a `## Prior findings` section with these statuses. Inline anchors always come from the full base→head diff, never the incremental one.
-- **`same_head`** — no new commits. A revalidation-only run skips reviewer lanes entirely and revalidates the prior findings as-is.
-- **`diverged`** — force-push or rebase removed the prior head from the commit history; anchors are unreliable, so the run falls back to a normal full review with a note.
+Four relationships are possible:
+
+- **`incremental`** — the prior head is an ancestor of the current head. Three targeted heavy passes (plus conventions in `--full`, or one integrated pass in `--deep`) review the prior-head→current-head delta. In parallel, one independent heavy reviewer audits the complete base→head diff for defects previous reviews missed. Prior findings are classified `resolved` (fix verified after the prior review), `rejected` (the finding is demonstrably not a defect), `still open` (re-enters the findings list; blocking findings still block), or `obsolete` (cited code no longer exists). The output adds `## Prior findings`; inline anchors always come from the full base→head diff.
+- **`same_head`** — no new commits. Delta passes are skipped, but prior discussion is revalidated and the full-diff gap hunter still looks for missed defects.
+- **`diverged`** — force-push or rebase removed the prior head from commit history; anchors are unreliable, so the run falls back to a normal full review with a note.
 - **`none`** or a failed discovery call — normal full review, identical to running without the flag.
 
-Discovery is bounded (paginated reads capped, at most 200 prior findings) and read-only; it never writes to GitHub. Prior state comes from durable GitHub data, so re-reviews work across sessions and machines. Only reviews carrying the package's canonical head marker are used; manual reviews by the same login are ignored.
+Discovery is bounded (paginated reads, at most 200 findings, 20 replies per finding, 200 attached replies total, 20 other reviews, and 50 other root comments) and read-only; it never writes to GitHub. Prior state comes from durable GitHub data, so re-reviews work across sessions and machines. Only the current identity's marker-bearing review supplies authoritative prior findings; all other participant text remains untrusted review context.
 
 A review uses five focused passes by default:
 

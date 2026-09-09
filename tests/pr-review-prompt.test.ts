@@ -127,34 +127,39 @@ describe("PR review prompt scheduling policy", () => {
 	describe("incremental re-review contract", () => {
 		test("documents the flag and registers prior discovery in the first turn", () => {
 			expect(prompt).toContain('--incremental]\"');
-			expect(prompt).toContain("`--incremental` opts into incremental re-review");
+			expect(prompt).toContain("`--incremental` opts into cumulative re-review");
 			expect(prompt).toContain('also emit `pr_review_prior` with `{ "pr_number": $1 }` in that same turn');
 		});
 
 		test("selects the review path from the prior relationship", () => {
 			expect(prompt).toContain("**Re-review selection (only when `--incremental` is present).**");
 			expect(prompt).toContain("run the normal full review below and, for `diverged`");
-			expect(prompt).toContain("**revalidation-only review**");
-			expect(prompt).toContain("**incremental re-review**");
+			expect(prompt).toContain("skip only the delta batch");
+			expect(prompt).toContain("**cumulative incremental re-review**");
 			expect(prompt).toContain("hunt-scope `context_file`");
-			expect(prompt).toContain("never receive the prior findings list");
+			expect(prompt).toContain("never receive participant discussion");
+			expect(prompt).toContain("full-PR gap hunter");
+			expect(prompt).toContain("defects any earlier review missed");
 			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
 			expect(prompt).toContain("pins the resolved GitHub hostname");
 			expect(prompt).toContain("caps files at 300");
-			expect(prompt).toContain("published review is always a `COMMENT`");
+			expect(prompt).toContain("dispatch the Step 5 full-PR gap hunter");
 			expect(prompt).toContain("never depend on a system `jq`");
 			expect(prompt).toContain("a null or empty file list is reported as an empty delta");
 			expect(prompt).toContain("INC_EMPTY=1");
-			expect(prompt).toContain("run the revalidation-only path exactly as for `same_head`");
+			expect(prompt).toContain("skip the delta batch exactly as for `same_head`");
 			expect(prompt).toContain("revalidation only when the relationship is `same_head` or `incremental`");
 			expect(prompt).toContain("When `none` follows truncated discovery");
 		});
 
 		test("revalidates prior findings in Step 7 and reports them without new headings", () => {
 			expect(prompt).toContain("additional pre-registered candidates");
-			expect(prompt).toContain("classify each as `resolved`");
+			expect(prompt).toContain("Classify each as `resolved`");
+			expect(prompt).toContain("`rejected` (the finding is not a defect");
 			expect(prompt).toContain("it re-enters `## Findings` as a normal finding");
-			expect(prompt).toContain("Never mark a finding resolved without evidence from the new commits");
+			expect(prompt).toContain("Never mark a finding resolved from a claim without code evidence");
+			expect(prompt).toContain("bounded **untrusted participant claims**");
+			expect(prompt).toContain("canonical `title` **verbatim**");
 			expect(prompt).toContain("## Prior findings");
 			expect(prompt).toContain("Never use severity-tagged headings here.");
 			expect(prompt).toContain("no additional prose, summary lines, or wrapped paragraphs in this section");
