@@ -74,11 +74,12 @@ const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 const { priorRevalidationRegistry } = await import("../lib/pr-review-prior.ts");
+const { reviewCandidateDispositionRegistry } = await import("../lib/pr-review-candidates.ts");
 
 function harness() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
-	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap", "self_review_subagent"];
+	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_candidate_disposition", "pr_review_incremental_gap", "self_review_subagent"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
@@ -144,7 +145,7 @@ describe("review tool execution gate", () => {
 
 	test("all review tools fail before processing parameters outside /pr-review", async () => {
 		const h = harness();
-		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap"]) {
+		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_candidate_disposition", "pr_review_incremental_gap"]) {
 			const result = await h.tools.get(name).execute("call-1", {}, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details).toEqual({ authorized: false });
@@ -204,6 +205,26 @@ describe("review tool execution gate", () => {
 		expect(accepted.details.statuses).toEqual([{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "Verified invariant (P0)." }]);
 		const repeated = await tool.execute("status-3", { statuses: [{ finding_id: "thread:9", status: "resolved", severity: "P1", evidence: "overwrite" }] }, undefined, undefined, h.ctx);
 		expect(repeated).toMatchObject({ isError: true, details: { authorized: true, reason: "invalid_statuses" } });
+	});
+
+	test("structured candidate dispositions require exact one-shot coverage", async () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+		reviewCandidateDispositionRegistry.markCandidates("session-1", lease.generation, [
+			{ id: "incremental-gap:1", laneKey: "incremental-gap", title: "Canonical", severity: "P1", location: "src/a.ts:2 RIGHT" },
+			{ id: "incremental-contracts:1", laneKey: "incremental-contracts", title: "Duplicate", severity: "P1", location: "src/a.ts:2 RIGHT" },
+		]);
+		const tool = h.tools.get("pr_review_candidate_disposition");
+		const incomplete = await tool.execute("candidates-1", { decisions: [] }, undefined, undefined, h.ctx);
+		expect(incomplete).toMatchObject({ isError: true, details: { reason: "invalid_dispositions" } });
+		const accepted = await tool.execute("candidates-2", { decisions: [
+			{ candidate_id: "incremental-gap:1", disposition: "accepted" },
+			{ candidate_id: "incremental-contracts:1", disposition: "duplicate", duplicate_of: "incremental-gap:1" },
+		] }, undefined, undefined, h.ctx);
+		expect(accepted.isError).toBeUndefined();
+		expect(accepted.details.decisions).toHaveLength(2);
 	});
 
 	test("incremental gap hunting requires a host-established usable prior relationship", async () => {
