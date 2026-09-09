@@ -880,12 +880,16 @@ export function synthesizeReviewArtifact(input: {
 	// The prior-finding disclosure gate must be computed before the strict JSON
 	// branch returns: a legacy JSON envelope is raw text without the section,
 	// so a required-but-absent disclosure blocks approval there too.
+	const hostPriorStatusesRecorded = input.priorRevalidationStatuses !== undefined;
 	const effectiveRawText = applyHostPriorStatuses(input.rawText, input.priorRevalidationStatuses);
 	const rawForPrior = effectiveRawText.trim().replace(/\r\n?/g, "\n");
 	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
 	const priorDisclosureSatisfied = (() => {
 		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
 		if (requiredTitles.length === 0) return true;
+		// Assistant-authored Markdown is untrusted. A required disclosure is
+		// approval evidence only after the one-shot host status tool recorded it.
+		if (!hostPriorStatusesRecorded) return false;
 		const disclosure = priorFindingsDisclosureEarly?.trim();
 		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
 		// Each prior finding must be disclosed by title in some distinct
@@ -916,7 +920,9 @@ export function synthesizeReviewArtifact(input: {
 			return true;
 		});
 	})();
-	if (input.strictJsonReview && !input.priorRevalidationStatuses?.length) {
+	if (input.strictJsonReview) {
+		// Strict JSON remains authoritative even when host prior statuses were
+		// recorded; status rendering must not degrade a valid structured review.
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
 		const batchEvidence = lanes.length > 0 || expectedLaneCount > 0;

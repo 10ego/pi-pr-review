@@ -1155,10 +1155,11 @@ export default function registerReviewTable(
 			ctx.sessionManager.getSessionId(),
 			retainedGeneration,
 		) ?? [];
-		const priorStatuses = priorRevalidationRegistry.statuses(
+		const recordedPriorStatuses = priorRevalidationRegistry.statuses(
 			ctx.sessionManager.getSessionId(),
 			retainedGeneration,
-		) ?? [];
+		);
+		const priorStatuses = recordedPriorStatuses ?? [];
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1169,7 +1170,7 @@ export default function registerReviewTable(
 				expectedLaneDescriptors,
 				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
 				...(priorRequiredTitles.length > 0 ? { priorRevalidationRequiredTitles: priorRequiredTitles } : {}),
-				...(priorStatuses.length > 0 ? { priorRevalidationStatuses: priorStatuses } : {}),
+				...(recordedPriorStatuses !== undefined ? { priorRevalidationStatuses: priorStatuses } : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;

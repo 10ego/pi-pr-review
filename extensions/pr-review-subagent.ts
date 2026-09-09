@@ -1997,8 +1997,8 @@ export default function registerPrReviewSubagents(
 					{ signal: executionSignal ?? undefined },
 					PRIOR_GH_OUTPUT_MAX_BYTES,
 				);
-				const suppliedDiff = fs.readFileSync(loadedContext.contextFile!);
-				if (!Buffer.from(authoritativeDiff, "utf8").equals(suppliedDiff)) {
+				const suppliedDiff = loadedContext.contextFileRawBytes;
+				if (!suppliedDiff || !Buffer.from(authoritativeDiff, "utf8").equals(suppliedDiff)) {
 					return {
 						content: [{ type: "text", text: "Incremental gap context failed: context_file is not the exact current base-to-head GitHub PR diff." }],
 						isError: true,

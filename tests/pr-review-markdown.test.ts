@@ -323,6 +323,7 @@ describe("Markdown-first canonical review artifacts", () => {
 			laneArtifacts: [completeLane],
 			expectedLaneDescriptors: [completeExpectedLane],
 			priorRevalidationRequiredTitles: ["nil map guard"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "rejected", severity: "P1", title: "nil map guard", evidence: "src/a.ts:12 is unreachable after construction validation" }],
 		});
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.mergeApprovalEligible).toBeTrue();
@@ -488,7 +489,18 @@ describe("Markdown-first canonical review artifacts", () => {
 			priorRevalidationRequiredTitles: titles,
 		});
 		expect(disclosed.quality).toBe("fully_parsed");
-		expect(disclosed.mergeApprovalEligible).toBeTrue();
+		expect(disclosed.mergeApprovalEligible).toBeFalse();
+		const hostBound = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+			priorRevalidationStatuses: [
+				{ findingId: "a", status: "resolved", severity: "P1", title: titles[0], evidence: "reconstructed above" },
+				{ findingId: "b", status: "resolved", severity: "P2", title: titles[1], evidence: "replies skipped" },
+			],
+		});
+		expect(hostBound.mergeApprovalEligible).toBeTrue();
 		// A title mentioned in prose without a status prefix discloses nothing.
 		const proseOnly = synthesizeReviewArtifact({
 			rawText: approve.replace(
@@ -1026,6 +1038,23 @@ describe("Markdown-first canonical review artifacts", () => {
 		});
 		expect(missingExpected.completeness).toBe("incomplete");
 		expect(missingExpected.mergeApprovalEligible).toBe(false);
+	});
+
+	test("keeps strict JSON parsing when host prior statuses are recorded", () => {
+		const strictJsonReview = {
+			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
+			disposition: "reviewed" as const,
+			verification: "Passed.", overview: "No current blockers.", findings: [], verdict: "approve",
+		};
+		const artifact = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical prior"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "resolved", severity: "P1", title: "Canonical prior", evidence: "verified in current source" }],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.body).toBe("");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
 	});
 
 	test("does not let a strict skipped disposition suppress retained lane candidates", () => {

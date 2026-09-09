@@ -29,6 +29,7 @@ describe("review context files", () => {
 		expect(loaded.context).toContain("diff --git a/a.ts b/a.ts");
 		expect(loaded.contextFile).toBe(path.join(root, "pr.diff"));
 		expect(loaded.contextFileText).toContain("diff --git a/a.ts b/a.ts");
+		expect(loaded.contextFileRawBytes?.toString("utf8")).toBe("diff --git a/a.ts b/a.ts\n+added\n");
 		expect(loaded.contextFileBytes).toBeGreaterThan(0);
 	});
 
