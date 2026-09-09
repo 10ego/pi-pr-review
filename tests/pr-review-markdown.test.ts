@@ -328,6 +328,24 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.mergeApprovalEligible).toBeTrue();
 	});
 
+	test("host-rendered structured statuses replace an omitted assistant classification", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings",
+			"## Prior findings\nNone.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical title"],
+			priorRevalidationStatuses: [{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "The source invariant was verified." }],
+		});
+		expect(artifact.body).toContain("- rejected: [P1] Canonical title — The source invariant was verified.");
+		expect(artifact.body).not.toContain("## Prior findings\nNone.");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
 	test("blocks approval when Prior findings discloses a still-open finding Findings does not carry", () => {
 		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
 			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",

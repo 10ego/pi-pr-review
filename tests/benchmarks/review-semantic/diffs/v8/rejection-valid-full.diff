@@ -2,10 +2,11 @@ diff --git a/src/catalog.ts b/src/catalog.ts
 index 4f85f11..f959c68 100644
 --- a/src/catalog.ts
 +++ b/src/catalog.ts
-@@ -1,3 +1,4 @@
--export function readCatalog(id: string, catalog: Map<string, unknown>) {
--	return catalog.get(id);
-+export function readPublicCatalog(id: string, catalog: Map<string, { public: boolean; value: unknown }>) {
+@@ -1,5 +1,4 @@
+ export function readCatalog(id: string, catalog: Map<string, { public: boolean; value: unknown }>) {
+-	const entry = catalog.get(id);
+-	if (!entry || !entry.public) return undefined;
+-	return entry.value;
 +	const entry = catalog.get(id);
 +	return entry?.public ? entry.value : undefined;
  }

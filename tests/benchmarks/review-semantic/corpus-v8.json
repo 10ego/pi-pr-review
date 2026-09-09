@@ -11,9 +11,9 @@
     {
       "id": "fixed-claim-valid",
       "title": "Author fix claim is verified against the correcting commit",
-      "diff": "diffs/v7/resolved-blocker-full.diff",
-      "diffSha256": "e01fab3500aa1017fb5a7ecae4a260ec96b9a0dae5a528129419e797bc888425",
-      "diffBytes": 311,
+      "diff": "diffs/v8/fixed-claim-valid-full.diff",
+      "diffSha256": "2e6ceb38628de7d68486878d67d3f9e4b22ef552acceea4686e9aa321c6e61b1",
+      "diffBytes": 324,
       "changedFiles": [
         "src/profile.ts"
       ],
@@ -23,14 +23,14 @@
       "priorState": {
         "relationship": "incremental",
         "priorDiff": {
-          "path": "diffs/v7/resolved-blocker-prior.diff",
+          "path": "diffs/v8/fixed-claim-valid-prior.diff",
           "sha256": "42290e68aa5e9f038c82853072415c0228f49b121dce0bd3503be800b7c5d909",
           "bytes": 273
         },
         "incrementalDiff": {
-          "path": "diffs/v7/resolved-blocker-incremental.diff",
-          "sha256": "b28f94f5c9e280dbab07d62c602a1114a5afb52a4181734abc9e372d0d25e922",
-          "bytes": 294
+          "path": "diffs/v8/fixed-claim-valid-incremental.diff",
+          "sha256": "db81f025a5e69139c5851b83d0da77931ffccc00f6fe7cbeddd183e933eed958",
+          "bytes": 307
         },
         "review": {
           "id": 8101,
@@ -185,8 +185,8 @@
         "cumulative": true,
         "priorDiff": {
           "path": "diffs/v8/rejection-valid-prior.diff",
-          "sha256": "46e063346f92ce3b7cc46600aace871ced94885d0a6c419156a36019869adffb",
-          "bytes": 427
+          "sha256": "f993bc4721d125d967870e7156ca0c5805abf79ac37d9c7c87e8c43d80438e5f",
+          "bytes": 425
         },
         "incrementalDiff": null,
         "review": {
@@ -221,8 +221,8 @@
         ]
       },
       "diff": "diffs/v8/rejection-valid-full.diff",
-      "diffSha256": "46e063346f92ce3b7cc46600aace871ced94885d0a6c419156a36019869adffb",
-      "diffBytes": 427
+      "diffSha256": "f993bc4721d125d967870e7156ca0c5805abf79ac37d9c7c87e8c43d80438e5f",
+      "diffBytes": 425
     },
     {
       "id": "rejection-invalid",

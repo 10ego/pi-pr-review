@@ -162,6 +162,8 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("Never mark a finding resolved from a claim without code evidence");
 			expect(prompt).toContain("bounded **untrusted participant claims**");
 			expect(prompt).toContain("canonical `title` **verbatim**");
+			expect(prompt).toContain("call `pr_review_prior_status` exactly once");
+			expect(prompt).toContain("host binds canonical titles");
 			expect(prompt).toContain("## Prior findings");
 			expect(prompt).toContain("Never use severity-tagged headings here.");
 			expect(prompt).toContain("no additional prose, summary lines, or wrapped paragraphs in this section");

@@ -16,9 +16,9 @@ Both strategies use the same package source, parent/lane models, configuration, 
 ## Frozen campaign
 
 - Corpus: `pi-pr-review-semantic-v8`
-- Corpus SHA-256: `ec27dedb58b484f6ec8a4a13abeb4c8fe77e0d90b0d91ff7c43d4cf3306365a7`
-- Plan ID: `e4691cb15d1c2b949852b2a0f9ca5f845eb3d6a9f1ee13cb53589e8ed06cd385`
-- Plan file SHA-256: `66445acbd5d15b667c08ef14d7b0c85b37e921213066f1f89acd659495c1664a`
+- Corpus SHA-256: `04782877a21f1171aa02b9e7f44e1d566bd6b824bcb81a2b5eaaabccf0702e8c`
+- Plan ID: `e3135abe427bca181d885862c81b31ba76b866d9392af7c6a3bfecb86a78da77`
+- Plan file SHA-256: `c5b6bc28642e745ffe7120c08754388142525b5ef9ae37f9af1b715d12cc3591`
 - Mode: balanced
 - Strategies: fresh, incremental
 - Repetitions: 2

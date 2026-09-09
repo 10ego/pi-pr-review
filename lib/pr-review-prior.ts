@@ -44,6 +44,8 @@ export interface PriorReviewDiscussionEntry {
 }
 
 export interface PriorReviewFinding {
+	/** Stable invocation-visible id used for structured host-rendered status submission. */
+	findingId?: string;
 	threadId: number;
 	inReplyToId: number | null;
 	path: string;
@@ -135,7 +137,7 @@ const METADATA_MAX_CHARS = 100;
 /** Normalize participant-authored discussion without interpreting it as trusted instructions. */
 export function discussionExcerpt(body: string | null | undefined): string | undefined {
 	if (typeof body !== "string") return undefined;
-	const normalized = body.replace(/\s+/g, " ").trim();
+	const normalized = body.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
 	return normalized ? normalized.slice(0, EXCERPT_MAX_CHARS) : undefined;
 }
 
@@ -147,26 +149,79 @@ function boundedMetadata(value: unknown, maxChars = METADATA_MAX_CHARS): string 
 
 const OTHER_NOTES_ENTRY = /^\*\*\[(P0|P1|P2|P3|nit)\]\s*(.*?)\*\*(?:\s+\u2014\s+`(.+)`)?\s*$/;
 
-/** Host-side record of the prior-finding titles an invocation must disclose.
+export type PriorFindingStatus = "resolved" | "rejected" | "still open" | "obsolete";
+export function normalizePriorStatusEvidence(value: string): string {
+	return value
+		.replace(/[\u0000-\u001f\u007f]/g, " ")
+		.replace(/<!--\s*pi-pr-review:/gi, "(marker removed):")
+		.replace(/\[(P[0-3]|nit)\]/gi, "($1)")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 1_000);
+}
+export interface PriorFindingStatusRecord {
+	findingId: string;
+	status: PriorFindingStatus;
+	severity: "P0" | "P1" | "P2" | "P3" | "nit";
+	title: string;
+	evidence: string;
+}
+interface PriorRegistryEntry {
+	findings: readonly { findingId: string; title: string; severity?: PriorReviewFinding["severity"] }[];
+	statuses?: readonly PriorFindingStatusRecord[];
+}
+
+/** Host-side record of prior findings and structured revalidation outcomes.
  * Keys are scoped by session id and generation so concurrent coordinators in
  * one process cannot collide on per-coordinator generation counters. */
 export class PriorRevalidationRegistry {
-	private readonly required = new Map<string, readonly string[]>();
-	/** Record the prior titles that must each appear in one distinct status
-	 * line; an empty list clears the requirement. Prunes to the eight most
-	 * recent entries so long-lived processes stay bounded. */
-	mark(sessionId: string, generation: number, titles: readonly string[]): void {
+	private readonly entries = new Map<string, PriorRegistryEntry>();
+	private set(sessionId: string, generation: number, entry: PriorRegistryEntry): void {
 		const key = `${sessionId}:${generation}`;
-		this.required.delete(key);
-		this.required.set(key, titles);
-		while (this.required.size > 8) {
-			const oldest = this.required.keys().next().value;
+		this.entries.delete(key);
+		this.entries.set(key, entry);
+		while (this.entries.size > 8) {
+			const oldest = this.entries.keys().next().value;
 			if (oldest === undefined) break;
-			this.required.delete(oldest);
+			this.entries.delete(oldest);
 		}
 	}
+	/** Compatibility helper retained for callers/tests that only have titles. */
+	mark(sessionId: string, generation: number, titles: readonly string[]): void {
+		this.set(sessionId, generation, { findings: titles.map((title, index) => ({ findingId: `legacy:${index}`, title })) });
+	}
+	markFindings(sessionId: string, generation: number, findings: readonly PriorReviewFinding[]): void {
+		this.set(sessionId, generation, {
+			findings: findings.map((finding, index) => ({
+				findingId: finding.findingId ?? (finding.threadId >= 0 ? `thread:${finding.threadId}` : `summary:${index}`),
+				title: finding.title,
+				...(finding.severity ? { severity: finding.severity } : {}),
+			})),
+		});
+	}
 	isRequired(sessionId: string, generation: number | undefined): readonly string[] | undefined {
-		return generation === undefined ? undefined : this.required.get(`${sessionId}:${generation}`);
+		return generation === undefined ? undefined : this.entries.get(`${sessionId}:${generation}`)?.findings.map((finding) => finding.title);
+	}
+	recordStatuses(sessionId: string, generation: number, statuses: readonly Omit<PriorFindingStatusRecord, "title">[]): { ok: true; statuses: readonly PriorFindingStatusRecord[] } | { ok: false; error: string } {
+		const key = `${sessionId}:${generation}`, entry = this.entries.get(key);
+		if (!entry) return { ok: false, error: "no prior findings are registered for this invocation" };
+		if (statuses.length !== entry.findings.length) return { ok: false, error: "statuses must cover every registered prior finding exactly once" };
+		const supplied = new Map<string, Omit<PriorFindingStatusRecord, "title">>();
+		for (const status of statuses) {
+			if (supplied.has(status.findingId)) return { ok: false, error: `duplicate prior finding id ${status.findingId}` };
+			supplied.set(status.findingId, status);
+		}
+		const rendered: PriorFindingStatusRecord[] = [];
+		for (const finding of entry.findings) {
+			const status = supplied.get(finding.findingId);
+			if (!status) return { ok: false, error: `missing prior finding id ${finding.findingId}` };
+			rendered.push({ ...status, title: finding.title });
+		}
+		this.set(sessionId, generation, { ...entry, statuses: Object.freeze(rendered.map((status) => Object.freeze(status))) });
+		return { ok: true, statuses: rendered };
+	}
+	statuses(sessionId: string, generation: number | undefined): readonly PriorFindingStatusRecord[] | undefined {
+		return generation === undefined ? undefined : this.entries.get(`${sessionId}:${generation}`)?.statuses;
 	}
 }
 
@@ -446,6 +501,10 @@ export async function discoverPriorReview(
 		}
 		findings.push(finding);
 	}
+
+	findings.forEach((finding, index) => {
+		finding.findingId = finding.threadId >= 0 ? `thread:${finding.threadId}` : `summary:${index}`;
+	});
 
 	// Replies are participant-authored discussion, not findings. Attach them to
 	// the matching authored root so the orchestrator can verify fix/rejection

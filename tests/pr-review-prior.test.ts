@@ -58,7 +58,7 @@ describe("prior inline finding body parsing", () => {
 		expect(commentExcerpt("**[P1] Title**")).toBeUndefined();
 		expect(commentExcerpt(undefined)).toBeUndefined();
 		expect(commentExcerpt(`**[P1] Title**\n\n${"x".repeat(900)}`)?.length).toBe(500);
-		expect(discussionExcerpt("  Fixed in abc.\n\nPlease re-check. ")).toBe("Fixed in abc. Please re-check.");
+		expect(discussionExcerpt("  Fixed in abc.\n\nPlease\u0000 re-check. ")).toBe("Fixed in abc. Please re-check.");
 		expect(discussionExcerpt(" ")).toBeUndefined();
 		expect(discussionExcerpt("x".repeat(900))?.length).toBe(500);
 	});
@@ -270,6 +270,17 @@ describe("prior revalidation registry", () => {
 		expect(registry.isRequired("s1", 29)).toEqual(["g"]);
 		expect(registry.isRequired("s1", 1)).toBeUndefined();
 	});
+
+	test("records complete structured statuses with canonical host titles", () => {
+		const registry = new PriorRevalidationRegistry();
+		registry.markFindings("s", 1, [{ findingId: "thread:9", threadId: 9, inReplyToId: null, path: "src/a.ts", line: 2, side: "RIGHT", severity: "P1", title: "Canonical title" }]);
+		expect(registry.recordStatuses("s", 1, [{ findingId: "thread:9", status: "rejected", severity: "P1", evidence: "The invariant is verified." }])).toEqual({
+			ok: true,
+			statuses: [{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "The invariant is verified." }],
+		});
+		expect(registry.statuses("s", 1)?.[0]?.title).toBe("Canonical title");
+		expect(registry.recordStatuses("s", 1, [])).toEqual({ ok: false, error: "statuses must cover every registered prior finding exactly once" });
+	});
 });
 
 describe("prior review discovery", () => {
@@ -326,6 +337,7 @@ describe("prior review discovery", () => {
 		expect(snapshot.incrementalRange).toEqual({ from: HEAD_B, to: HEAD_C, commitCount: 1 });
 		expect(snapshot.prior?.findings).toEqual([
 			{
+				findingId: "thread:101",
 				threadId: 101,
 				inReplyToId: null,
 				path: "src/a.ts",

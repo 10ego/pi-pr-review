@@ -32,7 +32,7 @@ const LEGACY_MODE_TOPOLOGIES = Object.freeze({
 	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
 	deep: MODE_TOPOLOGIES.deep,
 });
-const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review" });
+const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review", "incremental-gap": "incremental-gap", "incremental-correctness": "incremental-correctness", "incremental-contracts": "incremental-contracts", "incremental-security-performance": "incremental-security-performance", "incremental-conventions": "incremental-conventions", "incremental-deep": "incremental-deep" });
 const EXPLICIT_NON_FINDING = [
 	/\bno (?:issue|finding|bug|defect|problem)(?: exists| here| with this)?\b/iu,
 	/\b(?:is|are|remains?|appears?) (?:safe|correct|valid)\b/iu,
@@ -416,7 +416,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"); let records = [], sessionParseValid = true; try { records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []; } catch { sessionParseValid = false; }
 	const completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), processFailed = raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, failedRun = run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed") && raw.resolvedReview === null && raw.telemetry === null;
 	if (run.schemaVersion === 2) {
-		invariant(canonical(parsePriorStatuses(reviewPayload.rawMarkdown)) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
+		const renderedStatuses = parsePriorStatuses(reviewPayload.markdown), rawStatuses = parsePriorStatuses(reviewPayload.rawMarkdown); invariant(canonical(renderedStatuses.length > 0 ? renderedStatuses : rawStatuses) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
 	}
 	if (!failedRun) {
 		invariant(sessionParseValid && raw.process.exitCode === 0 && !processFailed && raw.auditValid && !Object.hasOwn(raw.session, "files") && !Object.hasOwn(raw.session, "overflow"), `${label} successful run has operational failure`);
@@ -652,7 +652,28 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
-	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
+	const result = { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
+	if (plan.schemaVersion === 2 && plan.strategies.includes("fresh") && plan.strategies.includes("incremental")) {
+		const complete = ({ run, item }) => { const expected = expectedModeTopology(run.mode, item, { strategy: run.strategy }); return run.lanes.length === expected.passIds.length && run.lanes.every((lane) => lane.status === "complete") && run.publication.fallback === false; };
+		const grouped = new Map();
+		for (const entry of scores) {
+			const key = `${entry.run.mode}\0${entry.run.repetition}\0${entry.run.caseId}`;
+			const pair = grouped.get(key) ?? { mode: entry.run.mode, repetition: entry.run.repetition, caseId: entry.run.caseId };
+			pair[entry.run.strategy] = entry; grouped.set(key, pair);
+		}
+		const pairs = [...grouped.values()], completePairs = pairs.filter((pair) => pair.fresh && pair.incremental && complete(pair.fresh) && complete(pair.incremental));
+		const freshPaired = completePairs.map((pair) => pair.fresh), incrementalPaired = completePairs.map((pair) => pair.incremental), freshMetrics = aggregateGroup(freshPaired), incrementalMetrics = aggregateGroup(incrementalPaired);
+		const freshMedian = percentile(freshPaired.map(({ run }) => run.elapsedMs), 0.5), incrementalMedian = percentile(incrementalPaired.map(({ run }) => run.elapsedMs), 0.5), metricDelta = (incremental, fresh) => typeof incremental === "number" && typeof fresh === "number" ? incremental - fresh : null;
+		result.paired = {
+			plannedPairs: pairs.length,
+			completePairs: completePairs.length,
+			incompletePairs: pairs.filter((pair) => !completePairs.includes(pair)).map((pair) => ({ mode: pair.mode, repetition: pair.repetition, caseId: pair.caseId, freshComplete: !!pair.fresh && complete(pair.fresh), incrementalComplete: !!pair.incremental && complete(pair.incremental) })),
+			operationalCompletion: { fresh: metricPair(pairs.length, pairs.filter((pair) => pair.fresh && complete(pair.fresh)).length), incremental: metricPair(pairs.length, pairs.filter((pair) => pair.incremental && complete(pair.incremental)).length) },
+			quality: { fresh: freshMetrics, incremental: incrementalMetrics, p0p1RecallDelta: metricDelta(incrementalMetrics.p0p1.recall, freshMetrics.p0p1.recall), p2RecallDelta: metricDelta(incrementalMetrics.p2.recall, freshMetrics.p2.recall), crossFileRecallDelta: metricDelta(incrementalMetrics.crossFile.recall, freshMetrics.crossFile.recall) },
+			latencyMs: { freshP50: freshMedian, incrementalP50: incrementalMedian, incrementalToFreshRatio: typeof freshMedian === "number" && freshMedian > 0 && typeof incrementalMedian === "number" ? incrementalMedian / freshMedian : null },
+		};
+	}
+	return result;
 }
 
 function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {

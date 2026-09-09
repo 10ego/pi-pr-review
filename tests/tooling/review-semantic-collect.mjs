@@ -169,10 +169,35 @@ function priorStatuses(markdown) {
 	for (const rawLine of body.split(/\r?\n/u)) {
 		let line = rawLine.trim();
 		for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; }
-		const match = /^(resolved|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue;
+		const match = /^(resolved|rejected|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue;
 		const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title });
 	}
 	return statuses;
+}
+function recordedPriorStatuses(records) {
+	for (const record of records) {
+		const message = record?.type === "message" ? record.message : null;
+		if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior_status" || !Array.isArray(message.content)) continue;
+		for (const part of message.content) {
+			if (part?.type !== "text" || typeof part.text !== "string") continue;
+			try {
+				const value = JSON.parse(part.text);
+				if (value?.action !== "recorded" || !Array.isArray(value.statuses)) continue;
+				const statuses = value.statuses.map((status) => ({ status: status?.status, title: status?.title }));
+				if (statuses.every((status) => ["resolved", "rejected", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0)) return statuses;
+			} catch {}
+		}
+	}
+	return null;
+}
+function renderRecordedPriorStatuses(markdown, statuses) {
+	if (!statuses?.length) return markdown;
+	const lines = statuses.map((status) => `- ${status.status}: ${status.title}`);
+	const section = `## Prior findings\n${lines.join("\n")}`;
+	const normalized = String(markdown ?? "").replace(/\r\n?/g, "\n");
+	const existing = /^## Prior findings\s*$[\s\S]*?(?=^## (?:Findings|Lane completeness|Strengths and notes)\s*$)/mi;
+	if (existing.test(normalized)) return normalized.replace(existing, `${section}\n\n`);
+	return /^## Findings\s*$/mi.test(normalized) ? normalized.replace(/^## Findings\s*$/mi, `${section}\n\n## Findings`) : `${normalized.trimEnd()}\n\n${section}\n`;
 }
 function priorRelationship(records) {
 	for (const record of records) {
@@ -203,10 +228,11 @@ export async function collectSessionResult({ records, entry, item, mode, parentM
 	const byId = new Map(); for (const lane of laneArtifacts) if (plain(lane) && typeof lane.passId === "string" && lane.passId.length > 0 && !byId.has(lane.passId)) byId.set(lane.passId, lane); const lanes = topology.passIds.map((id) => byId.has(id) ? observedLane(byId.get(id), id, parentModel) : { id, lens: id.replace(/-shard-[123]$/, ""), status: "failed", elapsedMs: null, provider: null, model: null });
 	const quality = completed?.synthesisQuality, completeness = completed?.completeness, publication = quality === "fully_parsed" && completeness === "complete" && lanes.every((lane) => lane.status === "complete") ? { artifact: "canonical", fallback: false } : quality === "raw" || !completed ? { artifact: "raw_body_only", fallback: true } : { artifact: "degraded", fallback: true };
 	if (!rawMarkdown.trim()) rawMarkdown = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n") || "Review process produced no canonical Markdown.";
-	const strategyRun = entry.strategy !== undefined, markdown = strategyRun && plain(review) ? renderReview(review, rawMarkdown) : rawMarkdown;
+	const strategyRun = entry.strategy !== undefined, structuredPriorStatuses = recordedPriorStatuses(records), renderedMarkdown = strategyRun && plain(review) ? renderReview(review, rawMarkdown) : rawMarkdown, markdown = renderRecordedPriorStatuses(renderedMarkdown, structuredPriorStatuses);
+	const observedPriorStatuses = structuredPriorStatuses ?? priorStatuses(rawMarkdown);
 	const findings = normalizeFindings(review), parentTiming = Number.isFinite(telemetry?.phases?.aggregateOrchestration?.elapsedMs) ? telemetry.phases.aggregateOrchestration.elapsedMs : elapsedMs, syntheticSessionBytes = records.length > 0 ? Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n") : null, session = sessionEvidence ?? { sha256: syntheticSessionBytes ? sha256(syntheticSessionBytes) : null, bytes: syntheticSessionBytes?.length ?? 0, recordCount: records.length, contentBase64: syntheticSessionBytes?.toString("base64") ?? null };
 	const retainedProcessError = processOutcome.error ?? (!lifecycleValid && processOutcome.code === 0 && processOutcome.signal === null ? "invalid host-authored Pi session lifecycle" : null);
-	return { run: { schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: priorRelationship(records), priorStatuses: priorStatuses(rawMarkdown), mergeApprovalEligible: typeof completed?.mergeApprovalEligible === "boolean" ? completed.mergeApprovalEligible : null } } : {}), repetition: entry.repetition, startedAtUtc, elapsedMs: Number.isFinite(telemetry?.totalWallMs) ? telemetry.totalWallMs : elapsedMs, timing: { parentValidationSynthesisMs: parentTiming }, configuration: null, lanes, publication, findings, artifacts: [] }, laneRaw: { laneArtifacts, telemetry: telemetry ?? null, resolvedReview: review ?? null, ghAudit, auditValid, process: { stdout, stderr, exitCode: processOutcome.code, signal: processOutcome.signal, error: retainedProcessError, elapsedMs }, session }, markdown, rawMarkdown, operationallyValid: lifecycleValid && auditValid };
+	return { run: { schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: priorRelationship(records), priorStatuses: observedPriorStatuses, mergeApprovalEligible: typeof completed?.mergeApprovalEligible === "boolean" ? completed.mergeApprovalEligible : null } } : {}), repetition: entry.repetition, startedAtUtc, elapsedMs: Number.isFinite(telemetry?.totalWallMs) ? telemetry.totalWallMs : elapsedMs, timing: { parentValidationSynthesisMs: parentTiming }, configuration: null, lanes, publication, findings, artifacts: [] }, laneRaw: { laneArtifacts, telemetry: telemetry ?? null, resolvedReview: review ?? null, ghAudit, auditValid, process: { stdout, stderr, exitCode: processOutcome.code, signal: processOutcome.signal, error: retainedProcessError, elapsedMs }, session }, markdown, rawMarkdown, operationallyValid: lifecycleValid && auditValid };
 }
 
 export async function spawnPi(pi, args, options, timeoutMs) {

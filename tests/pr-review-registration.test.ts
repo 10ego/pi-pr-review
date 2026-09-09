@@ -117,6 +117,7 @@ function expectWholeExtensionRegistered(harness: ReturnType<typeof registrationH
 	expect(harness.tools).toContain("review_subagents");
 	expect(harness.tools).toContain("pr_review_verify");
 	expect(harness.tools).toContain("pr_review_prior");
+	expect(harness.tools).toContain("pr_review_prior_status");
 	expect(harness.tools).toContain("pr_review_incremental_gap");
 	expect(harness.commands).toContain("pr-review-config");
 	expect(harness.commands).toContain("pr-review-publish");

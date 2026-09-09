@@ -29,6 +29,7 @@ export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagents",
 	"pr_review_verify",
 	"pr_review_prior",
+	"pr_review_prior_status",
 	"pr_review_incremental_gap",
 ] as const;
 

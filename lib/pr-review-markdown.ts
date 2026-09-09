@@ -6,6 +6,7 @@ import {
 	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
+import type { PriorFindingStatusRecord } from "./pr-review-prior.ts";
 import type { ReviewFindingLike, ReviewLike } from "./pr-review-publish.ts";
 
 export type ReviewSynthesisQuality = "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
@@ -834,6 +835,18 @@ function buildDegradedReviewBody(input: {
 	return safeReviewBody(lines.join("\n").trim());
 }
 
+function applyHostPriorStatuses(rawText: string, statuses: readonly PriorFindingStatusRecord[] | undefined): string {
+	if (!statuses?.length) return rawText;
+	const body = statuses.map((status) => `- ${status.status}: [${status.severity}] ${status.title} — ${status.evidence}`).join("\n");
+	const normalized = rawText.replace(/\r\n?/g, "\n");
+	const existing = /^## Prior findings\s*$[\s\S]*?(?=^## (?:Findings|Lane completeness|Strengths and notes)\s*$)/mi;
+	if (existing.test(normalized)) return normalized.replace(existing, `## Prior findings\n${body}\n\n`);
+	const findings = /^## Findings\s*$/mi;
+	return findings.test(normalized)
+		? normalized.replace(findings, `## Prior findings\n${body}\n\n## Findings`)
+		: `${normalized.trimEnd()}\n\n## Prior findings\n${body}\n`;
+}
+
 /** Build the canonical semantic artifact while taking every authority field from the host binding. */
 export function synthesizeReviewArtifact(input: {
 	rawText: string;
@@ -846,6 +859,9 @@ export function synthesizeReviewArtifact(input: {
 	/** Host-recorded prior-finding titles this run's Prior findings section
 	 * must each disclose in one status line. */
 	priorRevalidationRequiredTitles?: readonly string[];
+	/** Complete structured statuses accepted by the host status tool. Canonical
+	 * titles and normalized evidence replace assistant-authored disclosure. */
+	priorRevalidationStatuses?: readonly PriorFindingStatusRecord[];
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -864,7 +880,8 @@ export function synthesizeReviewArtifact(input: {
 	// The prior-finding disclosure gate must be computed before the strict JSON
 	// branch returns: a legacy JSON envelope is raw text without the section,
 	// so a required-but-absent disclosure blocks approval there too.
-	const rawForPrior = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const effectiveRawText = applyHostPriorStatuses(input.rawText, input.priorRevalidationStatuses);
+	const rawForPrior = effectiveRawText.trim().replace(/\r\n?/g, "\n");
 	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
 	const priorDisclosureSatisfied = (() => {
 		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
@@ -899,7 +916,7 @@ export function synthesizeReviewArtifact(input: {
 			return true;
 		});
 	})();
-	if (input.strictJsonReview) {
+	if (input.strictJsonReview && !input.priorRevalidationStatuses?.length) {
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
 		const batchEvidence = lanes.length > 0 || expectedLaneCount > 0;
@@ -968,7 +985,7 @@ export function synthesizeReviewArtifact(input: {
 				: []),
 		});
 	}
-	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const raw = effectiveRawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const recoveredLaneFindings = mergeUniqueFindings([], validatedLaneFindings);
