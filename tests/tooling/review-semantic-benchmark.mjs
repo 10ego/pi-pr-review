@@ -201,7 +201,8 @@ export function loadCorpus(file) {
 		}
 		if (value.schemaVersion === 2) {
 			const prior = item.priorState, relationship = prior?.relationship;
-			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"]), `case ${item.id} prior state schema`);
+			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"], ["cumulative"]), `case ${item.id} prior state schema`);
+			if (Object.hasOwn(prior, "cumulative")) invariant(prior.cumulative === true, `case ${item.id} cumulative topology marker`);
 			invariant(["incremental", "same_head", "none", "diverged"].includes(relationship), `case ${item.id} prior relationship`);
 			const validatePhaseDiff = (metadata, phase) => {
 				if (metadata === null) return null;
@@ -229,9 +230,19 @@ export function loadCorpus(file) {
 				invariant(!review.body.includes(item.id) && review.body.length <= 64 * 1024, `case ${item.id} reviewer-visible prior body`);
 				const commentIds = new Set();
 				for (const comment of review.comments) {
-					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
+					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine", "replies"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
 					if (Object.hasOwn(comment, "startLine")) invariant(Number.isSafeInteger(comment.startLine) && comment.startLine > 0 && comment.startLine < comment.line, `case ${item.id} prior comment start line`);
 					invariant(!comment.body.includes(item.id), `case ${item.id} reviewer-visible prior comment leaks its benchmark id`);
+					if (Object.hasOwn(comment, "replies")) {
+						invariant(Array.isArray(comment.replies) && comment.replies.length <= 20, `case ${item.id} prior replies`);
+						for (const reply of comment.replies) {
+							invariant(exactKeys(reply, ["id", "author", "body"], ["authorAssociation", "createdAt", "commitHead"]) && Number.isSafeInteger(reply.id) && reply.id > 0 && !commentIds.has(reply.id) && typeof reply.author === "string" && reply.author.length > 0 && reply.author.length <= 100 && typeof reply.body === "string" && reply.body.length > 0 && reply.body.length <= 20_000, `case ${item.id} prior reply`); commentIds.add(reply.id);
+							if (Object.hasOwn(reply, "authorAssociation")) invariant(typeof reply.authorAssociation === "string" && reply.authorAssociation.length > 0 && reply.authorAssociation.length <= 100, `case ${item.id} reply association`);
+							if (Object.hasOwn(reply, "createdAt")) invariant(typeof reply.createdAt === "string" && Number.isFinite(Date.parse(reply.createdAt)), `case ${item.id} reply timestamp`);
+							if (Object.hasOwn(reply, "commitHead")) invariant(reply.commitHead === "prior" || reply.commitHead === "current", `case ${item.id} reply commit binding`);
+							invariant(!reply.body.includes(item.id), `case ${item.id} reviewer-visible prior reply leaks its benchmark id`);
+						}
+					}
 				}
 				const authoredText = `${review.body}\n${review.comments.map((comment) => comment.body).join("\n")}`.toLocaleLowerCase("en-US");
 				invariant((relationship === "diverged" || prior.expectedStatuses.length > 0) && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
@@ -276,6 +287,14 @@ export function validatePlan(plan, corpusInfo) {
 export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
+	if (options.strategy === "incremental" && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
+		const delta = item.priorState.relationship === "same_head" ? []
+			: mode === "deep" ? ["incremental-deep"]
+				: mode === "full" ? ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"]
+					: ["incremental-correctness", "incremental-contracts", "incremental-security-performance"];
+		const passIds = ["incremental-gap", ...delta];
+		return { passIds, shardCount: 1, maxParallel: passIds.length };
+	}
 	if (options.strategy === "incremental" && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
 	const legacySharding = options.legacySharding === true;
 	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];

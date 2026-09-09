@@ -205,6 +205,17 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: true, reason: "context_failed" },
 		});
+		expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+		const wrongTier = await h.tools.get("review_subagent").execute("delta-1", {
+			incremental_pass: "incremental-correctness",
+			tier: "light",
+			objective: "ignored",
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(wrongTier).toMatchObject({
+			isError: true,
+			details: { authorized: false, reason: "incremental_pass" },
+		});
 	});
 
 	test("verification reports action-specific argument errors after flat-schema validation", async () => {

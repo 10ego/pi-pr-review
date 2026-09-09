@@ -54,6 +54,7 @@ import {
 	classifyReviewJsonObject,
 	classifyReviewLane,
 	finalAssistantText,
+	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 	type ReviewLaneLifecycle,
 } from "../lib/pr-review-artifacts.ts";
@@ -173,6 +174,21 @@ const FIXED_REVIEW_TOPOLOGIES: Readonly<Record<ReviewMode, readonly FixedReviewP
 		{ id: "deep-review", tier: "heavy", toolPolicy: "configured", scope: "Integrated whole-PR intent, implementation, callers, tests, and risks at every qualifying severity.", expectedOutput: "nonempty" },
 	]),
 });
+const INCREMENTAL_DELTA_PASSES = Object.freeze({
+	"incremental-correctness": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed state, lifecycle, ordering, concurrency, and cancellation defects." }),
+	"incremental-contracts": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed compile, type, API, data, error, boundary, and integration defects." }),
+	"incremental-security-performance": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed security, resource, performance, scalability, I/O, memory, and contention defects." }),
+	"incremental-conventions": Object.freeze({ tier: "medium" as const, modes: ["full"] as const, scope: "Review the new-commit delta against the supplied applicable conventions and for concrete maintainability defects at every severity." }),
+	"incremental-deep": Object.freeze({ tier: "heavy" as const, modes: ["deep"] as const, scope: "Review the new-commit delta as one integrated change for introduced or exposed defects at every severity." }),
+});
+type IncrementalDeltaPassId = keyof typeof INCREMENTAL_DELTA_PASSES;
+
+function incrementalDeltaPassIds(mode: ReviewMode): readonly IncrementalDeltaPassId[] {
+	if (mode === "deep") return ["incremental-deep"];
+	if (mode === "full") return ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"];
+	return ["incremental-correctness", "incremental-contracts", "incremental-security-performance"];
+}
+
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
 	medium: "convention compliance + readability / maintainability",
@@ -1562,6 +1578,9 @@ const IncrementalGapParams = Type.Object({
 }, { additionalProperties: false });
 
 const ReviewSubagentParams = Type.Object({
+	incremental_pass: Type.Optional(StringEnum(Object.keys(INCREMENTAL_DELTA_PASSES) as IncrementalDeltaPassId[], {
+		description: "Host-fixed cumulative delta pass id. Valid only after prior discovery establishes an ancestor incremental relationship.",
+	})),
 	tier: StringEnum(["light", "medium", "heavy"] as const, {
 		description:
 			"Model tier / subagent label. light = overview & risk scan; medium = conventions/readability; heavy = correctness/security/performance.",
@@ -1831,13 +1850,19 @@ export default function registerPrReviewSubagents(
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) {
 					return reviewLoopDeniedResult("pr_review_prior");
 				}
-				if ((snapshot.relationship === "same_head" || snapshot.relationship === "incremental") &&
-					!loopCoordinator.registerExpectedArtifacts(lease, [{
-						key: "incremental-gap",
-						tier: "heavy",
-						minorHygiene: false,
-						expectedOutput: "nonempty",
-					}], ctx)) {
+				const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+				const requiredCumulativeLanes: ExpectedReviewLane[] = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
+					? [
+						{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+						...(snapshot.relationship === "incremental" ? incrementalDeltaPassIds(reviewMode).map((id) => ({
+							key: id,
+							tier: INCREMENTAL_DELTA_PASSES[id].tier,
+							minorHygiene: false,
+						})) : []),
+					]
+					: [];
+				if (requiredCumulativeLanes.length > 0 &&
+					!loopCoordinator.registerExpectedArtifacts(lease, requiredCumulativeLanes, ctx)) {
 					return {
 						content: [{ type: "text", text: "pr_review_prior could not register the required cumulative gap-hunt lane." }],
 						isError: true,
@@ -1991,8 +2016,8 @@ export default function registerPrReviewSubagents(
 		promptSnippet:
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
 		promptGuidelines: [
-			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable, when rerunning one failed batch pass, or for the required full-diff gap hunt during a same-head/incremental re-review.",
-			"For the incremental gap hunt, use the full base-to-head captured diff rather than the incremental diff, keep participant discussion out of subagent context, and dispatch it concurrently with the delta batch and verification.",
+			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable, when rerunning one failed batch pass, or for each host-fixed incremental delta pass named by incremental_pass.",
+			"Incremental delta passes use the prior-to-current compare diff, compact trusted PR metadata, and no participant discussion; the host overrides scope and policy from incremental_pass.",
 			"When rerunning a failed pass, reuse the captured complete diff with `context_file` plus compact PR metadata in `context`; embedding the diff in context remains supported for compatibility.",
 		],
 		parameters: ReviewSubagentParams,
@@ -2002,6 +2027,19 @@ export default function registerPrReviewSubagents(
 			if (!lease) return reviewLoopDeniedResult("review_subagent");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const tier = params.tier as Tier;
+			const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+			const incrementalPassId = typeof params.incremental_pass === "string"
+				? params.incremental_pass as IncrementalDeltaPassId
+				: undefined;
+			const incrementalPass = incrementalPassId ? INCREMENTAL_DELTA_PASSES[incrementalPassId] : undefined;
+			if (incrementalPassId && (!incrementalPass || loopCoordinator.priorRelationship(ctx) !== "incremental" ||
+				!(incrementalPass.modes as readonly string[]).includes(reviewMode) || tier !== incrementalPass.tier)) {
+				return {
+					content: [{ type: "text", text: "review_subagent incremental_pass does not match the host-established relationship, mode, or tier." }],
+					isError: true,
+					details: { authorized: false, reason: "incremental_pass" },
+				};
+			}
 			let loadedContext;
 			try {
 				loadedContext = await loadReviewContext(ctx.cwd, params.context, params.context_file);
@@ -2013,17 +2051,18 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
-			const artifactKey = `${toolCallId}:single`;
+			const artifactKey = incrementalPassId ?? `${toolCallId}:single`;
+			const minorHygiene = incrementalPass ? false : params.minor_hygiene === true;
 			if (!loopCoordinator.registerExpectedArtifacts(lease, [{
 				key: artifactKey,
 				tier,
-				minorHygiene: params.minor_hygiene === true,
+				minorHygiene,
 			}], ctx)) {
 				return reviewLoopDeniedResult("review_subagent");
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: artifactKey,
-				label: `${tier} review`,
+				label: incrementalPassId ?? `${tier} review`,
 				tier,
 			});
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -2033,12 +2072,13 @@ export default function registerPrReviewSubagents(
 				config,
 				ctx,
 				{
+					...(incrementalPassId ? { id: incrementalPassId } : {}),
 					tier,
-					objective: params.objective,
+					objective: incrementalPass?.scope ?? params.objective,
 					context: loadedContext.context,
-					toolPolicy: normalizeToolPolicy(params.tool_policy),
-					majorOnly: params.major_only === true,
-					minorHygiene: params.minor_hygiene === true,
+					toolPolicy: incrementalPass ? "configured" : normalizeToolPolicy(params.tool_policy),
+					majorOnly: incrementalPass ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
+					minorHygiene,
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,
@@ -2061,6 +2101,7 @@ export default function registerPrReviewSubagents(
 				}],
 				...(result.status !== "complete" ? { isError: true } : {}),
 				details: {
+					...(incrementalPassId ? { incrementalPass: incrementalPassId } : {}),
 					tier: result.tier,
 					usedTier: result.usedTier,
 					model: result.model,

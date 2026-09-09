@@ -11,6 +11,7 @@ import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
 const INCREMENTAL_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v7.json");
+const CUMULATIVE_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v8.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -121,6 +122,37 @@ test("large multi-file cases keep fixed reviewers while legacy evidence retains 
 	assert.deepEqual(deep, { passIds: ["deep-review"], shardCount: 1, maxParallel: 1 });
 	const legacy = expectedModeTopology("balanced", item, { legacySharding: true });
 	assert.equal(legacy.shardCount, 2); assert.equal(legacy.passIds.length, 10); assert.equal(legacy.maxParallel, 10);
+});
+
+test("cumulative schema-v2 cases bind replies and require gap plus mode-specific delta lanes", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	const ancestor = info.corpus.cases.find((item) => item.id === "fixed-claim-false");
+	const sameHead = info.corpus.cases.find((item) => item.id === "malicious-same-head");
+	assert.deepEqual(expectedModeTopology("balanced", ancestor, { strategy: "incremental" }), {
+		passIds: ["incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance"],
+		shardCount: 1,
+		maxParallel: 4,
+	});
+	assert.deepEqual(expectedModeTopology("full", ancestor, { strategy: "incremental" }).passIds, [
+		"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
+	]);
+	assert.deepEqual(expectedModeTopology("deep", ancestor, { strategy: "incremental" }).passIds, ["incremental-gap", "incremental-deep"]);
+	assert.deepEqual(expectedModeTopology("balanced", sameHead, { strategy: "incremental" }), {
+		passIds: ["incremental-gap"], shardCount: 1, maxParallel: 1,
+	});
+	assert.equal(ancestor.priorState.review.comments[0].replies.length, 1);
+});
+
+test("cumulative fixtures reproduce every pinned final tree, including added files", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	for (const item of info.corpus.cases) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-cumulative-"));
+		try {
+			const fixture = createIncrementalFixtureRepository(info, item, root);
+			assert.ok(fixture.headSha);
+			if (item.id === "missed-old-and-new") assert.equal(fs.readFileSync(path.join(fixture.repo, "src/token.ts"), "utf8").includes("audit"), true);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	}
 });
 
 test("perfect immutable result bundle emits recall, lifecycle, fallback, and latency metrics", () => {
