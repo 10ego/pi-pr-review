@@ -217,7 +217,11 @@ export function loadCorpus(file) {
 			if (relationship === "same_head" || relationship === "diverged") invariant(priorDiffText !== null && incrementalDiffText === null && prior.review !== null, `case ${item.id} ${relationship} state`);
 			if (relationship === "none") invariant(priorDiffText === null && incrementalDiffText === null && prior.review === null, `case ${item.id} none state`);
 			invariant(Array.isArray(prior.expectedStatuses) && new Set(prior.expectedStatuses.map((status) => status.title)).size === prior.expectedStatuses.length, `case ${item.id} expected prior statuses`);
-			for (const status of prior.expectedStatuses) invariant(exactKeys(status, ["title", "status"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+			for (const status of prior.expectedStatuses) {
+				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+				if (status.status === "still open") invariant(typeof status.currentFindingId === "string" && item.expectedFindings.some((finding) => finding.id === status.currentFindingId), `case ${item.id} still-open status current finding binding`);
+				else invariant(!Object.hasOwn(status, "currentFindingId"), `case ${item.id} non-open status current finding binding`);
+			}
 			if (prior.review === null) invariant(prior.expectedStatuses.length === 0, `case ${item.id} none state has prior statuses`);
 			else {
 				const review = prior.review;
@@ -230,7 +234,7 @@ export function loadCorpus(file) {
 					invariant(!comment.body.includes(item.id), `case ${item.id} reviewer-visible prior comment leaks its benchmark id`);
 				}
 				const authoredText = `${review.body}\n${review.comments.map((comment) => comment.body).join("\n")}`.toLocaleLowerCase("en-US");
-				invariant(prior.expectedStatuses.length > 0 && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
+				invariant((relationship === "diverged" || prior.expectedStatuses.length > 0) && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
 			}
 		}
 	}
@@ -597,14 +601,14 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
 		let statusOpportunities = 0, statusMatches = 0, stillOpenOpportunities = 0, stillOpenCarried = 0, resolvedObsoleteRepublished = 0, relationshipOpportunities = 0, relationshipMatches = 0, sameHeadRuns = 0, sameHeadApprovalEligible = 0;
-		for (const { run, item, findings } of group) {
+		for (const { run, item, findings, score } of group) {
 			if (run.strategy !== "incremental") continue;
 			relationshipOpportunities++; if (run.reviewOutcome?.observedRelationship === item.priorState.relationship) relationshipMatches++;
 			if (item.priorState.relationship === "same_head") { sameHeadRuns++; if (run.reviewOutcome?.mergeApprovalEligible === true) sameHeadApprovalEligible++; }
 			for (const expected of item.priorState.expectedStatuses) {
 				statusOpportunities++; const observed = run.reviewOutcome?.priorStatuses?.filter((status) => namesPriorTitle(status.title, expected.title)) ?? []; if (observed.length === 1 && observed[0].status === expected.status) statusMatches++;
 				const republished = findings.some((finding) => namesPriorTitle(finding.title, expected.title));
-				if (expected.status === "still open") { stillOpenOpportunities++; if (republished) stillOpenCarried++; }
+				if (expected.status === "still open") { stillOpenOpportunities++; if (score.matchedExpectedIds.includes(expected.currentFindingId)) stillOpenCarried++; }
 				else if (republished) resolvedObsoleteRepublished++;
 			}
 		}

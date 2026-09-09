@@ -10,6 +10,7 @@ import { collectSessionResult, createIncrementalFixtureRepository, installGhShim
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
+const INCREMENTAL_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v7.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -26,13 +27,6 @@ function findingFor(expected) {
 		location: { ...expected.acceptableLocations[0] },
 	};
 }
-function createV2CorpusFile() {
-	const source = loadCorpus(CORPUS), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-v2-bundle-corpus-")), value = structuredClone(source.corpus); value.schemaVersion = 2; value.corpusId = "pi-pr-review-semantic-v7-test";
-	for (const item of value.cases) { const bytes = fs.readFileSync(path.join(source.root, item.diff)), local = `${item.id}.diff`; fs.writeFileSync(path.join(root, local), bytes); item.diff = local; item.priorState = { relationship: "none", priorDiff: null, incrementalDiff: null, review: null, expectedStatuses: [] }; }
-	for (const [index, relationship] of ["incremental", "same_head"].entries()) { const item = value.cases[index], bytes = fs.readFileSync(path.join(root, item.diff)), phase = { path: item.diff, sha256: sha256(bytes), bytes: bytes.length }, title = findingFor(item.expectedFindings[0]).title.replace(/^\[(?:P[0-3]|nit)\]\s*/u, ""); item.priorState = { relationship, priorDiff: phase, incrementalDiff: relationship === "incremental" ? phase : null, review: { id: 700 + index, submittedAt: "2026-09-08T00:00:00Z", body: "# PR Review\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->", comments: [{ id: 800 + index, path: item.changedFiles[0], line: 1, side: "RIGHT", body: `[${item.expectedFindings[0].targetSeverity}] ${title}` }] }, expectedStatuses: [{ title, status: "still open" }] }; }
-	const file = path.join(root, "corpus-v2.json"); fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`); return file;
-}
-
 function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], strategies, repetitions = 1, mutateRun, markdownForRun } = {}) {
 	const corpusInfo = loadCorpus(corpus), plan = createPlan(corpusInfo, modes, repetitions, strategies), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-")), runDir = path.join(root, "runs"), effectiveConfigBytes = Buffer.from('{"fixture":true}\n'), reviewConfigSha256 = sha256(effectiveConfigBytes); fs.mkdirSync(runDir); fs.writeFileSync(path.join(root, "effective-review-config.json"), effectiveConfigBytes);
 	const cases = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
@@ -40,7 +34,7 @@ function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], strategie
 	for (const entry of plan.entries) {
 		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item, { strategy: entry.strategy }), strategyRun = entry.strategy !== undefined, incremental = entry.strategy === "incremental";
 		const run = {
-			schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: incremental ? item.priorState.relationship : null, priorStatuses: incremental ? item.priorState.expectedStatuses.map((status) => ({ ...status })) : [], mergeApprovalEligible: incremental && item.priorState.relationship === "same_head" ? false : true } } : {}), repetition: entry.repetition,
+			schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: incremental ? item.priorState.relationship : null, priorStatuses: incremental ? item.priorState.expectedStatuses.map(({ title, status }) => ({ title, status })) : [], mergeApprovalEligible: incremental && item.priorState.relationship === "same_head" ? false : true } } : {}), repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
 			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.16", topologyGeneration: "fixed-v1", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
@@ -81,13 +75,19 @@ test("corpus schema v2 pins prior-state diffs, authored findings, and relationsh
 		item.priorState = { relationship: "none", priorDiff: null, incrementalDiff: null, review: null, expectedStatuses: [] };
 	}
 	const first = value.cases[0], phaseBytes = fs.readFileSync(path.join(root, first.diff)), phase = { path: first.diff, sha256: sha256(phaseBytes), bytes: phaseBytes.length };
-	first.priorState = { relationship: "incremental", priorDiff: phase, incrementalDiff: phase, review: { id: 71, submittedAt: "2026-09-08T00:00:00Z", body: "# PR Review\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->", comments: [{ id: 72, path: first.changedFiles[0], line: 1, side: "RIGHT", body: "[P1] Preserve the exported request contract" }] }, expectedStatuses: [{ title: "Preserve the exported request contract", status: "still open" }] };
+	first.priorState = { relationship: "incremental", priorDiff: phase, incrementalDiff: phase, review: { id: 71, submittedAt: "2026-09-08T00:00:00Z", body: "# PR Review\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->", comments: [{ id: 72, path: first.changedFiles[0], line: 1, side: "RIGHT", body: "[P1] Preserve the exported request contract" }] }, expectedStatuses: [{ title: "Preserve the exported request contract", status: "still open", currentFindingId: first.expectedFindings[0].id }] };
 	const corpusFile = path.join(root, "corpus-v2.json"); fs.writeFileSync(corpusFile, `${JSON.stringify(value, null, 2)}\n`); const loaded = loadCorpus(corpusFile); assert.equal(loaded.corpus.schemaVersion, 2); assert.equal(loaded.corpus.cases[0].priorState.relationship, "incremental");
 	const reject = (mutate, pattern) => { const candidate = structuredClone(value); mutate(candidate); const file = path.join(root, `invalid-${crypto.randomBytes(4).toString("hex")}.json`); fs.writeFileSync(file, JSON.stringify(candidate)); assert.throws(() => loadCorpus(file), pattern); };
 	reject((candidate) => { candidate.cases[0].priorState.relationship = "none"; }, /none state/);
 	reject((candidate) => { candidate.cases[0].priorState.review.body = "missing marker"; }, /prior review/);
 	reject((candidate) => { candidate.cases[0].priorState.expectedStatuses[0].title = "unmentioned title"; }, /must name an authored prior finding/);
 	reject((candidate) => { candidate.cases[0].priorState.priorDiff.bytes += 1; }, /prior diff hash\/bytes/);
+});
+
+test("incremental corpus v7 pins six executable relationship scenarios", () => {
+	const info = loadCorpus(INCREMENTAL_CORPUS); assert.equal(info.corpus.schemaVersion, 2); assert.equal(info.corpus.cases.length, 6); assert.deepEqual(info.corpus.cases.map((item) => item.priorState.relationship), ["incremental", "incremental", "incremental", "same_head", "none", "diverged"]); assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2); assert.ok(info.corpus.cases.some((item) => item.crossFile));
+	for (const item of info.corpus.cases) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-v7-materialize-")), fixture = createIncrementalFixtureRepository(info, item, root); assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true); if (item.priorState.relationship === "incremental") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 0); if (item.priorState.relationship === "same_head") assert.equal(fixture.priorHeadSha, fixture.headSha); if (item.priorState.relationship === "none") assert.equal(fixture.priorHeadSha, null); if (item.priorState.relationship === "diverged") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 1); fs.rmSync(root, { recursive: true, force: true }); }
+	const plan = createPlan(info, ["balanced"], 2, ["fresh", "incremental"]); assert.equal(plan.entries.length, 24); assert.deepEqual(validatePlan(plan, info), plan);
 });
 
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
@@ -134,9 +134,9 @@ test("perfect immutable result bundle emits recall, lifecycle, fallback, and lat
 });
 
 test("schema-v2 bundles score relationship, status, carry-forward, approval, and lane savings", () => {
-	const bundle = createBundle({ corpus: createV2CorpusFile(), modes: ["balanced"], strategies: ["fresh", "incremental"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), fresh = report.metrics.strategies.fresh, incremental = report.metrics.strategies.incremental;
-	assert.equal(report.schemaVersion, 2); assert.equal(report.resultCount, 24); assert.equal(incremental.priorReview.relationships.recall, 1); assert.equal(incremental.priorReview.statuses.recall, 1); assert.equal(incremental.priorReview.stillOpenCarryForward.recall, 1); assert.equal(incremental.priorReview.resolvedObsoleteRepublished, 0); assert.equal(incremental.priorReview.sameHeadRuns, 1); assert.equal(incremental.priorReview.sameHeadApprovalEligible, 0); assert.equal(fresh.lanes.total, 60); assert.equal(incremental.lanes.total, 55); assert.equal(report.metrics.runs.filter((run) => run.strategy === "incremental").length, 12);
-	const tampered = createBundle({ corpus: createV2CorpusFile(), modes: ["balanced"], strategies: ["incremental"] }), file = path.join(tampered.root, "runs", `${tampered.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(file)); run.reviewOutcome.observedRelationship = "diverged"; fs.writeFileSync(file, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: tampered.corpusInfo, plan: tampered.plan, resultsDirectory: tampered.root }), /retained prior-review outcome binding/);
+	const bundle = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), fresh = report.metrics.strategies.fresh, incremental = report.metrics.strategies.incremental;
+	assert.equal(report.schemaVersion, 2); assert.equal(report.resultCount, 12); assert.equal(incremental.priorReview.relationships.recall, 1, "relationships"); assert.equal(incremental.priorReview.statuses.recall, 1, "statuses"); assert.equal(incremental.priorReview.stillOpenCarryForward.recall, 1, "carry-forward"); assert.equal(incremental.priorReview.resolvedObsoleteRepublished, 0); assert.equal(incremental.priorReview.sameHeadRuns, 1); assert.equal(incremental.priorReview.sameHeadApprovalEligible, 0); assert.equal(fresh.lanes.total, 30); assert.equal(incremental.lanes.total, 25); assert.equal(report.metrics.runs.filter((run) => run.strategy === "incremental").length, 6);
+	const tampered = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["incremental"] }), file = path.join(tampered.root, "runs", `${tampered.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(file)); run.reviewOutcome.observedRelationship = "diverged"; fs.writeFileSync(file, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: tampered.corpusInfo, plan: tampered.plan, resultsDirectory: tampered.root }), /retained prior-review outcome binding/);
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {

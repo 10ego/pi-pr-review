@@ -52,6 +52,19 @@ The deterministic plan contains every `(mode, repetition, case)` tuple exactly o
 
 Supported modes are `quick`, `balanced`, `full`, `major-only`, and `deep`; `major-only` remains the compatibility spelling for quick mode.
 
+Corpus schema v2 comparisons add a strategy dimension. The v7 incremental experiment uses the frozen paired plan:
+
+```bash
+npm run benchmark:review -- plan \
+  --corpus tests/benchmarks/review-semantic/corpus-v7.json \
+  --modes balanced \
+  --strategies fresh,incremental \
+  --repetitions 2 \
+  --output tests/benchmarks/review-semantic/incremental-v7/plan.json
+```
+
+Schema-v1 corpora reject `--strategies`; schema-v2 corpora require it. Result rows bind their strategy separately from review mode so topology and incremental-selection effects cannot be conflated.
+
 ## Collect one real-model entry
 
 The collector intentionally accepts exactly one plan entry per invocation. It requires the next uncollected entry in plan order, creates results and evidence exclusively, and refuses reruns. This makes provider failures and timeouts durable observations rather than opportunities for cherry-picking.

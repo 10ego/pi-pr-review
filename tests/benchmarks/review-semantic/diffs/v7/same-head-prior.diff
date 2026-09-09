@@ -1,0 +1,10 @@
+diff --git a/src/socket.ts b/src/socket.ts
+index c2843d6..6be6fd5 100644
+--- a/src/socket.ts
++++ b/src/socket.ts
+@@ -1,4 +1,4 @@
+ export function attach(socket: any, handler: (value: unknown) => void) {
+ 	socket.on("message", handler);
+-	return () => socket.off("message", handler);
++	return () => {};
+ }
