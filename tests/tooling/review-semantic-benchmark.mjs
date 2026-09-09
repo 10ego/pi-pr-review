@@ -47,7 +47,7 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
 const MULTIPLICATIVE_COMPLEXITY = /\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
-const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
+const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|bypass(?:es|ed|ing)?|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|expos(?:e|es|ed|ure)|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
 function expandNegations(text) {
 	const replacements = { "can't": "cannot", "can’t": "cannot", "couldn't": "could not", "couldn’t": "could not", "doesn't": "does not", "doesn’t": "does not", "isn't": "is not", "isn’t": "is not", "aren't": "are not", "aren’t": "are not", "wasn't": "was not", "wasn’t": "was not", "weren't": "were not", "weren’t": "were not", "won't": "will not", "won’t": "will not" };
 	Object.assign(replacements, { "don't": "do not", "don’t": "do not", "hasn't": "has not", "hasn’t": "has not", "haven't": "have not", "haven’t": "have not", "hadn't": "had not", "hadn’t": "had not", "didn't": "did not", "didn’t": "did not", "shouldn't": "should not", "shouldn’t": "should not", "wouldn't": "would not", "wouldn’t": "would not", "mustn't": "must not", "mustn’t": "must not", "mightn't": "might not", "mightn’t": "might not", "needn't": "need not", "needn’t": "need not" });
@@ -521,8 +521,14 @@ function maskEmbeddedConcepts(text, groups) {
 		return masked;
 	});
 }
+function historicalSafeContext(clause) {
+	return /\b(?:previous|prior|formerly|before (?:this|the) change|old implementation)\b/iu.test(clause) && !/\b(?:current|currently|now|still|new implementation)\b/iu.test(clause);
+}
+function polarityClauses(finding) {
+	return [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;!?]\s+|\n+/iu)].map((clause) => clause.trim()).filter((clause) => clause.length > 0 && !historicalSafeContext(clause));
+}
 function contrastivePositiveDefectClause(expected, finding) {
-	const clauses = [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;!?]\s+|\n+/iu)].map((clause) => clause.trim()).filter(Boolean);
+	const clauses = polarityClauses(finding);
 	let lastContradiction = -1;
 	for (let index = 0; index < clauses.length; index++) { const polarity = expandNegations(clauses[index]); if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarity)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarity))) lastContradiction = index; }
 	return lastContradiction >= 0 ? clauses.slice(lastContradiction + 1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;
@@ -530,7 +536,7 @@ function contrastivePositiveDefectClause(expected, finding) {
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(expected, finding) : null;
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(polarityClauses(finding).join("\n")), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(expected, finding) : null;
 	if (contradictory && contrastiveClause === null) return false;
 	const semanticText = contradictory ? contrastiveClause : rawText, semanticBody = contradictory ? contrastiveClause : finding.body, text = semanticText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(semanticBody);
 	if (allConceptsMatched) return positiveDefect;

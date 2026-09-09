@@ -1,6 +1,6 @@
 # Incremental re-review experiment v7
 
-Status: **design frozen; implementation and collection pending**.
+Status: **complete; automatic defaulting rejected, explicit incremental mode retained**.
 
 This experiment validates the incremental re-review behavior released in `pi-pr-review@1.18.0` before plain `/pr-review N` is allowed to auto-detect prior state. Corpus v6 remains the accepted topology evidence; it cannot exercise prior-review discovery, status disclosure, delta comparison, or revalidation-only behavior.
 
@@ -85,3 +85,15 @@ Any semantic miss, status omission, incorrect narrowing on `none`/`diverged`, or
 3. Generate the immutable 24-row plan and record all executable/source/configuration fingerprints.
 4. Collect all rows with the acknowledged real-model collector.
 5. Score, privacy-sanitize, independently review the evidence, and record the retain/reject decision.
+
+## Results
+
+The final campaign retained all 24 planned rows. Three fresh and three incremental rows failed operational evidence requirements. Across all rows, fresh/incremental P0/P1 recall was 66.67%/50%, P2 recall was 50%/100%, clean-control case false-positive rate was 50%/0%, and publication fallback was 25%/25%. Incremental relationship selection was 12/12, exact prior-status accuracy was 6/8, still-open semantic carry-forward was 4/4, no resolved/obsolete prior was republished, and neither same-head row was approval-eligible.
+
+Seven case/repetition pairs completed operationally under both strategies. Both retained every represented seeded defect (2/2 P0/P1 and 1/1 P2). Incremental median lane time was 21.9% lower and aggregate lane time was 10.4% lower, but median total wall time was 12.8% slower. The valid same-head pair was 45.9% faster under incremental review; the four valid ancestor-incremental pairs were slower overall.
+
+## Decision
+
+**Reject automatic defaulting.** Conditions 1, 2, 6, and 8 failed: aggregate P0/P1 recall was lower after operational failures, one successful status paraphrased rather than naming the required prior title, incremental median wall time was not lower, and six rows failed operational evidence requirements. The results nevertheless validate useful opt-in behavior: exact relationship selection, complete still-open carry-forward, no resolved/obsolete republication, lower lane work, fewer clean-control findings, and a material same-head speedup.
+
+Keep `--incremental` opt-in. Before another paired campaign, prioritize exact-title prompt enforcement, terminal-assistant/completed-review consistency, and parent revalidation latency. Immutable sanitized evidence and pilot provenance are under `tests/benchmarks/review-semantic/incremental-v7/`.
