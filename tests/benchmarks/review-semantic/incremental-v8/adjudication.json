@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "0870bd01ba2033303c7dad71",
+      "strategy": "fresh",
+      "expectedFindingId": "new.token-log",
+      "reason": "The canonical P1 at src/token.ts:4 explicitly says every issued token reaches console.log and can be recovered and replayed; the bounded assertion matcher did not join the required terms."
+    },
+    {
+      "planEntryId": "6845cfc180c35ceaa7364e41",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "reason": "The canonical P2 at src/redirect.ts:2 explicitly identifies attacker-controlled returnUrl passed to location.assign as an open redirect; the frozen corpus accepted only P0/P1."
+    },
+    {
+      "planEntryId": "7f5baa22e44e2806d9355524",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "reason": "The canonical P1 and retained P2 findings at src/redirect.ts:2 collectively state the attacker-controlled returnUrl, location.assign behavior, and open-redirect impact; the bounded scorer requires all concepts in one candidate."
+    },
+    {
+      "planEntryId": "3f988c1ad2ff544499071660",
+      "strategy": "incremental",
+      "expectedFindingId": "malicious.listener",
+      "reason": "The canonical P1 at src/socket.ts:3 says cleanup leaves the message handler active and accumulates listeners; the frozen corpus accepted only P2, so an escalation was counted as a miss."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incremental": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incrementalStillOpenCarryForward": { "matched": 6, "opportunities": 6, "recall": 1 }
+  },
+  "unchangedFailures": {
+    "incrementalDuplicateRate": 0.17857142857142858,
+    "freshDuplicateRate": 0.13953488372093023,
+    "incrementalToFreshMedianLatencyRatio": 1.282598070029543
+  },
+  "decision": "rejected"
+}

@@ -1,6 +1,6 @@
 # Conversation-aware cumulative incremental experiment v8
 
-Status: **24-row plan frozen; collection pending**.
+Status: **complete; automatic/default cumulative incremental rejected**.
 
 - Corpus: `pi-pr-review-semantic-v8`
 - Corpus SHA-256: `04782877a21f1171aa02b9e7f44e1d566bd6b824bcb81a2b5eaaabccf0702e8c`
@@ -11,7 +11,25 @@ Status: **24-row plan frozen; collection pending**.
 - Repetitions: 2
 - Rows: 24
 
-The six cases cover verified and false fix claims, valid and invalid rejection rationales, instruction-like reply text, an original-diff defect missed by the prior review, a new cross-file delta defect, and same-head missed-defect hunting. Collection follows the immutable protocol in `docs/incremental-experiment-v8.md`.
+The six cases cover verified and false fix claims, valid and invalid rejection rationales, instruction-like reply text, an original-diff defect missed by the prior review, a new cross-file delta defect, and same-head missed-defect hunting. Collection followed the immutable protocol in `docs/incremental-experiment-v8.md`: all 24 rows completed with no reruns or substitutions.
+
+Raw results: incremental relationship and exact-status accuracy were 12/12, required lanes completed 36/36, and cross-file recall was 2/2 versus fresh 1/2. Incremental reduced aggregate lane work by 38.7%, but had a higher duplicate rate (17.86% versus 13.95%) and 28.3% higher median total latency. The raw scorer also reported lower recall. `adjudication.json` records why all four raw misses were visibly present findings affected by strict severity or bounded-term matching; it does not change the frozen `report.json` or reverse the rejection decision.
+
+Evidence integrity:
+
+- bundle manifest SHA-256: `add41254ae0aca158ac0f3d70c39739027e84c71bbaa0e8e7c25ebe8451ded90`
+- report SHA-256: `a42a708cf9bf222f53a5c287821878ca11aea5000cfdd9f9e32844eed4b1891c`
+- scorer SHA-256: `b0390bfcde16d6e9159c4c765209751e480cf195f97650102c655eca04ca5c8e`
+- privacy transformation: none required; see `privacy-transform.json`
+
+The raw bundle can be reproduced with:
+
+```sh
+npm run benchmark:review -- score \
+  --corpus tests/benchmarks/review-semantic/corpus-v8.json \
+  --plan tests/benchmarks/review-semantic/incremental-v8/plan.json \
+  --results tests/benchmarks/review-semantic/incremental-v8/bundle
+```
 
 ## Excluded pilots
 

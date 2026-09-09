@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "add41254ae0aca158ac0f3d70c39739027e84c71bbaa0e8e7c25ebe8451ded90",
+  "sanitizedRunManifestSha256": "add41254ae0aca158ac0f3d70c39739027e84c71bbaa0e8e7c25ebe8451ded90",
+  "reportSha256": "a42a708cf9bf222f53a5c287821878ca11aea5000cfdd9f9e32844eed4b1891c",
+  "scorerSha256": "b0390bfcde16d6e9159c4c765209751e480cf195f97650102c655eca04ca5c8e",
+  "transformations": [],
+  "privacyScan": "No local account names, home-directory paths, temporary-directory paths, or repository checkout paths were present in the collected JSON bundle.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true
+}
