@@ -553,6 +553,24 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(reentered.mergeApprovalEligible).toBeTrue();
 	});
 
+	test("does not let a shorter unrelated finding title satisfy still-open re-entry", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"### [P2] Keep the raw synthesis",
+			"### [P2] loop",
+		).replace(
+			"## Findings",
+			"## Prior findings\n- still open: [P2] Critical retry loop — the defect persists.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Critical retry loop"],
+		});
+		expect(artifact.mergeApprovalEligible).toBeFalse();
+	});
+
 	test("rejects out-of-contract level-two sections", () => {
 		const rawText = `${markdown}\n\n## Additional findings\n### [P1] Hidden blocker`;
 		const artifact = synthesizeReviewArtifact({ rawText, ...binding });

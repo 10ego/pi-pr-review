@@ -1106,12 +1106,22 @@ export function synthesizeReviewArtifact(input: {
 		const normalizedFindingTitles = safeFindings.map((finding) =>
 			String(finding.title ?? "")
 				// Reassessed severity may differ between the status line and the
-				// re-entered finding; compare tag-stripped titles.
+				// re-entered finding; compare tag-stripped canonical titles.
 				.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "")
 				.replace(/\s+/g, " ").trim().toLowerCase());
-		return stillOpenLines.every((line) =>
-			normalizedFindingTitles.some((findingTitle) =>
-				findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
+		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
+		if (requiredTitles.length > 0) {
+			return stillOpenLines.every((line) => requiredTitles.some((required) => {
+				const canonical = required.replace(/\s+/g, " ").trim().toLowerCase();
+				if (!canonical) return false;
+				let namesCanonical = false;
+				try { namesCanonical = new RegExp(`\\b${escapeRegExp(canonical)}\\b`, "i").test(line); }
+				catch { namesCanonical = line.toLowerCase().includes(canonical); }
+				return namesCanonical && normalizedFindingTitles.includes(canonical);
+			}));
+		}
+		return stillOpenLines.every((line) => normalizedFindingTitles.some((findingTitle) =>
+			findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
 	})();
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {

@@ -175,7 +175,7 @@ function priorStatuses(markdown) {
 	return statuses;
 }
 function recordedPriorStatuses(records) {
-	for (const record of records) {
+	for (const record of [...records].reverse()) {
 		const message = record?.type === "message" ? record.message : null;
 		if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior_status" || !Array.isArray(message.content)) continue;
 		for (const part of message.content) {

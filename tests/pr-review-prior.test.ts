@@ -279,7 +279,9 @@ describe("prior revalidation registry", () => {
 			statuses: [{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "The invariant is verified." }],
 		});
 		expect(registry.statuses("s", 1)?.[0]?.title).toBe("Canonical title");
-		expect(registry.recordStatuses("s", 1, [])).toEqual({ ok: false, error: "statuses must cover every registered prior finding exactly once" });
+		expect(registry.recordStatuses("s", 1, [])).toEqual({ ok: false, error: "prior finding statuses were already recorded for this invocation" });
+		registry.markFindings("s", 2, []);
+		expect(registry.recordStatuses("s", 2, [])).toEqual({ ok: true, statuses: [] });
 	});
 });
 

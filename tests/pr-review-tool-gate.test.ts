@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -202,6 +202,8 @@ describe("review tool execution gate", () => {
 		const accepted = await tool.execute("status-2", { statuses: [{ finding_id: "thread:9", status: "rejected", severity: "P1", evidence: "Verified invariant [P0]." }] }, undefined, undefined, h.ctx);
 		expect(accepted.isError).toBeUndefined();
 		expect(accepted.details.statuses).toEqual([{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "Verified invariant (P0)." }]);
+		const repeated = await tool.execute("status-3", { statuses: [{ finding_id: "thread:9", status: "resolved", severity: "P1", evidence: "overwrite" }] }, undefined, undefined, h.ctx);
+		expect(repeated).toMatchObject({ isError: true, details: { authorized: true, reason: "invalid_statuses" } });
 	});
 
 	test("incremental gap hunting requires a host-established usable prior relationship", async () => {
@@ -236,6 +238,21 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: false, reason: "incremental_pass" },
 		});
+	});
+
+	test("incremental gap hunting rejects a context file that differs by any byte from GitHub", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-binding-"));
+		const previousPath = process.env.PATH;
+		try {
+			const gh = path.join(root, "gh"), diff = path.join(root, "full.diff");
+			writeFileSync(gh, "#!/bin/sh\nprintf 'different\\n'\n"); chmodSync(gh, 0o755);
+			writeFileSync(diff, "expected\n"); process.env.PATH = `${root}:${previousPath ?? ""}`;
+			const h = harness(); h.ctx.cwd = root;
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx, true, false, "off", { repository: "acme/widget", hostname: "github.com", prNumber: 7, prTitle: "PR", reviewedHeadSha: "a".repeat(40), state: "OPEN", draft: false });
+			const lease = h.coordinator.acquire(h.ctx)!; expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+			const result = await h.tools.get("pr_review_incremental_gap").execute("gap-bind", { context_file: diff }, undefined, undefined, h.ctx);
+			expect(result).toMatchObject({ isError: true, details: { authorized: true, reason: "full_diff_mismatch" } });
+		} finally { process.env.PATH = previousPath; rmSync(root, { recursive: true, force: true }); }
 	});
 
 	test("verification reports action-specific argument errors after flat-schema validation", async () => {

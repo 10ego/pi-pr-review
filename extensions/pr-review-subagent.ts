@@ -63,7 +63,7 @@ import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext } from "../lib/pr-review-context.ts";
 import { discoverPriorReview, normalizePriorStatusEvidence, PRIOR_GH_OUTPUT_MAX_BYTES, PRIOR_REVIEW_MAX_FINDINGS, priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
-import { ghText } from "../lib/pr-review-publish.ts";
+import { ghRawText } from "../lib/pr-review-publish.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
@@ -1870,13 +1870,11 @@ export default function registerPrReviewSubagents(
 				// carry one distinct status line per prior title. Write against
 				// the acquired lease generation and only while the lease still
 				// owns the binding, so a late discovery cannot mark or clear a
-				// successor invocation. A truncated prior set also registers its
-				// known (partial) titles: the full review still re-hunts, but
-				// known blockers must be disclosed.
-				const findingsToMark = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental" || snapshot.truncated)
-					? (snapshot.prior?.findings ?? [])
-					: [];
-				if (findingsToMark.length > 0 && loopCoordinator.isLeaseActive(lease, ctx)) {
+				// successor invocation. Truncated discovery fails open to a fresh full review
+				// and does not create a partial structured-status obligation.
+				const shouldRegisterFindings = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
+				const findingsToMark = shouldRegisterFindings ? (snapshot.prior?.findings ?? []) : [];
+				if (shouldRegisterFindings && loopCoordinator.isLeaseActive(lease, ctx)) {
 					priorRevalidationRegistry.markFindings(
 						ctx.sessionManager.getSessionId(),
 						lease.generation,
@@ -1992,14 +1990,15 @@ export default function registerPrReviewSubagents(
 				const repository = binding.hostname.toLowerCase() === "github.com"
 					? binding.repository
 					: `${binding.hostname}/${binding.repository}`;
-				const authoritativeDiff = await ghText(
+				const authoritativeDiff = await ghRawText(
 					["pr", "diff", String(binding.prNumber), "--repo", repository],
 					ctx.cwd,
 					undefined,
 					{ signal: executionSignal ?? undefined },
 					PRIOR_GH_OUTPUT_MAX_BYTES,
 				);
-				if (authoritativeDiff.trim() !== loadedContext.contextFileText?.trim()) {
+				const suppliedDiff = fs.readFileSync(loadedContext.contextFile!);
+				if (!Buffer.from(authoritativeDiff, "utf8").equals(suppliedDiff)) {
 					return {
 						content: [{ type: "text", text: "Incremental gap context failed: context_file is not the exact current base-to-head GitHub PR diff." }],
 						isError: true,

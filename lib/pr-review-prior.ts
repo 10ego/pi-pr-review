@@ -205,6 +205,7 @@ export class PriorRevalidationRegistry {
 	recordStatuses(sessionId: string, generation: number, statuses: readonly Omit<PriorFindingStatusRecord, "title">[]): { ok: true; statuses: readonly PriorFindingStatusRecord[] } | { ok: false; error: string } {
 		const key = `${sessionId}:${generation}`, entry = this.entries.get(key);
 		if (!entry) return { ok: false, error: "no prior findings are registered for this invocation" };
+		if (entry.statuses) return { ok: false, error: "prior finding statuses were already recorded for this invocation" };
 		if (statuses.length !== entry.findings.length) return { ok: false, error: "statuses must cover every registered prior finding exactly once" };
 		const supplied = new Map<string, Omit<PriorFindingStatusRecord, "title">>();
 		for (const status of statuses) {

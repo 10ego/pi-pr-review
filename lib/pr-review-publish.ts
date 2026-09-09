@@ -1774,10 +1774,14 @@ function runGh(
 	});
 }
 
-export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+export async function ghRawText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
 	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle, outputMaxBytes);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
-	return result.stdout.trim();
+	return result.stdout;
+}
+
+export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+	return (await ghRawText(args, cwd, timeoutMs, lifecycle, outputMaxBytes)).trim();
 }
 
 export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<T> {
