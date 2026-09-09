@@ -29,6 +29,7 @@ export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagents",
 	"pr_review_verify",
 	"pr_review_prior",
+	"pr_review_incremental_gap",
 ] as const;
 
 const REVIEW_LOOP_TOOL_SET = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
@@ -46,6 +47,7 @@ interface ReviewLoopBinding {
 	totalTimer?: ReturnType<typeof setTimeout>;
 	synthesisTimer?: ReturnType<typeof setTimeout>;
 	synthesisStarted: boolean;
+	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
 
@@ -374,6 +376,20 @@ export class ReviewLoopCoordinator {
 				return this.focusRegistry.publish(lease.generation, descriptor.key, event);
 			},
 		});
+	}
+
+	setPriorRelationship(
+		lease: ReviewLoopLease,
+		relationship: "none" | "same_head" | "incremental" | "diverged",
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation) return false;
+		this.binding.priorRelationship = relationship;
+		return true;
+	}
+
+	priorRelationship(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): "none" | "same_head" | "incremental" | "diverged" | undefined {
+		return this.binding && sameBinding(this.binding, ctx) ? this.binding.priorRelationship : undefined;
 	}
 
 	registerExpectedArtifacts(

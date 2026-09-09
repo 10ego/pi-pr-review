@@ -140,6 +140,8 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("never receive participant discussion");
 			expect(prompt).toContain("full-PR gap hunter");
 			expect(prompt).toContain("defects any earlier review missed");
+			expect(prompt).toContain("host-fixed `pr_review_incremental_gap`");
+			expect(prompt).toContain("pre-registers its required lane");
 			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
 			expect(prompt).toContain("pins the resolved GitHub hostname");
 			expect(prompt).toContain("caps files at 300");
