@@ -225,7 +225,7 @@ export function loadCorpus(file) {
 			if (prior.review === null) invariant(prior.expectedStatuses.length === 0, `case ${item.id} none state has prior statuses`);
 			else {
 				const review = prior.review;
-				invariant(exactKeys(review, ["id", "submittedAt", "body", "comments"]) && Number.isSafeInteger(review.id) && review.id > 0 && typeof review.submittedAt === "string" && Number.isFinite(Date.parse(review.submittedAt)) && typeof review.body === "string" && review.body.includes("<!-- pi-pr-review:head={{PRIOR_HEAD}} -->") && Array.isArray(review.comments), `case ${item.id} prior review`);
+				invariant(exactKeys(review, ["id", "submittedAt", "body", "comments"]) && Number.isSafeInteger(review.id) && review.id > 0 && typeof review.submittedAt === "string" && Number.isFinite(Date.parse(review.submittedAt)) && typeof review.body === "string" && review.body.includes('<!-- pi-pr-review: {"schema":1,"headRefOid":"{{PRIOR_HEAD}}"} -->') && Array.isArray(review.comments), `case ${item.id} prior review`);
 				invariant(!review.body.includes(item.id) && review.body.length <= 64 * 1024, `case ${item.id} reviewer-visible prior body`);
 				const commentIds = new Set();
 				for (const comment of review.comments) {

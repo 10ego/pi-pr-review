@@ -83,7 +83,7 @@
         "review": {
           "id": 7001,
           "submittedAt": "2026-09-01T12:00:00Z",
-          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
           "comments": [
             {
               "id": 8001,
@@ -130,7 +130,7 @@
         "review": {
           "id": 7002,
           "submittedAt": "2026-09-02T12:00:00Z",
-          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
           "comments": [
             {
               "id": 8002,
@@ -231,7 +231,7 @@
         "review": {
           "id": 7003,
           "submittedAt": "2026-09-03T12:00:00Z",
-          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
           "comments": [
             {
               "id": 8003,
@@ -319,7 +319,7 @@
         "review": {
           "id": 7004,
           "submittedAt": "2026-09-04T12:00:00Z",
-          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
           "comments": [
             {
               "id": 8004,
@@ -429,7 +429,7 @@
         "review": {
           "id": 7006,
           "submittedAt": "2026-09-06T12:00:00Z",
-          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review:head={{PRIOR_HEAD}} -->",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
           "comments": [
             {
               "id": 8006,
