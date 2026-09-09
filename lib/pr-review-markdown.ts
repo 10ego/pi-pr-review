@@ -551,14 +551,18 @@ function retainedLaneCandidateTexts(
 function retainedLaneFindings(
 	lanes: readonly ReviewLaneArtifact[],
 	expected: readonly ExpectedReviewLane[],
+	acceptedCandidateIds?: ReadonlySet<string>,
 ): ReviewFindingLike[] {
 	const findings: ReviewFindingLike[] = [];
 	const seen = new Map<string, number>();
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
+		let candidateOrdinal = 0;
 		for (const text of retainedLaneCandidateTexts(lane, contract)) {
 			for (const candidate of extractValidatedReviewLaneCandidates(text, contract)) {
 				if (!candidate.prRelated) continue;
+				candidateOrdinal++;
+				if (acceptedCandidateIds && !acceptedCandidateIds.has(`${lane.key}:${candidateOrdinal}`)) continue;
 				const parsedLocation = candidate.location === "repo-wide"
 					? { status: "absent" as const, location: null }
 					: parseLocation(`${candidate.location} ${candidate.side}`);
@@ -862,6 +866,9 @@ export function synthesizeReviewArtifact(input: {
 	/** Complete structured statuses accepted by the host status tool. Canonical
 	 * titles and normalized evidence replace assistant-authored disclosure. */
 	priorRevalidationStatuses?: readonly PriorFindingStatusRecord[];
+	/** When recorded, lane recovery is authoritative and includes only these host-issued candidate IDs. */
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -876,7 +883,11 @@ export function synthesizeReviewArtifact(input: {
 		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
 			expected.key === lane.key && expected.tier === lane.tier &&
 			expected.minorHygiene === !!lane.minorHygiene));
-	const validatedLaneFindings = retainedLaneFindings(lanes, expectedLaneDescriptors);
+	const validatedLaneFindings = retainedLaneFindings(
+		lanes,
+		expectedLaneDescriptors,
+		input.candidateDispositionRecorded ? new Set(input.acceptedCandidateIds ?? []) : undefined,
+	);
 	// The prior-finding disclosure gate must be computed before the strict JSON
 	// branch returns: a legacy JSON envelope is raw text without the section,
 	// so a required-but-absent disclosure blocks approval there too.
@@ -935,10 +946,10 @@ export function synthesizeReviewArtifact(input: {
 		const recoveredOverridesSkip = input.strictJsonReview.disposition === "skipped" &&
 			validatedLaneFindings.length > 0;
 		const bodyFallback = !safe || completeness === "incomplete" || recoveredOverridesSkip;
-		const strictFindings = mergeUniqueFindings(
-			safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [],
-			validatedLaneFindings,
-		);
+		// A strict review supplied by host finalization already contains only
+		// accepted lane candidates plus validated parent-added findings.
+		const strictModelFindings = safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [];
+		const strictFindings = mergeUniqueFindings(strictModelFindings, validatedLaneFindings);
 		const stillOpenStatuses = (input.priorRevalidationStatuses ?? []).filter((status) => status.status === "still open");
 		const strictPriorStillOpenBlocking = stillOpenStatuses.some((status) => status.severity === "P0" || status.severity === "P1");
 		const strictFindingTitles = strictFindings.map((finding) => String(finding.title ?? "")
@@ -1097,11 +1108,14 @@ export function synthesizeReviewArtifact(input: {
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	// Terminal semantic validation may confirm a candidate, but it may not erase
-	// a complete host-validated lane block. Omitted candidates retain ordinary
-	// finding behavior with an explicit independent-validation advisory.
+	const authoritativePrimaryFindings = input.candidateDispositionRecorded
+		? parsedSynthesisFindings.filter((finding) => (input.priorRevalidationStatuses ?? []).some((status) =>
+			status.status === "still open" && String(finding.title ?? "").replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim().toLowerCase() === status.title.trim().toLowerCase()))
+		: parsedSynthesisFindings;
+	// Once the parent records a complete disposition set, accepted lane IDs are
+	// publication authority; rejected/duplicate candidates cannot be recovered.
 	const recoveredLaneFindings = validatedLaneFindings;
-	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
+	const safeFindings = mergeUniqueFindings(authoritativePrimaryFindings, recoveredLaneFindings);
 	// A still-open prior finding must re-enter Findings as a normal finding
 	// (the published concise body omits the Prior findings section, so a
 	// still-open entry that never re-enters would be invisible to readers
@@ -1169,16 +1183,25 @@ export function synthesizeReviewArtifact(input: {
 	// Markdown is the durable semantic product. Keep the complete deterministic
 	// body for local rendering, cache diagnostics, and extraction. GitHub
 	// publication independently renders a concise host summary for every quality.
-	const body = quality === "fully_parsed"
-		? safeReviewBody(raw)
-		: buildDegradedReviewBody({
-			rawText: raw,
+	const body = input.candidateDispositionRecorded
+		? buildDegradedReviewBody({
+			rawText: "",
 			lanes,
 			findings: safeFindings,
 			expectedLaneCount,
 			exactCoverage: exactLaneCoverage,
-			reason: degradationReasons[0],
-		});
+			reason: "host-recorded candidate dispositions produced the authoritative finding set",
+		})
+		: quality === "fully_parsed"
+			? safeReviewBody(raw)
+			: buildDegradedReviewBody({
+				rawText: raw,
+				lanes,
+				findings: safeFindings,
+				expectedLaneCount,
+				exactCoverage: exactLaneCoverage,
+				reason: degradationReasons[0],
+			});
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,

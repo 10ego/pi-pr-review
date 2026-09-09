@@ -31,6 +31,7 @@ export const REVIEW_LOOP_TOOL_NAMES = [
 	"pr_review_prepare",
 	"pr_review_prior",
 	"pr_review_prior_status",
+	"pr_review_candidate_disposition",
 	"pr_review_incremental_gap",
 ] as const;
 
