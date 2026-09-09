@@ -272,6 +272,7 @@ export function validatePlan(plan, corpusInfo) {
 export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
+	if (options.strategy === "incremental" && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
 	const legacySharding = options.legacySharding === true;
 	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];
 	invariant(base, `mode ${mode} is unavailable under the requested topology generation`);
@@ -339,6 +340,16 @@ function normalizePersistedFindings(review) {
 	if (!Array.isArray(review?.findings)) return [];
 	return review.findings.map((finding) => { const location = finding?.code_location, range = location?.line_range; return { title: String(finding?.title ?? ""), body: String(finding?.body ?? ""), severity: String(finding?.severity ?? ""), location: location && typeof location.absolute_file_path === "string" && Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end) && (location.side === "RIGHT" || location.side === "LEFT") ? { path: location.absolute_file_path, side: location.side, start: range.start, end: range.end } : null }; });
 }
+function parsePriorStatuses(markdown) {
+	if (typeof markdown !== "string") return [];
+	const body = /(?:^|\n)## Prior findings\s*\n([\s\S]*?)(?=\n## (?!#)|$)/iu.exec(markdown)?.[1] ?? "", statuses = [];
+	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|still open|obsolete)\s*:\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
+	return statuses;
+}
+function parsePriorRelationship(records) {
+	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior" || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
+	return null;
+}
 function parseVisibleFallbackFindings(markdown) {
 	if (typeof markdown !== "string" || markdown.length > 2 * 1024 * 1024) return [];
 	// Fail closed rather than mistake headings inside CommonMark containers for
@@ -380,6 +391,9 @@ function normalizeRawLane(lane, parentModel) { const attempts = Array.isArray(la
 function validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig) {
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"); let records = [], sessionParseValid = true; try { records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []; } catch { sessionParseValid = false; }
 	const completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), processFailed = raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, failedRun = run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed") && raw.resolvedReview === null && raw.telemetry === null;
+	if (run.schemaVersion === 2) {
+		invariant(canonical(parsePriorStatuses(reviewPayload.markdown)) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
+	}
 	if (!failedRun) {
 		invariant(sessionParseValid && raw.process.exitCode === 0 && !processFailed && raw.auditValid && !Object.hasOwn(raw.session, "files") && !Object.hasOwn(raw.session, "overflow"), `${label} successful run has operational failure`);
 		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
@@ -392,6 +406,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
 		invariant(run.publication.artifact === (canonicalPublication ? "canonical" : rawPublication ? "raw_body_only" : "degraded"), `${label} session publication binding`);
 		invariant(plain(raw.resolvedReview) && canonical(normalizePersistedFindings(raw.resolvedReview)) === canonical(run.findings), `${label} resolved finding binding`);
+		if (run.schemaVersion === 2) invariant(typeof data.mergeApprovalEligible === "boolean" && data.mergeApprovalEligible === run.reviewOutcome.mergeApprovalEligible, `${label} merge approval binding`);
 		if (plain(data.review)) invariant(canonical(data.review) === canonical(raw.resolvedReview), `${label} persisted/resolved review binding`);
 		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane, `${run.configuration.provider}/${run.configuration.model}`)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = resolvedTierModelIdentities(effectiveConfig, tier, `${run.configuration.provider}/${run.configuration.model}`); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
 	} else {
@@ -413,9 +428,17 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 }
 
 export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
-	const label = `run ${planEntry.entryId}`;
-	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"], ["artifactPayloads"]), `${label} schema`);
-	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
+	const label = `run ${planEntry.entryId}`, strategyRun = planEntry.strategy !== undefined;
+	invariant(exactKeys(run, strategyRun
+		? ["schemaVersion", "planEntryId", "caseId", "mode", "strategy", "reviewOutcome", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"]
+		: ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"], ["artifactPayloads"]), `${label} schema`);
+	invariant(run.schemaVersion === (strategyRun ? 2 : 1) && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && (!strategyRun || run.strategy === planEntry.strategy) && run.repetition === planEntry.repetition, `${label} plan binding`);
+	if (strategyRun) {
+		const outcome = run.reviewOutcome;
+		invariant(exactKeys(outcome, ["observedRelationship", "priorStatuses", "mergeApprovalEligible"]) && (outcome.observedRelationship === null || ["incremental", "same_head", "none", "diverged"].includes(outcome.observedRelationship)) && Array.isArray(outcome.priorStatuses) && outcome.priorStatuses.length <= 200 && (outcome.mergeApprovalEligible === null || typeof outcome.mergeApprovalEligible === "boolean"), `${label} review outcome`);
+		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
+		if (run.strategy === "fresh") invariant(outcome.observedRelationship === null && outcome.priorStatuses.length === 0, `${label} fresh strategy prior evidence`);
+	}
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
 	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
@@ -427,10 +450,12 @@ export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 		// Historical rows predate this explicit discriminator and retain their
 		// immutable sharded interpretation regardless of package version.
 		legacySharding: run.configuration.topologyGeneration !== "fixed-v1",
+		strategy: run.strategy,
 	});
-	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
+	const zeroTopology = expectedTopology.passIds.length === 0;
+	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && Number.isSafeInteger(topology.maxParallel) && (zeroTopology ? topology.passIds.length === 0 && topology.shardCount === 0 && topology.maxParallel === 0 : topology.passIds.length > 0 && topology.shardCount >= 1 && topology.shardCount <= 20 && topology.maxParallel >= 1 && topology.maxParallel <= 100), `${label} topology`);
 	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === expectedTopology.shardCount && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
-	invariant(Array.isArray(run.lanes) && run.lanes.length > 0, `${label} lanes`);
+	invariant(Array.isArray(run.lanes) && (zeroTopology || run.lanes.length > 0), `${label} lanes`);
 	const laneIds = new Set();
 	for (const lane of run.lanes) {
 		invariant(exactKeys(lane, ["id", "lens", "status", "elapsedMs", "provider", "model"]), `${label} lane schema`);
@@ -551,6 +576,11 @@ function distribution(values) {
 	return { mean, standardDeviation: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length), minimum: Math.min(...values), maximum: Math.max(...values) };
 }
 function metricPair(opportunities, matched) { return { matched, opportunities, recall: ratio(matched, opportunities) }; }
+function normalizedPriorTitle(value) { return String(value ?? "").replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("en-US"); }
+function namesPriorTitle(actual, expected) {
+	const haystack = normalizedPriorTitle(actual), needle = normalizedPriorTitle(expected); if (!needle) return false;
+	const escaped = needle.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"); try { return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(haystack); } catch { return haystack.includes(needle); }
+}
 
 export function aggregateScores(corpusInfo, plan, runs) {
 	const caseById = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
@@ -566,6 +596,18 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const perLens = Object.fromEntries(corpusInfo.corpus.lenses.map((lens) => [lens, select((expected) => expected.lenses.includes(lens))]));
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
+		let statusOpportunities = 0, statusMatches = 0, stillOpenOpportunities = 0, stillOpenCarried = 0, resolvedObsoleteRepublished = 0, relationshipOpportunities = 0, relationshipMatches = 0, sameHeadRuns = 0, sameHeadApprovalEligible = 0;
+		for (const { run, item, findings } of group) {
+			if (run.strategy !== "incremental") continue;
+			relationshipOpportunities++; if (run.reviewOutcome?.observedRelationship === item.priorState.relationship) relationshipMatches++;
+			if (item.priorState.relationship === "same_head") { sameHeadRuns++; if (run.reviewOutcome?.mergeApprovalEligible === true) sameHeadApprovalEligible++; }
+			for (const expected of item.priorState.expectedStatuses) {
+				statusOpportunities++; const observed = run.reviewOutcome?.priorStatuses?.filter((status) => namesPriorTitle(status.title, expected.title)) ?? []; if (observed.length === 1 && observed[0].status === expected.status) statusMatches++;
+				const republished = findings.some((finding) => namesPriorTitle(finding.title, expected.title));
+				if (expected.status === "still open") { stillOpenOpportunities++; if (republished) stillOpenCarried++; }
+				else if (republished) resolvedObsoleteRepublished++;
+			}
+		}
 		return {
 			runs: group.length,
 			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
@@ -574,12 +616,13 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			perLens,
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
 			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), unmatched, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
-			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
+			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal), elapsedMsSum: group.reduce((sum, { run }) => sum + run.lanes.reduce((laneSum, lane) => laneSum + (lane.elapsedMs ?? 0), 0), 0) },
+			priorReview: { statuses: metricPair(statusOpportunities, statusMatches), stillOpenCarryForward: metricPair(stillOpenOpportunities, stillOpenCarried), resolvedObsoleteRepublished, relationships: metricPair(relationshipOpportunities, relationshipMatches), sameHeadRuns, sameHeadApprovalEligible },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length), visibleFallbackFindings },
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
-	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
+	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
 }
 
 function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {
@@ -642,7 +685,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 		laneModels.set(lane.id, identity);
 	}
 	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport);
-	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, scorerSha256: SCORER_SHA256, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
+	return { schemaVersion: plan.schemaVersion, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, scorerSha256: SCORER_SHA256, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
 }
 
 function parseArgs(argv) {
