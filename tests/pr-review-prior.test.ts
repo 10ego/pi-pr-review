@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
 	classifyPriorHead,
 	commentExcerpt,
+	discussionExcerpt,
 	discoverPriorReview,
 	PriorRevalidationRegistry,
 	parseInlineFindingBody,
@@ -52,11 +53,14 @@ describe("prior inline finding body parsing", () => {
 		});
 	});
 
-	test("builds a bounded rationale excerpt from the body beyond the title line", () => {
+	test("builds bounded rationale and discussion excerpts", () => {
 		expect(commentExcerpt("**[P1] Title**\n\ntrigger: nil map\n\nimpact: panic")).toBe("trigger: nil map impact: panic");
 		expect(commentExcerpt("**[P1] Title**")).toBeUndefined();
 		expect(commentExcerpt(undefined)).toBeUndefined();
 		expect(commentExcerpt(`**[P1] Title**\n\n${"x".repeat(900)}`)?.length).toBe(500);
+		expect(discussionExcerpt("  Fixed in abc.\n\nPlease re-check. ")).toBe("Fixed in abc. Please re-check.");
+		expect(discussionExcerpt(" ")).toBeUndefined();
+		expect(discussionExcerpt("x".repeat(900))?.length).toBe(500);
 	});
 
 	test("recovers titles with nested bold spans and empty tag-only titles", () => {
@@ -295,7 +299,21 @@ describe("prior review discovery", () => {
 					path: "src/a.ts",
 					line: 12,
 					side: "RIGHT",
-					body: "follow-up",
+					body: "Fixed in the latest commit — please mark resolved.",
+					user: { login: "author" },
+					author_association: "OWNER",
+					created_at: "2026-01-04T00:00:00Z",
+					commit_id: HEAD_C,
+				},
+				{
+					id: 105,
+					pull_request_review_id: 11,
+					path: "src/other.ts",
+					line: 8,
+					side: "RIGHT",
+					body: "**[P2] Another reviewer concern**",
+					user: { login: "someone-else" },
+					created_at: "2026-01-04T01:00:00Z",
 				},
 				{ id: 104, pull_request_review_id: 33, path: "src/removed.ts", line: null, side: "RIGHT", body: "**[P3] no line**" },
 			]),
@@ -317,9 +335,62 @@ describe("prior review discovery", () => {
 				severity: "P1",
 				title: "Guard against nil map before write",
 				excerpt: "rationale",
+				replies: [{
+					id: 103,
+					kind: "reply",
+					inReplyToId: 101,
+					author: "author",
+					authorAssociation: "OWNER",
+					createdAt: "2026-01-04T00:00:00Z",
+					commitId: HEAD_C,
+					excerpt: "Fixed in the latest commit — please mark resolved.",
+				}],
 			},
 		]);
+		expect(snapshot.conversation?.trust).toBe("untrusted_review_discussion");
+		expect(snapshot.conversation?.reviews.map((review) => review.id)).toEqual([11, 22]);
+		expect(snapshot.conversation?.rootComments).toEqual([{
+			id: 102,
+			kind: "root_comment",
+			reviewId: 22,
+			excerpt: "**[P2] stale**",
+		}, {
+			id: 105,
+			kind: "root_comment",
+			reviewId: 11,
+			author: "someone-else",
+			createdAt: "2026-01-04T01:00:00Z",
+			excerpt: "**[P2] Another reviewer concern**",
+		}]);
+		expect(snapshot.conversation?.message).toContain("untrusted claims");
 		expect(snapshot.message).toContain("incremental re-review");
+		expect(snapshot.truncated).toBeFalse();
+	});
+
+	test("bounds replies per finding and marks conversation truncation without discarding prior state", async () => {
+		const replies = Array.from({ length: 21 }, (_value, index) => ({
+			id: 200 + index,
+			pull_request_review_id: 22,
+			in_reply_to_id: 101,
+			body: `reply ${index}`,
+			user: { login: "author" },
+		}));
+		const fixture = installFakeGh({
+			reviewsJson: JSON.stringify([{ id: 22, user: { login: "reviewer" }, body: marker(HEAD_C), state: "COMMENTED" }]),
+			commentsJson: JSON.stringify([{
+				id: 101,
+				pull_request_review_id: 22,
+				path: "src/a.ts",
+				line: 12,
+				side: "RIGHT",
+				body: "**[P1] Guard ownership**",
+			}, ...replies]),
+		});
+		const snapshot = await discoverPriorReview(fixture.cwd, 7, { ...fixture, identity: "reviewer" });
+		expect(snapshot.relationship).toBe("same_head");
+		expect(snapshot.prior?.findings[0]?.replies).toHaveLength(20);
+		expect(snapshot.prior?.findings[0]?.repliesTruncated).toBeTrue();
+		expect(snapshot.conversation?.truncated).toBeTrue();
 		expect(snapshot.truncated).toBeFalse();
 	});
 
