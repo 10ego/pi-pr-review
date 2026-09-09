@@ -128,7 +128,8 @@ describe("PR review prompt scheduling policy", () => {
 		test("documents the flag and registers prior discovery in the first turn", () => {
 			expect(prompt).toContain('--incremental]\"');
 			expect(prompt).toContain("`--incremental` opts into cumulative re-review");
-			expect(prompt).toContain('also emit `pr_review_prior` with `{ "pr_number": $1 }` in that same turn');
+			expect(prompt).toContain('exactly one `pr_review_prepare` call using `{ "pr_number": $1 }`');
+			expect(prompt).toContain("Do not also call `pr_review_prior` or recapture either diff");
 		});
 
 		test("selects the review path from the prior relationship", () => {
@@ -175,7 +176,7 @@ describe("PR review prompt scheduling policy", () => {
 		const dispatch = prompt.indexOf("If Step 2 selected a discovered baseline name");
 		expect(decision).toBeGreaterThan(-1);
 		expect(dispatch).toBeGreaterThan(decision);
-		expect(prompt).toContain('`pr_review_verify` `{ "action": "list" }` discovery calls together');
+		expect(prompt).toContain('emit it concurrently with `pr_review_verify` `{ "action": "list" }`');
 		expect(prompt).toContain("Applicability discovery depends only on the current repository");
 		expect(prompt).toContain("repository-wide convention-path listing (paths only)");
 		expect(prompt).toContain("project-local definitions are ignored");
@@ -192,7 +193,7 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("exposes a flat strict list/run schema and rejects legacy run overrides", () => {
 		const start = extension.indexOf("const PrReviewVerifyParams");
-		const end = extension.indexOf("const PrReviewPriorParams");
+		const end = extension.indexOf("const PrReviewPrepareParams");
 		const schema = extension.slice(start, end);
 		expect(schema).toContain("const PrReviewVerifyParams = Type.Object");
 		expect(schema).toContain('StringEnum(["list", "run"]');

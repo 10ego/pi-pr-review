@@ -1551,6 +1551,10 @@ const PrReviewVerifyParams = Type.Object(
 	{ additionalProperties: false },
 );
 
+const PrReviewPrepareParams = Type.Object({
+	pr_number: Type.Integer({ minimum: 1 }),
+}, { additionalProperties: false });
+
 const PrReviewPriorParams = Type.Object(
 	{
 		pr_number: Type.Integer({
@@ -1560,6 +1564,8 @@ const PrReviewPriorParams = Type.Object(
 	},
 	{ additionalProperties: false },
 );
+
+const INCREMENTAL_COMPARE_JQ = `if ((.files // []) | length) >= 300 then error("compare file cap reached; fall back to full review") else ((.files // []) | map((.previous_filename // .filename) as $old | "diff --git a/" + $old + " b/" + .filename + "\\n" + (if .status == "renamed" then "rename from " + $old + "\\nrename to " + .filename + "\\n" else "" end) + (if .patch == null then "*** BINARY OR PATCH-UNAVAILABLE FILE — read it in the repository ***\\n" elif .status == "added" then "--- /dev/null\\n+++ b/" + .filename + "\\n" + .patch + "\\n" elif .status == "removed" then "--- a/" + $old + "\\n+++ /dev/null\\n" + .patch + "\\n" else "--- a/" + $old + "\\n+++ b/" + .filename + "\\n" + .patch + "\\n" end)) | join("\\n")) end`;
 
 const PrReviewPriorStatusParams = Type.Object({
 	statuses: Type.Array(Type.Object({
@@ -1810,6 +1816,71 @@ export default function registerPrReviewSubagents(
 				...(verificationLifecycleFailed(result) ? { isError: true } : {}),
 				details: result,
 			};
+		},
+	});
+
+	pi.registerTool({
+		name: "pr_review_prepare",
+		label: "PR Review Prepare",
+		description: "Prepare one cumulative review with frozen metadata, prior state, and mode-0600 full/incremental diff files in one host call.",
+		promptSnippet: "Prepare cumulative metadata, prior discussion, relationship, and diff files",
+		promptGuidelines: [
+			"Use once instead of separate Step 1 metadata, identity, diff capture, prior discovery, and compare commands.",
+			"Use returned fullDiffFile and incrementalDiffFile directly; remove returned temporaryDirectory after final validation.",
+			"If preparation fails or reports unusable prior state, fail open to the ordinary full review path.",
+		],
+		parameters: PrReviewPrepareParams,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const lease = loopCoordinator.acquire(ctx);
+			if (!lease) return reviewLoopDeniedResult("pr_review_prepare");
+			if (loopCoordinator.peek()?.incremental !== true || params.pr_number !== loopCoordinator.peek()?.prNumber) {
+				return { content: [{ type: "text", text: "pr_review_prepare requires the matching active --incremental invocation." }], isError: true, details: { authorized: false, reason: "invocation" } };
+			}
+			const executionSignal = combineAbortSignals(signal, lease.signal);
+			let temporaryDirectory: string | undefined;
+			try {
+				const [snapshot, metadataText, fullDiff] = await Promise.all([
+					discoverPriorReview(ctx.cwd, params.pr_number, { signal: executionSignal ?? undefined }),
+					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,url,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
+					ghRawText(["pr", "diff", String(params.pr_number)], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
+				]);
+				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) return reviewLoopDeniedResult("pr_review_prepare");
+				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
+				if (shouldRegister) {
+					if (!loopCoordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], ctx)) return reviewLoopDeniedResult("pr_review_prepare");
+					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
+				}
+				const metadataRaw = JSON.parse(metadataText) as Record<string, unknown>;
+				const metadata = {
+					number: metadataRaw.number, title: metadataRaw.title, state: metadataRaw.state, isDraft: metadataRaw.isDraft,
+					author: metadataRaw.author, baseRefName: metadataRaw.baseRefName, headRefName: metadataRaw.headRefName,
+					headRefOid: metadataRaw.headRefOid, mergeable: metadataRaw.mergeable, url: metadataRaw.url, files: metadataRaw.files,
+				};
+				temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-prepare-"));
+				const fullDiffFile = path.join(temporaryDirectory, "full.diff");
+				fs.writeFileSync(fullDiffFile, fullDiff, { mode: 0o600 });
+				let incrementalDiffFile: string | undefined;
+				let incrementalDiffBytes = 0;
+				let incrementalEmpty = snapshot.relationship === "same_head";
+				if (snapshot.relationship === "incremental" && snapshot.prior) {
+					const compare = await ghRawText([
+						"api", "--hostname", snapshot.hostname,
+						`repos/${snapshot.repository}/compare/${snapshot.prior.head}...${snapshot.currentHead}`,
+						"--jq", INCREMENTAL_COMPARE_JQ,
+					], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
+					if (/^diff --git /m.test(compare)) {
+						incrementalDiffFile = path.join(temporaryDirectory, "incremental.diff");
+						fs.writeFileSync(incrementalDiffFile, compare, { mode: 0o600 });
+						incrementalDiffBytes = Buffer.byteLength(compare);
+						incrementalEmpty = false;
+					} else incrementalEmpty = true;
+				}
+				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes: Buffer.byteLength(fullDiff), incrementalDiffFile, incrementalDiffBytes, incrementalEmpty };
+				return { content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }], details: prepared };
+			} catch (error) {
+				if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+				return { content: [{ type: "text", text: `pr_review_prepare failed: ${errMessage(error)}` }], isError: true, details: { authorized: true, reason: "prepare_failed" } };
+			}
 		},
 	});
 

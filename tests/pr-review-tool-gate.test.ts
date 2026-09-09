@@ -78,7 +78,7 @@ const { priorRevalidationRegistry } = await import("../lib/pr-review-prior.ts");
 function harness() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
-	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap", "self_review_subagent"];
+	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prepare", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap", "self_review_subagent"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
@@ -144,7 +144,7 @@ describe("review tool execution gate", () => {
 
 	test("all review tools fail before processing parameters outside /pr-review", async () => {
 		const h = harness();
-		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap"]) {
+		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prepare", "pr_review_prior", "pr_review_prior_status", "pr_review_incremental_gap"]) {
 			const result = await h.tools.get(name).execute("call-1", {}, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details).toEqual({ authorized: false });
