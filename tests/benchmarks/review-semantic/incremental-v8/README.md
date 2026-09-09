@@ -17,10 +17,11 @@ Raw results: incremental relationship and exact-status accuracy were 12/12, requ
 
 Evidence integrity:
 
-- bundle manifest SHA-256: `add41254ae0aca158ac0f3d70c39739027e84c71bbaa0e8e7c25ebe8451ded90`
+- private source bundle-manifest SHA-256: `add41254ae0aca158ac0f3d70c39739027e84c71bbaa0e8e7c25ebe8451ded90`
+- sanitized bundle-manifest SHA-256: `f796f19fb6c57ebce2b88f8810344cf337b68c323c6283424ec1c76260481448`
 - report SHA-256: `a42a708cf9bf222f53a5c287821878ca11aea5000cfdd9f9e32844eed4b1891c`
 - scorer SHA-256: `b0390bfcde16d6e9159c4c765209751e480cf195f97650102c655eca04ca5c8e`
-- privacy transformation: none required; see `privacy-transform.json`
+- privacy transformation: entry-scoped temporary paths were redacted recursively inside embedded session payloads; see `privacy-transform.json`
 
 The raw bundle can be reproduced with:
 
@@ -28,7 +29,14 @@ The raw bundle can be reproduced with:
 npm run benchmark:review -- score \
   --corpus tests/benchmarks/review-semantic/corpus-v8.json \
   --plan tests/benchmarks/review-semantic/incremental-v8/plan.json \
-  --results tests/benchmarks/review-semantic/incremental-v8/bundle
+  --results tests/benchmarks/review-semantic/incremental-v8/bundle \
+  --output /tmp/incremental-v8-report.json
+
+cmp /tmp/incremental-v8-report.json \
+  tests/benchmarks/review-semantic/incremental-v8/report.json
+
+(cd tests/benchmarks/review-semantic/incremental-v8 && \
+  shasum -a 256 -c run-manifest.sha256)
 ```
 
 ## Excluded pilots

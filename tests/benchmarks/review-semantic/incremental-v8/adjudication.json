@@ -15,10 +15,10 @@
       "reason": "The canonical P2 at src/redirect.ts:2 explicitly identifies attacker-controlled returnUrl passed to location.assign as an open redirect; the frozen corpus accepted only P0/P1."
     },
     {
-      "planEntryId": "7f5baa22e44e2806d9355524",
+      "planEntryId": "409d4d1ab4705b2695783c3c",
       "strategy": "incremental",
       "expectedFindingId": "missed.redirect",
-      "reason": "The canonical P1 and retained P2 findings at src/redirect.ts:2 collectively state the attacker-controlled returnUrl, location.assign behavior, and open-redirect impact; the bounded scorer requires all concepts in one candidate."
+      "reason": "The canonical P2 at src/redirect.ts:2 explicitly identifies attacker-controlled returnUrl passed to location.assign as an open redirect; the frozen corpus accepted only P0/P1."
     },
     {
       "planEntryId": "3f988c1ad2ff544499071660",
