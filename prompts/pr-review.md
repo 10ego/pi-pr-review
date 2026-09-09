@@ -131,8 +131,8 @@ In balanced and full modes, include `overview` in the same fixed batch as the sp
 Run these independent passes over the diff, each on its tier reviewer (or inline if subagent tools are unavailable). Give every pass the shared PR metadata and complete diff from Step 1; give only the `--full` medium pass the relevant convention-file excerpts from Step 2. A normal fresh review and an incremental invocation that failed open use the fixed mode batch described below.
 
 For an established ancestor `incremental` relationship, do **not** repeat the full fixed batch. Instead dispatch this cumulative topology as concurrent individual `review_subagent` calls, all using the incremental diff file and compact trusted PR metadata but no participant discussion:
-- quick/default/`--balanced`: three heavy P0-P2 delta calls with `incremental_pass` values `incremental-correctness`, `incremental-contracts`, and `incremental-security-performance` respectively;
-- `--full`: those same three heavy all-severity delta calls plus one medium call with `incremental_pass: incremental-conventions` and the applicable convention excerpts;
+- quick/default/`--balanced`: two heavy P0-P2 delta calls with `incremental_pass` values `incremental-contracts` (integrated state/correctness/contracts) and `incremental-security-performance` (integrated security/resources) respectively;
+- `--full`: those same two heavy all-severity delta calls plus one medium call with `incremental_pass: incremental-conventions` and the applicable convention excerpts;
 - `--deep`: one all-severity heavy delta call with `incremental_pass: incremental-deep`.
 
 For every such call, set `tier` to the stated tier, supply any short nonempty objective (the host replaces it with the fixed scope), use `tool_policy: configured`, and pass the incremental diff as `context_file`. The immutable benchmark topology requires every listed delta pass. Host approval safety does not rely on them alone: prior discovery separately pre-registers the exact-full-diff gap artifact.

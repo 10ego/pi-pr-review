@@ -129,12 +129,12 @@ test("cumulative schema-v2 cases bind replies and require gap plus mode-specific
 	const ancestor = info.corpus.cases.find((item) => item.id === "fixed-claim-false");
 	const sameHead = info.corpus.cases.find((item) => item.id === "malicious-same-head");
 	assert.deepEqual(expectedModeTopology("balanced", ancestor, { strategy: "incremental" }), {
-		passIds: ["incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance"],
+		passIds: ["incremental-gap", "incremental-contracts", "incremental-security-performance"],
 		shardCount: 1,
-		maxParallel: 4,
+		maxParallel: 3,
 	});
 	assert.deepEqual(expectedModeTopology("full", ancestor, { strategy: "incremental" }).passIds, [
-		"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
+		"incremental-gap", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
 	]);
 	assert.deepEqual(expectedModeTopology("deep", ancestor, { strategy: "incremental" }).passIds, ["incremental-gap", "incremental-deep"]);
 	assert.deepEqual(expectedModeTopology("balanced", sameHead, { strategy: "incremental" }), {
