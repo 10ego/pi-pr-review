@@ -1,0 +1,7 @@
+diff --git a/src/labels.ts b/src/labels.ts
+index 6505f6c..19b3a89 100644
+--- a/src/labels.ts
++++ b/src/labels.ts
+@@ -1 +1 @@
+-export const documentLabel = "Document";
++export const documentLabel = "Document record";

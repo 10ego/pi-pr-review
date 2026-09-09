@@ -5,11 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun } from "./review-semantic-benchmark.mjs";
-import { collectSessionResult, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
+import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
+import { collectSessionResult, createIncrementalFixtureRepository, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
+const INCREMENTAL_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v7.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -26,14 +27,14 @@ function findingFor(expected) {
 		location: { ...expected.acceptableLocations[0] },
 	};
 }
-function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], repetitions = 1, mutateRun, markdownForRun } = {}) {
-	const corpusInfo = loadCorpus(corpus), plan = createPlan(corpusInfo, modes, repetitions), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-")), runDir = path.join(root, "runs"), effectiveConfigBytes = Buffer.from('{"fixture":true}\n'), reviewConfigSha256 = sha256(effectiveConfigBytes); fs.mkdirSync(runDir); fs.writeFileSync(path.join(root, "effective-review-config.json"), effectiveConfigBytes);
+function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], strategies, repetitions = 1, mutateRun, markdownForRun } = {}) {
+	const corpusInfo = loadCorpus(corpus), plan = createPlan(corpusInfo, modes, repetitions, strategies), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-semantic-")), runDir = path.join(root, "runs"), effectiveConfigBytes = Buffer.from('{"fixture":true}\n'), reviewConfigSha256 = sha256(effectiveConfigBytes); fs.mkdirSync(runDir); fs.writeFileSync(path.join(root, "effective-review-config.json"), effectiveConfigBytes);
 	const cases = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
 	const runs = [];
 	for (const entry of plan.entries) {
-		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item);
+		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item, { strategy: entry.strategy }), strategyRun = entry.strategy !== undefined, incremental = entry.strategy === "incremental";
 		const run = {
-			schemaVersion: 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, repetition: entry.repetition,
+			schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: incremental ? item.priorState.relationship : null, priorStatuses: incremental ? item.priorState.expectedStatuses.map(({ title, status }) => ({ title, status })) : [], mergeApprovalEligible: incremental && item.priorState.relationship === "same_head" ? false : true } } : {}), repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
 			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.16", topologyGeneration: "fixed-v1", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
@@ -41,10 +42,10 @@ function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], repetitio
 			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
 		};
 		mutateRun?.(run, item, runs.length, root);
-		const defaultMarkdown = run.findings.map((finding) => `${finding.title}\n${finding.body}`).join("\n") || "No findings.", markdown = markdownForRun?.(run, item, defaultMarkdown) ?? defaultMarkdown, rawLaneArtifacts = run.lanes.filter((lane) => lane.status !== "failed").map((lane) => ({ passId: lane.id, lifecycle: lane.status, requestedModel: lane.provider && lane.model ? `${lane.provider}/${lane.model}` : undefined, observedModel: lane.model ?? undefined, startOffsetMs: 0, endOffsetMs: lane.elapsedMs ?? 0, attempts: [] })), telemetry = { completion: "terminal_response", totalWallMs: run.elapsedMs, phases: { aggregateOrchestration: { elapsedMs: run.timing.parentValidationSynthesisMs } } }, hostFindings = run.findings.map((finding) => ({ title: finding.title, body: finding.body, severity: finding.severity, code_location: finding.location ? { absolute_file_path: finding.location.path, side: finding.location.side, line_range: { start: finding.location.start, end: finding.location.end } } : null })), completed = { review: { findings: hostFindings }, rawText: markdown, laneArtifacts: rawLaneArtifacts, synthesisQuality: run.publication.artifact === "canonical" ? "fully_parsed" : run.publication.artifact === "raw_body_only" ? "raw" : "partially_parsed", completeness: run.lanes.every((lane) => lane.status === "complete") ? "complete" : "incomplete" }, records = [{ type: "session", version: 3, id: entry.entryId, timestamp: run.startedAtUtc, cwd: "/fixture" }, { type: "model_change", provider: run.configuration.provider, modelId: run.configuration.model }, { type: "thinking_level_change", thinkingLevel: run.configuration.thinking }, { type: "message", message: { role: "assistant", content: [{ type: "text", text: markdown }], stopReason: "stop" } }, { type: "custom", customType: "pr-review-completed", data: completed }, { type: "custom", customType: "pr-review-telemetry", data: telemetry }], sessionBytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+		const priorMarkdown = strategyRun && incremental && run.reviewOutcome.priorStatuses.length > 0 ? `## Prior findings\n${run.reviewOutcome.priorStatuses.map((status) => `- ${status.status} — ${status.title}`).join("\n")}\n\n` : "", defaultMarkdown = `${priorMarkdown}${run.findings.map((finding) => `${finding.title}\n${finding.body}`).join("\n") || "No findings."}`, markdown = markdownForRun?.(run, item, defaultMarkdown) ?? defaultMarkdown, rawLaneArtifacts = run.lanes.filter((lane) => lane.status !== "failed").map((lane) => ({ passId: lane.id, lifecycle: lane.status, requestedModel: lane.provider && lane.model ? `${lane.provider}/${lane.model}` : undefined, observedModel: lane.model ?? undefined, startOffsetMs: 0, endOffsetMs: lane.elapsedMs ?? 0, attempts: [] })), telemetry = { completion: "terminal_response", totalWallMs: run.elapsedMs, phases: { aggregateOrchestration: { elapsedMs: run.timing.parentValidationSynthesisMs } } }, hostFindings = run.findings.map((finding) => ({ title: finding.title, body: finding.body, severity: finding.severity, code_location: finding.location ? { absolute_file_path: finding.location.path, side: finding.location.side, line_range: { start: finding.location.start, end: finding.location.end } } : null })), completed = { review: { findings: hostFindings }, rawText: markdown, laneArtifacts: rawLaneArtifacts, synthesisQuality: run.publication.artifact === "canonical" ? "fully_parsed" : run.publication.artifact === "raw_body_only" ? "raw" : "partially_parsed", completeness: run.lanes.every((lane) => lane.status === "complete") ? "complete" : "incomplete", ...(strategyRun ? { mergeApprovalEligible: run.reviewOutcome.mergeApprovalEligible } : {}) }, records = [{ type: "session", version: 3, id: entry.entryId, timestamp: run.startedAtUtc, cwd: "/fixture" }, { type: "model_change", provider: run.configuration.provider, modelId: run.configuration.model }, { type: "thinking_level_change", thinkingLevel: run.configuration.thinking }, ...(incremental ? [{ type: "message", message: { role: "toolResult", toolName: "pr_review_prior", content: [{ type: "text", text: JSON.stringify({ relationship: item.priorState.relationship }) }] } }] : []), { type: "message", message: { role: "assistant", content: [{ type: "text", text: markdown }], stopReason: "stop" } }, { type: "custom", customType: "pr-review-completed", data: completed }, { type: "custom", customType: "pr-review-telemetry", data: telemetry }], sessionBytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
 		run.artifacts = [
 			artifact(root, entry.entryId, "lane-artifacts", { schemaVersion: 1, planEntryId: entry.entryId, lanes: run.lanes, raw: { laneArtifacts: rawLaneArtifacts, telemetry, resolvedReview: completed.review, ghAudit: [{ allowed: true, write: false }], auditValid: true, process: { stdout: "fixture output", stderr: "", exitCode: 0, signal: null, error: null, elapsedMs: run.elapsedMs }, session: { sha256: sha256(sessionBytes), bytes: sessionBytes.length, recordCount: records.length, contentBase64: sessionBytes.toString("base64") } } }),
-			artifact(root, entry.entryId, "canonical-review", { schemaVersion: 1, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown }),
+			artifact(root, entry.entryId, "canonical-review", strategyRun ? { schemaVersion: 2, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown, rawMarkdown: markdown } : { schemaVersion: 1, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown }),
 		];
 		runs.push(run); fs.writeFileSync(path.join(runDir, `${entry.entryId}.json`), `${JSON.stringify(run, null, 2)}\n`);
 	}
@@ -66,12 +67,47 @@ test("versioned corpus pins every diff, covers all heavy lenses, cross-file find
 	const boundary = info.corpus.cases.find((item) => item.id === "boundary-nonfinite-timeout"), boundaryDiff = fs.readFileSync(path.join(info.root, boundary.diff), "utf8"); assert.match(boundaryDiff, /Number\.isFinite\(timeout\).*Number\.isSafeInteger\(timeout\)/); assert.doesNotMatch(boundaryDiff, /^\+.*if \(timeout <= 0\)/m);
 });
 
+test("corpus schema v2 pins prior-state diffs, authored findings, and relationship invariants", () => {
+	const source = loadCorpus(CORPUS), root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-corpus-v2-")), value = structuredClone(source.corpus);
+	value.schemaVersion = 2; value.corpusId = "pi-pr-review-semantic-v7-test";
+	for (const item of value.cases) {
+		const bytes = fs.readFileSync(path.join(source.root, item.diff)), local = `${item.id}.diff`; fs.writeFileSync(path.join(root, local), bytes); item.diff = local;
+		item.priorState = { relationship: "none", priorDiff: null, incrementalDiff: null, review: null, expectedStatuses: [] };
+	}
+	const first = value.cases[0], phaseBytes = fs.readFileSync(path.join(root, first.diff)), phase = { path: first.diff, sha256: sha256(phaseBytes), bytes: phaseBytes.length };
+	first.priorState = { relationship: "incremental", priorDiff: phase, incrementalDiff: phase, review: { id: 71, submittedAt: "2026-09-08T00:00:00Z", body: '# PR Review\n\n<!-- pi-pr-review: {"schema":1,"headRefOid":"{{PRIOR_HEAD}}"} -->', comments: [{ id: 72, path: first.changedFiles[0], line: 1, side: "RIGHT", body: "[P1] Preserve the exported request contract" }] }, expectedStatuses: [{ title: "Preserve the exported request contract", status: "still open", currentFindingId: first.expectedFindings[0].id }] };
+	const corpusFile = path.join(root, "corpus-v2.json"); fs.writeFileSync(corpusFile, `${JSON.stringify(value, null, 2)}\n`); const loaded = loadCorpus(corpusFile); assert.equal(loaded.corpus.schemaVersion, 2); assert.equal(loaded.corpus.cases[0].priorState.relationship, "incremental");
+	const reject = (mutate, pattern) => { const candidate = structuredClone(value); mutate(candidate); const file = path.join(root, `invalid-${crypto.randomBytes(4).toString("hex")}.json`); fs.writeFileSync(file, JSON.stringify(candidate)); assert.throws(() => loadCorpus(file), pattern); };
+	reject((candidate) => { candidate.cases[0].priorState.relationship = "none"; }, /none state/);
+	reject((candidate) => { candidate.cases[0].priorState.review.body = "missing marker"; }, /prior review/);
+	reject((candidate) => { candidate.cases[0].priorState.expectedStatuses[0].title = "unmentioned title"; }, /must name an authored prior finding/);
+	reject((candidate) => { candidate.cases[0].priorState.priorDiff.bytes += 1; }, /prior diff hash\/bytes/);
+});
+
+test("incremental corpus v7 pins six executable relationship scenarios", () => {
+	const info = loadCorpus(INCREMENTAL_CORPUS); assert.equal(info.corpus.schemaVersion, 2); assert.equal(info.corpus.cases.length, 6); assert.deepEqual(info.corpus.cases.map((item) => item.priorState.relationship), ["incremental", "incremental", "incremental", "same_head", "none", "diverged"]); assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2); assert.ok(info.corpus.cases.some((item) => item.crossFile));
+	for (const item of info.corpus.cases) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-v7-materialize-")), fixture = createIncrementalFixtureRepository(info, item, root); assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true); if (item.priorState.relationship === "incremental") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 0); if (item.priorState.relationship === "same_head") assert.equal(fixture.priorHeadSha, fixture.headSha); if (item.priorState.relationship === "none") assert.equal(fixture.priorHeadSha, null); if (item.priorState.relationship === "diverged") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 1); fs.rmSync(root, { recursive: true, force: true }); }
+	const plan = createPlan(info, ["balanced"], 2, ["fresh", "incremental"]); assert.equal(plan.entries.length, 24); assert.deepEqual(validatePlan(plan, info), plan);
+});
+
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
 	const info = loadCorpus(CORPUS), one = createPlan(info, ["balanced", "full"], 3), two = createPlan(info, ["balanced", "full"], 3);
 	assert.deepEqual(one, two); assert.equal(one.entries.length, 72); assert.equal(new Set(one.entries.map((entry) => entry.entryId)).size, 72);
 	for (const mode of one.modes) assert.equal(one.entries.filter((entry) => entry.mode === mode).length, 36);
 	assert.notEqual(one.entries[0].mode, one.entries[1].mode);
 	assert.ok(one.entries.slice(0, 22).some((entry, index, entries) => index > 0 && entry.mode !== entries[index - 1].mode));
+});
+
+test("schema-v1 planning remains byte-compatible while schema-v2 interleaves review strategies", () => {
+	const info = loadCorpus(CORPUS), historical = JSON.parse(fs.readFileSync("tests/benchmarks/review-semantic/topology-v6/plan.json", "utf8"));
+	assert.deepEqual(createPlan(info, historical.modes, historical.repetitions), historical);
+	assert.throws(() => createPlan(info, ["balanced"], 1, ["fresh"]), /strategies require corpus schema v2/);
+	const v2Info = { ...info, sha256: "f".repeat(64), corpus: { ...info.corpus, schemaVersion: 2, corpusId: "pi-pr-review-semantic-v7" } }, plan = createPlan(v2Info, ["balanced"], 2, ["fresh", "incremental"]);
+	assert.equal(plan.schemaVersion, 2); assert.deepEqual(plan.strategies, ["fresh", "incremental"]); assert.equal(plan.entries.length, 48); assert.equal(new Set(plan.entries.map((entry) => entry.entryId)).size, 48); assert.deepEqual(validatePlan(plan, v2Info), plan);
+	for (const strategy of plan.strategies) for (let repetition = 1; repetition <= 2; repetition++) assert.equal(plan.entries.filter((entry) => entry.strategy === strategy && entry.repetition === repetition).length, 12);
+	assert.notEqual(plan.entries[0].strategy, plan.entries[1].strategy); assert.throws(() => createPlan(v2Info, ["balanced"], 1), /requested strategies/);
+	const missingStrategy = structuredClone(plan); delete missingStrategy.entries[0].strategy; assert.throws(() => validatePlan(missingStrategy, v2Info), /plan entry schema/);
+	const wrongCorpusVersion = { ...v2Info, corpus: { ...v2Info.corpus, schemaVersion: 1 } }; assert.throws(() => validatePlan(plan, wrongCorpusVersion), /plan identity/);
 });
 
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {
@@ -95,6 +131,12 @@ test("perfect immutable result bundle emits recall, lifecycle, fallback, and lat
 	assert.equal(report.metrics.overall.lanes.completeRate, 1); assert.equal(report.metrics.overall.publication.fallbackRate, 0);
 	assert.equal(report.metrics.overall.latencyMs.p50, 111); assert.equal(report.metrics.overall.latencyMs.p95, 122); assert.ok(report.metrics.overall.latencyMs.standardDeviation > 0);
 	assert.equal(report.metrics.modes.balanced.runs, 12); assert.equal(report.metrics.modes.full.runs, 12);
+});
+
+test("schema-v2 bundles score relationship, status, carry-forward, approval, and lane savings", () => {
+	const bundle = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), fresh = report.metrics.strategies.fresh, incremental = report.metrics.strategies.incremental;
+	assert.equal(report.schemaVersion, 2); assert.equal(report.resultCount, 12); assert.equal(incremental.priorReview.relationships.recall, 1, "relationships"); assert.equal(incremental.priorReview.statuses.recall, 1, "statuses"); assert.equal(incremental.priorReview.stillOpenCarryForward.recall, 1, "carry-forward"); assert.equal(incremental.priorReview.resolvedObsoleteRepublished, 0); assert.equal(incremental.priorReview.sameHeadRuns, 1); assert.equal(incremental.priorReview.sameHeadApprovalEligible, 0); assert.equal(fresh.lanes.total, 30); assert.equal(incremental.lanes.total, 25); assert.equal(report.metrics.runs.filter((run) => run.strategy === "incremental").length, 6);
+	const tampered = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["incremental"] }), file = path.join(tampered.root, "runs", `${tampered.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(file)); run.reviewOutcome.observedRelationship = "diverged"; fs.writeFileSync(file, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: tampered.corpusInfo, plan: tampered.plan, resultsDirectory: tampered.root }), /retained prior-review outcome binding/);
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {
@@ -157,6 +199,12 @@ test("semantic assertion alternatives accept exact interpolation language withou
 	const boundary = info.corpus.cases.find((candidate) => candidate.id === "boundary-nonfinite-timeout"), boundaryExpected = boundary.expectedFindings[0], boundaryFinding = findingFor(boundaryExpected);
 	boundaryFinding.body = "The timeout guard does not fail for NaN and accepts the invalid non-finite value."; assert.deepEqual(scoreRun(boundary, { findings: [boundaryFinding] }).matchedExpectedIds, [boundaryExpected.id]);
 	boundaryFinding.body = "The non-finite timeout guard accepts NaN but this behavior presents no risk and is safe."; assert.deepEqual(scoreRun(boundary, { findings: [boundaryFinding] }).missedExpectedIds, [boundaryExpected.id]);
+});
+
+test("v7 polarity accepts current bypasses contrasted with historically safe code", () => {
+	const info = loadCorpus(INCREMENTAL_CORPUS), open = info.corpus.cases.find((item) => item.id === "open-blocker"), tenant = { title: "[P1] Reject cross-tenant document reads", body: "When userTenant differs, the function returns true and bypasses tenant isolation, exposing another tenant's documents.", severity: "P1", location: { path: "src/access.ts", side: "RIGHT", start: 2, end: 2 } }; assert.deepEqual(scoreRun(open, { findings: [tenant] }).matchedExpectedIds, [open.expectedFindings[0].id]);
+	const command = info.corpus.cases.find((item) => item.id === "no-prior"), injected = { title: "[P1] Keep the branch argument out of the shell command", body: "exec evaluates the branch as shell syntax, allowing arbitrary command execution. The previous execFile implementation passed it as an inert argument and avoided this vulnerability.", severity: "P1", location: { path: "src/branch.ts", side: "RIGHT", start: 3, end: 3 } }; assert.deepEqual(scoreRun(command, { findings: [injected] }).matchedExpectedIds, [command.expectedFindings[0].id]);
+	const currentSafe = { ...injected, body: "The current implementation uses execFile with an argv argument, so command injection is prevented." }; assert.deepEqual(scoreRun(command, { findings: [currentSafe] }).missedExpectedIds, [command.expectedFindings[0].id]);
 });
 
 test("visible fallback Markdown participates in semantic recall without becoming canonical publication", () => {
@@ -311,6 +359,14 @@ test("every corpus diff is syntactically applicable to its materialized base", (
 	}
 });
 
+test("incremental fixtures materialize exact ancestor, same-head, and diverged histories", () => {
+	const full = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1,2 @@\n-export const value = 1;\n+export const value = safe();\n+export const added = true;\n", prior = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1 @@\n-export const value = 1;\n+export const value = unsafe();\n", incremental = "diff --git a/src/value.ts b/src/value.ts\n--- a/src/value.ts\n+++ b/src/value.ts\n@@ -1 +1,2 @@\n-export const value = unsafe();\n+export const value = safe();\n+export const added = true;\n";
+	const materialize = (relationship) => { const root = fs.mkdtempSync(path.join(os.tmpdir(), `pi-review-history-${relationship}-`)); fs.writeFileSync(path.join(root, "full.diff"), full); fs.writeFileSync(path.join(root, "prior.diff"), relationship === "same_head" ? full : prior); fs.writeFileSync(path.join(root, "incremental.diff"), incremental); const metadata = (name) => { const bytes = fs.readFileSync(path.join(root, name)); return { path: name, sha256: sha256(bytes), bytes: bytes.length }; }, item = { id: "phase-history", diff: "full.diff", priorState: { relationship, priorDiff: relationship === "none" ? null : metadata("prior.diff"), incrementalDiff: relationship === "incremental" ? metadata("incremental.diff") : null, review: relationship === "none" ? null : {}, expectedStatuses: [] } }, corpusInfo = { root, corpus: { schemaVersion: 2 } }; return createIncrementalFixtureRepository(corpusInfo, item, root); };
+	const ancestor = materialize("incremental"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", ancestor.priorHeadSha, ancestor.headSha], { cwd: ancestor.repo }).status, 0); assert.match(ancestor.compareOutput, /INC_EMPTY=0/); assert.equal(fs.readFileSync(path.join(ancestor.repo, "src/value.ts"), "utf8"), "export const value = safe();\nexport const added = true;\n");
+	const same = materialize("same_head"); assert.equal(same.priorHeadSha, same.headSha); assert.equal(same.compareOutput, "");
+	const diverged = materialize("diverged"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", diverged.priorHeadSha, diverged.headSha], { cwd: diverged.repo }).status, 1); assert.equal(diverged.compareOutput, "");
+});
+
 test("session collection maps host lanes, telemetry, findings, and failure fallback", async () => {
 	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), entry = plan.entries[0], item = info.corpus.cases.find((candidate) => candidate.id === entry.caseId), passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], laneArtifacts = passIds.map((passId) => ({ passId, lifecycle: "complete", requestedModel: "fixture/lane", observedModel: "lane", startOffsetMs: 1, endOffsetMs: 11, attempts: [] })), review = { findings: [{ title: "[P2] Finding", body: "Concrete issue.", severity: "P2", code_location: { absolute_file_path: item.changedFiles[0], side: "RIGHT", line_range: { start: 1, end: 1 } } }] }, records = [
 		{ type: "custom", customType: "pr-review-completed", data: { review, rawText: "# PR Review", laneArtifacts, synthesisQuality: "fully_parsed", completeness: "complete" } },
@@ -334,6 +390,19 @@ test("read-only gh shim rejects every supported API write-method spelling", { sk
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-gh-shim-")), audit = path.join(root, "audit.jsonl"), config = path.join(root, "config.json"), wrapper = installGhShim(root), env = { ...process.env, BENCHMARK_GH_AUDIT: audit, BENCHMARK_GH_CONFIG: config }; fs.writeFileSync(audit, ""); fs.writeFileSync(config, JSON.stringify({ login: "reviewer", repo: { nameWithOwner: "benchmark/repo", url: "https://github.com/benchmark/repo" }, pullApi: {}, prView: {}, diffFile: path.join(root, "diff") })); fs.writeFileSync(path.join(root, "diff"), "diff");
 	for (const args of [["api", "-X", "POST", "repos/benchmark/repo/pulls/1/reviews"], ["api", "--method=POST", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-XPOST", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-f", "body=x", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-fbody=x", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-Fbody=x", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-iFbody=x", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-ifbody=x", "repos/benchmark/repo/pulls/1/reviews"], ["api", "-iXPOST", "repos/benchmark/repo/pulls/1/reviews"], ["api", "--input=-", "repos/benchmark/repo/pulls/1/reviews"]]) { const result = spawnSync(wrapper, args, { env, encoding: "utf8" }); assert.equal(result.status, 64, `${args.join(" ")}: ${result.stderr}`); }
 	const records = fs.readFileSync(audit, "utf8").trim().split("\n").map(JSON.parse); assert.equal(records.length, 10); assert.ok(records.every((record) => record.allowed === false && record.write === true));
+});
+
+test("read-only gh shim serves bounded prior-review discovery and compare data", { skip: process.platform === "win32" }, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-gh-prior-shim-")), audit = path.join(root, "audit.jsonl"), config = path.join(root, "config.json"), wrapper = installGhShim(root), env = { ...process.env, BENCHMARK_GH_AUDIT: audit, BENCHMARK_GH_CONFIG: config };
+	const priorHead = "1".repeat(40), currentHead = "2".repeat(40), reviews = [{ id: 7, body: `<!-- pi-pr-review: {"schema":1,"headRefOid":"${priorHead}"} -->`, state: "COMMENTED", user: { login: "reviewer" } }], reviewComments = [{ id: 8, pull_request_review_id: 7, path: "src/a.ts", line: 2, side: "RIGHT", body: "[P1] preserve the guard" }], commits = [{ sha: priorHead }, { sha: currentHead }], compareOutput = "diff --git a/src/a.ts b/src/a.ts\n";
+	fs.writeFileSync(audit, ""); fs.writeFileSync(config, JSON.stringify({ login: "reviewer", repo: { nameWithOwner: "benchmark/repo", url: "https://github.com/benchmark/repo" }, pullApi: { head: { sha: currentHead } }, prView: {}, diffFile: path.join(root, "diff"), reviews, reviewComments, commits, compareOutput })); fs.writeFileSync(path.join(root, "diff"), "diff");
+	const invoke = (endpoint, extra = []) => spawnSync(wrapper, ["api", "--hostname", "github.com", endpoint, ...extra], { env, encoding: "utf8" });
+	const reviewPage = invoke("repos/benchmark/repo/pulls/1/reviews?per_page=1&page=1"); assert.equal(reviewPage.status, 0); assert.deepEqual(JSON.parse(reviewPage.stdout), reviews);
+	const reviewPastEnd = invoke("repos/benchmark/repo/pulls/1/reviews?per_page=1&page=2"); assert.equal(reviewPastEnd.status, 0); assert.deepEqual(JSON.parse(reviewPastEnd.stdout), []);
+	const commentsPage = invoke("repos/benchmark/repo/pulls/1/comments?per_page=100&page=1"); assert.deepEqual(JSON.parse(commentsPage.stdout), reviewComments);
+	const commitsPage = invoke("repos/benchmark/repo/pulls/1/commits?per_page=100&page=1"); assert.deepEqual(JSON.parse(commitsPage.stdout), commits);
+	const compare = invoke(`repos/benchmark/repo/compare/${priorHead}...${currentHead}`, ["--jq", ".files"]); assert.equal(compare.status, 0); assert.equal(compare.stdout, compareOutput);
+	const records = fs.readFileSync(audit, "utf8").trim().split("\n").map(JSON.parse); assert.equal(records.length, 5); assert.ok(records.every((record) => record.allowed === true && record.write === false));
 });
 
 test("collector hard timeout terminates the detached Pi process group", async () => {

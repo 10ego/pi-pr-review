@@ -1,0 +1,29 @@
+diff --git a/src/cache.ts b/src/cache.ts
+deleted file mode 100644
+index c5eeb50..0000000
+--- a/src/cache.ts
++++ /dev/null
+@@ -1,3 +0,0 @@
+-export function readCached(entry: { payload: string }) {
+-	return JSON.parse(entry as any);
+-}
+diff --git a/src/documents.ts b/src/documents.ts
+index 9f9ffad..7255c40 100644
+--- a/src/documents.ts
++++ b/src/documents.ts
+@@ -1,3 +1,3 @@
+-export function loadDocument(db: any, tenantId: string, documentId: string) {
+-	return db.find({ tenantId, documentId });
++export function loadDocument(db: any, documentId: string) {
++	return db.find({ documentId });
+ }
+diff --git a/src/service.ts b/src/service.ts
+index 212bebe..4c4bf67 100644
+--- a/src/service.ts
++++ b/src/service.ts
+@@ -1,4 +1,4 @@
+ import { loadDocument } from "./documents";
+ export function getDocument(ctx: any, id: string) {
+-	return loadDocument(ctx.db, ctx.tenantId, id);
++	return loadDocument(ctx.db, id);
+ }

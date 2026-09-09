@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const MODES = new Set(["quick", "balanced", "full", "major-only", "deep"]);
+const REVIEW_STRATEGIES = new Set(["fresh", "incremental"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
@@ -46,7 +47,7 @@ const EXPLICIT_NON_FINDING = [
 	/\b(?:branch|input) (?:is|are) (?:already )?(?:escaped|quoted|sanitized|validated).{0,80}\b(?:eliminat(?:e|es|ing)|mitigat(?:e|es|ing)|prevent(?:s|ed|ing)?)\b/iu,
 ];
 const MULTIPLICATIVE_COMPLEXITY = /\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
-const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
+const DEFECT_CUE = /\b(?:accumulat(?:e|es|ing|ion)|arbitrary|attack|bypass(?:es|ed|ing)?|break(?:s|ing)?|broken|crash(?:es)?|defect|disclos(?:e|es|ure)|duplicat(?:e|es|ing|ion)|enable[sd]?|error|expos(?:e|es|ed|ure)|exploit|fail(?:s|ure)?|incorrect|invalid|inject(?:ion)?|leak|missing|quadratic|regression|removed|retain(?:s|ed|ing)|retention|throws?|unauthori[sz]ed|violat(?:e|es|ion)|vulnerab(?:le|ility))\b|passes? (?:the )?(?:cached )?object.{0,40}JSON\.parse|(?:guard|check|validation).{0,30}does not (?:block|fail|reject)|\bO\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s*[×*]\s*[\p{L}_][\p{L}\p{N}_]*|[\p{L}_][\p{L}\p{N}_]*\s*(?:\^\s*2|²))\s*\)/iu;
 function expandNegations(text) {
 	const replacements = { "can't": "cannot", "can’t": "cannot", "couldn't": "could not", "couldn’t": "could not", "doesn't": "does not", "doesn’t": "does not", "isn't": "is not", "isn’t": "is not", "aren't": "are not", "aren’t": "are not", "wasn't": "was not", "wasn’t": "was not", "weren't": "were not", "weren’t": "were not", "won't": "will not", "won’t": "will not" };
 	Object.assign(replacements, { "don't": "do not", "don’t": "do not", "hasn't": "has not", "hasn’t": "has not", "haven't": "have not", "haven’t": "have not", "hadn't": "had not", "hadn’t": "had not", "didn't": "did not", "didn’t": "did not", "shouldn't": "should not", "shouldn’t": "should not", "wouldn't": "would not", "wouldn’t": "would not", "mustn't": "must not", "mustn’t": "must not", "mightn't": "might not", "mightn’t": "might not", "needn't": "need not", "needn’t": "need not" });
@@ -158,13 +159,15 @@ function changedDiffLines(text) {
 export function loadCorpus(file) {
 	const corpusFile = path.resolve(file), root = path.dirname(corpusFile), { bytes, value } = readJson(corpusFile);
 	invariant(exactKeys(value, ["schemaVersion", "corpusId", "description", "lenses", "cases"]), "corpus schema");
-	invariant(value.schemaVersion === 1 && typeof value.corpusId === "string" && value.corpusId.length > 0, "corpus identity");
+	invariant((value.schemaVersion === 1 || value.schemaVersion === 2) && typeof value.corpusId === "string" && value.corpusId.length > 0, "corpus identity");
 	invariant(Array.isArray(value.lenses) && value.lenses.length > 0 && new Set(value.lenses).size === value.lenses.length && value.lenses.every((lens) => typeof lens === "string" && lens.length > 0), "corpus lenses");
 	invariant(Array.isArray(value.cases) && value.cases.length > 0, "corpus cases");
 	const ids = new Set(), expectedIds = new Set();
 	let cleanControls = 0, crossFileExpected = 0;
 	for (const item of value.cases) {
-		invariant(exactKeys(item, ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
+		invariant(exactKeys(item, value.schemaVersion === 2
+			? ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings", "priorState"]
+			: ["id", "title", "diff", "diffSha256", "diffBytes", "changedFiles", "cleanControl", "crossFile", "expectedFindings"]), "case schema");
 		invariant(typeof item.id === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id) && !ids.has(item.id), `case id ${item.id}`); ids.add(item.id);
 		invariant(typeof item.title === "string" && item.title.length >= 8 && item.title.length <= 120, `case ${item.id} title`);
 		invariant(typeof item.cleanControl === "boolean" && typeof item.crossFile === "boolean", `case ${item.id} flags`);
@@ -196,6 +199,44 @@ export function loadCorpus(file) {
 			}
 			if (expected.crossFile) crossFileExpected++;
 		}
+		if (value.schemaVersion === 2) {
+			const prior = item.priorState, relationship = prior?.relationship;
+			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"]), `case ${item.id} prior state schema`);
+			invariant(["incremental", "same_head", "none", "diverged"].includes(relationship), `case ${item.id} prior relationship`);
+			const validatePhaseDiff = (metadata, phase) => {
+				if (metadata === null) return null;
+				invariant(exactKeys(metadata, ["path", "sha256", "bytes"]), `case ${item.id} ${phase} diff schema`);
+				const phaseFile = resolveContainedRegular(root, metadata.path, `case ${item.id} ${phase} diff`), phaseBytes = fs.readFileSync(phaseFile), phaseText = phaseBytes.toString("utf8");
+				invariant(SHA256.test(metadata.sha256) && sha256(phaseBytes) === metadata.sha256 && Number.isSafeInteger(metadata.bytes) && metadata.bytes === phaseBytes.length && phaseText.length > 0, `case ${item.id} ${phase} diff hash/bytes`);
+				invariant(!phaseText.includes(item.id), `case ${item.id} reviewer-visible ${phase} diff leaks its benchmark id`);
+				parseDiffFiles(phaseText);
+				return phaseText;
+			};
+			const priorDiffText = validatePhaseDiff(prior.priorDiff, "prior"), incrementalDiffText = validatePhaseDiff(prior.incrementalDiff, "incremental");
+			if (relationship === "incremental") invariant(priorDiffText !== null && incrementalDiffText !== null && prior.review !== null, `case ${item.id} incremental state`);
+			if (relationship === "same_head" || relationship === "diverged") invariant(priorDiffText !== null && incrementalDiffText === null && prior.review !== null, `case ${item.id} ${relationship} state`);
+			if (relationship === "none") invariant(priorDiffText === null && incrementalDiffText === null && prior.review === null, `case ${item.id} none state`);
+			invariant(Array.isArray(prior.expectedStatuses) && new Set(prior.expectedStatuses.map((status) => status.title)).size === prior.expectedStatuses.length, `case ${item.id} expected prior statuses`);
+			for (const status of prior.expectedStatuses) {
+				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+				if (status.status === "still open") invariant(typeof status.currentFindingId === "string" && item.expectedFindings.some((finding) => finding.id === status.currentFindingId), `case ${item.id} still-open status current finding binding`);
+				else invariant(!Object.hasOwn(status, "currentFindingId"), `case ${item.id} non-open status current finding binding`);
+			}
+			if (prior.review === null) invariant(prior.expectedStatuses.length === 0, `case ${item.id} none state has prior statuses`);
+			else {
+				const review = prior.review;
+				invariant(exactKeys(review, ["id", "submittedAt", "body", "comments"]) && Number.isSafeInteger(review.id) && review.id > 0 && typeof review.submittedAt === "string" && Number.isFinite(Date.parse(review.submittedAt)) && typeof review.body === "string" && review.body.includes('<!-- pi-pr-review: {"schema":1,"headRefOid":"{{PRIOR_HEAD}}"} -->') && Array.isArray(review.comments), `case ${item.id} prior review`);
+				invariant(!review.body.includes(item.id) && review.body.length <= 64 * 1024, `case ${item.id} reviewer-visible prior body`);
+				const commentIds = new Set();
+				for (const comment of review.comments) {
+					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
+					if (Object.hasOwn(comment, "startLine")) invariant(Number.isSafeInteger(comment.startLine) && comment.startLine > 0 && comment.startLine < comment.line, `case ${item.id} prior comment start line`);
+					invariant(!comment.body.includes(item.id), `case ${item.id} reviewer-visible prior comment leaks its benchmark id`);
+				}
+				const authoredText = `${review.body}\n${review.comments.map((comment) => comment.body).join("\n")}`.toLocaleLowerCase("en-US");
+				invariant((relationship === "diverged" || prior.expectedStatuses.length > 0) && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
+			}
+		}
 	}
 	invariant(cleanControls >= 2, "corpus requires at least two clean controls");
 	invariant(crossFileExpected >= 1, "corpus requires cross-file expected findings");
@@ -204,22 +245,30 @@ export function loadCorpus(file) {
 }
 
 export function validatePlan(plan, corpusInfo) {
-	invariant(exactKeys(plan, ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "repetitions", "entries"]), "plan schema");
-	invariant(plan.schemaVersion === 1 && plan.corpusId === corpusInfo.corpus.corpusId && plan.corpusSha256 === corpusInfo.sha256 && SHA256.test(plan.planId), "plan identity");
+	const version = plan?.schemaVersion;
+	invariant(version === 1 || version === 2, "plan schema version");
+	const strategyPlan = version === 2;
+	invariant(exactKeys(plan, strategyPlan
+		? ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "strategies", "repetitions", "entries"]
+		: ["schemaVersion", "planId", "corpusId", "corpusSha256", "modes", "repetitions", "entries"]), "plan schema");
+	invariant((strategyPlan ? corpusInfo.corpus.schemaVersion === 2 : corpusInfo.corpus.schemaVersion === 1) && plan.corpusId === corpusInfo.corpus.corpusId && plan.corpusSha256 === corpusInfo.sha256 && SHA256.test(plan.planId), "plan identity");
 	invariant(Array.isArray(plan.modes) && plan.modes.length > 0 && new Set(plan.modes).size === plan.modes.length && plan.modes.every((mode) => MODES.has(mode)), "plan modes");
+	if (strategyPlan) invariant(Array.isArray(plan.strategies) && plan.strategies.length > 0 && new Set(plan.strategies).size === plan.strategies.length && plan.strategies.every((strategy) => REVIEW_STRATEGIES.has(strategy)), "plan strategies");
 	invariant(Number.isSafeInteger(plan.repetitions) && plan.repetitions >= 1 && plan.repetitions <= 100, "plan repetitions");
-	const expectedCount = corpusInfo.corpus.cases.length * plan.modes.length * plan.repetitions;
+	const strategies = strategyPlan ? plan.strategies : [null], expectedCount = corpusInfo.corpus.cases.length * plan.modes.length * strategies.length * plan.repetitions;
 	invariant(Array.isArray(plan.entries) && plan.entries.length === expectedCount, "plan entry count");
 	const ids = new Set(), tuples = new Set();
 	for (const entry of plan.entries) {
-		invariant(exactKeys(entry, ["entryId", "caseId", "mode", "repetition"]), "plan entry schema");
+		invariant(exactKeys(entry, strategyPlan ? ["entryId", "caseId", "mode", "strategy", "repetition"] : ["entryId", "caseId", "mode", "repetition"]), "plan entry schema");
 		invariant(typeof entry.entryId === "string" && /^[0-9a-f]{24}$/.test(entry.entryId) && !ids.has(entry.entryId), `plan entry id ${entry.entryId}`); ids.add(entry.entryId);
-		invariant(corpusInfo.corpus.cases.some((item) => item.id === entry.caseId) && plan.modes.includes(entry.mode) && Number.isSafeInteger(entry.repetition) && entry.repetition >= 1 && entry.repetition <= plan.repetitions, `plan entry ${entry.entryId}`);
-		const tuple = `${entry.mode}\0${entry.repetition}\0${entry.caseId}`;
-		invariant(!tuples.has(tuple), `duplicate plan tuple ${entry.mode}/${entry.repetition}/${entry.caseId}`); tuples.add(tuple);
+		invariant(corpusInfo.corpus.cases.some((item) => item.id === entry.caseId) && plan.modes.includes(entry.mode) && (!strategyPlan || plan.strategies.includes(entry.strategy)) && Number.isSafeInteger(entry.repetition) && entry.repetition >= 1 && entry.repetition <= plan.repetitions, `plan entry ${entry.entryId}`);
+		const tuple = `${entry.mode}\0${strategyPlan ? entry.strategy : ""}\0${entry.repetition}\0${entry.caseId}`;
+		invariant(!tuples.has(tuple), `duplicate plan tuple ${entry.mode}/${entry.strategy ?? "legacy"}/${entry.repetition}/${entry.caseId}`); tuples.add(tuple);
 	}
-	for (const mode of plan.modes) for (let repetition = 1; repetition <= plan.repetitions; repetition++) for (const item of corpusInfo.corpus.cases) invariant(tuples.has(`${mode}\0${repetition}\0${item.id}`), `missing plan tuple ${mode}/${repetition}/${item.id}`);
-	const identity = { schemaVersion: plan.schemaVersion, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, repetitions: plan.repetitions, entries: plan.entries };
+	for (const mode of plan.modes) for (const strategy of strategies) for (let repetition = 1; repetition <= plan.repetitions; repetition++) for (const item of corpusInfo.corpus.cases) invariant(tuples.has(`${mode}\0${strategy ?? ""}\0${repetition}\0${item.id}`), `missing plan tuple ${mode}/${strategy ?? "legacy"}/${repetition}/${item.id}`);
+	const identity = strategyPlan
+		? { schemaVersion: version, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, strategies: plan.strategies, repetitions: plan.repetitions, entries: plan.entries }
+		: { schemaVersion: version, corpusId: plan.corpusId, corpusSha256: plan.corpusSha256, modes: plan.modes, repetitions: plan.repetitions, entries: plan.entries };
 	invariant(sha256(Buffer.from(canonical(identity))) === plan.planId, "planId does not bind canonical plan");
 	return plan;
 }
@@ -227,6 +276,7 @@ export function validatePlan(plan, corpusInfo) {
 export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
+	if (options.strategy === "incremental" && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
 	const legacySharding = options.legacySharding === true;
 	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];
 	invariant(base, `mode ${mode} is unavailable under the requested topology generation`);
@@ -237,20 +287,28 @@ export function expectedModeTopology(mode, item, options = {}) {
 	return { passIds, shardCount, maxParallel: base.maxParallel * shardCount };
 }
 
-export function createPlan(corpusInfo, modes, repetitions) {
+export function createPlan(corpusInfo, modes, repetitions, strategies) {
 	invariant(Array.isArray(modes) && modes.length > 0 && new Set(modes).size === modes.length && modes.every((mode) => MODES.has(mode)), "requested modes");
 	invariant(Number.isSafeInteger(repetitions) && repetitions >= 1 && repetitions <= 100, "requested repetitions");
-	const entries = [];
-	// Interleave modes per case and rotate the first mode across repetitions/cases.
-	// This avoids running an entire mode during one provider/time window.
+	const strategyPlan = corpusInfo.corpus.schemaVersion === 2;
+	invariant(strategyPlan || strategies === undefined, "strategies require corpus schema v2");
+	if (strategyPlan) invariant(Array.isArray(strategies) && strategies.length > 0 && new Set(strategies).size === strategies.length && strategies.every((strategy) => REVIEW_STRATEGIES.has(strategy)), "requested strategies");
+	const entries = [], dimensions = strategyPlan ? modes.flatMap((mode) => strategies.map((strategy) => ({ mode, strategy }))) : modes.map((mode) => ({ mode }));
+	// Interleave mode/strategy dimensions per case and rotate the first dimension
+	// across repetitions/cases. This avoids assigning one provider window to one
+	// complete strategy or mode.
 	for (let repetition = 1; repetition <= repetitions; repetition++) for (let caseIndex = 0; caseIndex < corpusInfo.corpus.cases.length; caseIndex++) {
-		const item = corpusInfo.corpus.cases[caseIndex], offset = (repetition - 1 + caseIndex) % modes.length;
-		for (let modeIndex = 0; modeIndex < modes.length; modeIndex++) {
-			const mode = modes[(offset + modeIndex) % modes.length], key = `${corpusInfo.sha256}\0${mode}\0${repetition}\0${item.id}`;
-			entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode, repetition });
+		const item = corpusInfo.corpus.cases[caseIndex], offset = (repetition - 1 + caseIndex) % dimensions.length;
+		for (let dimensionIndex = 0; dimensionIndex < dimensions.length; dimensionIndex++) {
+			const dimension = dimensions[(offset + dimensionIndex) % dimensions.length], key = strategyPlan
+				? `${corpusInfo.sha256}\0${dimension.mode}\0${dimension.strategy}\0${repetition}\0${item.id}`
+				: `${corpusInfo.sha256}\0${dimension.mode}\0${repetition}\0${item.id}`;
+			entries.push({ entryId: sha256(Buffer.from(key)).slice(0, 24), caseId: item.id, mode: dimension.mode, ...(strategyPlan ? { strategy: dimension.strategy } : {}), repetition });
 		}
 	}
-	const identity = { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, repetitions, entries };
+	const identity = strategyPlan
+		? { schemaVersion: 2, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, strategies, repetitions, entries }
+		: { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, modes, repetitions, entries };
 	return { ...identity, planId: sha256(Buffer.from(canonical(identity))) };
 }
 
@@ -278,13 +336,24 @@ function validateArtifact(reference, bundleRoot, run, embeddedArtifacts = null) 
 		invariant(run.lanes.every((lane) => lane.status === "failed" || expectedRawIds.has(lane.id)), `${runLabel} normalized non-failed lane lacks raw evidence`);
 		invariant(raw.laneArtifacts.length > 0 || raw.process.stdout.length > 0 || raw.process.stderr.length > 0 || raw.session.bytes > 0 || (raw.session.files?.length ?? 0) > 0 || (raw.session.overflow?.fileCount ?? 0) > 0 || raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, `${runLabel} raw evidence is empty`);
 	} else {
-		invariant(exactKeys(payload, ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === 1 && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0 && run.findings.every((finding) => payload.markdown.includes(finding.title)), `${runLabel} canonical artifact binding`);
+		const v2 = run.schemaVersion === 2;
+		invariant(exactKeys(payload, v2 ? ["schemaVersion", "planEntryId", "publication", "findings", "markdown", "rawMarkdown"] : ["schemaVersion", "planEntryId", "publication", "findings", "markdown"]) && payload.schemaVersion === (v2 ? 2 : 1) && payload.planEntryId === run.planEntryId && canonical(payload.publication) === canonical(run.publication) && canonical(payload.findings) === canonical(run.findings) && typeof payload.markdown === "string" && payload.markdown.trim().length > 0 && (!v2 || typeof payload.rawMarkdown === "string" && payload.rawMarkdown.trim().length > 0) && run.findings.every((finding) => payload.markdown.includes(finding.title)), `${runLabel} canonical artifact binding`);
 	}
 	return payload;
 }
 function normalizePersistedFindings(review) {
 	if (!Array.isArray(review?.findings)) return [];
 	return review.findings.map((finding) => { const location = finding?.code_location, range = location?.line_range; return { title: String(finding?.title ?? ""), body: String(finding?.body ?? ""), severity: String(finding?.severity ?? ""), location: location && typeof location.absolute_file_path === "string" && Number.isSafeInteger(range?.start) && Number.isSafeInteger(range?.end) && (location.side === "RIGHT" || location.side === "LEFT") ? { path: location.absolute_file_path, side: location.side, start: range.start, end: range.end } : null }; });
+}
+function parsePriorStatuses(markdown) {
+	if (typeof markdown !== "string") return [];
+	const body = /(?:^|\n)## Prior findings\s*\n([\s\S]*?)(?=\n## (?!#)|$)/iu.exec(markdown)?.[1] ?? "", statuses = [];
+	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
+	return statuses;
+}
+function parsePriorRelationship(records) {
+	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior" || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
+	return null;
 }
 function parseVisibleFallbackFindings(markdown) {
 	if (typeof markdown !== "string" || markdown.length > 2 * 1024 * 1024) return [];
@@ -327,18 +396,22 @@ function normalizeRawLane(lane, parentModel) { const attempts = Array.isArray(la
 function validateSessionBindings(lanePayload, reviewPayload, run, label, effectiveConfig) {
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"); let records = [], sessionParseValid = true; try { records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []; } catch { sessionParseValid = false; }
 	const completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), processFailed = raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, failedRun = run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed") && raw.resolvedReview === null && raw.telemetry === null;
+	if (run.schemaVersion === 2) {
+		invariant(canonical(parsePriorStatuses(reviewPayload.rawMarkdown)) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
+	}
 	if (!failedRun) {
 		invariant(sessionParseValid && raw.process.exitCode === 0 && !processFailed && raw.auditValid && !Object.hasOwn(raw.session, "files") && !Object.hasOwn(raw.session, "overflow"), `${label} successful run has operational failure`);
 		invariant(completed.length === 1 && telemetry.length === 1, `${label} session completion/telemetry cardinality`);
 		const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
 		invariant(headers.length === 1 && typeof headers[0].cwd === "string" && path.isAbsolute(headers[0].cwd) && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop", `${label} retained session lifecycle`);
 		const terminalAssistantText = Array.isArray(assistants.at(-1).message?.content) ? assistants.at(-1).message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("") : "", data = completed[0].data, terminalTelemetry = telemetry[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
-		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && data.rawText === terminalAssistantText && data.rawText === reviewPayload.markdown, `${label} session artifact binding`);
+		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && data.rawText === terminalAssistantText && data.rawText === (run.schemaVersion === 2 ? reviewPayload.rawMarkdown : reviewPayload.markdown), `${label} session artifact binding`);
 		invariant(finiteNonnegative(terminalTelemetry?.totalWallMs) && terminalTelemetry.totalWallMs === run.elapsedMs && finiteNonnegative(terminalTelemetry?.phases?.aggregateOrchestration?.elapsedMs) && terminalTelemetry.phases.aggregateOrchestration.elapsedMs === run.timing.parentValidationSynthesisMs && terminalTelemetry.phases.aggregateOrchestration.elapsedMs <= terminalTelemetry.totalWallMs, `${label} retained latency binding`);
 		invariant(modelChanges.length >= 1 && modelChanges.at(-1).provider === run.configuration.provider && modelChanges.at(-1).modelId === run.configuration.model && thinkingChanges.length >= 1 && thinkingChanges.at(-1).thinkingLevel === run.configuration.thinking, `${label} session parent model/thinking binding`);
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
 		invariant(run.publication.artifact === (canonicalPublication ? "canonical" : rawPublication ? "raw_body_only" : "degraded"), `${label} session publication binding`);
 		invariant(plain(raw.resolvedReview) && canonical(normalizePersistedFindings(raw.resolvedReview)) === canonical(run.findings), `${label} resolved finding binding`);
+		if (run.schemaVersion === 2) invariant(typeof data.mergeApprovalEligible === "boolean" && data.mergeApprovalEligible === run.reviewOutcome.mergeApprovalEligible, `${label} merge approval binding`);
 		if (plain(data.review)) invariant(canonical(data.review) === canonical(raw.resolvedReview), `${label} persisted/resolved review binding`);
 		const rawById = new Map(raw.laneArtifacts.map((lane) => [lane.passId, normalizeRawLane(lane, `${run.configuration.provider}/${run.configuration.model}`)])); for (const lane of run.lanes) if (rawById.has(lane.id)) { invariant(canonical(rawById.get(lane.id)) === canonical(lane), `${label} normalized raw lane binding`); const base = lane.id.replace(/-shard-[123]$/, ""), tier = base === "overview" ? "light" : base === "conventions-maintainability" ? "medium" : "heavy", configured = resolvedTierModelIdentities(effectiveConfig, tier, `${run.configuration.provider}/${run.configuration.model}`); if (lane.provider !== null && lane.model !== null) invariant(configured.some((identity) => identity.provider === lane.provider && identity.model === lane.model), `${label} lane model is outside effective config`); }
 	} else {
@@ -360,9 +433,17 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 }
 
 export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
-	const label = `run ${planEntry.entryId}`;
-	invariant(exactKeys(run, ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"], ["artifactPayloads"]), `${label} schema`);
-	invariant(run.schemaVersion === 1 && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && run.repetition === planEntry.repetition, `${label} plan binding`);
+	const label = `run ${planEntry.entryId}`, strategyRun = planEntry.strategy !== undefined;
+	invariant(exactKeys(run, strategyRun
+		? ["schemaVersion", "planEntryId", "caseId", "mode", "strategy", "reviewOutcome", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"]
+		: ["schemaVersion", "planEntryId", "caseId", "mode", "repetition", "startedAtUtc", "elapsedMs", "timing", "configuration", "lanes", "publication", "findings", "artifacts"], ["artifactPayloads"]), `${label} schema`);
+	invariant(run.schemaVersion === (strategyRun ? 2 : 1) && run.planEntryId === planEntry.entryId && run.caseId === planEntry.caseId && run.mode === planEntry.mode && (!strategyRun || run.strategy === planEntry.strategy) && run.repetition === planEntry.repetition, `${label} plan binding`);
+	if (strategyRun) {
+		const outcome = run.reviewOutcome;
+		invariant(exactKeys(outcome, ["observedRelationship", "priorStatuses", "mergeApprovalEligible"]) && (outcome.observedRelationship === null || ["incremental", "same_head", "none", "diverged"].includes(outcome.observedRelationship)) && Array.isArray(outcome.priorStatuses) && outcome.priorStatuses.length <= 200 && (outcome.mergeApprovalEligible === null || typeof outcome.mergeApprovalEligible === "boolean"), `${label} review outcome`);
+		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
+		if (run.strategy === "fresh") invariant(outcome.observedRelationship === null && outcome.priorStatuses.length === 0, `${label} fresh strategy prior evidence`);
+	}
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
 	invariant(finiteNonnegative(run.elapsedMs), `${label} elapsedMs`);
 	invariant(exactKeys(run.timing, ["parentValidationSynthesisMs"]) && finiteNonnegative(run.timing.parentValidationSynthesisMs), `${label} parent timing`);
@@ -374,10 +455,12 @@ export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 		// Historical rows predate this explicit discriminator and retain their
 		// immutable sharded interpretation regardless of package version.
 		legacySharding: run.configuration.topologyGeneration !== "fixed-v1",
+		strategy: run.strategy,
 	});
-	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.length > 0 && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && topology.shardCount >= 1 && topology.shardCount <= 20 && Number.isSafeInteger(topology.maxParallel) && topology.maxParallel >= 1 && topology.maxParallel <= 100, `${label} topology`);
+	const zeroTopology = expectedTopology.passIds.length === 0;
+	invariant(exactKeys(topology, ["passIds", "shardCount", "maxParallel"]) && Array.isArray(topology.passIds) && topology.passIds.every((id) => typeof id === "string" && id.length > 0) && Number.isSafeInteger(topology.shardCount) && Number.isSafeInteger(topology.maxParallel) && (zeroTopology ? topology.passIds.length === 0 && topology.shardCount === 0 && topology.maxParallel === 0 : topology.passIds.length > 0 && topology.shardCount >= 1 && topology.shardCount <= 20 && topology.maxParallel >= 1 && topology.maxParallel <= 100), `${label} topology`);
 	invariant(JSON.stringify(topology.passIds) === JSON.stringify(expectedTopology.passIds) && topology.shardCount === expectedTopology.shardCount && topology.maxParallel === expectedTopology.maxParallel, `${label} topology does not match ${run.mode}`);
-	invariant(Array.isArray(run.lanes) && run.lanes.length > 0, `${label} lanes`);
+	invariant(Array.isArray(run.lanes) && (zeroTopology || run.lanes.length > 0), `${label} lanes`);
 	const laneIds = new Set();
 	for (const lane of run.lanes) {
 		invariant(exactKeys(lane, ["id", "lens", "status", "elapsedMs", "provider", "model"]), `${label} lane schema`);
@@ -438,8 +521,14 @@ function maskEmbeddedConcepts(text, groups) {
 		return masked;
 	});
 }
+function historicalSafeContext(clause) {
+	return /\b(?:previous|prior|formerly|before (?:this|the) change|old implementation)\b/iu.test(clause) && !/\b(?:current|currently|now|still|new implementation)\b/iu.test(clause);
+}
+function polarityClauses(finding) {
+	return [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;!?]\s+|\n+/iu)].map((clause) => clause.trim()).filter((clause) => clause.length > 0 && !historicalSafeContext(clause));
+}
 function contrastivePositiveDefectClause(expected, finding) {
-	const clauses = [finding.title, ...finding.body.split(/\b(?:but|however|yet)\b|[.;!?]\s+|\n+/iu)].map((clause) => clause.trim()).filter(Boolean);
+	const clauses = polarityClauses(finding);
 	let lastContradiction = -1;
 	for (let index = 0; index < clauses.length; index++) { const polarity = expandNegations(clauses[index]); if (EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarity)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarity))) lastContradiction = index; }
 	return lastContradiction >= 0 ? clauses.slice(lastContradiction + 1).find((clause) => hasPositiveDefectCue(clause)) ?? null : null;
@@ -447,7 +536,7 @@ function contrastivePositiveDefectClause(expected, finding) {
 function expectedMatchesFinding(expected, finding) {
 	if (!expected.allowedSeverities.includes(finding.severity)) return false;
 	if (!expected.acceptableLocations.some((location) => locationMatches(finding.location, location))) return false;
-	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(rawText), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(expected, finding) : null;
+	const rawText = `${finding.title}\n${finding.body}`, polarityText = expandNegations(polarityClauses(finding).join("\n")), contradictory = EXPLICIT_NON_FINDING.some((pattern) => pattern.test(polarityText)) || expected.contradictionPatterns.some((pattern) => new RegExp(pattern, "iu").test(polarityText)), contrastiveClause = contradictory ? contrastivePositiveDefectClause(expected, finding) : null;
 	if (contradictory && contrastiveClause === null) return false;
 	const semanticText = contradictory ? contrastiveClause : rawText, semanticBody = contradictory ? contrastiveClause : finding.body, text = semanticText.toLocaleLowerCase("en-US"), conceptMatches = expected.requiredConcepts.map((group) => group.some((term) => containsConcept(text, term))), matchedConcepts = conceptMatches.filter(Boolean).length, allConceptsMatched = matchedConcepts === conceptMatches.length, positiveDefect = hasPositiveDefectCue(semanticBody);
 	if (allConceptsMatched) return positiveDefect;
@@ -498,6 +587,11 @@ function distribution(values) {
 	return { mean, standardDeviation: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length), minimum: Math.min(...values), maximum: Math.max(...values) };
 }
 function metricPair(opportunities, matched) { return { matched, opportunities, recall: ratio(matched, opportunities) }; }
+function normalizedPriorTitle(value) { return String(value ?? "").replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\s+/gu, " ").trim().toLocaleLowerCase("en-US"); }
+function namesPriorTitle(actual, expected) {
+	const haystack = normalizedPriorTitle(actual), needle = normalizedPriorTitle(expected); if (!needle) return false;
+	const escaped = needle.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"); try { return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(haystack); } catch { return haystack.includes(needle); }
+}
 
 export function aggregateScores(corpusInfo, plan, runs) {
 	const caseById = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
@@ -513,6 +607,18 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const perLens = Object.fromEntries(corpusInfo.corpus.lenses.map((lens) => [lens, select((expected) => expected.lenses.includes(lens))]));
 		const clean = group.filter(({ item }) => item.cleanControl), laneStates = Object.fromEntries([...LANE_STATES].map((state) => [state, group.reduce((sum, { run }) => sum + run.lanes.filter((lane) => lane.status === state).length, 0)]));
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
+		let statusOpportunities = 0, statusMatches = 0, stillOpenOpportunities = 0, stillOpenCarried = 0, resolvedObsoleteRepublished = 0, relationshipOpportunities = 0, relationshipMatches = 0, sameHeadRuns = 0, sameHeadApprovalEligible = 0;
+		for (const { run, item, findings, score } of group) {
+			if (run.strategy !== "incremental") continue;
+			relationshipOpportunities++; if (run.reviewOutcome?.observedRelationship === item.priorState.relationship) relationshipMatches++;
+			if (item.priorState.relationship === "same_head") { sameHeadRuns++; if (run.reviewOutcome?.mergeApprovalEligible === true) sameHeadApprovalEligible++; }
+			for (const expected of item.priorState.expectedStatuses) {
+				statusOpportunities++; const observed = run.reviewOutcome?.priorStatuses?.filter((status) => namesPriorTitle(status.title, expected.title)) ?? []; if (observed.length === 1 && observed[0].status === expected.status) statusMatches++;
+				const republished = findings.some((finding) => namesPriorTitle(finding.title, expected.title));
+				if (expected.status === "still open") { stillOpenOpportunities++; if (score.matchedExpectedIds.includes(expected.currentFindingId)) stillOpenCarried++; }
+				else if (republished) resolvedObsoleteRepublished++;
+			}
+		}
 		return {
 			runs: group.length,
 			p0p1: select((expected) => expected.targetSeverity === "P0" || expected.targetSeverity === "P1"),
@@ -521,12 +627,13 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			perLens,
 			cleanControls: { runs: clean.length, runsWithFindings: clean.filter(({ score }) => score.cleanControlHadFinding).length, caseFalsePositiveRate: ratio(clean.filter(({ score }) => score.cleanControlHadFinding).length, clean.length) },
 			findings: { total: allFindings, matched: matchedFindings, underclassified, overclassified, exactSeverityRate: ratio(matchedFindings - underclassified - overclassified, matchedFindings), unmatched, falsePositives, duplicates, falsePositiveRate: ratio(falsePositives, allFindings), duplicateRate: ratio(duplicates, allFindings) },
-			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal) },
+			lanes: { total: laneTotal, ...laneStates, completeRate: ratio(laneStates.complete, laneTotal), partialRate: ratio(laneStates.partial, laneTotal), timedOutRate: ratio(laneStates.timed_out, laneTotal), failedRate: ratio(laneStates.failed, laneTotal), elapsedMsSum: group.reduce((sum, { run }) => sum + run.lanes.reduce((laneSum, lane) => laneSum + (lane.elapsedMs ?? 0), 0), 0) },
+			priorReview: { statuses: metricPair(statusOpportunities, statusMatches), stillOpenCarryForward: metricPair(stillOpenOpportunities, stillOpenCarried), resolvedObsoleteRepublished, relationships: metricPair(relationshipOpportunities, relationshipMatches), sameHeadRuns, sameHeadApprovalEligible },
 			publication: { fallbackRuns, fallbackRate: ratio(fallbackRuns, group.length), visibleFallbackFindings },
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
-	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, repetition: run.repetition, ...score })) };
+	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
 }
 
 function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {
@@ -589,7 +696,7 @@ export function scoreBundle({ corpusInfo, plan, resultsDirectory, gates = null, 
 		laneModels.set(lane.id, identity);
 	}
 	const metrics = aggregateScores(corpusInfo, plan, runs), gate = evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport);
-	return { schemaVersion: 1, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, scorerSha256: SCORER_SHA256, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
+	return { schemaVersion: plan.schemaVersion, corpusId: corpusInfo.corpus.corpusId, corpusSha256: corpusInfo.sha256, planId: plan.planId, scorerSha256: SCORER_SHA256, configurationFingerprint, environmentFingerprint, resultCount: runs.length, gate, metrics };
 }
 
 function parseArgs(argv) {
@@ -601,7 +708,7 @@ function parseArgs(argv) {
 		invariant(/^--[a-z-]+$/.test(key ?? "") && value !== undefined && !value.startsWith("--") && options[key] === undefined, `invalid argument near ${key ?? "end"}`);
 		options[key] = value;
 	}
-	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates", "--baseline-report"]);
+	const allowed = command === "plan" ? new Set(["--corpus", "--modes", "--strategies", "--repetitions", "--output"]) : new Set(["--corpus", "--plan", "--results", "--output", "--gates", "--baseline-report"]);
 	invariant(Object.keys(options).every((key) => allowed.has(key)), "unknown argument");
 	for (const required of command === "plan" ? ["--corpus", "--modes", "--repetitions", "--output"] : ["--corpus", "--plan", "--results", "--output"]) invariant(options[required] !== undefined, `missing ${required}`);
 	return { command, options };
@@ -614,8 +721,8 @@ function writeExclusive(file, value) {
 async function main() {
 	const { command, options } = parseArgs(process.argv.slice(2)), corpusInfo = loadCorpus(options["--corpus"]);
 	if (command === "plan") {
-		const repetitions = Number(options["--repetitions"]), modes = options["--modes"].split(",");
-		const plan = createPlan(corpusInfo, modes, repetitions); writeExclusive(options["--output"], plan);
+		const repetitions = Number(options["--repetitions"]), modes = options["--modes"].split(","), strategies = options["--strategies"]?.split(",");
+		const plan = createPlan(corpusInfo, modes, repetitions, strategies); writeExclusive(options["--output"], plan);
 		console.log(`Wrote ${plan.entries.length}-run semantic benchmark plan ${plan.planId}.`); return;
 	}
 	const plan = readJson(path.resolve(options["--plan"])).value, gates = options["--gates"] ? readJson(path.resolve(options["--gates"])).value : null; invariant(!gates || options["--baseline-report"], "--gates requires --baseline-report"); const baselineRead = options["--baseline-report"] ? readJson(path.resolve(options["--baseline-report"])) : null, baselineReport = baselineRead ? { sha256: sha256(baselineRead.bytes), value: baselineRead.value } : null;

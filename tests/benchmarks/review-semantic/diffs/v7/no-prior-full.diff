@@ -1,0 +1,11 @@
+diff --git a/src/branch.ts b/src/branch.ts
+index 3523b49..7dbf305 100644
+--- a/src/branch.ts
++++ b/src/branch.ts
+@@ -1,4 +1,4 @@
+-import { execFile } from "node:child_process";
++import { exec } from "node:child_process";
+ export function showBranch(branch: string) {
+-	return execFile("git", ["show", branch]);
++	return exec(`git show ${branch}`);
+ }
