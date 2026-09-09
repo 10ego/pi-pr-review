@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "corpusId": "pi-pr-review-semantic-v7",
-  "description": "Paired fresh and incremental re-review cases with pinned prior state, Git histories, host-rendered publication Markdown, and separately bound terminal Markdown.",
+  "description": "Paired fresh and incremental re-review cases with pinned prior state, Git histories, host-rendered publication Markdown, separately bound terminal Markdown, and prompt-conformant em-dash prior-status lines.",
   "lenses": [
     "correctness-contracts",
     "security-performance",

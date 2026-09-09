@@ -167,7 +167,7 @@ function priorStatuses(markdown) {
 	for (const rawLine of body.split(/\r?\n/u)) {
 		let line = rawLine.trim();
 		for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; }
-		const match = /^(resolved|still open|obsolete)\s*:\s*(.+)$/iu.exec(line); if (!match) continue;
+		const match = /^(resolved|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue;
 		const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title });
 	}
 	return statuses;
