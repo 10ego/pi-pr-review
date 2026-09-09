@@ -54,7 +54,6 @@ import {
 	type ReviewModeResolution,
 } from "../lib/pr-review-publish.ts";
 import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
-import { reviewCandidateDispositionRegistry } from "../lib/pr-review-candidates.ts";
 import { priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
@@ -1161,24 +1160,6 @@ export default function registerReviewTable(
 			retainedGeneration,
 		);
 		const priorStatuses = recordedPriorStatuses ?? [];
-		const candidateFinalization = reviewCandidateDispositionRegistry.finalization(
-			ctx.sessionManager.getSessionId(),
-			retainedGeneration,
-		);
-		const finalizedFindings = reviewCandidateDispositionRegistry.acceptedFindings(
-			ctx.sessionManager.getSessionId(),
-			retainedGeneration,
-		) ?? [];
-		const hostFinalizedReview = active?.reviewBinding && candidateFinalization ? {
-			pr: { number: active.reviewBinding.prNumber, title: active.reviewBinding.prTitle, head_sha: active.reviewBinding.reviewedHeadSha },
-			disposition: "reviewed" as const,
-			overview: candidateFinalization.overview,
-			verification: candidateFinalization.verification,
-			findings: [...finalizedFindings],
-			verdict: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "request_changes" : "approve",
-			overall_correctness: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "patch is incorrect" : "patch is correct",
-			overall_explanation: candidateFinalization.overview,
-		} : undefined;
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1187,13 +1168,9 @@ export default function registerReviewTable(
 				headSha: active.reviewBinding.reviewedHeadSha,
 				laneArtifacts,
 				expectedLaneDescriptors,
-				...(hostFinalizedReview || trustedStrictReview ? { strictJsonReview: hostFinalizedReview ?? trustedStrictReview } : {}),
+				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
 				...(priorRequiredTitles.length > 0 ? { priorRevalidationRequiredTitles: priorRequiredTitles } : {}),
 				...(recordedPriorStatuses !== undefined ? { priorRevalidationStatuses: priorStatuses } : {}),
-				...(candidateFinalization !== undefined ? {
-					candidateDispositionRecorded: true,
-					acceptedCandidateIds: candidateFinalization.decisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId),
-				} : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;

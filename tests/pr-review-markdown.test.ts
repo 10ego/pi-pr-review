@@ -1066,27 +1066,6 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(stillOpen.mergeApprovalEligible).toBeFalse();
 	});
 
-	test("uses host-recorded candidate IDs as the authoritative finding set", () => {
-		const candidate = [
-			"title: [P1] Preserve retained blockers",
-			"severity: P1",
-			"why: A complete host lane retained this blocking candidate.",
-			"location: src/review.ts:10-10",
-			"side: RIGHT",
-			"in_diff: yes",
-			"pr_related: yes",
-			"confidence: 0.90",
-		].join("\n");
-		const lane = { ...completeLane, rawText: candidate } satisfies ReviewLaneArtifact;
-		const artifact = synthesizeReviewArtifact({
-			rawText: markdown, ...binding, laneArtifacts: [lane], expectedLaneDescriptors: [completeExpectedLane],
-			candidateDispositionRecorded: true, acceptedCandidateIds: ["correctness:0:1"],
-		});
-		expect(artifact.review.findings?.map((finding) => finding.title)).toEqual(["[P1] Preserve retained blockers"]);
-		expect(artifact.body).toContain("Preserve retained blockers");
-		expect(artifact.body).not.toContain("Keep the raw synthesis");
-	});
-
 	test("does not let a strict skipped disposition suppress retained lane candidates", () => {
 		const strictJsonReview = {
 			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
