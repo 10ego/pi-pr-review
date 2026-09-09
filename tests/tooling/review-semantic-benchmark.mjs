@@ -32,7 +32,7 @@ const LEGACY_MODE_TOPOLOGIES = Object.freeze({
 	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
 	deep: MODE_TOPOLOGIES.deep,
 });
-const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review", "incremental-gap": "incremental-gap", "incremental-contracts": "incremental-contracts", "incremental-security-performance": "incremental-security-performance", "incremental-conventions": "incremental-conventions", "incremental-deep": "incremental-deep" });
+const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review", "incremental-gap": "incremental-gap", "incremental-correctness": "incremental-correctness", "incremental-contracts": "incremental-contracts", "incremental-security-performance": "incremental-security-performance", "incremental-conventions": "incremental-conventions", "incremental-deep": "incremental-deep" });
 const EXPLICIT_NON_FINDING = [
 	/\bno (?:issue|finding|bug|defect|problem)(?: exists| here| with this)?\b/iu,
 	/\b(?:is|are|remains?|appears?) (?:safe|correct|valid)\b/iu,
@@ -290,8 +290,8 @@ export function expectedModeTopology(mode, item, options = {}) {
 	if (options.strategy === "incremental" && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
 		const delta = item.priorState.relationship === "same_head" ? []
 			: mode === "deep" ? ["incremental-deep"]
-				: mode === "full" ? ["incremental-contracts", "incremental-security-performance", "incremental-conventions"]
-					: ["incremental-contracts", "incremental-security-performance"];
+				: mode === "full" ? ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"]
+					: ["incremental-correctness", "incremental-contracts", "incremental-security-performance"];
 		const passIds = ["incremental-gap", ...delta];
 		return { passIds, shardCount: 1, maxParallel: passIds.length };
 	}

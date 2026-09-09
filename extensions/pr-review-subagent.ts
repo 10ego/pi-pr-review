@@ -176,8 +176,9 @@ const FIXED_REVIEW_TOPOLOGIES: Readonly<Record<ReviewMode, readonly FixedReviewP
 	]),
 });
 const INCREMENTAL_DELTA_PASSES = Object.freeze({
-	"incremental-contracts": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed state, lifecycle, ordering, concurrency, cancellation, compile, type, API, data, error, boundary, and integration defects." }),
-	"incremental-security-performance": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed security, resource ownership, cleanup, performance, scalability, I/O, memory, and contention defects." }),
+	"incremental-correctness": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed state, lifecycle, ordering, concurrency, and cancellation defects." }),
+	"incremental-contracts": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed compile, type, API, data, error, boundary, and integration defects." }),
+	"incremental-security-performance": Object.freeze({ tier: "heavy" as const, modes: ["quick", "balanced", "full"] as const, scope: "Review the new-commit delta for introduced or exposed security, resource, performance, scalability, I/O, memory, and contention defects." }),
 	"incremental-conventions": Object.freeze({ tier: "medium" as const, modes: ["full"] as const, scope: "Review the new-commit delta against the supplied applicable conventions and for concrete maintainability defects at every severity." }),
 	"incremental-deep": Object.freeze({ tier: "heavy" as const, modes: ["deep"] as const, scope: "Review the new-commit delta as one integrated change for introduced or exposed defects at every severity." }),
 });
