@@ -54,7 +54,6 @@ import {
 	type ReviewModeResolution,
 } from "../lib/pr-review-publish.ts";
 import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
-import { reviewCandidateDispositionRegistry } from "../lib/pr-review-candidates.ts";
 import { priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
@@ -1161,10 +1160,6 @@ export default function registerReviewTable(
 			retainedGeneration,
 		);
 		const priorStatuses = recordedPriorStatuses ?? [];
-		const candidateDecisions = reviewCandidateDispositionRegistry.decisions(
-			ctx.sessionManager.getSessionId(),
-			retainedGeneration,
-		);
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1176,10 +1171,6 @@ export default function registerReviewTable(
 				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
 				...(priorRequiredTitles.length > 0 ? { priorRevalidationRequiredTitles: priorRequiredTitles } : {}),
 				...(recordedPriorStatuses !== undefined ? { priorRevalidationStatuses: priorStatuses } : {}),
-				...(candidateDecisions !== undefined ? {
-					candidateDispositionRecorded: true,
-					acceptedCandidateIds: candidateDecisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId),
-				} : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;
