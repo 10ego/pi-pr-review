@@ -1055,6 +1055,15 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.quality).toBe("fully_parsed");
 		expect(artifact.body).toBe("");
 		expect(artifact.mergeApprovalEligible).toBeTrue();
+
+		const stillOpen = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical prior"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "still open", severity: "P1", title: "Canonical prior", evidence: "defect remains in current source" }],
+		});
+		expect(stillOpen.quality).toBe("fully_parsed");
+		expect(stillOpen.mergeApprovalEligible).toBeFalse();
 	});
 
 	test("does not let a strict skipped disposition suppress retained lane candidates", () => {

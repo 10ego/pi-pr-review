@@ -939,6 +939,12 @@ export function synthesizeReviewArtifact(input: {
 			safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [],
 			validatedLaneFindings,
 		);
+		const stillOpenStatuses = (input.priorRevalidationStatuses ?? []).filter((status) => status.status === "still open");
+		const strictPriorStillOpenBlocking = stillOpenStatuses.some((status) => status.severity === "P0" || status.severity === "P1");
+		const strictFindingTitles = strictFindings.map((finding) => String(finding.title ?? "")
+			.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase());
+		const strictPriorStillOpenReentered = stillOpenStatuses.every((status) =>
+			strictFindingTitles.includes(status.title.replace(/\s+/g, " ").trim().toLowerCase()));
 		const body = bodyFallback
 			? buildDegradedReviewBody({
 				rawText: input.rawText,
@@ -981,7 +987,7 @@ export function synthesizeReviewArtifact(input: {
 			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
-			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied,
+			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied && !strictPriorStillOpenBlocking && strictPriorStillOpenReentered,
 			diagnostics: Object.freeze(bodyFallback
 				? [recoveredOverridesSkip
 					? "retained lane findings overrode a skipped model synthesis"
