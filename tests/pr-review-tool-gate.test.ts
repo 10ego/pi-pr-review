@@ -162,7 +162,8 @@ describe("review tool execution gate", () => {
 	});
 
 	test("pre-registers the exact cumulative topology for each mode", () => {
-		expect(cumulativeExpectedLanes("same_head", "balanced").map((lane) => lane.key)).toEqual(["incremental-gap"]);
+		expect(cumulativeExpectedLanes("same_head", "balanced").map((lane) => lane.key)).toEqual(["incremental-gap", "incremental-security-performance"]);
+		expect(cumulativeExpectedLanes("same_head", "deep").map((lane) => lane.key)).toEqual(["incremental-gap"]);
 		expect(cumulativeExpectedLanes("incremental", "balanced").map((lane) => lane.key)).toEqual([
 			"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance",
 		]);
@@ -314,6 +315,14 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: true, reason: "context_failed" },
 		});
+		const sameHeadResource = await h.tools.get("review_subagent").execute("same-head-resource", {
+			incremental_pass: "incremental-security-performance", tier: "heavy", objective: "ignored", context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(sameHeadResource).toMatchObject({ isError: true, details: { tier: "heavy", contextFileBytes: 0 } });
+		const sameHeadWrongPass = await h.tools.get("review_subagent").execute("same-head-wrong", {
+			incremental_pass: "incremental-correctness", tier: "heavy", objective: "ignored", context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(sameHeadWrongPass).toMatchObject({ isError: true, details: { authorized: false, reason: "incremental_pass" } });
 		expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
 		const wrongTier = await h.tools.get("review_subagent").execute("delta-1", {
 			incremental_pass: "incremental-correctness",

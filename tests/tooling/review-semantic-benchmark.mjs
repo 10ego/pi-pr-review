@@ -294,7 +294,7 @@ export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
 	if (options.strategy === "incremental" && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
-		const delta = item.priorState.relationship === "same_head" ? []
+		const delta = item.priorState.relationship === "same_head" ? (mode === "deep" ? [] : ["incremental-security-performance"])
 			: mode === "deep" ? ["incremental-deep"]
 				: mode === "full" ? ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"]
 					: ["incremental-correctness", "incremental-contracts", "incremental-security-performance"];

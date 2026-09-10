@@ -240,6 +240,9 @@ export function cumulativeExpectedLanes(
 	if (relationship !== "same_head" && relationship !== "incremental") return [];
 	return [
 		{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		...(relationship === "same_head" && reviewMode !== "deep"
+			? [{ key: "incremental-security-performance" as const, tier: "heavy" as const, minorHygiene: false, expectedOutput: "review_lane" as const }]
+			: []),
 		...(relationship === "incremental" && hasIncrementalDiff
 			? INCREMENTAL_DELTA_PASS_IDS.filter((key) => (INCREMENTAL_DELTA_PASSES[key].modes as readonly string[]).includes(reviewMode))
 				.map((key) => ({ key, tier: INCREMENTAL_DELTA_PASSES[key].tier, minorHygiene: false, expectedOutput: "review_lane" as const }))
@@ -2021,7 +2024,8 @@ export default function registerPrReviewSubagents(
 					if (!loopCoordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from(fullDiff, "utf8"), ctx)) throw new Error("could not bind the prepared full diff");
 					for (const descriptor of expectedPreparedLanes) {
 						if (descriptor.key === "incremental-gap") continue;
-						if (!incrementalText || !loopCoordinator.registerPreparedContext(lease, descriptor.key, Buffer.from(incrementalText, "utf8"), ctx)) throw new Error("could not bind the prepared incremental diff");
+						const preparedLaneText = snapshot.relationship === "same_head" ? fullDiff : incrementalText;
+						if (!preparedLaneText || !loopCoordinator.registerPreparedContext(lease, descriptor.key, Buffer.from(preparedLaneText, "utf8"), ctx)) throw new Error("could not bind the prepared cumulative lane diff");
 					}
 					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
 				}
@@ -2422,7 +2426,7 @@ export default function registerPrReviewSubagents(
 			"Run a tiered PR-review pass (light/medium/heavy) in an isolated subagent on the configured model",
 		promptGuidelines: [
 			"Use review_subagent for a single /pr-review pass when review_subagents is unavailable, when rerunning one failed batch pass, or for each host-fixed incremental delta pass named by incremental_pass.",
-			"Incremental delta passes use the prior-to-current compare diff, compact trusted PR metadata, and no participant discussion; the host overrides scope and policy from incremental_pass.",
+			"Incremental delta passes use the prior-to-current compare diff, compact trusted PR metadata, and no participant discussion; the same-head security-performance pass uses the exact prepared full diff. The host overrides scope and policy from incremental_pass.",
 			"When rerunning a failed pass, reuse the captured complete diff with `context_file` plus compact PR metadata in `context`; embedding the diff in context remains supported for compatibility.",
 		],
 		parameters: ReviewSubagentParams,
@@ -2439,7 +2443,8 @@ export default function registerPrReviewSubagents(
 			const incrementalPass = incrementalPassId ? INCREMENTAL_DELTA_PASSES[incrementalPassId] : undefined;
 			const relationship = loopCoordinator.priorRelationship(ctx);
 			const cumulative = loopCoordinator.peek()?.incremental === true && (relationship === "same_head" || relationship === "incremental");
-			if (incrementalPassId && (!incrementalPass || relationship !== "incremental" ||
+			const sameHeadResourcePass = relationship === "same_head" && incrementalPassId === "incremental-security-performance" && reviewMode !== "deep";
+			if (incrementalPassId && (!incrementalPass || (relationship !== "incremental" && !sameHeadResourcePass) ||
 				!(incrementalPass.modes as readonly string[]).includes(reviewMode) || tier !== incrementalPass.tier)) {
 				return {
 					content: [{ type: "text", text: "review_subagent incremental_pass does not match the host-established relationship, mode, or tier." }],
@@ -2497,7 +2502,9 @@ export default function registerPrReviewSubagents(
 				{
 					...(incrementalPassId || implicitGap ? { id: artifactKey } : {}),
 					tier,
-					objective: implicitGap ? INCREMENTAL_GAP_OBJECTIVE : incrementalPass?.scope ?? params.objective,
+					objective: implicitGap ? INCREMENTAL_GAP_OBJECTIVE : sameHeadResourcePass
+						? "Independently review the complete unchanged base-to-head PR diff for security, resource-lifecycle, performance, scalability, I/O, memory, and contention defects. Treat prior discussion as unavailable and return only independently substantiated findings."
+						: incrementalPass?.scope ?? params.objective,
 					context: loadedContext.context,
 					toolPolicy: incrementalPass || implicitGap ? "configured" : normalizeToolPolicy(params.tool_policy),
 					majorOnly: incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,

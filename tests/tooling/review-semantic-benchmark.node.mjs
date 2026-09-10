@@ -138,6 +138,9 @@ test("cumulative schema-v2 cases bind replies and require gap plus mode-specific
 	]);
 	assert.deepEqual(expectedModeTopology("deep", ancestor, { strategy: "incremental" }).passIds, ["incremental-gap", "incremental-deep"]);
 	assert.deepEqual(expectedModeTopology("balanced", sameHead, { strategy: "incremental" }), {
+		passIds: ["incremental-gap", "incremental-security-performance"], shardCount: 1, maxParallel: 2,
+	});
+	assert.deepEqual(expectedModeTopology("deep", sameHead, { strategy: "incremental" }), {
 		passIds: ["incremental-gap"], shardCount: 1, maxParallel: 1,
 	});
 	assert.equal(ancestor.priorState.review.comments[0].replies.length, 1);
