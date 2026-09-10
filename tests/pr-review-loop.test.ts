@@ -57,6 +57,25 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.acquire(h.ctx as any)).toBeDefined();
 	});
 
+	test("runs invocation cleanup exactly once on consume or clear", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		let cleanups = 0;
+		expect(h.coordinator.registerCleanup(lease, () => { cleanups++; }, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.consume()?.prNumber).toBe(7);
+		expect(cleanups).toBe(1);
+		h.coordinator.clear();
+		expect(cleanups).toBe(1);
+		expect(h.coordinator.registerCleanup(lease, () => { cleanups++; }, h.ctx as any)).toBeFalse();
+
+		h.coordinator.begin(parsePublishMode("/pr-review 8"), autoOff, "interactive", h.ctx as any);
+		const nextLease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerCleanup(nextLease, () => { cleanups++; }, h.ctx as any)).toBeTrue();
+		h.coordinator.clear();
+		expect(cleanups).toBe(2);
+	});
+
 	test("suspends every tool for output repair and restores only base tools", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);

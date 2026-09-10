@@ -63,9 +63,10 @@ export class ReviewCandidateDispositionRegistry {
 			decisions.some((decision) => !entry.candidates.has(decision.candidateId))) {
 			return { ok: false, error: "decisions must cover every registered candidate exactly once" };
 		}
+		const acceptedIds = new Set(decisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId));
 		for (const decision of decisions) {
-			if (decision.disposition === "duplicate" && (!decision.duplicateOf || decision.duplicateOf === decision.candidateId || !entry.candidates.has(decision.duplicateOf))) {
-				return { ok: false, error: "duplicate decisions must reference another registered candidate" };
+			if (decision.disposition === "duplicate" && (!decision.duplicateOf || decision.duplicateOf === decision.candidateId || !acceptedIds.has(decision.duplicateOf))) {
+				return { ok: false, error: "duplicate decisions must reference another accepted candidate" };
 			}
 			if (decision.disposition !== "duplicate" && decision.duplicateOf) return { ok: false, error: "only duplicate decisions may include duplicate_of" };
 		}
@@ -81,6 +82,10 @@ export class ReviewCandidateDispositionRegistry {
 
 	finalization(sessionId: string, generation: number): ReviewCandidateFinalization | undefined {
 		return this.entries.get(`${sessionId}:${generation}`)?.finalization;
+	}
+
+	clear(sessionId: string, generation: number): void {
+		this.entries.delete(`${sessionId}:${generation}`);
 	}
 
 	acceptedFindings(sessionId: string, generation: number): readonly ReviewFindingLike[] | undefined {

@@ -63,7 +63,7 @@ import { reviewCandidateDispositionRegistry, type ReviewCandidateRecord } from "
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
-import { loadReviewContext } from "../lib/pr-review-context.ts";
+import { loadReviewContext, MAX_REVIEW_CONTEXT_FILE_BYTES } from "../lib/pr-review-context.ts";
 import { discoverPriorReview, normalizePriorStatusEvidence, PRIOR_GH_OUTPUT_MAX_BYTES, PRIOR_REVIEW_MAX_FINDINGS, priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import { ghRawText } from "../lib/pr-review-publish.ts";
 import {
@@ -1880,7 +1880,7 @@ export default function registerPrReviewSubagents(
 		promptSnippet: "Prepare cumulative metadata, prior discussion, relationship, and diff files",
 		promptGuidelines: [
 			"Use once instead of separate Step 1 metadata, identity, diff capture, prior discovery, and compare commands.",
-			"Use returned fullDiffFile and incrementalDiffFile directly; remove returned temporaryDirectory after final validation.",
+			"Use returned fullDiffFile and incrementalDiffFile directly; the host removes temporaryDirectory when the invocation closes.",
 			"If preparation fails or reports unusable prior state, fail open to the ordinary full review path.",
 		],
 		parameters: PrReviewPrepareParams,
@@ -1898,23 +1898,20 @@ export default function registerPrReviewSubagents(
 					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,url,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
 					ghRawText(["pr", "diff", String(params.pr_number)], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
 				]);
-				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) return reviewLoopDeniedResult("pr_review_prepare");
-				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
-				if (shouldRegister) {
-					if (!loopCoordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], ctx)) return reviewLoopDeniedResult("pr_review_prepare");
-					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
-				}
 				const metadataRaw = JSON.parse(metadataText) as Record<string, unknown>;
+				const fullDiffBytes = Buffer.byteLength(fullDiff);
+				if (metadataRaw.number !== params.pr_number || metadataRaw.headRefOid !== snapshot.currentHead || !/^[0-9a-f]{40}$/i.test(snapshot.currentHead)) {
+					throw new Error("prepared metadata does not match prior discovery");
+				}
+				const boundHead = loopCoordinator.peek()?.reviewBinding?.reviewedHeadSha;
+				if (boundHead && boundHead.toLowerCase() !== snapshot.currentHead.toLowerCase()) throw new Error("prepared head does not match the invocation binding");
+				if (!fullDiff.trim() || fullDiffBytes > MAX_REVIEW_CONTEXT_FILE_BYTES) throw new Error("prepared full diff is empty or exceeds the review context bound");
 				const metadata = {
 					number: metadataRaw.number, title: metadataRaw.title, state: metadataRaw.state, isDraft: metadataRaw.isDraft,
 					author: metadataRaw.author, baseRefName: metadataRaw.baseRefName, headRefName: metadataRaw.headRefName,
 					headRefOid: metadataRaw.headRefOid, mergeable: metadataRaw.mergeable, url: metadataRaw.url, files: metadataRaw.files,
 				};
-				temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-prepare-"));
-				const fullDiffFile = path.join(temporaryDirectory, "full.diff");
-				fs.writeFileSync(fullDiffFile, fullDiff, { mode: 0o600 });
-				let incrementalDiffFile: string | undefined;
-				let incrementalDiffBytes = 0;
+				let incrementalText: string | undefined;
 				let incrementalEmpty = snapshot.relationship === "same_head";
 				if (snapshot.relationship === "incremental" && snapshot.prior) {
 					const compare = await ghRawText([
@@ -1923,13 +1920,33 @@ export default function registerPrReviewSubagents(
 						"--jq", INCREMENTAL_COMPARE_JQ,
 					], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
 					if (/^diff --git /m.test(compare)) {
-						incrementalDiffFile = path.join(temporaryDirectory, "incremental.diff");
-						fs.writeFileSync(incrementalDiffFile, compare, { mode: 0o600 });
-						incrementalDiffBytes = Buffer.byteLength(compare);
+						if (Buffer.byteLength(compare) > MAX_REVIEW_CONTEXT_FILE_BYTES) throw new Error("prepared incremental diff exceeds the review context bound");
+						incrementalText = compare;
 						incrementalEmpty = false;
 					} else incrementalEmpty = true;
 				}
-				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes: Buffer.byteLength(fullDiff), incrementalDiffFile, incrementalDiffBytes, incrementalEmpty };
+				// No relationship or registry state is mutated until every GitHub read,
+				// bound check, and compare transformation has succeeded.
+				temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-prepare-"));
+				const fullDiffFile = path.join(temporaryDirectory, "full.diff");
+				fs.writeFileSync(fullDiffFile, fullDiff, { mode: 0o600 });
+				let incrementalDiffFile: string | undefined;
+				if (incrementalText !== undefined) {
+					incrementalDiffFile = path.join(temporaryDirectory, "incremental.diff");
+					fs.writeFileSync(incrementalDiffFile, incrementalText, { mode: 0o600 });
+				}
+				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) throw new Error("could not bind the prepared relationship");
+				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
+				if (shouldRegister) {
+					if (!loopCoordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], ctx)) throw new Error("could not register prepared gap coverage");
+					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
+				}
+				const ownedDirectory = temporaryDirectory;
+				if (!loopCoordinator.registerCleanup(lease, () => {
+					fs.rmSync(ownedDirectory, { recursive: true, force: true });
+					reviewCandidateDispositionRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+				}, ctx)) throw new Error("could not register prepared context cleanup");
+				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes, incrementalDiffFile, incrementalDiffBytes: incrementalText ? Buffer.byteLength(incrementalText) : 0, incrementalEmpty };
 				return { content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }], details: prepared };
 			} catch (error) {
 				if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -2094,11 +2111,12 @@ export default function registerPrReviewSubagents(
 				disposition: decision.disposition,
 				...(decision.duplicate_of ? { duplicateOf: decision.duplicate_of } : {}),
 			}));
-			if (params.added_findings.some((finding) => finding.end_line < finding.start_line)) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: added finding line range is reversed" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
+			if (params.added_findings.some((finding) => finding.end_line < finding.start_line ||
+				!finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim() || path.isAbsolute(finding.path) || finding.path.includes("\\") || finding.path.split("/").includes("..") || /[\u0000-\u001f\u007f]/.test(finding.path))) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: added finding location is unsafe" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
 			}
 			const addedFindings = params.added_findings.map((finding) => ({
-				title: /^\[(?:P[0-3]|nit)\]\s/i.test(finding.title) ? finding.title : `[${finding.severity}] ${finding.title}`,
+				title: `[${finding.severity}] ${finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim()}`,
 				severity: finding.severity,
 				blocking: finding.severity === "P0" || finding.severity === "P1",
 				body: finding.body,

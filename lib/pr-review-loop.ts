@@ -50,6 +50,7 @@ interface ReviewLoopBinding {
 	totalTimer?: ReturnType<typeof setTimeout>;
 	synthesisTimer?: ReturnType<typeof setTimeout>;
 	synthesisStarted: boolean;
+	cleanupCallbacks: Set<() => void>;
 	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
@@ -190,6 +191,7 @@ export class ReviewLoopCoordinator {
 			budget,
 			onDeadline: onTotalDeadline,
 			synthesisStarted: false,
+			cleanupCallbacks: new Set(),
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -403,6 +405,17 @@ export class ReviewLoopCoordinator {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, lanes);
 	}
 
+	/** Register invocation-owned cleanup that runs exactly once on consume, clear, or replacement. */
+	registerCleanup(
+		lease: ReviewLoopLease,
+		cleanup: () => void,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return false;
+		this.binding.cleanupCallbacks.add(cleanup);
+		return true;
+	}
+
 	createArtifactPublisher(
 		lease: ReviewLoopLease,
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
@@ -554,6 +567,12 @@ export class ReviewLoopCoordinator {
 	}
 
 	private revokeBinding(): void {
+		if (this.binding) {
+			for (const cleanup of this.binding.cleanupCallbacks) {
+				try { cleanup(); } catch { /* cleanup is best-effort and authority still revokes */ }
+			}
+			this.binding.cleanupCallbacks.clear();
+		}
 		if (this.binding?.totalTimer) clearTimeout(this.binding.totalTimer);
 		if (this.binding?.synthesisTimer) clearTimeout(this.binding.synthesisTimer);
 		const generation = this.binding?.generation;

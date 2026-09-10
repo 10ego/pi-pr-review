@@ -12,7 +12,11 @@ describe("review candidate disposition registry", () => {
 		expect(registry.recordFinalization("s", 1, [
 			{ candidateId: "gap:1", disposition: "accepted" },
 			{ candidateId: "delta:1", disposition: "duplicate", duplicateOf: "missing" },
-		], [], "overview", "verification")).toEqual({ ok: false, error: "duplicate decisions must reference another registered candidate" });
+		], [], "overview", "verification")).toEqual({ ok: false, error: "duplicate decisions must reference another accepted candidate" });
+		expect(registry.recordFinalization("s", 1, [
+			{ candidateId: "gap:1", disposition: "rejected" },
+			{ candidateId: "delta:1", disposition: "duplicate", duplicateOf: "gap:1" },
+		], [], "overview", "verification")).toEqual({ ok: false, error: "duplicate decisions must reference another accepted candidate" });
 		const accepted = registry.recordFinalization("s", 1, [
 			{ candidateId: "gap:1", disposition: "accepted" },
 			{ candidateId: "delta:1", disposition: "duplicate", duplicateOf: "gap:1" },
@@ -20,5 +24,7 @@ describe("review candidate disposition registry", () => {
 		expect(accepted.ok).toBeTrue();
 		expect(registry.acceptedFindings("s", 1)?.map((finding) => finding.title)).toEqual(["[P1] Canonical", "[P2] Parent added"]);
 		expect(registry.recordFinalization("s", 1, [], [], "overview", "verification")).toEqual({ ok: false, error: "candidate finalization was already recorded for this invocation" });
+		registry.clear("s", 1);
+		expect(registry.acceptedFindings("s", 1)).toBeUndefined();
 	});
 });
