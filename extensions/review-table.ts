@@ -1283,7 +1283,9 @@ export default function registerReviewTable(
 		const degradedBody = artifact && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
 			? artifact.body
 			: undefined;
-		const hostFinalizedBody = candidateFinalization && artifact ? artifact.body : undefined;
+		const hostFinalizedBody = candidateFinalization && artifact
+			? JSON.stringify(artifact.review, null, 2)
+			: undefined;
 		// Automation must not surface an approval claim that host-owned lane
 		// evidence has already downgraded. Preserve raw fully parsed output for
 		// machine consumers, but replace degraded/incomplete terminal text with

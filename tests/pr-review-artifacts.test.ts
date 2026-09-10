@@ -583,6 +583,17 @@ describe("invocation lane artifact retention", () => {
 		expect(registry.retain(7, retained)).toBeFalse();
 	});
 
+	test("freezes retained artifacts before authoritative finalization", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [{ key: "call:0", tier: "heavy", minorHygiene: false }])).toBeTrue();
+		expect(registry.retain(7, artifact())).toBeTrue();
+		expect(registry.freeze(7)).toBeTrue();
+		expect(registry.retain(7, artifact({ rawText: "replacement" }))).toBeFalse();
+		expect(registry.snapshot(7)?.[0]?.rawText).toBe("NO FINDINGS.");
+		expect(registry.freeze(8)).toBeFalse();
+	});
+
 	test("snapshots concurrent completions in requested-pass order", () => {
 		const registry = new ReviewLaneArtifactRegistry();
 		registry.open(7);

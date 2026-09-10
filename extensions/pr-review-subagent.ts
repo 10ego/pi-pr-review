@@ -2174,6 +2174,7 @@ export default function registerPrReviewSubagents(
 				expectedCandidateLaneKeys,
 			);
 			if (!recorded.ok) return { content: [{ type: "text", text: `pr_review_candidate_disposition failed: ${recorded.error}` }], isError: true, details: { authorized: true, reason: "invalid_dispositions" } };
+			if (!loopCoordinator.freezeArtifacts(lease, ctx)) return reviewLoopDeniedResult("pr_review_candidate_disposition");
 			return { content: [{ type: "text", text: JSON.stringify({ action: "finalized", decisions: recorded.finalization.decisions, addedFindings: recorded.finalization.addedFindings.length }, null, 2) }], details: { authorized: true, finalization: recorded.finalization } };
 		},
 	});
@@ -2283,6 +2284,7 @@ export default function registerPrReviewSubagents(
 			const warnings = [...thinkingWarnings(config, ["heavy"]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			const candidates = incrementalCandidateRecords(expected.key, result.text, result.attempts, "nonempty");
+			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_incremental_gap");
 			if (!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, expected.key, candidates)) {
 				return { content: [{ type: "text", text: "Incremental gap candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}
@@ -2398,6 +2400,7 @@ export default function registerPrReviewSubagents(
 			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			const incrementalCandidates = incrementalPassId ? incrementalCandidateRecords(artifactKey, result.text, result.attempts, "review_lane") : [];
+			if (incrementalPassId && !loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			if (incrementalPassId && !reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, artifactKey, incrementalCandidates)) {
 				return { content: [{ type: "text", text: "Incremental delta candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}

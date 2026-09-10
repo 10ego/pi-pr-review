@@ -902,10 +902,12 @@ export class ReviewLaneArtifactRegistry {
 	private generation?: number;
 	private readonly artifacts = new Map<string, ReviewLaneArtifact>();
 	private readonly expectedLanes = new Map<string, ExpectedReviewLane>();
+	private frozen = false;
 
 	open(generation: number): void {
 		this.close();
 		this.generation = generation;
+		this.frozen = false;
 	}
 
 	expect(generation: number, lanes: readonly ExpectedReviewLane[]): boolean {
@@ -934,13 +936,19 @@ export class ReviewLaneArtifactRegistry {
 		return this.generation === generation ? Object.freeze([...this.expectedLanes.values()]) : undefined;
 	}
 
+	freeze(generation: number): boolean {
+		if (this.generation !== generation) return false;
+		this.frozen = true;
+		return true;
+	}
+
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
 		try {
 			// Read and validate every downstream-consumed field inside try/catch and
 			// store the safe frozen snapshot, never the hostile original.
 			const snapshot = laneArtifactSnapshot(artifact);
 			if (
-				!snapshot ||
+				!snapshot || this.frozen ||
 				this.generation !== generation || snapshot.generation !== generation ||
 				!this.expectedLanes.has(snapshot.key)
 			) return false;
@@ -968,6 +976,7 @@ export class ReviewLaneArtifactRegistry {
 		if (generation !== undefined && this.generation !== generation) return;
 		this.artifacts.clear();
 		this.expectedLanes.clear();
+		this.frozen = false;
 		this.generation = undefined;
 	}
 }
