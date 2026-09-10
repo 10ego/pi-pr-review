@@ -202,21 +202,34 @@ export function invalidStillOpenPriorTitles(
 
 /** Conservatively retain a source-revalidated still-open finding when the
  * parent omitted a duplicate manual re-entry. Host-recorded status supplies
- * identity/severity; a repo-wide location avoids trusting a stale line anchor. */
+ * identity/severity; only an identical same-head review may reuse the prior
+ * anchor, while ancestor reviews avoid trusting a potentially stale line. */
 export function automaticStillOpenCarryForwards(
-	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit"; evidence: string }[],
+	statuses: readonly { findingId?: string; status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit"; evidence: string }[],
 	represented: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
+	priorFindings: readonly { findingId: string; path?: string; startLine?: number; line?: number; side?: "LEFT" | "RIGHT" }[] = [],
+	preservePriorLocation = false,
 ): ReviewFindingLike[] {
 	return statuses.filter((status) => status.status === "still open" && !represented.some((finding) =>
 		canonicalFindingTitle(finding.title) === canonicalFindingTitle(status.title)))
-		.map((status) => ({
-			title: `[${status.severity}] ${canonicalFindingTitle(status.title)}`,
-			severity: status.severity,
-			blocking: status.severity === "P0" || status.severity === "P1",
-			body: `This previously reported defect remains open after current-source revalidation. Evidence: ${status.evidence}`,
-			confidence_score: 0.9,
-			code_location: null,
-		}));
+		.map((status) => {
+			const prior = preservePriorLocation ? priorFindings.find((finding) => finding.findingId === status.findingId) : undefined;
+			const safePath = prior?.path && !path.isAbsolute(prior.path) && !prior.path.includes("\\") &&
+				prior.path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..") && !/[\u0000-\u001f\u007f]/.test(prior.path);
+			const line = prior?.line;
+			const start = prior?.startLine ?? line;
+			const codeLocation = safePath && Number.isInteger(start) && Number.isInteger(line) && start! > 0 && line! >= start!
+				? { absolute_file_path: prior!.path!, line_range: { start: start!, end: line! }, side: prior?.side ?? "RIGHT" as const, commentable: true }
+				: null;
+			return {
+				title: `[${status.severity}] ${canonicalFindingTitle(status.title)}`,
+				severity: status.severity,
+				blocking: status.severity === "P0" || status.severity === "P1",
+				body: `This previously reported defect remains open after current-source revalidation. Evidence: ${status.evidence}`,
+				confidence_score: 0.9,
+				code_location: codeLocation,
+			};
+		});
 }
 
 export function cumulativeExpectedLanes(
@@ -2237,7 +2250,12 @@ export default function registerPrReviewSubagents(
 				}),
 				...addedFindings.map((finding) => ({ title: finding.title, severity: finding.severity })),
 			];
-			const automaticCarryForwards = automaticStillOpenCarryForwards(recordedStatuses ?? [], representedFindings);
+			const automaticCarryForwards = automaticStillOpenCarryForwards(
+				recordedStatuses ?? [],
+				representedFindings,
+				priorRevalidationRegistry.findings(ctx.sessionManager.getSessionId(), lease.generation) ?? [],
+				relationship === "same_head",
+			);
 			const finalizedAddedFindings = [...addedFindings, ...automaticCarryForwards];
 			const invalidStillOpen = invalidStillOpenPriorTitles(recordedStatuses ?? [], [
 				...representedFindings,

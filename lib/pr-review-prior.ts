@@ -166,8 +166,17 @@ export interface PriorFindingStatusRecord {
 	title: string;
 	evidence: string;
 }
+export interface PriorRegistryFinding {
+	findingId: string;
+	title: string;
+	severity?: PriorReviewFinding["severity"];
+	path?: string;
+	startLine?: number;
+	line?: number;
+	side?: "LEFT" | "RIGHT";
+}
 interface PriorRegistryEntry {
-	findings: readonly { findingId: string; title: string; severity?: PriorReviewFinding["severity"] }[];
+	findings: readonly PriorRegistryFinding[];
 	statuses?: readonly PriorFindingStatusRecord[];
 }
 
@@ -196,8 +205,15 @@ export class PriorRevalidationRegistry {
 				findingId: finding.findingId ?? (finding.threadId >= 0 ? `thread:${finding.threadId}` : `summary:${index}`),
 				title: finding.title,
 				...(finding.severity ? { severity: finding.severity } : {}),
+				...(finding.path ? { path: finding.path } : {}),
+				...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
+				...(finding.line > 0 ? { line: finding.line } : {}),
+				...(finding.side ? { side: finding.side } : {}),
 			})),
 		});
+	}
+	findings(sessionId: string, generation: number | undefined): readonly PriorRegistryFinding[] | undefined {
+		return generation === undefined ? undefined : this.entries.get(`${sessionId}:${generation}`)?.findings;
 	}
 	isRequired(sessionId: string, generation: number | undefined): readonly string[] | undefined {
 		return generation === undefined ? undefined : this.entries.get(`${sessionId}:${generation}`)?.findings.map((finding) => finding.title);

@@ -146,7 +146,7 @@ describe("review tool execution gate", () => {
 	});
 
 	test("automatically carries forward omitted still-open findings without masking a supplied downgrade", () => {
-		const statuses = [{ status: "still open", title: "Restore tenant guard", severity: "P1", evidence: "The unconditional return remains at src/access.ts:2." }] as const;
+		const statuses = [{ findingId: "thread:1", status: "still open", title: "Restore tenant guard", severity: "P1", evidence: "The unconditional return remains at src/access.ts:2." }] as const;
 		expect(automaticStillOpenCarryForwards(statuses, [])).toEqual([{
 			title: "[P1] Restore tenant guard",
 			severity: "P1",
@@ -155,6 +155,8 @@ describe("review tool execution gate", () => {
 			confidence_score: 0.9,
 			code_location: null,
 		}]);
+		expect(automaticStillOpenCarryForwards(statuses, [], [{ findingId: "thread:1", path: "src/access.ts", line: 2, side: "RIGHT" }], true)[0]?.code_location).toEqual({ absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true });
+		expect(automaticStillOpenCarryForwards(statuses, [], [{ findingId: "thread:1", path: "../outside", line: 2, side: "RIGHT" }], true)[0]?.code_location).toBeNull();
 		expect(automaticStillOpenCarryForwards(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual([]);
 		expect(invalidStillOpenPriorTitles(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual(["Restore tenant guard"]);
 	});
@@ -288,7 +290,7 @@ describe("review tool execution gate", () => {
 		const finalized = await h.tools.get("pr_review_candidate_disposition").execute("carry-finalize", { overview: "Review complete", verification: "Source inspected", decisions: [], added_findings: [{ title: "[P1] Restore tenant guard", severity: "P1", body: "Duplicate manual carry-forward without a safe current anchor.", confidence: 0.8, path: "src/access.ts" }] }, undefined, undefined, h.ctx);
 		expect(finalized.isError).toBeUndefined();
 		expect(finalized.details.automaticCarryForwards).toBe(1);
-		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: null })]);
+		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
 	});
 
 	test("incremental gap hunting requires a host-established usable prior relationship", async () => {
