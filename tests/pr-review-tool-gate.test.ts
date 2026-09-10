@@ -378,6 +378,30 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("does not spend the synthetic contract slot after a provider failure", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-provider-failure-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stderr.write("429 rate limited"); process.exit(1); });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-provider-failure-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("generic-heavy-failure", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeTrue();
+			expect(result.details.attempts).toHaveLength(1);
+			expect(readFileSync(counter, "utf8")).toBe("1");
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("incremental gap hunting rejects a context file that differs by any byte from GitHub", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-binding-"));
 		const previousPath = process.env.PATH;

@@ -471,6 +471,8 @@ interface ModelAttempt {
 	usedTier?: Tier;
 	kind: "primary" | "fallback" | "nearest" | "default";
 	fallbackIndex?: number;
+	/** Same-model secondary slot reserved only for a contract-partial result. */
+	contractRetry?: boolean;
 }
 
 const NEAREST_TIER_ORDER: Record<Tier, Tier[]> = {
@@ -1089,7 +1091,7 @@ async function runSubagentAttempt(
 	const batchRemainingBeforeAttemptMs = budget ? budget.batchDeadlineMs - startedAt : undefined;
 	const totalRemainingBeforeAttemptMs = budget ? budget.totalDeadlineMs - startedAt : undefined;
 	const deadlineAtMs = budget
-		? attemptDeadline(budget, pass.tier, attempt.kind === "fallback", () => startedAt)
+		? attemptDeadline(budget, pass.tier, attempt.kind === "fallback" || attempt.contractRetry === true, () => startedAt)
 		: undefined;
 	const deadlineMs = deadlineAtMs === undefined ? undefined : Math.max(0, deadlineAtMs - startedAt);
 	try {
@@ -1376,11 +1378,12 @@ async function runSubagentPass(
 	// while bounding retry amplification.
 	const configuredAttempts = attempts.slice(0, attempts[0]?.kind === "fallback" ? 1 : 2);
 	const boundedAttempts = pass.retryContractPartial === true && configuredAttempts.length === 1
-		? [configuredAttempts[0]!, configuredAttempts[0]!]
+		? [configuredAttempts[0]!, { ...configuredAttempts[0]!, contractRetry: true }]
 		: configuredAttempts;
 	for (let attemptIndex = 0; attemptIndex < boundedAttempts.length; attemptIndex++) {
 		const attempt = boundedAttempts[attemptIndex]!;
-		if (attempt.kind === "fallback" && budget && !fallbackBudget(budget).allowed) {
+		if (attempt.contractRetry === true && reports.at(-1)?.status !== "partial") break;
+		if ((attempt.kind === "fallback" || attempt.contractRetry === true) && budget && !fallbackBudget(budget).allowed) {
 			fallbackBudgetRejected = true;
 			break;
 		}
@@ -1448,7 +1451,7 @@ async function runSubagentPass(
 			forcedTermination: result.forcedTermination,
 			deadlineMs,
 			configuredDeadlineMs: budget
-				? (attempt.kind === "fallback" ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier])
+				? (attempt.kind === "fallback" || attempt.contractRetry === true ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier])
 				: undefined,
 			budgetElapsedBeforeAttemptMs,
 			batchRemainingBeforeAttemptMs,
