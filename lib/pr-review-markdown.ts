@@ -515,8 +515,9 @@ function retainedLaneText(lane: ReviewLaneArtifact): string {
 	return "";
 }
 
-function retainedLaneCandidateTexts(
-	lane: ReviewLaneArtifact,
+export function retainedReviewCandidateTexts(
+	rawText: string,
+	attempts: readonly Pick<ReviewLaneArtifact["attempts"][number], "ordinal" | "rawText">[],
 	contract: "review_lane" | "nonempty",
 ): string[] {
 	const texts: string[] = [];
@@ -534,13 +535,13 @@ function retainedLaneCandidateTexts(
 	// The lane-level text is the latest authoritative output. Earlier attempts
 	// remain eligible only for independently contract-valid findings; malformed
 	// prose can neither become a finding nor poison a valid earlier attempt.
-	if (retain(lane.rawText) === "stop") return texts;
+	if (retain(rawText) === "stop") return texts;
 	const ordinals = new Set<number>();
-	for (const attempt of lane.attempts) {
+	for (const attempt of attempts) {
 		if (ordinals.has(attempt.ordinal)) return texts;
 		ordinals.add(attempt.ordinal);
 	}
-	const newestFirst = [...lane.attempts].sort((left, right) =>
+	const newestFirst = [...attempts].sort((left, right) =>
 		left.ordinal === right.ordinal ? 0 : left.ordinal > right.ordinal ? -1 : 1);
 	for (const attempt of newestFirst) {
 		if (retain(attempt.rawText) === "stop") break;
@@ -558,7 +559,7 @@ function retainedLaneFindings(
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
 		let candidateOrdinal = 0;
-		for (const text of retainedLaneCandidateTexts(lane, contract)) {
+		for (const text of retainedReviewCandidateTexts(lane.rawText, lane.attempts, contract)) {
 			for (const candidate of extractValidatedReviewLaneCandidates(text, contract)) {
 				if (!candidate.prRelated) continue;
 				candidateOrdinal++;

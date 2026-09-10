@@ -60,6 +60,7 @@ import {
 	type ReviewLaneLifecycle,
 } from "../lib/pr-review-artifacts.ts";
 import { reviewCandidateDispositionRegistry, type ReviewCandidateRecord } from "../lib/pr-review-candidates.ts";
+import { retainedReviewCandidateTexts } from "../lib/pr-review-markdown.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
@@ -1599,13 +1600,24 @@ const PrReviewCandidateDispositionParams = Type.Object({
 	}, { additionalProperties: false }), { maxItems: PRIOR_REVIEW_MAX_FINDINGS }),
 }, { additionalProperties: false });
 
-function incrementalCandidateRecords(laneKey: string, rawText: string, contract: "review_lane" | "nonempty"): ReviewCandidateRecord[] {
-	return extractValidatedReviewLaneCandidates(rawText, contract)
+function incrementalCandidateRecords(
+	laneKey: string,
+	rawText: string,
+	attempts: readonly Pick<ModelAttemptReport, "rawText">[] | undefined,
+	contract: "review_lane" | "nonempty",
+): ReviewCandidateRecord[] {
+	let ordinal = 0;
+	return retainedReviewCandidateTexts(
+		rawText,
+		(attempts ?? []).map((attempt, index) => ({ ordinal: index + 1, rawText: attempt.rawText })),
+		contract,
+	).flatMap((text) => extractValidatedReviewLaneCandidates(text, contract)
 		.filter((candidate) => candidate.prRelated)
-		.map((candidate, index) => {
+		.map((candidate) => {
+			ordinal++;
 			const location = /^(.*):(\d+)(?:-(\d+))?$/.exec(candidate.location);
 			return {
-				id: `${laneKey}:${index + 1}`,
+				id: `${laneKey}:${ordinal}`,
 				laneKey,
 				finding: {
 					title: candidate.title,
@@ -1621,7 +1633,7 @@ function incrementalCandidateRecords(laneKey: string, rawText: string, contract:
 					} : null,
 				},
 			};
-		});
+		}));
 }
 
 function candidateIndexText(candidates: readonly ReviewCandidateRecord[]): string {
@@ -1893,22 +1905,26 @@ export default function registerPrReviewSubagents(
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			let temporaryDirectory: string | undefined;
 			try {
-				const [snapshot, metadataText, fullDiff] = await Promise.all([
+				const [snapshot, metadataText] = await Promise.all([
 					discoverPriorReview(ctx.cwd, params.pr_number, { signal: executionSignal ?? undefined }),
-					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,url,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
-					ghRawText(["pr", "diff", String(params.pr_number)], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
+					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,url,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
 				]);
 				const metadataRaw = JSON.parse(metadataText) as Record<string, unknown>;
-				const fullDiffBytes = Buffer.byteLength(fullDiff);
-				if (metadataRaw.number !== params.pr_number || metadataRaw.headRefOid !== snapshot.currentHead || !/^[0-9a-f]{40}$/i.test(snapshot.currentHead)) {
+				if (metadataRaw.number !== params.pr_number || metadataRaw.headRefOid !== snapshot.currentHead || !/^[0-9a-f]{40}$/i.test(snapshot.currentHead) || !/^[0-9a-f]{40}$/i.test(String(metadataRaw.baseRefOid ?? ""))) {
 					throw new Error("prepared metadata does not match prior discovery");
 				}
+				const fullDiff = await ghRawText([
+					"api", "--hostname", snapshot.hostname,
+					"-H", "Accept: application/vnd.github.v3.diff",
+					`repos/${snapshot.repository}/compare/${String(metadataRaw.baseRefOid)}...${snapshot.currentHead}`,
+				], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
+				const fullDiffBytes = Buffer.byteLength(fullDiff);
 				const boundHead = loopCoordinator.peek()?.reviewBinding?.reviewedHeadSha;
 				if (boundHead && boundHead.toLowerCase() !== snapshot.currentHead.toLowerCase()) throw new Error("prepared head does not match the invocation binding");
 				if (!fullDiff.trim() || fullDiffBytes > MAX_REVIEW_CONTEXT_FILE_BYTES) throw new Error("prepared full diff is empty or exceeds the review context bound");
 				const metadata = {
 					number: metadataRaw.number, title: metadataRaw.title, state: metadataRaw.state, isDraft: metadataRaw.isDraft,
-					author: metadataRaw.author, baseRefName: metadataRaw.baseRefName, headRefName: metadataRaw.headRefName,
+					author: metadataRaw.author, baseRefName: metadataRaw.baseRefName, baseRefOid: metadataRaw.baseRefOid, headRefName: metadataRaw.headRefName,
 					headRefOid: metadataRaw.headRefOid, mergeable: metadataRaw.mergeable, url: metadataRaw.url, files: metadataRaw.files,
 				};
 				let incrementalText: string | undefined;
@@ -1938,7 +1954,13 @@ export default function registerPrReviewSubagents(
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) throw new Error("could not bind the prepared relationship");
 				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
 				if (shouldRegister) {
-					if (!loopCoordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], ctx)) throw new Error("could not register prepared gap coverage");
+					const expectedPreparedLanes = [
+						{ key: "incremental-gap", tier: "heavy" as const, minorHygiene: false, expectedOutput: "nonempty" as const },
+						...(snapshot.relationship === "incremental"
+							? Object.entries(INCREMENTAL_PASS_POLICIES).map(([key, policy]) => ({ key, tier: policy.tier, minorHygiene: false, expectedOutput: "review_lane" as const }))
+							: []),
+					];
+					if (!loopCoordinator.registerExpectedArtifacts(lease, expectedPreparedLanes, ctx)) throw new Error("could not register prepared cumulative coverage");
 					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
 				}
 				const ownedDirectory = temporaryDirectory;
@@ -2235,7 +2257,7 @@ export default function registerPrReviewSubagents(
 			);
 			const warnings = [...thinkingWarnings(config, ["heavy"]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
-			const candidates = incrementalCandidateRecords(expected.key, result.text, "nonempty");
+			const candidates = incrementalCandidateRecords(expected.key, result.text, result.attempts, "nonempty");
 			if (!reviewCandidateDispositionRegistry.markCandidates(ctx.sessionManager.getSessionId(), lease.generation, candidates)) {
 				return { content: [{ type: "text", text: "Incremental gap candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}
@@ -2350,7 +2372,7 @@ export default function registerPrReviewSubagents(
 
 			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
-			const incrementalCandidates = incrementalPassId ? incrementalCandidateRecords(artifactKey, result.text, "review_lane") : [];
+			const incrementalCandidates = incrementalPassId ? incrementalCandidateRecords(artifactKey, result.text, result.attempts, "review_lane") : [];
 			if (incrementalPassId && !reviewCandidateDispositionRegistry.markCandidates(ctx.sessionManager.getSessionId(), lease.generation, incrementalCandidates)) {
 				return { content: [{ type: "text", text: "Incremental delta candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}

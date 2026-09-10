@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
+import { demoteHeadings, retainedReviewCandidateTexts, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
 import { validateInlineComments } from "../lib/pr-review-publish.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
@@ -1503,6 +1503,18 @@ describe("Markdown-first canonical review artifacts", () => {
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
 		expect(artifact.body).toContain("### overview-shard-1 — partial");
 		expect(artifact.body).toContain('- "overview-shard-1" — `partial`');
+	});
+
+	test("exposes the exact retry texts used for retained candidate IDs", () => {
+		const earlier = "title: [P2] Earlier\nseverity: P2\nwhy: retained\nlocation: x.ts:1\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.8";
+		expect(retainedReviewCandidateTexts("malformed fallback", [
+			{ ordinal: 1, rawText: earlier },
+			{ ordinal: 2, rawText: "malformed fallback" },
+		], "review_lane")).toEqual(["malformed fallback", earlier]);
+		expect(retainedReviewCandidateTexts("NO FINDINGS.", [
+			{ ordinal: 1, rawText: earlier },
+			{ ordinal: 2, rawText: "NO FINDINGS." },
+		], "review_lane")).toEqual([]);
 	});
 
 	test("recovers validated findings from an earlier attempt when the terminal fallback is malformed", () => {

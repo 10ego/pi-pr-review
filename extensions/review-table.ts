@@ -1175,6 +1175,8 @@ export default function registerReviewTable(
 			overview: candidateFinalization.overview,
 			verification: candidateFinalization.verification,
 			findings: [...finalizedFindings],
+			strengths: [],
+			notes: { correctness: "", security: "", performance: "" },
 			verdict: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "request_changes" : "approve",
 			overall_correctness: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "patch is incorrect" : "patch is correct",
 			overall_explanation: candidateFinalization.overview,
