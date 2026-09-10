@@ -52,3 +52,12 @@
 - Directional plans use `0bbfd891009fdd5e50031dcbde611315d847392a41da8991acdbc83e7d2a7a3a`; no directional row supports release decisions. Two six-case pilots after dispatch recovery completed 6/6 with every lane complete and no fallbacks. Canonical carry-forward reached 3/3 after scorer correction.
 - One broad same-head gap reviewer still showed stochastic resource recall. Runtime `aad3010` adds an independent same-head security/resource pass over the exact full diff. Its six-case pilot completed 6/6 and 20/20 lanes; both seeded same-head defects were visible, with the listener conservatively escalated P2→P1.
 - Scorer `f80c460` measures still-open identity directly by exact canonical title and equal-or-higher severity rather than requiring ordinary semantic-location matching. V14 also permits P1 matching for the P2 listener target while retaining P2 as the target, so exact-severity accuracy still records overclassification.
+
+## Corpus v14 decision
+
+- Valid immutable campaign: corpus SHA-256 `d55c079409b285f5e6a0efa2015bf92f065295889a78cc78ae9235c27f44d1f4`, plan `0850f69c3cecc8400559a11f5b3f5b24ec77fa1a9af1ce27383ad36c5122a4ba`, plan SHA-256 `e52dd71f83a86b31a086649cdce7ac233604c298a3c576ff253c59ff8ae959a1`.
+- Collection completed 24/24 in order with zero collector failures and no reruns.
+- Exact relationships/statuses were 12/12; still-open carry-forward was 6/6. Human adjudication of the five raw bounded-matcher misses found every seeded defect visibly present in both strategies (12/12 each), with exact-severity accuracy 83.3% incremental versus 75.0% fresh.
+- Operational completion tied at 10/12 and fallback tied at 16.7%. Incremental duplicate rate improved to 10.5% from fresh 27.3%; complete-pair median latency improved to 69.8s from 80.6s (ratio 0.866).
+- Automatic selection remains rejected: two incremental gap outputs were structurally partial, so incremental required-lane completion was 95.0% versus fresh 96.7% and failed the absolute all-lanes-complete gate.
+- Keep explicit `--incremental`. Next work should address gap-output contract reliability without weakening fail-closed evidence rules; do not rerun v14.

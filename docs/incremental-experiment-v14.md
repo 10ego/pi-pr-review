@@ -1,6 +1,6 @@
 # Cumulative re-review reliability experiment v14
 
-Status: **frozen; collection not started**.
+Status: **complete; automatic selection rejected**.
 
 ## Candidate
 
@@ -36,3 +36,21 @@ Execute every row once in stored order without reruns, skips, reordering, or sub
 8. Median incremental latency is no more than 25% above fresh.
 
 This campaign still cannot authorize automatic selection because it does not exercise selector mechanics or explicit `--fresh`; automatic defaulting additionally requires no worse median latency.
+
+## Result
+
+All 24 rows completed collection in stored order with zero collector failures and no reruns. The scorer reports `baseline_required` because no accepted baseline file was supplied. Raw and adjudicated results show:
+
+- relationship and exact prior-status accuracy: 12/12;
+- still-open carry-forward: 6/6;
+- adjudicated seeded-defect presence: 12/12 fresh and 12/12 incremental;
+- adjudicated exact-severity rate: 75.0% fresh and 83.3% incremental;
+- duplicate rate: 27.3% fresh and 10.5% incremental;
+- operational completion: 10/12 for both strategies;
+- required-lane completion: 96.7% fresh and 95.0% incremental;
+- publication fallback: 16.7% for both strategies;
+- complete-pair median latency: 80.6s fresh and 69.8s incremental, ratio 0.866.
+
+Five raw semantic misses were adjudicated as visibly present without changing the raw report: two token-log wording mismatches, two redirect findings present at P2 against a P1 target, and one exact canonical tenant finding whose automatic ancestor carry-forward intentionally used a repo-wide anchor. See `adjudication.json`.
+
+Automatic selection remains rejected because two incremental gap lanes were structurally partial, leaving incremental required-lane completion below fresh and violating the absolute all-lanes-complete gate. The explicit `--incremental` path remains available and is materially improved over v13.

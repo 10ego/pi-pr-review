@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage and severity without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "646aa1c67cd0c2c02b29ebd2",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "reason": "The canonical P1 at src/token.ts:4 explicitly says the full issued token is written to stdout/log output and can be recovered and replayed; the bounded concept matcher did not join the equivalent wording."
+    },
+    {
+      "planEntryId": "8a7eb1ea9427108c622aee16",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "reason": "The canonical P1 at src/token.ts:4 explicitly says every issued token reaches application logs and exposes a replayable credential; the bounded concept matcher did not join the equivalent wording."
+    },
+    {
+      "planEntryId": "8a7eb1ea9427108c622aee16",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "reason": "The canonical P2 at src/redirect.ts:2 identifies an unchecked returnUrl reaching navigation and enabling an arbitrary external-origin phishing redirect. This is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "bb164755aff26e0a41890438",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "reason": "Multiple canonical P2 findings at src/redirect.ts:2 identify the unchecked returnUrl as an attacker-controlled open redirect. The defect is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "d3661ba62c67c20cb197d664",
+      "strategy": "incremental",
+      "expectedFindingId": "invalid-rejection.tenant-check",
+      "reason": "The canonical P1 finding says canReadDocument unconditionally grants access and enables cross-tenant reads at src/access.ts:2; the host-carried exact prior title repeats the same source-grounded defect with a conservative repo-wide anchor."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incremental": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incrementalStillOpenCarryForward": { "matched": 6, "opportunities": 6, "recall": 1 }
+  },
+  "adjudicatedSeverity": {
+    "fresh": { "matched": 12, "underclassified": 1, "overclassified": 2, "exactSeverityRate": 0.75 },
+    "incremental": { "matched": 12, "underclassified": 1, "overclassified": 1, "exactSeverityRate": 0.8333333333333334 }
+  },
+  "unchangedOperationalFailures": {
+    "freshCompleteRuns": 10,
+    "incrementalCompleteRuns": 10,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.9666666666666667,
+    "incrementalLaneCompleteRate": 0.95,
+    "freshPublicationFallbackRate": 0.16666666666666666,
+    "incrementalPublicationFallbackRate": 0.16666666666666666
+  },
+  "unchangedAdvantages": {
+    "freshDuplicateRate": 0.2727272727272727,
+    "incrementalDuplicateRate": 0.10526315789473684,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 0.8660149709538316
+  },
+  "decision": "automatic selection rejected; explicit --incremental retained"
+}
