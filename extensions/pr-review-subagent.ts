@@ -1934,7 +1934,7 @@ export default function registerPrReviewSubagents(
 			try {
 				const [snapshot, metadataText] = await Promise.all([
 					discoverPriorReview(ctx.cwd, params.pr_number, { signal: executionSignal ?? undefined }),
-					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,url,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
+					ghRawText(["pr", "view", String(params.pr_number), "--json", "number,title,body,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,mergeable,url,changedFiles,files"], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES),
 				]);
 				const metadataRaw = JSON.parse(metadataText) as Record<string, unknown>;
 				if (metadataRaw.number !== params.pr_number || metadataRaw.headRefOid !== snapshot.currentHead || !/^[0-9a-f]{40}$/i.test(snapshot.currentHead) || !/^[0-9a-f]{40}$/i.test(String(metadataRaw.baseRefOid ?? ""))) {
@@ -1946,13 +1946,15 @@ export default function registerPrReviewSubagents(
 					`repos/${snapshot.repository}/compare/${String(metadataRaw.baseRefOid)}...${snapshot.currentHead}`,
 				], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
 				const fullDiffBytes = Buffer.byteLength(fullDiff);
+				const diffFileCount = (fullDiff.match(/^diff --git /gm) ?? []).length;
+				if (!Number.isSafeInteger(metadataRaw.changedFiles) || metadataRaw.changedFiles !== diffFileCount) throw new Error("prepared full diff file count does not match GitHub metadata");
 				const boundHead = loopCoordinator.peek()?.reviewBinding?.reviewedHeadSha;
 				if (boundHead && boundHead.toLowerCase() !== snapshot.currentHead.toLowerCase()) throw new Error("prepared head does not match the invocation binding");
 				if (!fullDiff.trim() || fullDiffBytes > MAX_REVIEW_CONTEXT_FILE_BYTES) throw new Error("prepared full diff is empty or exceeds the review context bound");
 				const metadata = {
 					number: metadataRaw.number, title: metadataRaw.title, state: metadataRaw.state, isDraft: metadataRaw.isDraft,
 					author: metadataRaw.author, baseRefName: metadataRaw.baseRefName, baseRefOid: metadataRaw.baseRefOid, headRefName: metadataRaw.headRefName,
-					headRefOid: metadataRaw.headRefOid, mergeable: metadataRaw.mergeable, url: metadataRaw.url, files: metadataRaw.files,
+					headRefOid: metadataRaw.headRefOid, mergeable: metadataRaw.mergeable, url: metadataRaw.url, changedFiles: metadataRaw.changedFiles, files: metadataRaw.files,
 				};
 				let incrementalText: string | undefined;
 				let incrementalEmpty = snapshot.relationship === "same_head";

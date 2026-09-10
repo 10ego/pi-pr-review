@@ -593,6 +593,9 @@ export interface CompletedReviewRecord {
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
+	priorRevalidationStatuses?: readonly { findingId: string; status: "resolved" | "rejected" | "still open" | "obsolete"; severity: "P0" | "P1" | "P2" | "P3" | "nit"; title: string; evidence: string }[];
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 	diagnostics?: readonly string[];
 }
 
@@ -620,6 +623,9 @@ export interface PersistedCompletedReview {
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
+	priorRevalidationStatuses?: readonly { findingId: string; status: "resolved" | "rejected" | "still open" | "obsolete"; severity: "P0" | "P1" | "P2" | "P3" | "nit"; title: string; evidence: string }[];
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 	diagnostics?: readonly string[];
 }
 
@@ -789,7 +795,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "priorRevalidationStatuses" | "candidateDispositionRecorded" | "acceptedCandidateIds" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -810,6 +816,9 @@ export class CompletedReviewCache {
 			...(typeof artifact?.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: artifact.mergeApprovalEligible }
 				: {}),
+			...(artifact?.priorRevalidationStatuses ? { priorRevalidationStatuses: artifact.priorRevalidationStatuses } : {}),
+			...(artifact?.candidateDispositionRecorded ? { candidateDispositionRecorded: true } : {}),
+			...(artifact?.acceptedCandidateIds ? { acceptedCandidateIds: artifact.acceptedCandidateIds } : {}),
 			...(artifact?.diagnostics ? { diagnostics: artifact.diagnostics } : {}),
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
@@ -848,6 +857,9 @@ export class CompletedReviewCache {
 			...(typeof record.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: record.mergeApprovalEligible }
 				: {}),
+			...(record.priorRevalidationStatuses ? { priorRevalidationStatuses: record.priorRevalidationStatuses } : {}),
+			...(record.candidateDispositionRecorded ? { candidateDispositionRecorded: true } : {}),
+			...(record.acceptedCandidateIds ? { acceptedCandidateIds: record.acceptedCandidateIds } : {}),
 			...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
 		};
 	}
@@ -915,6 +927,19 @@ export class CompletedReviewCache {
 		const persistedMergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
 			? value.mergeApprovalEligible
 			: undefined;
+		const priorRevalidationStatuses = Array.isArray(value.priorRevalidationStatuses) && value.priorRevalidationStatuses.length <= 200 &&
+			value.priorRevalidationStatuses.every((status) => isObject(status) && typeof status.findingId === "string" && typeof status.title === "string" && typeof status.evidence === "string" &&
+				["resolved", "rejected", "still open", "obsolete"].includes(String(status.status)) && ["P0", "P1", "P2", "P3", "nit"].includes(String(status.severity)))
+			? value.priorRevalidationStatuses as CompletedReviewRecord["priorRevalidationStatuses"]
+			: undefined;
+		if (Object.prototype.hasOwnProperty.call(value, "priorRevalidationStatuses") && !priorRevalidationStatuses) return false;
+		const acceptedCandidateIds = Array.isArray(value.acceptedCandidateIds) && value.acceptedCandidateIds.length <= 1_000 &&
+			value.acceptedCandidateIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 160) && new Set(value.acceptedCandidateIds).size === value.acceptedCandidateIds.length
+			? value.acceptedCandidateIds as string[]
+			: undefined;
+		if (Object.prototype.hasOwnProperty.call(value, "acceptedCandidateIds") && !acceptedCandidateIds) return false;
+		const candidateDispositionRecorded = value.candidateDispositionRecorded === true;
+		if (value.candidateDispositionRecorded !== undefined && value.candidateDispositionRecorded !== true) return false;
 		// Never trust a persisted true independently of the evidence it claims to
 		// summarize. Current-schema restored approvals require a fully parsed,
 		// complete artifact and at least one validated complete host lane. Legacy
@@ -935,6 +960,8 @@ export class CompletedReviewCache {
 				laneArtifacts: laneArtifacts ?? [],
 				expectedLaneDescriptors: expectedLaneDescriptors ?? [],
 				...(strictJsonReview ? { strictJsonReview } : {}),
+				...(priorRevalidationStatuses ? { priorRevalidationStatuses } : {}),
+				...(candidateDispositionRecorded ? { candidateDispositionRecorded: true, acceptedCandidateIds: acceptedCandidateIds ?? [] } : {}),
 			});
 			rawApprovalEvidenceValid = rebound.mergeApprovalEligible && rebound.review.verdict === "approve" &&
 				reviewHash(rebound.review) === reviewHash(parsed.review);
@@ -983,6 +1010,8 @@ export class CompletedReviewCache {
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
 			...(restoredMergeApprovalEligible !== undefined ? { mergeApprovalEligible: restoredMergeApprovalEligible } : {}),
+			...(priorRevalidationStatuses ? { priorRevalidationStatuses } : {}),
+			...(candidateDispositionRecorded ? { candidateDispositionRecorded: true, acceptedCandidateIds: acceptedCandidateIds ?? [] } : {}),
 			...(diagnostics ? { diagnostics } : {}),
 		});
 		return true;

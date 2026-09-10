@@ -700,10 +700,11 @@ export default function registerReviewTable(
 		if (!invocation.reviewBinding) {
 			return completionError(invocation, "the completed review has no frozen host repository binding; no publish-only cache is available");
 		}
-		const hostFinalized = !!reviewCandidateDispositionRegistry.finalization(
-			ctx.sessionManager.getSessionId(),
-			invocation.reviewBinding.invocationGeneration,
-		);
+		const completionSessionId = ctx.sessionManager.getSessionId();
+		const completionGeneration = invocation.reviewBinding.invocationGeneration;
+		const completionFinalization = reviewCandidateDispositionRegistry.finalization(completionSessionId, completionGeneration);
+		const completionPriorStatuses = priorRevalidationRegistry.statuses(completionSessionId, completionGeneration);
+		const hostFinalized = !!completionFinalization;
 		const repository = {
 			repository: invocation.reviewBinding.repository,
 			hostname: invocation.reviewBinding.hostname,
@@ -724,6 +725,11 @@ export default function registerReviewTable(
 			expectedLaneCount: artifact.expectedLaneCount,
 			completeness: artifact.completeness,
 			mergeApprovalEligible: artifact.mergeApprovalEligible,
+			...(completionPriorStatuses !== undefined ? { priorRevalidationStatuses: completionPriorStatuses } : {}),
+			...(completionFinalization !== undefined ? {
+				candidateDispositionRecorded: true,
+				acceptedCandidateIds: completionFinalization.decisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId),
+			} : {}),
 			diagnostics: artifact.diagnostics,
 		} : undefined);
 		const { record } = replacement;
