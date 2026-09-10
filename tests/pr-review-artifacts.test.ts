@@ -272,6 +272,17 @@ describe("semantic lane completion", () => {
 		}
 	});
 
+	test("accepts unambiguous ASCII case variants of candidate labels without repairing other framing", () => {
+		const upperLabels = integratedCandidate().split("\n").map((line) => {
+			const separator = line.indexOf(":");
+			return `${line.slice(0, separator).replace(/(^|_)([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`)}${line.slice(separator)}`;
+		}).join("\n");
+		const valid = `${integratedFraming()}\n${upperLabels}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: valid, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: valid.replace("Review status: COMPLETE", "Review status status completeStatus: COMPLETE"), exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${valid}\ntitle: [P2] Duplicate field`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+	});
+
 	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
 		const nit = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.").replace("[P2] Preserve review evidence", "[nit] Preserve review evidence").replace("severity: P2", "severity: nit")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
@@ -354,7 +365,6 @@ declared prose\nNO FINDINGS.`,
 
 		for (const malformed of [
 			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "severity: P9")}`,
-			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "Severity: P2")}`,
 			`${integratedFraming("heading").replace("## Overview\n", "## Overview: inline\n")}\nNO FINDINGS.`,
 			`${integratedFraming()}\n${integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P1] Preserve review evidence").replace("severity: P2", "severity: P2")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("side: RIGHT", "side: MIDDLE")}`,

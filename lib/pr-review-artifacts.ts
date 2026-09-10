@@ -128,7 +128,9 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
  * are documented in the public tool schema and both reviewer prompts: framing
  * labels may be plain (`Overview:`), bold (`**Overview:**`), or ATX headings
  * followed by one top-level value line; candidate fields may be plain/bold or
- * use the one exact top-level `- ` list marker. Blockquotes, code fences, JSON,
+ * use the one exact top-level `- ` list marker. Candidate label names are
+ * ASCII-case-insensitive, then canonicalized before order and uniqueness checks;
+ * values and all other productions remain exact. Blockquotes, code fences, JSON,
  * and other wrappers are not part of the contract. Nonblank contract lines do
  * not carry trailing horizontal whitespace, and a `why` continuation is exactly
  * two spaces plus a non-list line.
@@ -218,6 +220,12 @@ function escapePattern(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function asciiCaseInsensitivePattern(value: string): string {
+	return [...value].map((character) => /[A-Za-z]/.test(character)
+		? `[${character.toLowerCase()}${character.toUpperCase()}]`
+		: escapePattern(character)).join("");
+}
+
 /** Parse the exact framing forms; headings are accepted only for framing. */
 function framingLabel(line: string): MarkdownLabel | undefined {
 	if (/^[ \t]/.test(line)) return undefined;
@@ -234,7 +242,7 @@ function framingLabel(line: string): MarkdownLabel | undefined {
 
 /** Candidate fields are top-level one-line values with optional bold syntax or one exact `- ` marker. */
 function candidateLabel(line: string): MarkdownLabel | undefined {
-	const names = CANDIDATE_FIELDS.map(escapePattern).join("|");
+	const names = CANDIDATE_FIELDS.map(asciiCaseInsensitivePattern).join("|");
 	const match = new RegExp(`^(?:- )?(?:(?:\\*\\*)(${names}):(?:\\*\\*)|(?:__)(${names}):(?:__)|(${names}):)[ \t]*(.*)$`).exec(line);
 	if (!match) return undefined;
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
