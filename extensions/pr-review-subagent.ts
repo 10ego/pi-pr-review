@@ -981,6 +981,8 @@ interface ModelAttemptReport {
 	status: ReviewLaneLifecycle;
 	rawText: string;
 	retryable: boolean;
+	/** True only for a clean process whose output missed the structural contract. */
+	contractRetryable: boolean;
 	elapsedMs: number;
 	firstEventMs?: number;
 	firstAssistantMs?: number;
@@ -1382,7 +1384,7 @@ async function runSubagentPass(
 		: configuredAttempts;
 	for (let attemptIndex = 0; attemptIndex < boundedAttempts.length; attemptIndex++) {
 		const attempt = boundedAttempts[attemptIndex]!;
-		if (attempt.contractRetry === true && reports.at(-1)?.status !== "partial") break;
+		if (attempt.contractRetry === true && reports.at(-1)?.contractRetryable !== true) break;
 		if ((attempt.kind === "fallback" || attempt.contractRetry === true) && budget && !fallbackBudget(budget).allowed) {
 			fallbackBudgetRejected = true;
 			break;
@@ -1437,6 +1439,7 @@ async function runSubagentPass(
 			status: lifecycle,
 			rawText: result.text,
 			retryable,
+			contractRetryable,
 			elapsedMs,
 			firstEventMs: result.firstEventMs,
 			firstAssistantMs: result.firstAssistantMs,

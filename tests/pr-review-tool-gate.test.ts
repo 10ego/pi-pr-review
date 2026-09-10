@@ -367,7 +367,7 @@ describe("review tool execution gate", () => {
 			expect(result.isError).not.toBeTrue();
 			expect(result.details).toMatchObject({ incrementalGapAlias: true, relationship: "incremental", status: "complete", fallbackUsed: false });
 			expect(result.details.attempts).toHaveLength(2);
-			expect(result.details.attempts.map((attempt: any) => attempt.status)).toEqual(["partial", "complete"]);
+			expect(result.details.attempts.map((attempt: any) => [attempt.status, attempt.contractRetryable])).toEqual([["partial", true], ["complete", false]]);
 			expect(result.content[0].text).toContain("Candidate IDs: none");
 			expect(reviewCandidateDispositionRegistry.candidates("gap-alias-session", lease.generation)).toEqual([]);
 			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)?.map((entry: any) => entry.key)).toEqual(["incremental-gap"]);
@@ -382,7 +382,7 @@ describe("review tool execution gate", () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-provider-failure-"));
 		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
 		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
-		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stderr.write("429 rate limited"); process.exit(1); });`);
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "Review status: COMPLETE\\nOverview: partial provider output before failure." }] } })); process.stderr.write("429 rate limited"); process.exit(1); });`);
 		const originalScript = process.argv[1];
 		try {
 			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-provider-failure-session";
@@ -395,6 +395,7 @@ describe("review tool execution gate", () => {
 			const result = await h.tools.get("review_subagent").execute("generic-heavy-failure", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details.attempts).toHaveLength(1);
+			expect(result.details.attempts[0]).toMatchObject({ status: "partial", contractRetryable: false });
 			expect(readFileSync(counter, "utf8")).toBe("1");
 		} finally {
 			process.argv[1] = originalScript;
