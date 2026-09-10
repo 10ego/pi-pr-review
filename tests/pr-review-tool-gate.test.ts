@@ -293,6 +293,43 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: false, reason: "incremental_pass" },
 		});
+		const genericSingle = await h.tools.get("review_subagent").execute("generic-single", {
+			tier: "light",
+			objective: "generic cumulative pass",
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(genericSingle).toMatchObject({ isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } });
+		const genericBatch = await h.tools.get("review_subagents").execute("generic-batch", {
+			passes: balancedPasses(),
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(genericBatch).toMatchObject({ isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } });
+	});
+
+	test("routes a generic heavy pass over the exact prepared full diff into the mandatory gap lane", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-alias-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff");
+		const framing = "Review status: COMPLETE\nOverview: complete full-diff gap hunt.\nStrengths: bounded scope.\nRisk areas: low integration risk.\nNO FINDINGS.";
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(framing)} }] } })));`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-alias-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("generic-heavy", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details).toMatchObject({ incrementalGapAlias: true, relationship: "incremental", status: "complete" });
+			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)?.map((entry: any) => entry.key)).toEqual(["incremental-gap"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((entry: any) => [entry.passId, entry.lifecycle])).toEqual([["incremental-gap", "complete"]]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test("incremental gap hunting rejects a context file that differs by any byte from GitHub", async () => {

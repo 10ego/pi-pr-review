@@ -2381,13 +2381,18 @@ export default function registerPrReviewSubagents(
 				? params.incremental_pass as IncrementalDeltaPassId
 				: undefined;
 			const incrementalPass = incrementalPassId ? INCREMENTAL_DELTA_PASSES[incrementalPassId] : undefined;
-			if (incrementalPassId && (!incrementalPass || loopCoordinator.priorRelationship(ctx) !== "incremental" ||
+			const relationship = loopCoordinator.priorRelationship(ctx);
+			const cumulative = loopCoordinator.peek()?.incremental === true && (relationship === "same_head" || relationship === "incremental");
+			if (incrementalPassId && (!incrementalPass || relationship !== "incremental" ||
 				!(incrementalPass.modes as readonly string[]).includes(reviewMode) || tier !== incrementalPass.tier)) {
 				return {
 					content: [{ type: "text", text: "review_subagent incremental_pass does not match the host-established relationship, mode, or tier." }],
 					isError: true,
 					details: { authorized: false, reason: "incremental_pass" },
 				};
+			}
+			if (cumulative && !incrementalPassId && tier !== "heavy") {
+				return { content: [{ type: "text", text: "Generic review_subagent passes are unavailable during cumulative review. Use pr_review_incremental_gap or a host-fixed incremental_pass lane." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
 			}
 			let loadedContext;
 			try {
@@ -2400,25 +2405,31 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
-			const artifactKey = incrementalPassId ?? `${toolCallId}:single`;
+			const implicitGap = !incrementalPassId && cumulative && tier === "heavy" && !!loadedContext.contextFileRawBytes &&
+				loopCoordinator.preparedContextMatches(lease, "incremental-gap", loadedContext.contextFileRawBytes, ctx) === true;
+			if (cumulative && !incrementalPassId && !implicitGap) {
+				return { content: [{ type: "text", text: "Generic review_subagent passes are unavailable during cumulative review. Use pr_review_incremental_gap for the host-prepared full diff or incremental_pass for a host-fixed delta lane." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
+			}
+			const artifactKey = incrementalPassId ?? (implicitGap ? "incremental-gap" : `${toolCallId}:single`);
 			if (incrementalPassId && (!loadedContext.contextFileRawBytes ||
 				loopCoordinator.preparedContextMatches(lease, artifactKey, loadedContext.contextFileRawBytes, ctx) !== true)) {
 				return { content: [{ type: "text", text: "Incremental delta context failed: context_file is not the exact host-prepared prior-to-current diff." }], isError: true, details: { authorized: true, reason: "incremental_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes } };
 			}
-			const minorHygiene = incrementalPass ? false : params.minor_hygiene === true;
+			const minorHygiene = incrementalPass || implicitGap ? false : params.minor_hygiene === true;
 			if (!loopCoordinator.registerExpectedArtifacts(lease, [{
 				key: artifactKey,
 				tier,
 				minorHygiene,
+				...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
 			}], ctx)) {
 				return reviewLoopDeniedResult("review_subagent");
 			}
-			if (incrementalPassId && !loopCoordinator.claimArtifact(lease, artifactKey, ctx)) {
-				return { content: [{ type: "text", text: "The cumulative delta lane was already invoked." }], isError: true, details: { authorized: false, reason: "duplicate_cumulative_lane" } };
+			if ((incrementalPassId || implicitGap) && !loopCoordinator.claimArtifact(lease, artifactKey, ctx)) {
+				return { content: [{ type: "text", text: `The cumulative ${implicitGap ? "gap" : "delta"} lane was already invoked.` }], isError: true, details: { authorized: false, reason: "duplicate_cumulative_lane" } };
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: artifactKey,
-				label: incrementalPassId ?? `${tier} review`,
+				label: implicitGap ? "incremental full-PR gap hunt" : incrementalPassId ?? `${tier} review`,
 				tier,
 			});
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -2428,13 +2439,14 @@ export default function registerPrReviewSubagents(
 				config,
 				ctx,
 				{
-					...(incrementalPassId ? { id: incrementalPassId } : {}),
+					...(incrementalPassId || implicitGap ? { id: artifactKey } : {}),
 					tier,
-					objective: incrementalPass?.scope ?? params.objective,
+					objective: implicitGap ? INCREMENTAL_GAP_OBJECTIVE : incrementalPass?.scope ?? params.objective,
 					context: loadedContext.context,
-					toolPolicy: incrementalPass ? "configured" : normalizeToolPolicy(params.tool_policy),
-					majorOnly: incrementalPass ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
+					toolPolicy: incrementalPass || implicitGap ? "configured" : normalizeToolPolicy(params.tool_policy),
+					majorOnly: incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
 					minorHygiene,
+					...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,
@@ -2448,12 +2460,13 @@ export default function registerPrReviewSubagents(
 
 			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
-			const incrementalCandidates = incrementalPassId ? incrementalCandidateRecords(artifactKey, result.text, result.attempts, "review_lane") : [];
-			if (incrementalPassId && !loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
-			if (incrementalPassId && !reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, artifactKey, incrementalCandidates)) {
-				return { content: [{ type: "text", text: "Incremental delta candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
+			const cumulativeLane = !!incrementalPassId || implicitGap;
+			const incrementalCandidates = cumulativeLane ? incrementalCandidateRecords(artifactKey, result.text, result.attempts, implicitGap ? "nonempty" : "review_lane") : [];
+			if (cumulativeLane && !loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
+			if (cumulativeLane && !reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, artifactKey, incrementalCandidates)) {
+				return { content: [{ type: "text", text: `Incremental ${implicitGap ? "gap" : "delta"} candidate registration failed.` }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}
-			const candidateIndex = incrementalPassId ? ["", candidateIndexText(incrementalCandidates)] : [];
+			const candidateIndex = cumulativeLane ? ["", candidateIndexText(incrementalCandidates)] : [];
 			return {
 				content: [{
 					type: "text",
@@ -2464,6 +2477,7 @@ export default function registerPrReviewSubagents(
 				...(result.status !== "complete" ? { isError: true } : {}),
 				details: {
 					...(incrementalPassId ? { incrementalPass: incrementalPassId } : {}),
+					...(implicitGap ? { incrementalGapAlias: true, relationship } : {}),
 					tier: result.tier,
 					usedTier: result.usedTier,
 					model: result.model,
@@ -2511,6 +2525,10 @@ export default function registerPrReviewSubagents(
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("review_subagents");
+			const relationship = loopCoordinator.priorRelationship(ctx);
+			if (loopCoordinator.peek()?.incremental === true && (relationship === "same_head" || relationship === "incremental")) {
+				return { content: [{ type: "text", text: "review_subagents is unavailable after cumulative review preparation. Use pr_review_incremental_gap and the host-fixed incremental_pass lanes." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
+			}
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
 			const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
