@@ -71,7 +71,7 @@ mock.module("typebox", () => {
 
 const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts");
 const registerPrReviewSubagents = prReviewSubagentModule.default;
-const { cumulativeExpectedLanes, invalidStillOpenPriorTitles } = prReviewSubagentModule;
+const { automaticStillOpenCarryForwards, cumulativeExpectedLanes, invalidStillOpenPriorTitles } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
@@ -143,6 +143,20 @@ describe("review tool execution gate", () => {
 		expect(invalidStillOpenPriorTitles([
 			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
 		], [{ title: "[P1] Restore   tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
+	});
+
+	test("automatically carries forward omitted still-open findings without masking a supplied downgrade", () => {
+		const statuses = [{ status: "still open", title: "Restore tenant guard", severity: "P1", evidence: "The unconditional return remains at src/access.ts:2." }] as const;
+		expect(automaticStillOpenCarryForwards(statuses, [])).toEqual([{
+			title: "[P1] Restore tenant guard",
+			severity: "P1",
+			blocking: true,
+			body: "This previously reported defect remains open after current-source revalidation. Evidence: The unconditional return remains at src/access.ts:2.",
+			confidence_score: 0.9,
+			code_location: null,
+		}]);
+		expect(automaticStillOpenCarryForwards(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual([]);
+		expect(invalidStillOpenPriorTitles(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual(["Restore tenant guard"]);
 	});
 
 	test("pre-registers the exact cumulative topology for each mode", () => {
@@ -259,6 +273,22 @@ describe("review tool execution gate", () => {
 		expect(accepted.isError).toBeUndefined();
 		expect(accepted.details.finalization.decisions).toHaveLength(2);
 		expect(accepted.details.finalization.addedFindings[0].title).toBe("[P2] Parent issue");
+	});
+
+	test("host finalization carries an omitted source-revalidated still-open prior finding", async () => {
+		const h = harness(); h.ctx.sessionManager.getSessionId = () => "automatic-carry-session";
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+		priorRevalidationRegistry.markFindings("automatic-carry-session", lease.generation, [{ findingId: "thread:1", threadId: 1, inReplyToId: null, path: "src/access.ts", line: 2, side: "RIGHT", severity: "P1", title: "Restore tenant guard" }]);
+		const status = await h.tools.get("pr_review_prior_status").execute("carry-status", { statuses: [{ finding_id: "thread:1", status: "still open", severity: "P1", evidence: "The unconditional authorization remains." }] }, undefined, undefined, h.ctx);
+		expect(status.isError).toBeUndefined();
+		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates("automatic-carry-session", lease.generation, "incremental-gap", [])).toBeTrue();
+		const finalized = await h.tools.get("pr_review_candidate_disposition").execute("carry-finalize", { overview: "Review complete", verification: "Source inspected", decisions: [], added_findings: [{ title: "[P1] Restore tenant guard", severity: "P1", body: "Duplicate manual carry-forward without a safe current anchor.", confidence: 0.8, path: "src/access.ts" }] }, undefined, undefined, h.ctx);
+		expect(finalized.isError).toBeUndefined();
+		expect(finalized.details.automaticCarryForwards).toBe(1);
+		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: null })]);
 	});
 
 	test("incremental gap hunting requires a host-established usable prior relationship", async () => {

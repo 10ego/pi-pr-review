@@ -66,7 +66,7 @@ import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
 import { loadReviewContext, MAX_REVIEW_CONTEXT_FILE_BYTES } from "../lib/pr-review-context.ts";
 import { discoverPriorReview, normalizePriorStatusEvidence, PRIOR_GH_OUTPUT_MAX_BYTES, PRIOR_REVIEW_MAX_FINDINGS, priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
-import { ghRawText } from "../lib/pr-review-publish.ts";
+import { ghRawText, type ReviewFindingLike } from "../lib/pr-review-publish.ts";
 import {
 	combineAbortSignals,
 	ReviewLoopCoordinator,
@@ -188,15 +188,35 @@ const INCREMENTAL_DELTA_PASSES = Object.freeze({
 type IncrementalDeltaPassId = keyof typeof INCREMENTAL_DELTA_PASSES;
 const INCREMENTAL_DELTA_PASS_IDS = Object.freeze(Object.keys(INCREMENTAL_DELTA_PASSES) as IncrementalDeltaPassId[]);
 
+const canonicalFindingTitle = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim();
+
 export function invalidStillOpenPriorTitles(
 	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 	findings: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 ): string[] {
-	const canonical = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim();
 	const rank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
 	return statuses.filter((status) => status.status === "still open" && !findings.some((finding) =>
-		canonical(finding.title) === canonical(status.title) && rank[finding.severity] <= rank[status.severity]))
+		canonicalFindingTitle(finding.title) === canonicalFindingTitle(status.title) && rank[finding.severity] <= rank[status.severity]))
 		.map((status) => status.title);
+}
+
+/** Conservatively retain a source-revalidated still-open finding when the
+ * parent omitted a duplicate manual re-entry. Host-recorded status supplies
+ * identity/severity; a repo-wide location avoids trusting a stale line anchor. */
+export function automaticStillOpenCarryForwards(
+	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit"; evidence: string }[],
+	represented: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
+): ReviewFindingLike[] {
+	return statuses.filter((status) => status.status === "still open" && !represented.some((finding) =>
+		canonicalFindingTitle(finding.title) === canonicalFindingTitle(status.title)))
+		.map((status) => ({
+			title: `[${status.severity}] ${canonicalFindingTitle(status.title)}`,
+			severity: status.severity,
+			blocking: status.severity === "P0" || status.severity === "P1",
+			body: `This previously reported defect remains open after current-source revalidation. Evidence: ${status.evidence}`,
+			confidence_score: 0.9,
+			code_location: null,
+		}));
 }
 
 export function cumulativeExpectedLanes(
@@ -1620,10 +1640,10 @@ const PrReviewCandidateDispositionParams = Type.Object({
 		body: Type.String({ minLength: 1, maxLength: 8_000 }),
 		confidence: Type.Number({ minimum: 0, maximum: 1 }),
 		path: Type.String({ minLength: 1, maxLength: 2_000 }),
-		start_line: Type.Integer({ minimum: 1 }),
-		end_line: Type.Integer({ minimum: 1 }),
-		side: StringEnum(["LEFT", "RIGHT"] as const),
-		commentable: Type.Boolean(),
+		start_line: Type.Optional(Type.Integer({ minimum: 1 })),
+		end_line: Type.Optional(Type.Integer({ minimum: 1 })),
+		side: Type.Optional(StringEnum(["LEFT", "RIGHT"] as const)),
+		commentable: Type.Optional(Type.Boolean()),
 	}, { additionalProperties: false }), { maxItems: PRIOR_REVIEW_MAX_FINDINGS }),
 }, { additionalProperties: false });
 
@@ -2164,7 +2184,7 @@ export default function registerPrReviewSubagents(
 		promptGuidelines: [
 			"Call exactly once after every gap and delta result is available and independently validated.",
 			"Cover every Candidate ID exactly once; duplicate entries must reference the accepted canonical candidate.",
-			"Put independently validated findings without a lane ID in added_findings; never discard them because no lane proposed them.",
+			"Put independently validated findings without a lane ID in added_findings; never discard them because no lane proposed them. Do not manually duplicate a prior finding recorded as still open: the host carries it forward with canonical identity and severity.",
 			"Supply final overview and verification. The host publishes this artifact; after success respond only that host finalization completed.",
 		],
 		parameters: PrReviewCandidateDispositionParams,
@@ -2180,12 +2200,29 @@ export default function registerPrReviewSubagents(
 				disposition: decision.disposition,
 				...(decision.duplicate_of ? { duplicateOf: decision.duplicate_of } : {}),
 			}));
-			if (params.added_findings.some((finding) => finding.end_line < finding.start_line ||
-				!finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim() || path.isAbsolute(finding.path) || finding.path.includes("\\") || finding.path.split("/").some((segment) => segment === "" || segment === "." || segment === "..") || /[\u0000-\u001f\u007f]/.test(finding.path))) {
+			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
+			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
+			}
+			const severityRank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
+			const completeAddedParams = [];
+			for (const finding of params.added_findings) {
+				const completeLocation = Number.isInteger(finding.start_line) && Number.isInteger(finding.end_line) &&
+					(finding.side === "LEFT" || finding.side === "RIGHT") && typeof finding.commentable === "boolean";
+				if (!completeLocation) {
+					const matchingStillOpen = recordedStatuses?.find((status) => status.status === "still open" &&
+						canonicalFindingTitle(status.title) === canonicalFindingTitle(finding.title));
+					if (matchingStillOpen && severityRank[finding.severity] <= severityRank[matchingStillOpen.severity]) continue;
+					return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: new parent-added findings require a complete location" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
+				}
+				completeAddedParams.push(finding as typeof finding & { start_line: number; end_line: number; side: "LEFT" | "RIGHT"; commentable: boolean });
+			}
+			if (completeAddedParams.some((finding) => finding.end_line < finding.start_line ||
+				!canonicalFindingTitle(finding.title) || path.isAbsolute(finding.path) || finding.path.includes("\\") || finding.path.split("/").some((segment) => segment === "" || segment === "." || segment === "..") || /[\u0000-\u001f\u007f]/.test(finding.path))) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: added finding location is unsafe" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
 			}
-			const addedFindings = params.added_findings.map((finding) => ({
-				title: `[${finding.severity}] ${finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim()}`,
+			const addedFindings = completeAddedParams.map((finding) => ({
+				title: `[${finding.severity}] ${canonicalFindingTitle(finding.title)}`,
 				severity: finding.severity,
 				blocking: finding.severity === "P0" || finding.severity === "P1",
 				body: finding.body,
@@ -2193,31 +2230,32 @@ export default function registerPrReviewSubagents(
 				code_location: { absolute_file_path: finding.path, line_range: { start: finding.start_line, end: finding.end_line }, side: finding.side, commentable: finding.commentable },
 			}));
 			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
-			const acceptedPriorFindings = [
+			const representedFindings = [
 				...decisions.filter((decision) => decision.disposition === "accepted").flatMap((decision) => {
 					const candidate = registeredCandidates.find((registered) => registered.id === decision.candidateId);
 					return candidate ? [{ title: candidate.finding.title, severity: candidate.finding.severity }] : [];
 				}),
 				...addedFindings.map((finding) => ({ title: finding.title, severity: finding.severity })),
 			];
-			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
-			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
-			}
-			const invalidStillOpen = invalidStillOpenPriorTitles(recordedStatuses ?? [], acceptedPriorFindings);
+			const automaticCarryForwards = automaticStillOpenCarryForwards(recordedStatuses ?? [], representedFindings);
+			const finalizedAddedFindings = [...addedFindings, ...automaticCarryForwards];
+			const invalidStillOpen = invalidStillOpenPriorTitles(recordedStatuses ?? [], [
+				...representedFindings,
+				...automaticCarryForwards.map((finding) => ({ title: finding.title, severity: finding.severity })),
+			]);
 			if (invalidStillOpen.length > 0) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every still-open prior finding must be re-entered with its exact canonical title and equal-or-higher severity" }], isError: true, details: { authorized: true, reason: "invalid_still_open_finding" } };
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: a supplied still-open prior finding has a mismatched canonical title or lower severity" }], isError: true, details: { authorized: true, reason: "invalid_still_open_finding" } };
 			}
 			const expectedCandidateLaneKeys = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? [])
 				.map((descriptor) => descriptor.key)
 				.filter((key) => key === "incremental-gap" || INCREMENTAL_DELTA_PASS_IDS.includes(key as IncrementalDeltaPassId));
 			const recorded = reviewCandidateDispositionRegistry.recordFinalization(
-				ctx.sessionManager.getSessionId(), lease.generation, decisions, addedFindings, params.overview, params.verification,
+				ctx.sessionManager.getSessionId(), lease.generation, decisions, finalizedAddedFindings, params.overview, params.verification,
 				expectedCandidateLaneKeys,
 			);
 			if (!recorded.ok) return { content: [{ type: "text", text: `pr_review_candidate_disposition failed: ${recorded.error}` }], isError: true, details: { authorized: true, reason: "invalid_dispositions" } };
 			if (!loopCoordinator.freezeArtifacts(lease, ctx)) return reviewLoopDeniedResult("pr_review_candidate_disposition");
-			return { content: [{ type: "text", text: JSON.stringify({ action: "finalized", decisions: recorded.finalization.decisions, addedFindings: recorded.finalization.addedFindings.length }, null, 2) }], details: { authorized: true, finalization: recorded.finalization } };
+			return { content: [{ type: "text", text: JSON.stringify({ action: "finalized", decisions: recorded.finalization.decisions, addedFindings: recorded.finalization.addedFindings.length, automaticCarryForwards: automaticCarryForwards.length }, null, 2) }], details: { authorized: true, finalization: recorded.finalization, automaticCarryForwards: automaticCarryForwards.length } };
 		},
 	});
 
