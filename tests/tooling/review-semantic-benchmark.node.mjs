@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
+import { completedReviewTextBound, createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, createIncrementalFixtureRepository, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
@@ -397,6 +397,15 @@ test("incremental fixtures materialize exact ancestor, same-head, and diverged h
 	const ancestor = materialize("incremental"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", ancestor.priorHeadSha, ancestor.headSha], { cwd: ancestor.repo }).status, 0); assert.match(ancestor.compareOutput, /INC_EMPTY=0/); assert.equal(fs.readFileSync(path.join(ancestor.repo, "src/value.ts"), "utf8"), "export const value = safe();\nexport const added = true;\n");
 	const same = materialize("same_head"); assert.equal(same.priorHeadSha, same.headSha); assert.equal(same.compareOutput, "");
 	const diverged = materialize("diverged"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", diverged.priorHeadSha, diverged.headSha], { cwd: diverged.repo }).status, 1); assert.equal(diverged.compareOutput, "");
+});
+
+test("host-finalized lifecycle binding accepts only exact direct JSON", () => {
+	const review = { findings: [], verdict: "approve" }, data = { rawText: JSON.stringify(review), review, candidateDispositionRecorded: true };
+	assert.equal(completedReviewTextBound(data, "Host finalization completed."), true);
+	assert.equal(completedReviewTextBound({ ...data, candidateDispositionRecorded: false }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ ...data, rawText: JSON.stringify({ ...review, verdict: "request_changes" }) }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ ...data, rawText: "not JSON" }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ rawText: "same" }, "same"), true);
 });
 
 test("session collection maps host lanes, telemetry, findings, and failure fallback", async () => {

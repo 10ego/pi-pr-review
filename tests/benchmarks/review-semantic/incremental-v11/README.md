@@ -1,6 +1,6 @@
 # Incremental v11 evidence
 
-Immutable 24-row campaign using strict direct-JSON validation of host-finalized lifecycle evidence.
+Invalidated partial campaign. The scorer retained the obsolete terminal-text rule after the collector correction, then fallback validation omitted the failed second-row file; later ordered rows refused to start.
 
 - runtime: `6cf2354`
 - collector: `9c15bfb`
@@ -9,4 +9,4 @@ Immutable 24-row campaign using strict direct-JSON validation of host-finalized 
 - plan SHA-256: `b3c54aa295bb27b2bf9ebc9459543f0926a16f2f2a189506fb6409b6cdc27e50`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute every row once in stored order and retain all failures. See `docs/incremental-experiment-v11.md`.
+The first row completed, the second row ran but could not be retained, and the remaining 22 invocations refused due the missing prior row. Nothing was rerun. See `docs/incremental-experiment-v11.md`; this evidence cannot support product decisions.

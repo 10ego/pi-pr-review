@@ -1,6 +1,6 @@
 # Host-prepared cumulative re-review experiment v11
 
-Status: **frozen; collection not started**.
+Status: **invalidated during immutable collection; no rows rerun**.
 
 ## Purpose
 
@@ -35,3 +35,9 @@ Execute every row once in stored order without reruns, skips, reordering, or sub
 8. median incremental latency no more than 25% above fresh.
 
 This campaign cannot authorize automatic selection because it does not cover selector mechanics or `--fresh`; automatic defaulting also requires no worse median latency.
+
+## Outcome
+
+The first fresh row completed. The second row executed its model work, but scorer preflight rejected the successful host-finalized record because the scorer independently retained the old terminal-text-equality rule. The collector's fail-retention path then exposed a separate defect: it replaced rendered Markdown without restoring the structured prior-status section, causing fallback validation to throw and omit the failed-row file. Every later stored-order invocation refused because that prior plan entry was missing.
+
+V11 is invalid and incomplete. No row was rerun. The partial bundle and ordered failure summary are retained, and no metrics or product decisions may be derived from it. Collector and scorer now share one strict direct-JSON binding helper, and fallback rendering preserves host-recorded prior statuses.

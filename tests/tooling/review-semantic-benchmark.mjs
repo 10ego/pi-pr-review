@@ -75,6 +75,12 @@ function invariant(condition, message) {
 function plain(value) {
 	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
+export function completedReviewTextBound(data, terminalAssistantText) {
+	if (!plain(data) || typeof data.rawText !== "string" || typeof terminalAssistantText !== "string") return false;
+	if (data.rawText === terminalAssistantText) return true;
+	if (data.candidateDispositionRecorded !== true || !plain(data.review)) return false;
+	try { const parsed = JSON.parse(data.rawText); return plain(parsed) && JSON.stringify(parsed) === JSON.stringify(data.review); } catch { return false; }
+}
 function exactKeys(value, required, optional = []) {
 	if (!plain(value)) return false;
 	const allowed = new Set([...required, ...optional]);
@@ -424,7 +430,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
 		invariant(headers.length === 1 && typeof headers[0].cwd === "string" && path.isAbsolute(headers[0].cwd) && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop", `${label} retained session lifecycle`);
 		const terminalAssistantText = Array.isArray(assistants.at(-1).message?.content) ? assistants.at(-1).message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("") : "", data = completed[0].data, terminalTelemetry = telemetry[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
-		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && data.rawText === terminalAssistantText && data.rawText === (run.schemaVersion === 2 ? reviewPayload.rawMarkdown : reviewPayload.markdown), `${label} session artifact binding`);
+		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && completedReviewTextBound(data, terminalAssistantText) && data.rawText === (run.schemaVersion === 2 ? reviewPayload.rawMarkdown : reviewPayload.markdown), `${label} session artifact binding`);
 		invariant(finiteNonnegative(terminalTelemetry?.totalWallMs) && terminalTelemetry.totalWallMs === run.elapsedMs && finiteNonnegative(terminalTelemetry?.phases?.aggregateOrchestration?.elapsedMs) && terminalTelemetry.phases.aggregateOrchestration.elapsedMs === run.timing.parentValidationSynthesisMs && terminalTelemetry.phases.aggregateOrchestration.elapsedMs <= terminalTelemetry.totalWallMs, `${label} retained latency binding`);
 		invariant(modelChanges.length >= 1 && modelChanges.at(-1).provider === run.configuration.provider && modelChanges.at(-1).modelId === run.configuration.model && thinkingChanges.length >= 1 && thinkingChanges.at(-1).thinkingLevel === run.configuration.thinking, `${label} session parent model/thinking binding`);
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
