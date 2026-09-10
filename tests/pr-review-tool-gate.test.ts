@@ -71,7 +71,7 @@ mock.module("typebox", () => {
 
 const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts");
 const registerPrReviewSubagents = prReviewSubagentModule.default;
-const { cumulativeExpectedLanes } = prReviewSubagentModule;
+const { cumulativeExpectedLanes, missingStillOpenPriorTitles } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
@@ -126,6 +126,16 @@ function balancedPasses() {
 }
 
 describe("review tool execution gate", () => {
+	test("requires exact canonical re-entry for every still-open prior finding", () => {
+		expect(missingStillOpenPriorTitles([
+			{ status: "resolved", title: "Old resolved" },
+			{ status: "still open", title: "Restore tenant guard" },
+		], ["[P1] Restore   tenant guard"])).toEqual([]);
+		expect(missingStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard" },
+		], ["[P1] Restore the tenant guard"])).toEqual(["Restore tenant guard"]);
+	});
+
 	test("pre-registers the exact cumulative topology for each mode", () => {
 		expect(cumulativeExpectedLanes("same_head", "balanced").map((lane) => lane.key)).toEqual(["incremental-gap"]);
 		expect(cumulativeExpectedLanes("incremental", "balanced").map((lane) => lane.key)).toEqual([

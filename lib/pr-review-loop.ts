@@ -454,6 +454,10 @@ export class ReviewLoopCoordinator {
 		return lease ? this.artifactRegistry.expectedCount(lease.generation) : undefined;
 	}
 
+	claimArtifact(lease: ReviewLoopLease, key: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.claim(lease.generation, key);
+	}
+
 	freezeArtifacts(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.freeze(lease.generation);
 	}

@@ -188,6 +188,15 @@ const INCREMENTAL_DELTA_PASSES = Object.freeze({
 type IncrementalDeltaPassId = keyof typeof INCREMENTAL_DELTA_PASSES;
 const INCREMENTAL_DELTA_PASS_IDS = Object.freeze(Object.keys(INCREMENTAL_DELTA_PASSES) as IncrementalDeltaPassId[]);
 
+export function missingStillOpenPriorTitles(
+	statuses: readonly { status: string; title: string }[],
+	findingTitles: readonly string[],
+): string[] {
+	const canonical = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+	const retained = new Set(findingTitles.map(canonical));
+	return statuses.filter((status) => status.status === "still open" && !retained.has(canonical(status.title))).map((status) => status.title);
+}
+
 export function cumulativeExpectedLanes(
 	relationship: "none" | "same_head" | "incremental" | "diverged",
 	reviewMode: "quick" | "balanced" | "full" | "deep",
@@ -2155,7 +2164,7 @@ export default function registerPrReviewSubagents(
 				...(decision.duplicate_of ? { duplicateOf: decision.duplicate_of } : {}),
 			}));
 			if (params.added_findings.some((finding) => finding.end_line < finding.start_line ||
-				!finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim() || path.isAbsolute(finding.path) || finding.path.includes("\\") || finding.path.split("/").includes("..") || /[\u0000-\u001f\u007f]/.test(finding.path))) {
+				!finding.title.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim() || path.isAbsolute(finding.path) || finding.path.includes("\\") || finding.path.split("/").some((segment) => segment === "" || segment === "." || segment === "..") || /[\u0000-\u001f\u007f]/.test(finding.path))) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: added finding location is unsafe" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
 			}
 			const addedFindings = params.added_findings.map((finding) => ({
@@ -2166,6 +2175,21 @@ export default function registerPrReviewSubagents(
 				confidence_score: finding.confidence,
 				code_location: { absolute_file_path: finding.path, line_range: { start: finding.start_line, end: finding.end_line }, side: finding.side, commentable: finding.commentable },
 			}));
+			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
+			const acceptedTitles = new Set([
+				...decisions.filter((decision) => decision.disposition === "accepted").flatMap((decision) => {
+					const candidate = registeredCandidates.find((registered) => registered.id === decision.candidateId);
+					return candidate ? [candidate.finding.title] : [];
+				}),
+				...addedFindings.map((finding) => finding.title),
+			]);
+			const missingStillOpen = missingStillOpenPriorTitles(
+				priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation) ?? [],
+				[...acceptedTitles],
+			);
+			if (missingStillOpen.length > 0) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every still-open prior finding must be re-entered with its exact canonical title" }], isError: true, details: { authorized: true, reason: "missing_still_open_finding" } };
+			}
 			const expectedCandidateLaneKeys = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? [])
 				.map((descriptor) => descriptor.key)
 				.filter((key) => key === "incremental-gap" || INCREMENTAL_DELTA_PASS_IDS.includes(key as IncrementalDeltaPassId));
@@ -2247,8 +2271,8 @@ export default function registerPrReviewSubagents(
 				};
 			}
 			const expected = { key: "incremental-gap", tier: "heavy" as const, minorHygiene: false, expectedOutput: "nonempty" as const };
-			if (!loopCoordinator.registerExpectedArtifacts(lease, [expected], ctx)) {
-				return reviewLoopDeniedResult("pr_review_incremental_gap");
+			if (!loopCoordinator.registerExpectedArtifacts(lease, [expected], ctx) || !loopCoordinator.claimArtifact(lease, expected.key, ctx)) {
+				return { content: [{ type: "text", text: "The cumulative gap lane is unavailable or was already invoked." }], isError: true, details: { authorized: false, reason: "duplicate_cumulative_lane" } };
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: expected.key,
@@ -2366,6 +2390,9 @@ export default function registerPrReviewSubagents(
 				minorHygiene,
 			}], ctx)) {
 				return reviewLoopDeniedResult("review_subagent");
+			}
+			if (incrementalPassId && !loopCoordinator.claimArtifact(lease, artifactKey, ctx)) {
+				return { content: [{ type: "text", text: "The cumulative delta lane was already invoked." }], isError: true, details: { authorized: false, reason: "duplicate_cumulative_lane" } };
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: artifactKey,

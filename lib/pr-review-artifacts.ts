@@ -902,6 +902,7 @@ export class ReviewLaneArtifactRegistry {
 	private generation?: number;
 	private readonly artifacts = new Map<string, ReviewLaneArtifact>();
 	private readonly expectedLanes = new Map<string, ExpectedReviewLane>();
+	private readonly claimedLanes = new Set<string>();
 	private frozen = false;
 
 	open(generation: number): void {
@@ -912,7 +913,7 @@ export class ReviewLaneArtifactRegistry {
 
 	expect(generation: number, lanes: readonly ExpectedReviewLane[]): boolean {
 		if (
-			this.generation !== generation || lanes.length === 0 ||
+			this.generation !== generation || this.frozen || lanes.length === 0 ||
 			lanes.some((lane) => !lane.key || !new Set(["light", "medium", "heavy"]).has(lane.tier) ||
 				(lane.expectedOutput !== undefined && !new Set(["review_lane", "nonempty"]).has(lane.expectedOutput)))
 		) return false;
@@ -925,6 +926,12 @@ export class ReviewLaneArtifactRegistry {
 			)) return false;
 			this.expectedLanes.set(lane.key, Object.freeze({ ...lane }));
 		}
+		return true;
+	}
+
+	claim(generation: number, laneKey: string): boolean {
+		if (this.generation !== generation || this.frozen || !this.expectedLanes.has(laneKey) || this.claimedLanes.has(laneKey)) return false;
+		this.claimedLanes.add(laneKey);
 		return true;
 	}
 
@@ -976,6 +983,7 @@ export class ReviewLaneArtifactRegistry {
 		if (generation !== undefined && this.generation !== generation) return;
 		this.artifacts.clear();
 		this.expectedLanes.clear();
+		this.claimedLanes.clear();
 		this.frozen = false;
 		this.generation = undefined;
 	}
