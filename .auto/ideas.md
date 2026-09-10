@@ -61,3 +61,10 @@
 - Operational completion tied at 10/12 and fallback tied at 16.7%. Incremental duplicate rate improved to 10.5% from fresh 27.3%; complete-pair median latency improved to 69.8s from 80.6s (ratio 0.866).
 - Automatic selection remains rejected: two incremental gap outputs were structurally partial, so incremental required-lane completion was 95.0% versus fresh 96.7% and failed the absolute all-lanes-complete gate.
 - Keep explicit `--incremental`. Next work should address gap-output contract reliability without weakening fail-closed evidence rules; do not rerun v14.
+
+## Post-v14 gap contract retry
+
+- Runtime `a84bc46` adds one same-evidence retry only for structurally partial cumulative gap output. Independent snapshot review found that the synthetic slot initially also admitted timeout/provider retries and bypassed secondary budgets.
+- `9979ba0` applies fallback-attempt budget/deadline caps and reserves the synthetic slot; a second snapshot review found nonempty provider failures still classified partial.
+- `ce0260b` records clean-process contract eligibility separately, so provider failures cannot consume the slot. A final high-effort snapshot review found no P0-P2 issues. Every Orca review worktree was removed after worker settlement and release.
+- Directional plan `554ff18b29a494419ad9f122a4c3f0edfaee58e6e97b837d66193ecc078a7c2a` completed 6/6 with 20/20 lanes, no fallbacks, exact statuses/carry-forward, and one observed `partial -> complete` same-model gap retry with `fallbackUsed: false`. This pilot is not release evidence.
