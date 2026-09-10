@@ -1646,7 +1646,10 @@ function runGh(
 		let settled = false;
 		let closed = false;
 		let groupCleanupStarted = false;
-		let stdout = "";
+		const stdoutChunks: Buffer[] = [];
+		let stdoutBytes = 0;
+		let stdoutTruncated = false;
+		const stdoutText = () => `${Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8")}${stdoutTruncated ? "\0" : ""}`;
 		let stderr = "";
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1743,7 +1746,7 @@ function runGh(
 			termination = reason;
 			if (timer) clearTimeout(timer);
 			pendingResult = {
-				stdout,
+				stdout: stdoutText(),
 				stderr,
 				exitCode: 1,
 				timedOut: reason === "timeout",
@@ -1763,9 +1766,14 @@ function runGh(
 				finishPending();
 			}, graceMs + reserveMs);
 		};
-		proc.stdout.on("data", (data) => {
-			if (stdout.length >= outputMaxBytes) return;
-			stdout += data.toString().slice(0, Math.max(0, outputMaxBytes - stdout.length));
+		proc.stdout.on("data", (data: Buffer) => {
+			if (stdoutBytes >= outputMaxBytes) return;
+			const retained = data.subarray(0, Math.max(0, outputMaxBytes - stdoutBytes));
+			if (retained.length < data.length) stdoutTruncated = true;
+			if (retained.length > 0) {
+				stdoutChunks.push(retained);
+				stdoutBytes += retained.length;
+			}
 		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
@@ -1773,12 +1781,12 @@ function runGh(
 			if (!settled && code !== "EPIPE") stderr += error.message;
 		});
 		proc.on("error", (error) =>
-			finish({ stdout, stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
+			finish({ stdout: stdoutText(), stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
 		);
 		proc.on("close", (code) => {
 			closed = true;
 			pendingResult = {
-				stdout,
+				stdout: stdoutText(),
 				stderr,
 				exitCode: termination ? 1 : code ?? 1,
 				timedOut: termination === "timeout",

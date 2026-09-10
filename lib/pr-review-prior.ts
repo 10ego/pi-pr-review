@@ -209,13 +209,21 @@ export class PriorRevalidationRegistry {
 		if (statuses.length !== entry.findings.length) return { ok: false, error: "statuses must cover every registered prior finding exactly once" };
 		const supplied = new Map<string, Omit<PriorFindingStatusRecord, "title">>();
 		for (const status of statuses) {
+			if (!status || typeof status.findingId !== "string" || !["resolved", "rejected", "still open", "obsolete"].includes(status.status) ||
+				!["P0", "P1", "P2", "P3", "nit"].includes(status.severity) || typeof status.evidence !== "string" || !status.evidence) {
+				return { ok: false, error: "prior finding status is malformed" };
+			}
 			if (supplied.has(status.findingId)) return { ok: false, error: `duplicate prior finding id ${status.findingId}` };
 			supplied.set(status.findingId, status);
 		}
 		const rendered: PriorFindingStatusRecord[] = [];
+		const severityRank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
 		for (const finding of entry.findings) {
 			const status = supplied.get(finding.findingId);
 			if (!status) return { ok: false, error: `missing prior finding id ${finding.findingId}` };
+			if (finding.severity && severityRank[status.severity] > severityRank[finding.severity]) {
+				return { ok: false, error: `prior finding ${finding.findingId} cannot be downgraded below ${finding.severity}` };
+			}
 			rendered.push({ ...status, title: finding.title });
 		}
 		this.set(sessionId, generation, { ...entry, statuses: Object.freeze(rendered.map((status) => Object.freeze(status))) });

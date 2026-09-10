@@ -274,6 +274,8 @@ describe("prior revalidation registry", () => {
 	test("records complete structured statuses with canonical host titles", () => {
 		const registry = new PriorRevalidationRegistry();
 		registry.markFindings("s", 1, [{ findingId: "thread:9", threadId: 9, inReplyToId: null, path: "src/a.ts", line: 2, side: "RIGHT", severity: "P1", title: "Canonical title" }]);
+		expect(registry.recordStatuses("s", 1, [{ findingId: "thread:9", status: "still open", severity: "P2 Dix", evidence: "unsafe downgrade" } as never])).toEqual({ ok: false, error: "prior finding status is malformed" });
+		expect(registry.recordStatuses("s", 1, [{ findingId: "thread:9", status: "still open", severity: "P2", evidence: "unsafe downgrade" }])).toEqual({ ok: false, error: "prior finding thread:9 cannot be downgraded below P1" });
 		expect(registry.recordStatuses("s", 1, [{ findingId: "thread:9", status: "rejected", severity: "P1", evidence: "The invariant is verified." }])).toEqual({
 			ok: true,
 			statuses: [{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "The invariant is verified." }],
