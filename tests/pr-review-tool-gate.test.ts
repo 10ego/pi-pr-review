@@ -349,10 +349,11 @@ describe("review tool execution gate", () => {
 
 	test("routes a generic heavy pass over the exact prepared full diff into the mandatory gap lane", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-alias-"));
-		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff");
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
 		const framing = "Review status: COMPLETE\nOverview: complete full-diff gap hunt.\nStrengths: bounded scope.\nRisk areas: low integration risk.\nNO FINDINGS.";
 		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
-		writeFileSync(child, `process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(framing)} }] } })));`);
+		const partialWithCandidate = "Review status: COMPLETE\nOverview: first attempt found a defect.\nStrengths: bounded scope.\nRisk areas: authorization regression.\ntitle: [P1] Preserve the first attempt finding\nseverity: P1\nwhy: The changed authorization path permits cross-tenant access.\nlocation: src/access.ts:2\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.99\n\ntitle: [P1] truncated";
+		writeFileSync(child, `import fs from "node:fs"; process.stdin.resume(); process.stdin.on("end", () => { const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); const text = count === 0 ? ${JSON.stringify(partialWithCandidate)} : ${JSON.stringify(framing)}; process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } })); });`);
 		const originalScript = process.argv[1];
 		try {
 			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-alias-session";
@@ -364,7 +365,11 @@ describe("review tool execution gate", () => {
 			process.argv[1] = child;
 			const result = await h.tools.get("review_subagent").execute("generic-heavy", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
 			expect(result.isError).not.toBeTrue();
-			expect(result.details).toMatchObject({ incrementalGapAlias: true, relationship: "incremental", status: "complete" });
+			expect(result.details).toMatchObject({ incrementalGapAlias: true, relationship: "incremental", status: "complete", fallbackUsed: false });
+			expect(result.details.attempts).toHaveLength(2);
+			expect(result.details.attempts.map((attempt: any) => attempt.status)).toEqual(["partial", "complete"]);
+			expect(result.content[0].text).toContain("Candidate IDs: none");
+			expect(reviewCandidateDispositionRegistry.candidates("gap-alias-session", lease.generation)).toEqual([]);
 			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)?.map((entry: any) => entry.key)).toEqual(["incremental-gap"]);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((entry: any) => [entry.passId, entry.lifecycle])).toEqual([["incremental-gap", "complete"]]);
 		} finally {

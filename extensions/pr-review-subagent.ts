@@ -956,6 +956,8 @@ interface SubagentPassRequest {
 	majorOnly?: boolean;
 	minorHygiene?: boolean;
 	expectedOutput?: InternalExpectedOutput;
+	/** Retry one structurally partial completion with the same bounded evidence. */
+	retryContractPartial?: boolean;
 	systemPrompt?: string;
 	focusPublisher?: ReviewFocusPublisher;
 	artifactPublisher?: ReviewArtifactPublisher;
@@ -1372,7 +1374,10 @@ async function runSubagentPass(
 
 	// One primary plus at most one configured fallback preserves user model quality
 	// while bounding retry amplification.
-	const boundedAttempts = attempts.slice(0, attempts[0]?.kind === "fallback" ? 1 : 2);
+	const configuredAttempts = attempts.slice(0, attempts[0]?.kind === "fallback" ? 1 : 2);
+	const boundedAttempts = pass.retryContractPartial === true && configuredAttempts.length === 1
+		? [configuredAttempts[0]!, configuredAttempts[0]!]
+		: configuredAttempts;
 	for (let attemptIndex = 0; attemptIndex < boundedAttempts.length; attemptIndex++) {
 		const attempt = boundedAttempts[attemptIndex]!;
 		if (attempt.kind === "fallback" && budget && !fallbackBudget(budget).allowed) {
@@ -1416,7 +1421,8 @@ async function runSubagentPass(
 			result.errorMessage = "File-backed complete diff was not fully read through every host-required range.";
 		}
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-		const retryable = lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
+		const contractRetryable = pass.retryContractPartial === true && lifecycle === "partial" && !processFailed && attemptIndex + 1 < boundedAttempts.length;
+		const retryable = contractRetryable || lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;
 		lastNotice = notice;
 		reports.push({
@@ -1465,7 +1471,7 @@ async function runSubagentPass(
 				stopReason: result.stopReason,
 				errorMessage: result.errorMessage,
 				attempts: reports,
-				fallbackUsed: attempt.kind === "fallback" || reports.length > 1,
+				fallbackUsed: attempt.kind === "fallback",
 				retryableFailure: false,
 				toolPolicy,
 				elapsedMs: monotonicNow() - startedAt,
@@ -1503,7 +1509,7 @@ async function runSubagentPass(
 		stopReason: final.stopReason,
 		errorMessage: final.errorMessage,
 		attempts: reports,
-		fallbackUsed: reports.length > 1,
+		fallbackUsed: reports.some((report) => report.kind === "fallback"),
 		retryableFailure: reports.at(-1)?.retryable ?? false,
 		toolPolicy,
 		elapsedMs: monotonicNow() - startedAt,
@@ -2373,6 +2379,7 @@ export default function registerPrReviewSubagents(
 					majorOnly: reviewMode === "quick" || reviewMode === "balanced",
 					minorHygiene: false,
 					expectedOutput: "nonempty",
+					retryContractPartial: true,
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,
@@ -2509,7 +2516,7 @@ export default function registerPrReviewSubagents(
 					toolPolicy: incrementalPass || implicitGap ? "configured" : normalizeToolPolicy(params.tool_policy),
 					majorOnly: incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
 					minorHygiene,
-					...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
+					...(implicitGap ? { expectedOutput: "nonempty" as const, retryContractPartial: true } : {}),
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,
