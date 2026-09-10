@@ -640,8 +640,11 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			for (const expected of item.priorState.expectedStatuses) {
 				statusOpportunities++; const observed = run.reviewOutcome?.priorStatuses?.filter((status) => namesPriorTitle(status.title, expected.title)) ?? []; if (observed.length === 1 && observed[0].status === expected.status) statusMatches++;
 				const republished = findings.some((finding) => namesPriorTitle(finding.title, expected.title));
-				if (expected.status === "still open") { stillOpenOpportunities++; if (score.matchedExpectedIds.includes(expected.currentFindingId)) stillOpenCarried++; }
-				else if (republished) resolvedObsoleteRepublished++;
+				if (expected.status === "still open") {
+					stillOpenOpportunities++;
+					const current = item.expectedFindings.find((finding) => finding.id === expected.currentFindingId);
+					if (current && findings.some((finding) => normalizedPriorTitle(finding.title) === normalizedPriorTitle(expected.title) && SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[current.targetSeverity])) stillOpenCarried++;
+				} else if (republished) resolvedObsoleteRepublished++;
 			}
 		}
 		return {
