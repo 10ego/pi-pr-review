@@ -77,7 +77,7 @@ function plain(value) {
 }
 export function completedReviewTextBound(data, terminalAssistantText) {
 	if (!plain(data) || typeof data.rawText !== "string" || typeof terminalAssistantText !== "string") return false;
-	if (data.rawText === terminalAssistantText) return true;
+	if (data.rawText === terminalAssistantText || data.publicationBody === terminalAssistantText) return true;
 	if (data.candidateDispositionRecorded !== true || !plain(data.review)) return false;
 	try { const parsed = JSON.parse(data.rawText); return plain(parsed) && JSON.stringify(parsed) === JSON.stringify(data.review); } catch { return false; }
 }

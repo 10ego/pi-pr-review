@@ -1,6 +1,6 @@
 # Host-prepared cumulative re-review experiment v12
 
-Status: **frozen; collection not started**.
+Status: **invalidated after immutable collection; no rows rerun**.
 
 ## Exact candidate and campaign
 
@@ -27,3 +27,9 @@ V9-v11 are invalid and no prior row is reused. Execute every row once in stored 
 8. Median incremental latency no more than 25% above fresh.
 
 This campaign cannot authorize automatic selection because it does not cover selector mechanics or `--fresh`; automatic defaulting also requires no worse median latency.
+
+## Outcome
+
+All 24 rows were collected once in stored order and six were retained as apparent failures. The resulting diagnostic report showed 100% relationship/status accuracy but only 50% incremental operational completion and lower recall than fresh. Inspection showed that several incomplete reviews had legitimate host evidence: the terminal assistant text exactly matched `pr-review-completed.publicationBody`, while `rawText` was the host-normalized canonical rendering. The shared binding helper covered direct text and candidate-finalized JSON, but omitted this ordinary host-normalization path and therefore erased partial lane evidence and visible fallback findings.
+
+V12 is invalid for release and quality decisions; no rows are rerun. The raw report and all rows are retained. The shared binding now also accepts exact terminal-to-`publicationBody` equality while continuing to bind normalized `rawText` through the same host completion record.

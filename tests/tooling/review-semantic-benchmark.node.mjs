@@ -405,6 +405,8 @@ test("host-finalized lifecycle binding accepts only exact direct JSON", () => {
 	assert.equal(completedReviewTextBound({ ...data, candidateDispositionRecorded: false }, "Host finalization completed."), false);
 	assert.equal(completedReviewTextBound({ ...data, rawText: JSON.stringify({ ...review, verdict: "request_changes" }) }, "Host finalization completed."), false);
 	assert.equal(completedReviewTextBound({ ...data, rawText: "not JSON" }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ rawText: "normalized", publicationBody: "published" }, "published"), true);
+	assert.equal(completedReviewTextBound({ rawText: "normalized", publicationBody: "published" }, "different"), false);
 	assert.equal(completedReviewTextBound({ rawText: "same" }, "same"), true);
 });
 

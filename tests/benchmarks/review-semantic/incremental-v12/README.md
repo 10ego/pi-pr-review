@@ -1,6 +1,6 @@
 # Incremental v12 evidence
 
-Immutable 24-row campaign with shared collector/scorer host-finalization binding.
+Invalidated immutable 24-row campaign. All rows remain retained without reruns.
 
 - runtime: `6cf2354`
 - collector/scorer: `649cb17`
@@ -9,4 +9,4 @@ Immutable 24-row campaign with shared collector/scorer host-finalization binding
 - plan SHA-256: `0c53290bead6b0a654c64f51526fc8efaa9e60f407a8161d2c57f08d6b948ac4`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute every row once in stored order and retain all failures. See `docs/incremental-experiment-v12.md`.
+Every row was executed once in stored order. The campaign was invalidated because the shared lifecycle binding omitted the ordinary host-normalization path where terminal text equals `publicationBody` and `rawText` is canonicalized. See `docs/incremental-experiment-v12.md`; the report cannot support product decisions.
