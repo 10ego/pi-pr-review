@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage and severity without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "method": "Every canonical review for the four defect-bearing cases was checked against the expected source location, causal mechanism, impact, and target severity. Equivalent wording missed by the bounded scorer was counted as present; severity was read from the canonical finding label.",
+  "adjudicatedDefectPresence": {
+    "fresh": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incremental": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incrementalStillOpenCarryForward": { "matched": 6, "opportunities": 6, "recall": 1 }
+  },
+  "adjudicatedSeverity": {
+    "fresh": { "matched": 12, "underclassified": 1, "overclassified": 2, "exactSeverityRate": 0.75 },
+    "incremental": { "matched": 12, "underclassified": 1, "overclassified": 1, "exactSeverityRate": 0.8333333333333334 }
+  },
+  "operationalResults": {
+    "freshCompleteRuns": 10,
+    "incrementalCompleteRuns": 11,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.9666666666666667,
+    "incrementalLaneCompleteRate": 0.975,
+    "freshPublicationFallbackRate": 0.16666666666666666,
+    "incrementalPublicationFallbackRate": 0.08333333333333333
+  },
+  "contractRetryAudit": [
+    {
+      "planEntryId": "1ccbdd0bacbbe1cc2dc8900c",
+      "caseId": "missed-old-and-new",
+      "attempts": ["partial", "complete"],
+      "firstAttemptElapsedMsApprox": 506000,
+      "secondAttemptElapsedMsApprox": 56000,
+      "fallbackUsed": false,
+      "finalLaneStatus": "complete"
+    },
+    {
+      "planEntryId": "ce7857f1f61773771fab6c6c",
+      "caseId": "malicious-same-head",
+      "attempts": ["partial", "partial"],
+      "firstAttemptElapsedMsApprox": 21000,
+      "secondAttemptElapsedMsApprox": 31000,
+      "fallbackUsed": false,
+      "finalLaneStatus": "partial"
+    }
+  ],
+  "comparativeResults": {
+    "freshDuplicateRate": 0.34146341463414637,
+    "incrementalDuplicateRate": 0.1111111111111111,
+    "completePairFreshMedianLatencyMs": 60094.858,
+    "completePairIncrementalMedianLatencyMs": 116772.529,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 1.9431367821852576
+  },
+  "decision": "automatic selection rejected; explicit --incremental retained because one required incremental gap lane remained partial and incremental complete-pair median latency was worse than fresh"
+}

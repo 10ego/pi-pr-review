@@ -8,4 +8,4 @@ Immutable paired campaign for bounded cumulative-gap contract retry.
 - plan SHA-256: `8333533d43b952db0be9f1975337f1b43b5012842846724612fabd2a5cabc607`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute all 24 rows once in stored order and retain every failure. See `docs/incremental-experiment-v15.md`.
+All 24 rows completed once in stored order with zero collector failures or reruns. Incremental improved operational completion, fallback rate, duplication, and exact severity, while preserving exact statuses and carry-forward. Automatic selection remains rejected because one retried gap lane stayed partial and complete-pair median latency was 1.943x fresh. The untouched raw report is accompanied by transparent visible-defect adjudication. See `docs/incremental-experiment-v15.md`.

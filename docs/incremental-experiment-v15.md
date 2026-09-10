@@ -1,6 +1,6 @@
 # Cumulative gap-reliability experiment v15
 
-Status: **frozen; collection not started**.
+Status: **complete; automatic selection rejected**.
 
 ## Candidate
 
@@ -32,4 +32,20 @@ Execute every row once in stored order without reruns, skips, reordering, or sub
 6. Complete-pair incremental median latency is no more than 25% above fresh.
 7. Any contract retry is exactly one clean-partial retry, remains within secondary-attempt budgets, and does not erase retained evidence or masquerade as fallback.
 
-This campaign cannot enable automatic selection because selector mechanics and explicit `--fresh` are not exercised; automatic defaulting also requires no worse median latency.
+## Results
+
+All 24 rows completed once in stored order with zero collector failures or reruns.
+
+- exact relationships/statuses: 12/12;
+- still-open carry-forward: 6/6;
+- adjudicated seeded-defect presence: 12/12 fresh and 12/12 incremental;
+- exact severity: 75.0% fresh and 83.3% incremental;
+- operational completion: 10/12 fresh and 11/12 incremental;
+- required-lane completion: 96.7% fresh and 97.5% incremental;
+- publication fallback rate: 16.7% fresh and 8.3% incremental;
+- duplicate rate: 34.1% fresh and 11.1% incremental;
+- complete-pair median latency: 60.1s fresh and 116.8s incremental (1.943 ratio).
+
+Two incremental gap lanes exercised the bounded retry. One completed after `partial -> complete`; the other remained `partial -> partial`. Both retained attempt evidence and correctly reported no model fallback. The successful retry's first process ran for roughly 506 seconds before returning partial output, producing a severe latency outlier despite the secondary attempt cap.
+
+Automatic selection remains rejected. V15 misses the absolute all-required-lanes-complete gate and the no-worse-median-latency gate; selector mechanics and explicit `--fresh` also remain unimplemented and unbenchmarked. Raw scoring remains unchanged, with equivalent visible findings documented separately in `adjudication.json`.
