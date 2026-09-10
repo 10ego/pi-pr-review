@@ -1,6 +1,6 @@
 # Incremental v10 evidence
 
-Corrected immutable 24-row campaign after v9 collector invalidation.
+Invalidated immutable 24-row campaign after v9 collector invalidation. All rows remain retained without reruns.
 
 - runtime: `6cf2354`
 - collector: `2adb06c`
@@ -9,4 +9,4 @@ Corrected immutable 24-row campaign after v9 collector invalidation.
 - plan SHA-256: `e43f897634b47bef5ef9e78a40d42d466711c62cdc115238d7b2551e0fd4ac67`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute every row once in stored order and retain all failures. See `docs/incremental-experiment-v10.md`.
+Every row was executed once in stored order. The campaign was invalidated because its lifecycle check incorrectly passed host-finalized JSON through the Markdown parser. See `docs/incremental-experiment-v10.md`; the raw report must not be used for product decisions.

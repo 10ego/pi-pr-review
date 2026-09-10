@@ -1,6 +1,6 @@
 # Host-prepared cumulative re-review experiment v10
 
-Status: **frozen; collection not started**.
+Status: **invalidated after immutable collection; no rows rerun**.
 
 ## Purpose
 
@@ -35,3 +35,9 @@ Execute every row once in stored order without reruns, skips, reordering, or sub
 8. median incremental latency no more than 25% above fresh.
 
 Automatic selection remains disabled regardless of outcome because this campaign does not exercise selector mechanics or `--fresh`. Automatic defaulting additionally requires no worse median latency and a dedicated selector/fail-open corpus.
+
+## Outcome
+
+All 24 rows were collected once in stored order. V10 was invalidated because the v9 collector correction attempted to validate host-finalized JSON with the Markdown publication parser, which intentionally returns no review for JSON. Consequently all 12 incremental sessions were again represented as collector failures. Direct replay of a retained session with strict JSON parsing recovered all four complete lanes and canonical publication, confirming the collector defect.
+
+The raw rows and diagnostic report are retained without reruns and cannot support product decisions. The lifecycle validator now parses host-finalized `rawText` directly as JSON and requires exact equality with the host completed-review object; its regression test also requires this validation to remain independent of the Markdown parser.
