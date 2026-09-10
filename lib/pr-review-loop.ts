@@ -51,6 +51,7 @@ interface ReviewLoopBinding {
 	synthesisTimer?: ReturnType<typeof setTimeout>;
 	synthesisStarted: boolean;
 	cleanupCallbacks: Set<() => void>;
+	preparedContextBytes: Map<string, Buffer>;
 	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
@@ -192,6 +193,7 @@ export class ReviewLoopCoordinator {
 			onDeadline: onTotalDeadline,
 			synthesisStarted: false,
 			cleanupCallbacks: new Set(),
+			preparedContextBytes: new Map(),
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -452,6 +454,30 @@ export class ReviewLoopCoordinator {
 		}
 		const lease = this.acquire(ctx);
 		return lease ? this.artifactRegistry.expectedCount(lease.generation) : undefined;
+	}
+
+	registerPreparedContext(
+		lease: ReviewLoopLease,
+		key: string,
+		bytes: Uint8Array,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || !key || bytes.byteLength === 0) return false;
+		const existing = this.binding.preparedContextBytes.get(key);
+		if (existing && !existing.equals(bytes)) return false;
+		this.binding.preparedContextBytes.set(key, Buffer.from(bytes));
+		return true;
+	}
+
+	preparedContextMatches(
+		lease: ReviewLoopLease,
+		key: string,
+		bytes: Uint8Array,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return false;
+		const expected = this.binding.preparedContextBytes.get(key);
+		return expected ? expected.equals(bytes) : undefined;
 	}
 
 	claimArtifact(lease: ReviewLoopLease, key: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {

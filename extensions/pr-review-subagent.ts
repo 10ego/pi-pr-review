@@ -1981,12 +1981,18 @@ export default function registerPrReviewSubagents(
 				if (shouldRegister) {
 					const expectedPreparedLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced", !incrementalEmpty);
 					if (!loopCoordinator.registerExpectedArtifacts(lease, expectedPreparedLanes, ctx)) throw new Error("could not register prepared cumulative coverage");
+					if (!loopCoordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from(fullDiff, "utf8"), ctx)) throw new Error("could not bind the prepared full diff");
+					for (const descriptor of expectedPreparedLanes) {
+						if (descriptor.key === "incremental-gap") continue;
+						if (!incrementalText || !loopCoordinator.registerPreparedContext(lease, descriptor.key, Buffer.from(incrementalText, "utf8"), ctx)) throw new Error("could not bind the prepared incremental diff");
+					}
 					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
 				}
 				const ownedDirectory = temporaryDirectory;
+				const preparedSessionId = ctx.sessionManager.getSessionId();
 				if (!loopCoordinator.registerCleanup(lease, () => {
 					fs.rmSync(ownedDirectory, { recursive: true, force: true });
-					reviewCandidateDispositionRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+					reviewCandidateDispositionRegistry.clear(preparedSessionId, lease.generation);
 				}, ctx)) throw new Error("could not register prepared context cleanup");
 				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes, incrementalDiffFile, incrementalDiffBytes: incrementalText ? Buffer.byteLength(incrementalText) : 0, incrementalEmpty };
 				return { content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }], details: prepared };
@@ -2036,6 +2042,7 @@ export default function registerPrReviewSubagents(
 					signal: executionSignal ?? undefined,
 				});
 				let hasIncrementalDiff = true;
+				let incrementalText: string | undefined;
 				if (snapshot.relationship === "incremental" && snapshot.prior) {
 					const compare = await ghRawText([
 						"api", "--hostname", snapshot.hostname,
@@ -2043,6 +2050,7 @@ export default function registerPrReviewSubagents(
 						"--jq", INCREMENTAL_COMPARE_JQ,
 					], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
 					hasIncrementalDiff = /^diff --git /m.test(compare);
+					if (hasIncrementalDiff) incrementalText = compare;
 				}
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) {
 					return reviewLoopDeniedResult("pr_review_prior");
@@ -2056,8 +2064,13 @@ export default function registerPrReviewSubagents(
 						details: { authorized: true, reason: "cumulative_registration_failed" },
 					};
 				}
+				for (const descriptor of requiredCumulativeLanes) {
+					if (descriptor.key === "incremental-gap") continue;
+					if (!incrementalText || !loopCoordinator.registerPreparedContext(lease, descriptor.key, Buffer.from(incrementalText, "utf8"), ctx)) return reviewLoopDeniedResult("pr_review_prior");
+				}
+				const priorSessionId = ctx.sessionManager.getSessionId();
 				if (requiredCumulativeLanes.length > 0 && !loopCoordinator.registerCleanup(lease, () => {
-					reviewCandidateDispositionRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+					reviewCandidateDispositionRegistry.clear(priorSessionId, lease.generation);
 				}, ctx)) return reviewLoopDeniedResult("pr_review_prior");
 				// Record host-side that this invocation owes a Prior findings
 				// disclosure: approval eligibility will require the section to
@@ -2183,10 +2196,11 @@ export default function registerPrReviewSubagents(
 				}),
 				...addedFindings.map((finding) => finding.title),
 			]);
-			const missingStillOpen = missingStillOpenPriorTitles(
-				priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation) ?? [],
-				[...acceptedTitles],
-			);
+			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
+			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
+			}
+			const missingStillOpen = missingStillOpenPriorTitles(recordedStatuses ?? [], [...acceptedTitles]);
 			if (missingStillOpen.length > 0) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every still-open prior finding must be re-entered with its exact canonical title" }], isError: true, details: { authorized: true, reason: "missing_still_open_finding" } };
 			}
@@ -2245,23 +2259,23 @@ export default function registerPrReviewSubagents(
 			const binding = loopCoordinator.peek()?.reviewBinding;
 			if (!binding) return reviewLoopDeniedResult("pr_review_incremental_gap");
 			try {
-				const repository = binding.hostname.toLowerCase() === "github.com"
-					? binding.repository
-					: `${binding.hostname}/${binding.repository}`;
-				const authoritativeDiff = await ghRawText(
-					["pr", "diff", String(binding.prNumber), "--repo", repository],
-					ctx.cwd,
-					undefined,
-					{ signal: executionSignal ?? undefined },
-					PRIOR_GH_OUTPUT_MAX_BYTES,
-				);
 				const suppliedDiff = loadedContext.contextFileRawBytes;
-				if (!suppliedDiff || !Buffer.from(authoritativeDiff, "utf8").equals(suppliedDiff)) {
+				const preparedMatch = suppliedDiff
+					? loopCoordinator.preparedContextMatches(lease, "incremental-gap", suppliedDiff, ctx)
+					: false;
+				if (preparedMatch === false) {
 					return {
-						content: [{ type: "text", text: "Incremental gap context failed: context_file is not the exact current base-to-head GitHub PR diff." }],
+						content: [{ type: "text", text: "Incremental gap context failed: context_file is not the exact host-prepared base-to-head diff." }],
 						isError: true,
 						details: { authorized: true, reason: "full_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes },
 					};
+				}
+				if (preparedMatch === undefined) {
+					const repository = binding.hostname.toLowerCase() === "github.com" ? binding.repository : `${binding.hostname}/${binding.repository}`;
+					const authoritativeDiff = await ghRawText(["pr", "diff", String(binding.prNumber), "--repo", repository], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
+					if (!suppliedDiff || !Buffer.from(authoritativeDiff, "utf8").equals(suppliedDiff)) {
+						return { content: [{ type: "text", text: "Incremental gap context failed: context_file is not the exact current base-to-head GitHub PR diff." }], isError: true, details: { authorized: true, reason: "full_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes } };
+					}
 				}
 			} catch (error) {
 				return {
@@ -2383,6 +2397,10 @@ export default function registerPrReviewSubagents(
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("review_subagent");
 			const artifactKey = incrementalPassId ?? `${toolCallId}:single`;
+			if (incrementalPassId && (!loadedContext.contextFileRawBytes ||
+				loopCoordinator.preparedContextMatches(lease, artifactKey, loadedContext.contextFileRawBytes, ctx) !== true)) {
+				return { content: [{ type: "text", text: "Incremental delta context failed: context_file is not the exact host-prepared prior-to-current diff." }], isError: true, details: { authorized: true, reason: "incremental_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes } };
+			}
 			const minorHygiene = incrementalPass ? false : params.minor_hygiene === true;
 			if (!loopCoordinator.registerExpectedArtifacts(lease, [{
 				key: artifactKey,

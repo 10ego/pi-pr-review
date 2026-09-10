@@ -57,6 +57,20 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.acquire(h.ctx as any)).toBeDefined();
 	});
 
+	test("binds prepared context bytes to the active generation", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		const bytes = Buffer.from("frozen diff");
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.registerPreparedContext(lease, "delta", bytes, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", Buffer.from("other"), h.ctx as any)).toBeFalse();
+		expect(h.coordinator.registerPreparedContext(lease, "delta", Buffer.from("other"), h.ctx as any)).toBeFalse();
+		h.coordinator.clear();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeFalse();
+	});
+
 	test("runs invocation cleanup exactly once on consume or clear", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
