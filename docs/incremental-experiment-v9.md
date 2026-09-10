@@ -1,6 +1,6 @@
 # Host-prepared cumulative re-review experiment v9
 
-Status: **frozen; collection not started**.
+Status: **invalidated after immutable collection; no rows rerun**.
 
 ## Question
 
@@ -48,3 +48,9 @@ Semantic and operational safety dominate speed. Explicit cumulative incremental 
 Automatic selection remains disabled regardless of this campaign because v9 does not exercise an automatic selector or `--fresh`. A later automatic-selection campaign must additionally show no worse median latency than fresh and cover selector reasons, `--fresh`, truncation, divergence, and fail-open behavior.
 
 Directional pilots are excluded from these gates and cannot replace a v9 row. Raw scorer mismatches may be adjudicated only after immutable collection, with the untouched raw report retained.
+
+## Outcome
+
+All 24 rows were collected once in stored order. The collector retained 15 apparent operational failures and the raw report showed every incremental lane as failed. Inspection of the immutable session evidence established a harness incompatibility: host finalization deliberately persists canonical review JSON in `pr-review-completed.rawText`, while the terminal assistant message remains a terse acknowledgment. The collector required those strings to be identical and therefore discarded otherwise complete host-owned lane artifacts from all 12 incremental runs.
+
+V9 is invalid and cannot support product, release, latency, or defaulting decisions. Its rows and untouched raw report are retained without reruns. The collector now accepts a differing terminal acknowledgment only when `candidateDispositionRecorded` is true and parsing the persisted raw JSON reproduces the exact host completed-review object. Recollection requires a new corpus identity and plan.

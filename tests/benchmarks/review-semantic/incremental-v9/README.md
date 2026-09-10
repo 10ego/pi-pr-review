@@ -1,6 +1,6 @@
 # Incremental v9 evidence
 
-Immutable 24-row campaign for the host-prepared, host-finalized cumulative re-review candidate.
+Invalidated immutable 24-row campaign for the host-prepared, host-finalized cumulative re-review candidate. All rows remain retained without reruns.
 
 Frozen inputs:
 
@@ -10,4 +10,4 @@ Frozen inputs:
 - plan SHA-256: `b1e9dbfceabae152720aa6b1de18b567c02c60ac65eb67594da40af2f3900524`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Collection must execute every plan row once in stored order without reruns, skips, reordering, or substitutions. See `docs/incremental-experiment-v9.md` for gates.
+Collection executed every plan row once in stored order without reruns, skips, reordering, or substitutions. The campaign was invalidated because the collector rejected the intentional difference between the terse terminal acknowledgment and host-finalized canonical `rawText`; see `docs/incremental-experiment-v9.md`. The raw report is retained and must not be used for product decisions.
