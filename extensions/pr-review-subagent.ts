@@ -192,7 +192,7 @@ export function invalidStillOpenPriorTitles(
 	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 	findings: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 ): string[] {
-	const canonical = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+	const canonical = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim();
 	const rank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
 	return statuses.filter((status) => status.status === "still open" && !findings.some((finding) =>
 		canonical(finding.title) === canonical(status.title) && rank[finding.severity] <= rank[status.severity]))

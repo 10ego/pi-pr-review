@@ -700,6 +700,10 @@ export default function registerReviewTable(
 		if (!invocation.reviewBinding) {
 			return completionError(invocation, "the completed review has no frozen host repository binding; no publish-only cache is available");
 		}
+		const hostFinalized = !!reviewCandidateDispositionRegistry.finalization(
+			ctx.sessionManager.getSessionId(),
+			invocation.reviewBinding.invocationGeneration,
+		);
 		const repository = {
 			repository: invocation.reviewBinding.repository,
 			hostname: invocation.reviewBinding.hostname,
@@ -714,7 +718,7 @@ export default function registerReviewTable(
 			...(artifact.body && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
 				? { publicationBody: artifact.body }
 				: {}),
-			rawText: artifact.rawText,
+			rawText: hostFinalized ? JSON.stringify(artifact.review) : artifact.rawText,
 			laneArtifacts: artifact.laneArtifacts,
 			expectedLaneDescriptors: artifact.expectedLaneDescriptors,
 			expectedLaneCount: artifact.expectedLaneCount,

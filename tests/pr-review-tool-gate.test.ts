@@ -130,7 +130,7 @@ describe("review tool execution gate", () => {
 		expect(invalidStillOpenPriorTitles([
 			{ status: "resolved", title: "Old resolved", severity: "P1" },
 			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
-		], [{ title: "[P1] Restore   tenant guard", severity: "P1" }])).toEqual([]);
+		], [{ title: "[P1] Restore tenant guard", severity: "P1" }])).toEqual([]);
 		expect(invalidStillOpenPriorTitles([
 			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
 		], [{ title: "[P1] Restore tenant guard", severity: "P2" }])).toEqual(["Restore tenant guard"]);
@@ -139,7 +139,10 @@ describe("review tool execution gate", () => {
 		], [{ title: "[P0] Restore tenant guard", severity: "P0" }])).toEqual([]);
 		expect(invalidStillOpenPriorTitles([
 			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
-		], [{ title: "[P1] Restore the tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
+		], [{ title: "[P1] restore tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
+		expect(invalidStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P1] Restore   tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
 	});
 
 	test("pre-registers the exact cumulative topology for each mode", () => {
