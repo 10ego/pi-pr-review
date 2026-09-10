@@ -43,3 +43,12 @@
 - Automatic selection is rejected: operational completion was 5/12 incremental versus 12/12 fresh, required-lane completion was 80.6% versus 100%, still-open carry-forward was 4/6, and P2 recall was 50% versus 100%.
 - Keep `--incremental` explicit. Do not add selector mechanics until cumulative lane-invocation/finalization reliability and P2 carry-forward are fixed and a new immutable campaign passes every gate.
 - V9-v12 are retained as invalid campaigns without reruns; they exposed collector/scorer compatibility defects for candidate-finalized JSON and host-normalized `publicationBody`. V13 is the first valid campaign for the consolidated architecture.
+
+## Post-v13 reliability work
+
+- V13 forensics found five cumulative parents dispatching a generic heavy lane instead of `pr_review_incremental_gap`, generic calls polluting frozen expected topology, and repeated manual still-open re-entry schema errors.
+- Runtime `942d6d5` safely aliases a generic heavy call over the exact prepared full diff to `incremental-gap` and rejects all other generic cumulative calls before topology mutation.
+- Runtime `eb4e97f` automatically carries omitted source-revalidated `still open` findings at canonical equal-or-higher severity and absorbs incomplete manual duplicates; `686ec76` preserves old anchors only for byte-identical same-head reviews.
+- Directional plans use `0bbfd891009fdd5e50031dcbde611315d847392a41da8991acdbc83e7d2a7a3a`; no directional row supports release decisions. Two six-case pilots after dispatch recovery completed 6/6 with every lane complete and no fallbacks. Canonical carry-forward reached 3/3 after scorer correction.
+- One broad same-head gap reviewer still showed stochastic resource recall. Runtime `aad3010` adds an independent same-head security/resource pass over the exact full diff. Its six-case pilot completed 6/6 and 20/20 lanes; both seeded same-head defects were visible, with the listener conservatively escalated P2→P1.
+- Scorer `f80c460` measures still-open identity directly by exact canonical title and equal-or-higher severity rather than requiring ordinary semantic-location matching. V14 also permits P1 matching for the P2 listener target while retaining P2 as the target, so exact-severity accuracy still records overclassification.
