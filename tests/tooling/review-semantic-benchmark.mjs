@@ -371,7 +371,7 @@ function parsePriorStatuses(markdown) {
 	return statuses;
 }
 function parsePriorRelationship(records) {
-	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior" || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
+	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || !["pr_review_prior", "pr_review_prepare"].includes(message.toolName) || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
 	return null;
 }
 function parseVisibleFallbackFindings(markdown) {
