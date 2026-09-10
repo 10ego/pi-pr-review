@@ -188,13 +188,15 @@ const INCREMENTAL_DELTA_PASSES = Object.freeze({
 type IncrementalDeltaPassId = keyof typeof INCREMENTAL_DELTA_PASSES;
 const INCREMENTAL_DELTA_PASS_IDS = Object.freeze(Object.keys(INCREMENTAL_DELTA_PASSES) as IncrementalDeltaPassId[]);
 
-export function missingStillOpenPriorTitles(
-	statuses: readonly { status: string; title: string }[],
-	findingTitles: readonly string[],
+export function invalidStillOpenPriorTitles(
+	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
+	findings: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 ): string[] {
 	const canonical = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase();
-	const retained = new Set(findingTitles.map(canonical));
-	return statuses.filter((status) => status.status === "still open" && !retained.has(canonical(status.title))).map((status) => status.title);
+	const rank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
+	return statuses.filter((status) => status.status === "still open" && !findings.some((finding) =>
+		canonical(finding.title) === canonical(status.title) && rank[finding.severity] <= rank[status.severity]))
+		.map((status) => status.title);
 }
 
 export function cumulativeExpectedLanes(
@@ -2189,20 +2191,20 @@ export default function registerPrReviewSubagents(
 				code_location: { absolute_file_path: finding.path, line_range: { start: finding.start_line, end: finding.end_line }, side: finding.side, commentable: finding.commentable },
 			}));
 			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
-			const acceptedTitles = new Set([
+			const acceptedPriorFindings = [
 				...decisions.filter((decision) => decision.disposition === "accepted").flatMap((decision) => {
 					const candidate = registeredCandidates.find((registered) => registered.id === decision.candidateId);
-					return candidate ? [candidate.finding.title] : [];
+					return candidate ? [{ title: candidate.finding.title, severity: candidate.finding.severity }] : [];
 				}),
-				...addedFindings.map((finding) => finding.title),
-			]);
+				...addedFindings.map((finding) => ({ title: finding.title, severity: finding.severity })),
+			];
 			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
 			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
 			}
-			const missingStillOpen = missingStillOpenPriorTitles(recordedStatuses ?? [], [...acceptedTitles]);
-			if (missingStillOpen.length > 0) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every still-open prior finding must be re-entered with its exact canonical title" }], isError: true, details: { authorized: true, reason: "missing_still_open_finding" } };
+			const invalidStillOpen = invalidStillOpenPriorTitles(recordedStatuses ?? [], acceptedPriorFindings);
+			if (invalidStillOpen.length > 0) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every still-open prior finding must be re-entered with its exact canonical title and equal-or-higher severity" }], isError: true, details: { authorized: true, reason: "invalid_still_open_finding" } };
 			}
 			const expectedCandidateLaneKeys = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? [])
 				.map((descriptor) => descriptor.key)
