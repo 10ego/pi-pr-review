@@ -41,5 +41,12 @@ describe("review candidate disposition registry", () => {
 			id: "gap:1", laneKey: "other", finding: { title: "bad", severity: "P2", body: "bad", code_location: null },
 		}])).toBeFalse();
 		expect(registry.candidates("s", 2)?.map((candidate) => candidate.finding.title)).toEqual(["[P2] Replacement"]);
+		expect(registry.recordFinalization("s", 2, [
+			{ candidateId: "gap:1", disposition: "accepted" },
+		], [], "overview", "verification", ["gap", "delta"])).toEqual({ ok: false, error: "every expected candidate-producing lane must settle before finalization" });
+		expect(registry.replaceLaneCandidates("s", 2, "delta", [])).toBeTrue();
+		expect(registry.recordFinalization("s", 2, [
+			{ candidateId: "gap:1", disposition: "accepted" },
+		], [], "overview", "verification", ["gap", "delta"]).ok).toBeTrue();
 	});
 });

@@ -2026,10 +2026,19 @@ export default function registerPrReviewSubagents(
 				const snapshot = await discoverPriorReview(ctx.cwd, params.pr_number, {
 					signal: executionSignal ?? undefined,
 				});
+				let hasIncrementalDiff = true;
+				if (snapshot.relationship === "incremental" && snapshot.prior) {
+					const compare = await ghRawText([
+						"api", "--hostname", snapshot.hostname,
+						`repos/${snapshot.repository}/compare/${snapshot.prior.head}...${snapshot.currentHead}`,
+						"--jq", INCREMENTAL_COMPARE_JQ,
+					], ctx.cwd, undefined, { signal: executionSignal ?? undefined }, PRIOR_GH_OUTPUT_MAX_BYTES);
+					hasIncrementalDiff = /^diff --git /m.test(compare);
+				}
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) {
 					return reviewLoopDeniedResult("pr_review_prior");
 				}
-				const requiredCumulativeLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced");
+				const requiredCumulativeLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced", hasIncrementalDiff);
 				if (requiredCumulativeLanes.length > 0 &&
 					!loopCoordinator.registerExpectedArtifacts(lease, requiredCumulativeLanes, ctx)) {
 					return {
@@ -2038,6 +2047,9 @@ export default function registerPrReviewSubagents(
 						details: { authorized: true, reason: "cumulative_registration_failed" },
 					};
 				}
+				if (requiredCumulativeLanes.length > 0 && !loopCoordinator.registerCleanup(lease, () => {
+					reviewCandidateDispositionRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+				}, ctx)) return reviewLoopDeniedResult("pr_review_prior");
 				// Record host-side that this invocation owes a Prior findings
 				// disclosure: approval eligibility will require the section to
 				// carry one distinct status line per prior title. Write against
@@ -2154,8 +2166,12 @@ export default function registerPrReviewSubagents(
 				confidence_score: finding.confidence,
 				code_location: { absolute_file_path: finding.path, line_range: { start: finding.start_line, end: finding.end_line }, side: finding.side, commentable: finding.commentable },
 			}));
+			const expectedCandidateLaneKeys = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? [])
+				.map((descriptor) => descriptor.key)
+				.filter((key) => key === "incremental-gap" || INCREMENTAL_DELTA_PASS_IDS.includes(key as IncrementalDeltaPassId));
 			const recorded = reviewCandidateDispositionRegistry.recordFinalization(
 				ctx.sessionManager.getSessionId(), lease.generation, decisions, addedFindings, params.overview, params.verification,
+				expectedCandidateLaneKeys,
 			);
 			if (!recorded.ok) return { content: [{ type: "text", text: `pr_review_candidate_disposition failed: ${recorded.error}` }], isError: true, details: { authorized: true, reason: "invalid_dispositions" } };
 			return { content: [{ type: "text", text: JSON.stringify({ action: "finalized", decisions: recorded.finalization.decisions, addedFindings: recorded.finalization.addedFindings.length }, null, 2) }], details: { authorized: true, finalization: recorded.finalization } };

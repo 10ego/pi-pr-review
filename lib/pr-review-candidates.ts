@@ -23,6 +23,7 @@ export interface ReviewCandidateFinalization {
 
 interface CandidateEntry {
 	candidates: Map<string, ReviewCandidateRecord>;
+	settledLanes: Set<string>;
 	finalization?: ReviewCandidateFinalization;
 }
 
@@ -32,12 +33,13 @@ export class ReviewCandidateDispositionRegistry {
 
 	markCandidates(sessionId: string, generation: number, candidates: readonly ReviewCandidateRecord[]): boolean {
 		const key = `${sessionId}:${generation}`;
-		const entry = this.entries.get(key) ?? { candidates: new Map<string, ReviewCandidateRecord>() };
+		const entry = this.entries.get(key) ?? { candidates: new Map<string, ReviewCandidateRecord>(), settledLanes: new Set<string>() };
 		if (entry.finalization) return false;
 		for (const candidate of candidates) {
 			const existing = entry.candidates.get(candidate.id);
 			if (existing && JSON.stringify(existing) !== JSON.stringify(candidate)) return false;
 			entry.candidates.set(candidate.id, Object.freeze({ ...candidate, finding: Object.freeze({ ...candidate.finding }) }));
+			entry.settledLanes.add(candidate.laneKey);
 		}
 		this.entries.set(key, entry);
 		return true;
@@ -50,7 +52,7 @@ export class ReviewCandidateDispositionRegistry {
 		candidates: readonly ReviewCandidateRecord[],
 	): boolean {
 		const key = `${sessionId}:${generation}`;
-		const entry = this.entries.get(key) ?? { candidates: new Map<string, ReviewCandidateRecord>() };
+		const entry = this.entries.get(key) ?? { candidates: new Map<string, ReviewCandidateRecord>(), settledLanes: new Set<string>() };
 		if (entry.finalization || !laneKey) return false;
 		const candidateIds = new Set<string>();
 		for (const candidate of candidates) {
@@ -62,6 +64,7 @@ export class ReviewCandidateDispositionRegistry {
 		// Validate the complete replacement before mutating the retained lane set.
 		for (const [id, candidate] of entry.candidates) if (candidate.laneKey === laneKey) entry.candidates.delete(id);
 		for (const candidate of candidates) entry.candidates.set(candidate.id, Object.freeze({ ...candidate, finding: Object.freeze({ ...candidate.finding }) }));
+		entry.settledLanes.add(laneKey);
 		this.entries.set(key, entry);
 		return true;
 	}
@@ -78,10 +81,14 @@ export class ReviewCandidateDispositionRegistry {
 		addedFindings: readonly ReviewFindingLike[],
 		overview: string,
 		verification: string,
+		expectedLaneKeys: readonly string[] = [],
 	): { ok: true; finalization: ReviewCandidateFinalization } | { ok: false; error: string } {
 		const entry = this.entries.get(`${sessionId}:${generation}`);
 		if (!entry) return { ok: false, error: "no incremental lane candidates are registered for this invocation" };
 		if (entry.finalization) return { ok: false, error: "candidate finalization was already recorded for this invocation" };
+		if (expectedLaneKeys.some((laneKey) => !entry.settledLanes.has(laneKey))) {
+			return { ok: false, error: "every expected candidate-producing lane must settle before finalization" };
+		}
 		if (decisions.length !== entry.candidates.size || new Set(decisions.map((decision) => decision.candidateId)).size !== decisions.length ||
 			decisions.some((decision) => !entry.candidates.has(decision.candidateId))) {
 			return { ok: false, error: "decisions must cover every registered candidate exactly once" };

@@ -1283,13 +1283,15 @@ export default function registerReviewTable(
 		const degradedBody = artifact && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
 			? artifact.body
 			: undefined;
+		const hostFinalizedBody = candidateFinalization && artifact ? artifact.body : undefined;
 		// Automation must not surface an approval claim that host-owned lane
 		// evidence has already downgraded. Preserve raw fully parsed output for
 		// machine consumers, but replace degraded/incomplete terminal text with
 		// the same deterministic body used by publication.
 		if (ctx.mode !== "tui") {
-			if (!degradedBody) return;
-			return { message: { ...event.message, content: [...nonText, { type: "text", text: degradedBody }] } };
+			const automationBody = degradedBody ?? hostFinalizedBody;
+			if (!automationBody) return;
+			return { message: { ...event.message, content: [...nonText, { type: "text", text: automationBody }] } };
 		}
 		return {
 			message: {
