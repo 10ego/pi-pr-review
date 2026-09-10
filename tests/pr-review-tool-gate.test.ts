@@ -69,7 +69,9 @@ mock.module("typebox", () => {
 	};
 });
 
-const registerPrReviewSubagents = (await import("../extensions/pr-review-subagent.ts")).default;
+const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts");
+const registerPrReviewSubagents = prReviewSubagentModule.default;
+const { cumulativeExpectedLanes } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
@@ -124,6 +126,18 @@ function balancedPasses() {
 }
 
 describe("review tool execution gate", () => {
+	test("pre-registers the exact cumulative topology for each mode", () => {
+		expect(cumulativeExpectedLanes("same_head", "balanced").map((lane) => lane.key)).toEqual(["incremental-gap"]);
+		expect(cumulativeExpectedLanes("incremental", "balanced").map((lane) => lane.key)).toEqual([
+			"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance",
+		]);
+		expect(cumulativeExpectedLanes("incremental", "full").map((lane) => lane.key)).toEqual([
+			"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
+		]);
+		expect(cumulativeExpectedLanes("incremental", "deep").map((lane) => lane.key)).toEqual(["incremental-gap", "incremental-deep"]);
+		expect(cumulativeExpectedLanes("incremental", "balanced", false).map((lane) => lane.key)).toEqual(["incremental-gap"]);
+		expect(cumulativeExpectedLanes("none", "balanced")).toEqual([]);
+	});
 	test("registers self-review with an empty closed schema and hides it while idle", () => {
 		const h = harness();
 		const tool = h.tools.get("self_review_subagent");

@@ -186,6 +186,22 @@ const INCREMENTAL_DELTA_PASSES = Object.freeze({
 	"incremental-deep": Object.freeze({ tier: "heavy" as const, modes: ["deep"] as const, scope: "Review the new-commit delta as one integrated change for introduced or exposed defects at every severity." }),
 });
 type IncrementalDeltaPassId = keyof typeof INCREMENTAL_DELTA_PASSES;
+const INCREMENTAL_DELTA_PASS_IDS = Object.freeze(Object.keys(INCREMENTAL_DELTA_PASSES) as IncrementalDeltaPassId[]);
+
+export function cumulativeExpectedLanes(
+	relationship: "none" | "same_head" | "incremental" | "diverged",
+	reviewMode: "quick" | "balanced" | "full" | "deep",
+	hasIncrementalDiff = true,
+): ExpectedReviewLane[] {
+	if (relationship !== "same_head" && relationship !== "incremental") return [];
+	return [
+		{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		...(relationship === "incremental" && hasIncrementalDiff
+			? INCREMENTAL_DELTA_PASS_IDS.filter((key) => (INCREMENTAL_DELTA_PASSES[key].modes as readonly string[]).includes(reviewMode))
+				.map((key) => ({ key, tier: INCREMENTAL_DELTA_PASSES[key].tier, minorHygiene: false, expectedOutput: "review_lane" as const }))
+			: []),
+	];
+}
 
 const TIER_PURPOSE: Record<Tier, string> = {
 	light: "overview / strengths / high-level risk scan",
@@ -1954,12 +1970,7 @@ export default function registerPrReviewSubagents(
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) throw new Error("could not bind the prepared relationship");
 				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
 				if (shouldRegister) {
-					const expectedPreparedLanes = [
-						{ key: "incremental-gap", tier: "heavy" as const, minorHygiene: false, expectedOutput: "nonempty" as const },
-						...(snapshot.relationship === "incremental"
-							? Object.entries(INCREMENTAL_PASS_POLICIES).map(([key, policy]) => ({ key, tier: policy.tier, minorHygiene: false, expectedOutput: "review_lane" as const }))
-							: []),
-					];
+					const expectedPreparedLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced", !incrementalEmpty);
 					if (!loopCoordinator.registerExpectedArtifacts(lease, expectedPreparedLanes, ctx)) throw new Error("could not register prepared cumulative coverage");
 					priorRevalidationRegistry.markFindings(ctx.sessionManager.getSessionId(), lease.generation, snapshot.prior?.findings ?? []);
 				}
@@ -2018,15 +2029,13 @@ export default function registerPrReviewSubagents(
 				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) {
 					return reviewLoopDeniedResult("pr_review_prior");
 				}
-				const requiredCumulativeLanes: ExpectedReviewLane[] = (snapshot.relationship === "same_head" || snapshot.relationship === "incremental")
-					? [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }]
-					: [];
+				const requiredCumulativeLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced");
 				if (requiredCumulativeLanes.length > 0 &&
 					!loopCoordinator.registerExpectedArtifacts(lease, requiredCumulativeLanes, ctx)) {
 					return {
-						content: [{ type: "text", text: "pr_review_prior could not register the required cumulative gap-hunt lane." }],
+						content: [{ type: "text", text: "pr_review_prior could not register the required cumulative review lanes." }],
 						isError: true,
-						details: { authorized: true, reason: "gap_registration_failed" },
+						details: { authorized: true, reason: "cumulative_registration_failed" },
 					};
 				}
 				// Record host-side that this invocation owes a Prior findings
@@ -2258,7 +2267,7 @@ export default function registerPrReviewSubagents(
 			const warnings = [...thinkingWarnings(config, ["heavy"]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			const candidates = incrementalCandidateRecords(expected.key, result.text, result.attempts, "nonempty");
-			if (!reviewCandidateDispositionRegistry.markCandidates(ctx.sessionManager.getSessionId(), lease.generation, candidates)) {
+			if (!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, expected.key, candidates)) {
 				return { content: [{ type: "text", text: "Incremental gap candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}
 			return {
@@ -2373,7 +2382,7 @@ export default function registerPrReviewSubagents(
 			const warnings = [...thinkingWarnings(config, [tier]), ...(lease.budget?.warnings ?? [])];
 			const detail = result.text || result.errorMessage || result.stderr || "(no output)";
 			const incrementalCandidates = incrementalPassId ? incrementalCandidateRecords(artifactKey, result.text, result.attempts, "review_lane") : [];
-			if (incrementalPassId && !reviewCandidateDispositionRegistry.markCandidates(ctx.sessionManager.getSessionId(), lease.generation, incrementalCandidates)) {
+			if (incrementalPassId && !reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, artifactKey, incrementalCandidates)) {
 				return { content: [{ type: "text", text: "Incremental delta candidate registration failed." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 			}
 			const candidateIndex = incrementalPassId ? ["", candidateIndexText(incrementalCandidates)] : [];

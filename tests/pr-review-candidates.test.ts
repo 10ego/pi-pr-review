@@ -27,4 +27,19 @@ describe("review candidate disposition registry", () => {
 		registry.clear("s", 1);
 		expect(registry.acceptedFindings("s", 1)).toBeUndefined();
 	});
+
+	test("atomically replaces candidates for a retried fixed lane", () => {
+		const registry = new ReviewCandidateDispositionRegistry();
+		expect(registry.replaceLaneCandidates("s", 2, "gap", [{
+			id: "gap:1", laneKey: "gap", finding: { title: "[P1] First", severity: "P1", body: "first", code_location: null },
+		}])).toBeTrue();
+		expect(registry.replaceLaneCandidates("s", 2, "gap", [{
+			id: "gap:1", laneKey: "gap", finding: { title: "[P2] Replacement", severity: "P2", body: "second", code_location: null },
+		}])).toBeTrue();
+		expect(registry.candidates("s", 2)?.map((candidate) => candidate.finding.title)).toEqual(["[P2] Replacement"]);
+		expect(registry.replaceLaneCandidates("s", 2, "gap", [{
+			id: "gap:1", laneKey: "other", finding: { title: "bad", severity: "P2", body: "bad", code_location: null },
+		}])).toBeFalse();
+		expect(registry.candidates("s", 2)?.map((candidate) => candidate.finding.title)).toEqual(["[P2] Replacement"]);
+	});
 });

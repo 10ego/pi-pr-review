@@ -43,6 +43,29 @@ export class ReviewCandidateDispositionRegistry {
 		return true;
 	}
 
+	replaceLaneCandidates(
+		sessionId: string,
+		generation: number,
+		laneKey: string,
+		candidates: readonly ReviewCandidateRecord[],
+	): boolean {
+		const key = `${sessionId}:${generation}`;
+		const entry = this.entries.get(key) ?? { candidates: new Map<string, ReviewCandidateRecord>() };
+		if (entry.finalization || !laneKey) return false;
+		const candidateIds = new Set<string>();
+		for (const candidate of candidates) {
+			if (!candidate.id || candidate.laneKey !== laneKey || candidateIds.has(candidate.id)) return false;
+			const existing = entry.candidates.get(candidate.id);
+			if (existing && existing.laneKey !== laneKey) return false;
+			candidateIds.add(candidate.id);
+		}
+		// Validate the complete replacement before mutating the retained lane set.
+		for (const [id, candidate] of entry.candidates) if (candidate.laneKey === laneKey) entry.candidates.delete(id);
+		for (const candidate of candidates) entry.candidates.set(candidate.id, Object.freeze({ ...candidate, finding: Object.freeze({ ...candidate.finding }) }));
+		this.entries.set(key, entry);
+		return true;
+	}
+
 	candidates(sessionId: string, generation: number): readonly ReviewCandidateRecord[] | undefined {
 		const entry = this.entries.get(`${sessionId}:${generation}`);
 		return entry ? Object.freeze([...entry.candidates.values()]) : undefined;
