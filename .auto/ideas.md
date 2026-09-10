@@ -34,3 +34,12 @@
 - Tool-free one-shot heavy discovery trial: all five passes/relevance gates passed but total was 767.6s, heavy tail 550.5s, parent validation 98.2s/13 calls. Every heavy pass had toolElapsedMs=0, yet firstAssistantMs was 182-548s and essentially equaled completion. The model shifted reasoning into the single response; eliminating tool rounds did not reduce the tail. Rejected.
 - Paired-heavy-lens trial: overview plus lifecycle/contracts and security/resources passed all three gates and found two relevant issues, but total was 670.1s, heavy tail 471.0s, and parent validation 85.5s. It did not beat the retained 452.0s balanced result and weakens independent lens isolation; configured tool work was only 65-167ms. Rejected.
 - Direct extension-owned PR context/first-turn balanced dispatch: all five passes and relevance gates passed, with 525.7s total, 320.0s heavy tail, 110.5s parent work, and three findings. Implied pre-batch setup was still ~95.1s versus ~79s in the comparable instrumented balanced trace, so the lower total came from provider-tail variance rather than eliminating a parent turn. Added ~200 lines and no phase win; cleanup succeeded. Rejected.
+
+## Corpus v13 release-candidate decision
+
+- Frozen campaign: corpus SHA-256 `25410357344f48dbfe92daef22a0420dc587ff742ca52468db1a129c17f39179`, plan `fab1f7c87f2f32a1e28f6d2fc993f8acb30f4002dcb23d0d7e2638f94e9f7cc6`, plan SHA-256 `f5ff050c1aad9af887a8906df3d5a31526849fdf0d29988f49f50c8b27b3e725`.
+- Collection completed 24/24 in order with zero collector failures and no reruns.
+- Exact relationship and status accuracy remained 12/12, duplicate rate improved (10.5% incremental versus 13.0% fresh), and complete-pair median latency was only 3.6% slower (100.0s versus 96.6s).
+- Automatic selection is rejected: operational completion was 5/12 incremental versus 12/12 fresh, required-lane completion was 80.6% versus 100%, still-open carry-forward was 4/6, and P2 recall was 50% versus 100%.
+- Keep `--incremental` explicit. Do not add selector mechanics until cumulative lane-invocation/finalization reliability and P2 carry-forward are fixed and a new immutable campaign passes every gate.
+- V9-v12 are retained as invalid campaigns without reruns; they exposed collector/scorer compatibility defects for candidate-finalized JSON and host-normalized `publicationBody`. V13 is the first valid campaign for the consolidated architecture.

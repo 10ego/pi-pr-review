@@ -9,4 +9,4 @@ Immutable 24-row campaign covering all host-authored completion representations.
 - plan SHA-256: `f5ff050c1aad9af887a8906df3d5a31526849fdf0d29988f49f50c8b27b3e725`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute every row once in stored order and retain all failures. See `docs/incremental-experiment-v13.md`.
+All 24 rows completed once in stored order with zero collector failures. Automatic selection was rejected: incremental completed only 5/12 runs, carried forward 4/6 still-open findings, reached 50% P2 recall versus fresh's 100%, and completed 80.6% of required lanes. See `docs/incremental-experiment-v13.md`.
