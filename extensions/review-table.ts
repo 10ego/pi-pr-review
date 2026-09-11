@@ -746,6 +746,7 @@ export default function registerReviewTable(
 	const telemetryTracker = new ReviewTelemetryTracker();
 	const INCREMENTAL_CONTINUATION_MESSAGE_TYPE = "pr-review-incremental-continuation-request";
 	interface IncrementalHostContinuation {
+		readonly id: string;
 		readonly generation: number;
 		readonly sessionId: string;
 		readonly text: string;
@@ -902,9 +903,10 @@ export default function registerReviewTable(
 			if (message.role !== "custom" ||
 				(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return [message];
 			changed = true;
-			const generation = (message as { details?: { generation?: unknown } }).details?.generation;
+			const details = (message as { details?: { generation?: unknown; continuationId?: unknown } }).details;
 			if (continuation?.delivered === true && activeGeneration === continuation.generation &&
-				generation === continuation.generation && ctx.sessionManager.getSessionId() === continuation.sessionId) {
+				details?.generation === continuation.generation && details.continuationId === continuation.id &&
+				ctx.sessionManager.getSessionId() === continuation.sessionId) {
 				return [{ ...message, content: continuation.text }];
 			}
 			return [];
@@ -923,7 +925,8 @@ export default function registerReviewTable(
 		}
 		const continuation = incrementalHostContinuation;
 		if (!continuation || continuation.delivered) return;
-		const retainedBindingMatches = text === continuation.text &&
+		const continuationId = (event.message as { details?: { continuationId?: unknown } }).details?.continuationId;
+		const retainedBindingMatches = text === continuation.text && continuationId === continuation.id &&
 			loopCoordinator.retainedGeneration(ctx) === continuation.generation &&
 			ctx.sessionManager.getSessionId() === continuation.sessionId;
 		if (retainedBindingMatches && loopCoordinator.deadlineExpired()) {
@@ -1307,13 +1310,15 @@ export default function registerReviewTable(
 					...(priorStatusesMissing ? ["Structured prior-finding statuses are missing."] : []),
 					...(candidateFinalization === undefined ? ["Host candidate finalization is missing."] : []),
 				];
+				const continuationId = randomUUID();
 				const continuationText = [
 					"Host continuation: this cumulative incremental review is incomplete.",
-					`Recovery generation: ${retainedGeneration}; nonce: ${randomUUID()}.`,
+					`Recovery generation: ${retainedGeneration}; nonce: ${continuationId}.`,
 					...requirements,
 					"Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
 				].join("\n");
 				incrementalHostContinuation = {
+					id: continuationId,
 					generation: retainedGeneration,
 					sessionId: ctx.sessionManager.getSessionId(),
 					text: continuationText,
@@ -1330,7 +1335,7 @@ export default function registerReviewTable(
 						customType: INCREMENTAL_CONTINUATION_MESSAGE_TYPE,
 						content: continuationText,
 						display: false,
-						details: { generation: retainedGeneration },
+						details: { generation: retainedGeneration, continuationId },
 					}, { deliverAs: "followUp", triggerTurn: true });
 					return;
 				} catch (error) {

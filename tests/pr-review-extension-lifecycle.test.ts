@@ -2310,7 +2310,13 @@ describe("completed review extension lifecycle", () => {
 		});
 		const [redactedFollowUp] = await harness.emit("message_end", { message: { role: "custom", ...followUp } });
 		expect(redactedFollowUp.message.content).toBe("");
-		const [liveContext] = await harness.emit("context", { messages: [redactedFollowUp.message] });
+		const historicalSameGeneration = {
+			...redactedFollowUp.message,
+			details: { generation: lease.generation, continuationId: "historical-continuation" },
+		};
+		const [liveContext] = await harness.emit("context", {
+			messages: [historicalSameGeneration, redactedFollowUp.message],
+		});
 		expect(liveContext.messages).toEqual([{ ...redactedFollowUp.message, content: followUp.content }]);
 
 		await harness.emit("message_end", { message: premature });
