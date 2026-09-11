@@ -2313,7 +2313,9 @@ describe("completed review extension lifecycle", () => {
 			outcome: "input_accepted",
 			generation: lease.generation,
 		});
-		await harness.emit("before_agent_start", { prompt: followUp.content });
+		await harness.emit("message_start", {
+			message: { role: "user", content: [{ type: "text", text: followUp.content }] },
+		});
 		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
 			outcome: "delivered",
 			generation: lease.generation,
@@ -2356,12 +2358,14 @@ describe("completed review extension lifecycle", () => {
 		const followUp = harness.sentUserMessages[0]!;
 		await harness.emit("input", { text: followUp.content, source: "extension", streamingBehavior: "followUp" });
 
-		await harness.emit("before_agent_start", { prompt: `${followUp.content} transformed` });
+		await harness.emit("message_start", {
+			message: { role: "user", content: [{ type: "text", text: `${followUp.content} transformed` }] },
+		});
 		expect(harness.abortCount()).toBe(1);
 		expect(harness.loopCoordinator.peek()).toBeUndefined();
 		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
 			outcome: "rejected",
-			reason: "prompt_binding_mismatch",
+			reason: "message_binding_mismatch",
 		});
 	});
 
@@ -2407,7 +2411,9 @@ describe("completed review extension lifecycle", () => {
 		await harness.emit("input", { text: followUp.content, source: "extension", streamingBehavior: "followUp" });
 		await harness.emit("input", { text: "cancel", source: "interactive" });
 
-		await harness.emit("before_agent_start", { prompt: followUp.content });
+		await harness.emit("message_start", {
+			message: { role: "user", content: [{ type: "text", text: followUp.content }] },
+		});
 		expect(harness.abortCount()).toBe(1);
 		expect(harness.loopCoordinator.peek()).toBeUndefined();
 		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({

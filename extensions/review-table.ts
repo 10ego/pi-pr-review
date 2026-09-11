@@ -886,31 +886,35 @@ export default function registerReviewTable(
 		restoreCompletedReviews(ctx);
 	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
-		if (invalidatedIncrementalContinuationTexts.delete(event.prompt)) {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await selfReviewCoordinator.beginTask(ctx);
+	});
+
+	pi.on("message_start", (event, ctx) => {
+		if (event.message.role !== "user") return;
+		const text = assistantText(event.message);
+		if (invalidatedIncrementalContinuationTexts.delete(text)) {
 			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start" });
 			ctx.abort();
 			return;
 		}
 		const continuation = incrementalHostContinuation;
-		if (continuation?.inputAccepted && !continuation.delivered) {
-			const valid = event.prompt === continuation.text &&
-				loopCoordinator.retainedGeneration(ctx) === continuation.generation &&
-				ctx.sessionManager.getSessionId() === continuation.sessionId;
-			if (!valid) {
-				recordIncrementalHostContinuation("rejected", {
-					generation: continuation.generation,
-					reason: "prompt_binding_mismatch",
-				});
-				clearIncrementalHostContinuation(false);
-				loopCoordinator.clear();
-				ctx.abort();
-				return;
-			}
-			continuation.delivered = true;
-			recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
+		if (!continuation?.inputAccepted || continuation.delivered) return;
+		const valid = text === continuation.text &&
+			loopCoordinator.activeGeneration(ctx) === continuation.generation &&
+			ctx.sessionManager.getSessionId() === continuation.sessionId;
+		if (!valid) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: continuation.generation,
+				reason: "message_binding_mismatch",
+			});
+			clearIncrementalHostContinuation(false);
+			loopCoordinator.clear();
+			ctx.abort();
+			return;
 		}
-		await selfReviewCoordinator.beginTask(ctx);
+		continuation.delivered = true;
+		recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
 	});
 
 	pi.on("agent_settled", () => {
