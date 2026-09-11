@@ -133,7 +133,8 @@ function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
 	}
 }
 
-function assistantText(message: { content?: MessagePart[] }): string {
+function assistantText(message: { content?: string | MessagePart[] }): string {
+	if (typeof message.content === "string") return message.content;
 	if (!Array.isArray(message.content)) return "";
 	return message.content
 		.filter((p) => p.type === "text" && typeof p.text === "string")
@@ -743,11 +744,11 @@ export default function registerReviewTable(
 	};
 
 	const telemetryTracker = new ReviewTelemetryTracker();
+	const INCREMENTAL_CONTINUATION_MESSAGE_TYPE = "pr-review-incremental-continuation-request";
 	interface IncrementalHostContinuation {
 		readonly generation: number;
 		readonly sessionId: string;
 		readonly text: string;
-		inputAccepted: boolean;
 		delivered: boolean;
 	}
 	let incrementalHostContinuation: IncrementalHostContinuation | undefined;
@@ -767,7 +768,7 @@ export default function registerReviewTable(
 		incrementalHostContinuation = undefined;
 	};
 	const recordIncrementalHostContinuation = (
-		outcome: "queued" | "input_accepted" | "delivered" | "exhausted" | "queue_failed" | "rejected",
+		outcome: "queued" | "delivered" | "exhausted" | "queue_failed" | "rejected",
 		details: Record<string, unknown>,
 	) => {
 		try {
@@ -891,7 +892,8 @@ export default function registerReviewTable(
 	});
 
 	pi.on("message_start", (event, ctx) => {
-		if (event.message.role !== "user") return;
+		if (event.message.role !== "custom" ||
+			(event.message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return;
 		const text = assistantText(event.message);
 		if (invalidatedIncrementalContinuationTexts.delete(text)) {
 			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start" });
@@ -899,7 +901,7 @@ export default function registerReviewTable(
 			return;
 		}
 		const continuation = incrementalHostContinuation;
-		if (!continuation?.inputAccepted || continuation.delivered) return;
+		if (!continuation || continuation.delivered) return;
 		const valid = text === continuation.text &&
 			loopCoordinator.activeGeneration(ctx) === continuation.generation &&
 			ctx.sessionManager.getSessionId() === continuation.sessionId;
@@ -919,6 +921,15 @@ export default function registerReviewTable(
 
 	pi.on("agent_settled", () => {
 		selfReviewCoordinator.clear();
+		const continuation = incrementalHostContinuation;
+		if (!continuation || continuation.delivered) return;
+		recordIncrementalHostContinuation("queue_failed", {
+			generation: continuation.generation,
+			reason: "settled_without_delivery",
+		});
+		clearIncrementalHostContinuation(false);
+		loopCoordinator.clear();
+		persistTelemetry("cleared");
 	});
 
 	pi.on("session_tree", (event, ctx) => {
@@ -941,24 +952,8 @@ export default function registerReviewTable(
 
 	pi.on("input", async (event, ctx) => {
 		const source = event.source as ReviewLoopInputSource;
-		if (source === "extension" && invalidatedIncrementalContinuationTexts.delete(event.text)) {
-			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_input" });
-			return { action: "handled" as const };
-		}
-		const continuation = incrementalHostContinuation;
-		const retainedGeneration = loopCoordinator.retainedGeneration(ctx);
-		if (
-			continuation && !continuation.inputAccepted && !continuation.delivered && source === "extension" &&
-			event.streamingBehavior === "followUp" && event.text === continuation.text &&
-			retainedGeneration === continuation.generation &&
-			ctx.sessionManager.getSessionId() === continuation.sessionId
-		) {
-			continuation.inputAccepted = true;
-			recordIncrementalHostContinuation("input_accepted", { generation: continuation.generation });
-			return { action: "continue" as const };
-		}
 
-		// Any other input revokes the prior top-level task generation before it can
+		// Any input revokes the prior top-level task generation before it can
 		// authorize a replay or an unrelated queued/steering continuation.
 		clearIncrementalHostContinuation();
 		revokePreflight();
@@ -1287,7 +1282,6 @@ export default function registerReviewTable(
 					generation: retainedGeneration,
 					sessionId: ctx.sessionManager.getSessionId(),
 					text: continuationText,
-					inputAccepted: false,
 					delivered: false,
 				};
 				recordIncrementalHostContinuation("queued", {
@@ -1297,7 +1291,12 @@ export default function registerReviewTable(
 					candidateFinalizationMissing: candidateFinalization === undefined,
 				});
 				try {
-					pi.sendUserMessage(continuationText, { deliverAs: "followUp" });
+					pi.sendMessage({
+						customType: INCREMENTAL_CONTINUATION_MESSAGE_TYPE,
+						content: continuationText,
+						display: false,
+						details: { generation: retainedGeneration },
+					}, { deliverAs: "followUp", triggerTurn: true });
 					return;
 				} catch (error) {
 					recordIncrementalHostContinuation("queue_failed", {
