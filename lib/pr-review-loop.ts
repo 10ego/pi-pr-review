@@ -480,6 +480,16 @@ export class ReviewLoopCoordinator {
 		return expected ? expected.equals(bytes) : undefined;
 	}
 
+	preparedContext(
+		lease: ReviewLoopLease,
+		key: string,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): Buffer | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return undefined;
+		const bytes = this.binding.preparedContextBytes.get(key);
+		return bytes ? Buffer.from(bytes) : undefined;
+	}
+
 	claimArtifact(lease: ReviewLoopLease, key: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.claim(lease.generation, key);
 	}

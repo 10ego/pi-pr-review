@@ -2211,18 +2211,36 @@ export default function registerPrReviewSubagents(
 		description: "Finalize the host-owned cumulative review: classify every lane candidate and submit independently discovered parent findings that have no lane ID.",
 		promptSnippet: "Finalize cumulative candidates and parent-added findings into the host artifact",
 		promptGuidelines: [
-			"Call exactly once after every gap and delta result is available and independently validated.",
+			"Call after every planned delta result is available and independently validated. If the mandatory gap call was omitted, the host runs it now and requires one resubmission with its returned Candidate IDs.",
 			"Cover every Candidate ID exactly once; duplicate entries must reference the accepted canonical candidate.",
 			"Put independently validated findings without a lane ID in added_findings; never discard them because no lane proposed them. Do not manually duplicate a prior finding recorded as still open: the host carries it forward with canonical identity and severity.",
 			"Supply final overview and verification. The host publishes this artifact; after success respond only that host finalization completed.",
 		],
 		parameters: PrReviewCandidateDispositionParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("pr_review_candidate_disposition");
 			const relationship = loopCoordinator.priorRelationship(ctx);
 			if (loopCoordinator.peek()?.incremental !== true || (relationship !== "same_head" && relationship !== "incremental")) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition requires cumulative incremental state." }], isError: true, details: { authorized: false, reason: "prior_relationship" } };
+			}
+			const gapKey = "incremental-gap";
+			const gapExpected = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? []).some((descriptor) => descriptor.key === gapKey);
+			const gapRetained = (loopCoordinator.artifactSnapshot(ctx) ?? []).some((artifact) => artifact.key === gapKey);
+			const preparedGapBytes = loopCoordinator.preparedContext(lease, gapKey, ctx);
+			if (gapExpected && !gapRetained && preparedGapBytes) {
+				const gapBytes = preparedGapBytes;
+				if (!loopCoordinator.claimArtifact(lease, gapKey, ctx)) return { content: [{ type: "text", text: "Mandatory incremental gap coverage is unavailable or still running; finalization remains fail-closed." }], isError: true, details: { authorized: true, reason: "gap_unavailable" } };
+				const config = loadConfig(ctx);
+				const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+				const gapResult = await runSubagentPass(config, ctx, {
+					id: gapKey, tier: "heavy", objective: INCREMENTAL_GAP_OBJECTIVE, context: gapBytes.toString("utf8"), toolPolicy: "configured",
+					majorOnly: reviewMode === "quick" || reviewMode === "balanced", minorHygiene: false, expectedOutput: "nonempty", retryContractPartial: true,
+					focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, { key: gapKey, label: "incremental full-PR gap hunt", tier: "heavy" }), artifactPublisher: loopCoordinator.createArtifactPublisher(lease, ctx), generation: lease.generation, artifactKey: gapKey,
+				}, combineAbortSignals(signal, lease.signal), (text) => onUpdate?.({ content: [{ type: "text", text }] }), () => loopCoordinator.isLeaseActive(lease, ctx), lease.budget ? activateReviewBatch(lease.budget) : undefined);
+				const gapCandidates = incrementalCandidateRecords(gapKey, gapResult.text, gapResult.attempts, "nonempty");
+				if (!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, gapKey, gapCandidates)) return { content: [{ type: "text", text: "Mandatory incremental gap candidates could not be retained." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
+				return { content: [{ type: "text", text: [`Mandatory incremental gap ${gapResult.status}; resubmit finalization with every Candidate ID below.`, "", candidateIndexText(gapCandidates)].join("\n") }], isError: true, details: { authorized: true, reason: "gap_recovered", status: gapResult.status, attempts: gapResult.attempts, candidates: gapCandidates.map((candidate) => candidate.id) } };
 			}
 			const decisions = params.decisions.map((decision) => ({
 				candidateId: decision.candidate_id,
