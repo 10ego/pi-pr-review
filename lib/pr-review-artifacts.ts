@@ -248,6 +248,16 @@ function candidateLabel(line: string): MarkdownLabel | undefined {
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
 
+/** Strip only CommonMark's exact two-space hard break from an otherwise recognizable candidate field line. */
+function normalizeCandidateHardBreaks(text: string): string {
+	return text.split("\n").map((line) => {
+		if (!line.endsWith("  ") || line.endsWith("   ")) return line;
+		const stripped = line.slice(0, -2);
+		const candidateLine = stripped.startsWith("  ") ? stripped.slice(2) : stripped;
+		return candidateLabel(candidateLine) ? stripped : line;
+	}).join("\n");
+}
+
 type CandidateBlockStyle = "top-level" | "list-undecided" | "repeated-list" | "yaml-list";
 
 /** Parse top-level, repeated-list-marker, or conventional YAML-list fields. */
@@ -479,7 +489,8 @@ function parseCandidatePrefix(
 	return { candidates, consumedAll: true };
 }
 
-function parseIntegratedCompletion(text: string): boolean {
+function parseIntegratedCompletion(rawText: string): boolean {
+	const text = normalizeCandidateHardBreaks(rawText);
 	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || hasHtmlContainer(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
@@ -537,7 +548,7 @@ export function extractValidatedReviewLaneCandidates(
 	rawText: string,
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
 ): readonly ValidatedReviewLaneCandidate[] {
-	const text = normalizeReviewText(rawText);
+	const text = normalizeCandidateHardBreaks(normalizeReviewText(rawText));
 	if (
 		!text.trim() || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
@@ -617,7 +628,7 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 }
 
 function parseOrdinaryCandidateCompletion(rawText: string): boolean {
-	const text = normalizeReviewText(rawText);
+	const text = normalizeCandidateHardBreaks(normalizeReviewText(rawText));
 	if (
 		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||

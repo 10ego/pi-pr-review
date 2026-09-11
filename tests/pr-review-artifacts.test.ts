@@ -283,6 +283,25 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: `${valid}\ntitle: [P2] Duplicate field`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
 	});
 
+	test("normalizes only exact candidate-field Markdown hard breaks", () => {
+		const hardBreakCandidate = [
+			"- **title:** [P2] Preserve review evidence  ",
+			"  **severity:** P2  ",
+			"  **why:** The changed path drops a required result.  ",
+			"  **location:** src/a.ts:10-12  ",
+			"  **side:** RIGHT  ",
+			"  **in_diff:** yes  ",
+			"  **pr_related:** yes  ",
+			"  **confidence:** 0.9",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(hardBreakCandidate)).toHaveLength(1);
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${integratedFraming()}\n${hardBreakCandidate}`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate.replace("P2  ", "P2   "), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate.replace("P2  ", "P2 \t"), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${hardBreakCandidate}\narbitrary prose  `, exitCode: 0, stopReason: "stop" })).toBe("partial");
+	});
+
 	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
 		const nit = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.").replace("[P2] Preserve review evidence", "[nit] Preserve review evidence").replace("severity: P2", "severity: nit")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");

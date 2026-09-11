@@ -141,12 +141,12 @@ describe("PR review prompt scheduling policy", () => {
 			expect(prompt).toContain("never receive participant discussion");
 			expect(prompt).toContain("full-PR gap hunter");
 			expect(prompt).toContain("defects any earlier review missed");
-			expect(prompt).toContain("host-fixed `pr_review_incremental_gap`");
-			expect(prompt).toContain("pre-registers its required lane");
+			expect(prompt).toContain("`pr_review_prepare` itself runs the host-fixed `incremental-gap` lane");
+			expect(prompt).toContain("pre-registers, claims, runs, and retains the exact-full-diff gap artifact");
 			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
 			expect(prompt).toContain("pins the resolved GitHub hostname");
 			expect(prompt).toContain("caps files at 300");
-			expect(prompt).toContain("dispatch the Step 5 full-PR gap hunter");
+			expect(prompt).toContain("the full-PR gap hunter already ran inside preparation");
 			expect(prompt).toContain("never depend on a system `jq`");
 			expect(prompt).toContain("a null or empty file list is reported as an empty delta");
 			expect(prompt).toContain("INC_EMPTY=1");
