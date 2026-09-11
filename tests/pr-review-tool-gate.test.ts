@@ -225,6 +225,14 @@ describe("review tool execution gate", () => {
 		}, undefined, undefined, h.ctx);
 		expect(single).toMatchObject({ isError: true, details: { reason: "preparation_required" } });
 		expect(h.coordinator.setPriorRelationship(h.coordinator.acquire(h.ctx)!, "none", h.ctx)).toBeTrue();
+		const preBatchSingle = await h.tools.get("review_subagent").execute("single-before-batch", {
+			tier: "heavy",
+			objective: "review",
+			context: "metadata",
+			context_file: "/not-read-before-fixed-batch",
+		}, undefined, undefined, h.ctx);
+		expect(preBatchSingle).toMatchObject({ isError: true, details: { reason: "fresh_batch_required" } });
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx)).toEqual([]);
 		const settled = await h.tools.get("review_subagents").execute("batch-settled", {
 			passes: quickPasses(),
 			context: "metadata",

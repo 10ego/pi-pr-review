@@ -2514,6 +2514,10 @@ export default function registerPrReviewSubagents(
 			if (activeInvocation?.incremental === true && relationship === undefined) {
 				return { content: [{ type: "text", text: "Automatic review selection is pending. Call pr_review_prepare before dispatching review lanes." }], isError: true, details: { authorized: false, reason: "preparation_required" } };
 			}
+			if (activeInvocation?.incremental === true && (relationship === "none" || relationship === "diverged") &&
+				(loopCoordinator.expectedArtifactDescriptors(ctx)?.length ?? 0) === 0) {
+				return { content: [{ type: "text", text: "Automatically selected fresh review requires the fixed review_subagents batch before any targeted single-lane recovery." }], isError: true, details: { authorized: false, reason: "fresh_batch_required" } };
+			}
 			const cumulative = activeInvocation?.incremental === true && (relationship === "same_head" || relationship === "incremental");
 			const sameHeadResourcePass = relationship === "same_head" && incrementalPassId === "incremental-security-performance" && reviewMode !== "deep";
 			if (incrementalPassId && (!incrementalPass || (relationship !== "incremental" && !sameHeadResourcePass) ||

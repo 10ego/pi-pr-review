@@ -19,7 +19,7 @@ The selected strategy and reason are persisted as bounded `pr-review-selection` 
 1. Default invocations are transformed with the configured review mode and `--incremental` before prompt expansion.
 2. Explicit `--fresh` never enables prior discovery or host continuation.
 3. Explicit `--incremental` retains cumulative behavior.
-4. Fresh batch and individual review lanes are rejected while automatic preparation is pending; legacy prior discovery cannot bypass atomic preparation.
+4. Fresh batch and individual review lanes are rejected while automatic preparation is pending; after a fresh selection, individual lanes remain unavailable until the fixed batch registers the complete mode topology. Legacy prior discovery cannot bypass atomic preparation.
 5. Failed preparation atomically clears prepared bytes, expected lanes, prior findings, and candidate state before selecting fresh.
 6. Missing preparation or an omitted selected fresh topology queues one continuation and cannot loop; queue failure, exhaustion, or deadline expiry clears authority before caching or publication.
 7. Selection telemetry contains only generation, requested strategy, selected strategy, and bounded reason.
