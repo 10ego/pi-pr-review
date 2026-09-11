@@ -1,6 +1,6 @@
 # Automatic fresh versus incremental selection v1
 
-Status: **frozen; collection not started**.
+Status: **complete; automatic defaulting rejected**.
 
 - candidate: `38a2f0281581d166b2c72993d55716cc3bfc6bc7`
 - corpus: `tests/benchmarks/review-semantic/corpus-selector-v1.json`
@@ -45,8 +45,23 @@ The immutable real-model campaign covers:
 
 Malformed/truncated prior state, preparation failure, cleanup failure, concurrent preparation, missing preparation, missing fresh topology, deadline expiry, queue failure, and continuation exhaustion are deterministic host-lifecycle gates rather than stochastic model rows.
 
-Every row is retained once without reruns. Automatic selection must choose the expected strategy in every case, preserve V18's semantic and operational gates, add no duplicate publication, and have no worse median end-to-end latency than the corresponding explicit strategy after accounting for selection overhead.
+Every row was retained once without reruns. Automatic selection had to choose the expected strategy in every case, preserve V18's semantic and operational gates, add no duplicate publication, and have no worse median end-to-end latency than the corresponding explicit strategy after accounting for selection overhead.
+
+## Results
+
+- 36/36 rows retained with process exit 0 and no reruns;
+- automatic selection telemetry: 12/12 exact requested, selected, and reason values;
+- automatic relationships: 12/12 exact;
+- automatic prior statuses: 8/8 exact;
+- automatic still-open carry-forward: 4/4;
+- automatic raw recall: P0/P1 66.7%, P2 100%, cross-file 50%;
+- automatic operational completion: 11/12;
+- automatic required-lane completion: 47/48 (97.9%);
+- automatic publication fallback: 1/12 (8.3%);
+- automatic median latency: 82.7s, versus 78.0s explicit fresh and 86.5s explicit incremental.
+
+The retained automatic no-prior repetition 1 row had a structurally partial `correctness-contracts` lane. The retained explicit-incremental no-prior repetition 2 row independently had a structurally partial `security-performance` lane. Neither was rerun. Exact strategy choice therefore passed, but the absolute all-required-lanes-complete and operational-completion gates failed. Automatic defaulting remains unreleased.
 
 ## Directional pilot
 
-A disposable six-case automatic-only pilot completed 6/6 operational runs and 24/24 required lanes with exact relationship and selected-strategy telemetry, exact prior statuses/carry-forward, 100% raw seeded-defect recall, zero fallback, and 65.0s median latency. This pilot is directional only and cannot authorize release.
+A disposable six-case automatic-only pilot completed 6/6 operational runs and 24/24 required lanes with exact relationship and selected-strategy telemetry, exact prior statuses/carry-forward, 100% raw seeded-defect recall, zero fallback, and 65.0s median latency. This pilot was directional only and did not override the failed immutable campaign.

@@ -8,4 +8,4 @@ Frozen immutable campaign for host-owned automatic fresh-versus-cumulative PR re
 - plan SHA-256: `5a6fe4869564157e43e74e852714e8bdfe0c775662fb1988933b08fd3904aeac`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Collect all 36 rows once in stored order and retain every result without reruns.
+All 36 rows were collected once in stored order without reruns. Automatic selection identity passed 12/12, but one automatic no-prior row retained a partial fresh contracts lane. Automatic operational completion was 11/12 and required-lane completion was 47/48, so automatic defaulting remains rejected. The raw report, selection audit, and privacy-sanitized evidence are retained unchanged.
