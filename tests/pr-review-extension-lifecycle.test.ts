@@ -2398,10 +2398,26 @@ describe("completed review extension lifecycle", () => {
 		});
 		expect(harness.abortCount()).toBe(1);
 		expect(harness.loopCoordinator.peek()).toBeUndefined();
-		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
-			outcome: "rejected",
-			reason: "invalidated_before_start",
+		const rejected = harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data;
+		expect(rejected).toMatchObject({ outcome: "rejected", reason: "invalidated_before_start" });
+		expect(rejected.textSha256).toMatch(/^[a-f0-9]{64}$/);
+		const contextMessages = [
+			{ role: "custom", ...followUp },
+			{ role: "user", content: [{ type: "text", text: "next request" }] },
+		];
+		const [filtered] = await harness.emit("context", { messages: contextMessages });
+		expect(filtered.messages).toEqual([contextMessages[1]]);
+		const [redacted] = await harness.emit("message_end", { message: contextMessages[0] });
+		expect(redacted.message).toMatchObject({
+			role: "custom",
+			customType: "pr-review-incremental-continuation-request",
+			content: "",
 		});
+
+		const restored = createHarness([...harness.branch]);
+		await restored.emit("session_start", { reason: "resume" });
+		const [restoredFiltered] = await restored.emit("context", { messages: contextMessages });
+		expect(restoredFiltered.messages).toEqual([contextMessages[1]]);
 	});
 
 	test("does not authenticate a user message that copies the custom continuation text", async () => {
