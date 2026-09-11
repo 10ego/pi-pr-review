@@ -294,6 +294,31 @@ describe("review tool execution gate", () => {
 		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
 	});
 
+	test("recovers an omitted prepared gap after validation and requires one finalization resubmission", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-post-confirm-gap-"));
+		const child = path.join(root, "child.mjs");
+		writeFileSync(child, `process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Review status: COMPLETE\\nOverview: The complete PR was inspected.\\nStrengths: The change remains focused.\\nRisk areas: Authorization boundaries require attention.\\ntitle: [P1] Preserve tenant authorization\\nseverity: P1\\nwhy: Returning true permits cross-tenant document reads and removes the ownership boundary.\\nlocation: src/access.ts:2\\nside: RIGHT\\nin_diff: yes\\npr_related: yes\\nconfidence: 0.99" }] } })));`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "post-confirm-gap-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from("diff --git a/src/access.ts b/src/access.ts\n"), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const first = await h.tools.get("pr_review_candidate_disposition").execute("recover-gap", { overview: "Review complete", verification: "Source inspected", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+			expect(first).toMatchObject({ isError: true, details: { reason: "gap_recovered", status: "complete", candidates: ["incremental-gap:1"] } });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => [artifact.key, artifact.lifecycle])).toEqual([["incremental-gap", "complete"]]);
+			const second = await h.tools.get("pr_review_candidate_disposition").execute("finalize-gap", { overview: "Review complete", verification: "Source inspected", decisions: [{ candidate_id: "incremental-gap:1", disposition: "accepted" }], added_findings: [] }, undefined, undefined, h.ctx);
+			expect(second.isError).toBeUndefined();
+			expect(second.details.finalization.decisions).toEqual([{ candidateId: "incremental-gap:1", disposition: "accepted" }]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("incremental gap hunting requires a host-established usable prior relationship", async () => {
 		const h = harness();
 		h.coordinator.begin(
