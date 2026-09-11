@@ -8,4 +8,4 @@ Immutable paired final campaign for explicit cumulative incremental review with 
 - plan SHA-256: `4f97e57203b63d306b76a322c3faf4b7c5a3fd47d84fcb53a88d82da2ca7e920`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Execute all 24 rows once in stored order and retain every failure.
+All 24 rows were collected once in stored order. One incremental clean-control row was retained as failed without rerun. Incremental improved duplication and complete-pair median latency while preserving adjudicated seeded defects and prior state, but publication and automatic selection remain rejected because required-lane completion was 95% and paired raw P0/P1 and cross-file recall were lower than fresh.

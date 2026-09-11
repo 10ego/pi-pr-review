@@ -1,6 +1,6 @@
 # Cumulative incremental final campaign v17
 
-Status: **frozen; collection not started**.
+Status: **complete; publication and automatic selection rejected**.
 
 ## Candidate
 
@@ -29,3 +29,20 @@ Execute every row exactly once in stored order without reruns, skips, reordering
 4. Every required incremental lane completes.
 5. Complete-pair incremental median latency is no worse than fresh.
 6. Any omitted-gap recovery is post-confirmation, bounded, evidence-preserving, and requires one finalization resubmission.
+
+## Results
+
+All 24 rows were collected once in stored order. One incremental clean-control row was retained as a failed result without rerun.
+
+- exact relationships/statuses: 12/12;
+- still-open carry-forward: 6/6;
+- adjudicated seeded-defect presence: 12/12 for both strategies;
+- operational completion: 11/12 for both;
+- required-lane completion: 98.3% fresh and 95.0% incremental;
+- publication fallback rate: 8.3% for both;
+- duplicate rate: 31.9% fresh and 11.1% incremental;
+- complete-pair median latency: 75.9s fresh and 73.3s incremental (0.966 ratio);
+- paired raw P0/P1 recall: 62.5% fresh and 37.5% incremental;
+- paired raw cross-file recall: 100% fresh and 0% incremental.
+
+The failed incremental row claimed host finalization but retained neither required same-head lane. It contained no seeded defect, so visible-defect adjudication remains complete, but operational and lane reliability fail the absolute gate. Publication and automatic selection remain rejected. Raw scoring is unchanged; equivalent findings missed by the bounded matcher are recorded separately in `adjudication.json`.
