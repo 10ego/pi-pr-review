@@ -92,6 +92,7 @@ test("incremental corpus v7 pins six executable relationship scenarios", () => {
 	const info = loadCorpus(INCREMENTAL_CORPUS); assert.equal(info.corpus.schemaVersion, 2); assert.equal(info.corpus.cases.length, 6); assert.deepEqual(info.corpus.cases.map((item) => item.priorState.relationship), ["incremental", "incremental", "incremental", "same_head", "none", "diverged"]); assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2); assert.ok(info.corpus.cases.some((item) => item.crossFile));
 	for (const item of info.corpus.cases) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-v7-materialize-")), fixture = createIncrementalFixtureRepository(info, item, root); assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true); if (item.priorState.relationship === "incremental") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 0); if (item.priorState.relationship === "same_head") assert.equal(fixture.priorHeadSha, fixture.headSha); if (item.priorState.relationship === "none") assert.equal(fixture.priorHeadSha, null); if (item.priorState.relationship === "diverged") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 1); fs.rmSync(root, { recursive: true, force: true }); }
 	const plan = createPlan(info, ["balanced"], 2, ["fresh", "incremental"]); assert.equal(plan.entries.length, 24); assert.deepEqual(validatePlan(plan, info), plan);
+	const autoPlan = createPlan(info, ["balanced"], 1, ["auto"]); assert.equal(autoPlan.entries.length, 6); assert.deepEqual(validatePlan(autoPlan, info), autoPlan);
 });
 
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
@@ -112,6 +113,13 @@ test("schema-v1 planning remains byte-compatible while schema-v2 interleaves rev
 	assert.notEqual(plan.entries[0].strategy, plan.entries[1].strategy); assert.throws(() => createPlan(v2Info, ["balanced"], 1), /requested strategies/);
 	const missingStrategy = structuredClone(plan); delete missingStrategy.entries[0].strategy; assert.throws(() => validatePlan(missingStrategy, v2Info), /plan entry schema/);
 	const wrongCorpusVersion = { ...v2Info, corpus: { ...v2Info.corpus, schemaVersion: 1 } }; assert.throws(() => validatePlan(plan, wrongCorpusVersion), /plan identity/);
+});
+
+test("automatic strategy uses cumulative topology only for usable prior relationships", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	for (const item of info.corpus.cases) {
+		assert.deepEqual(expectedModeTopology("balanced", item, { strategy: "auto" }), expectedModeTopology("balanced", item, { strategy: "incremental" }));
+	}
 });
 
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {

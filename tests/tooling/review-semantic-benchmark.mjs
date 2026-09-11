@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const MODES = new Set(["quick", "balanced", "full", "major-only", "deep"]);
-const REVIEW_STRATEGIES = new Set(["fresh", "incremental"]);
+const REVIEW_STRATEGIES = new Set(["fresh", "incremental", "auto"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
@@ -293,7 +293,7 @@ export function validatePlan(plan, corpusInfo) {
 export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
-	if (options.strategy === "incremental" && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
+	if ((options.strategy === "incremental" || options.strategy === "auto") && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
 		const delta = item.priorState.relationship === "same_head" ? (mode === "deep" ? [] : ["incremental-security-performance"])
 			: mode === "deep" ? ["incremental-deep"]
 				: mode === "full" ? ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"]
@@ -301,7 +301,7 @@ export function expectedModeTopology(mode, item, options = {}) {
 		const passIds = ["incremental-gap", ...delta];
 		return { passIds, shardCount: 1, maxParallel: passIds.length };
 	}
-	if (options.strategy === "incremental" && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
+	if ((options.strategy === "incremental" || options.strategy === "auto") && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
 	const legacySharding = options.legacySharding === true;
 	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];
 	invariant(base, `mode ${mode} is unavailable under the requested topology generation`);
@@ -634,7 +634,7 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
 		let statusOpportunities = 0, statusMatches = 0, stillOpenOpportunities = 0, stillOpenCarried = 0, resolvedObsoleteRepublished = 0, relationshipOpportunities = 0, relationshipMatches = 0, sameHeadRuns = 0, sameHeadApprovalEligible = 0;
 		for (const { run, item, findings, score } of group) {
-			if (run.strategy !== "incremental") continue;
+			if (run.strategy !== "incremental" && run.strategy !== "auto") continue;
 			relationshipOpportunities++; if (run.reviewOutcome?.observedRelationship === item.priorState.relationship) relationshipMatches++;
 			if (item.priorState.relationship === "same_head") { sameHeadRuns++; if (run.reviewOutcome?.mergeApprovalEligible === true) sameHeadApprovalEligible++; }
 			for (const expected of item.priorState.expectedStatuses) {
