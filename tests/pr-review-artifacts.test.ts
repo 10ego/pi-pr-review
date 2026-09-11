@@ -302,6 +302,26 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: `${hardBreakCandidate}\narbitrary prose  `, exitCode: 0, stopReason: "stop" })).toBe("partial");
 	});
 
+	test("unwraps only an exact single-code-span candidate location", () => {
+		const repeated = integratedCandidate().split("\n").map((line) => `- **${line.replace(": ", ":** ")}`).join("\n").replace("src/a.ts:10-12", "`src/a.ts:10-12`");
+		expect(classifyReviewLane({ tier: "heavy", rawText: repeated, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(repeated)).toHaveLength(1);
+		const yaml = [
+			"- **title:** [P1] Prevent command injection",
+			"  **severity:** P1",
+			"  **why:** The changed shell invocation executes attacker-controlled syntax.",
+			"  **location:** `src/branch.ts:3-3`",
+			"  **side:** RIGHT",
+			"  **in_diff:** yes",
+			"  **pr_related:** yes",
+			"  **confidence:** 1.0",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: yaml, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		for (const location of ["``src/a.ts:10-12``", "`src/a.ts:10-12", "`src/a.ts`:10-12", "`src/a.ts:10-12` trailing", "`../src/a.ts:10-12`", "`src/a.ts:10-12` `extra`"]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: yaml.replace("`src/branch.ts:3-3`", location), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
 	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
 		const nit = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.").replace("[P2] Preserve review evidence", "[nit] Preserve review evidence").replace("severity: P2", "severity: nit")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");

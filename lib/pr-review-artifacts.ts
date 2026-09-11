@@ -248,13 +248,19 @@ function candidateLabel(line: string): MarkdownLabel | undefined {
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
 }
 
-/** Strip only CommonMark's exact two-space hard break from an otherwise recognizable candidate field line. */
-function normalizeCandidateHardBreaks(text: string): string {
-	return text.split("\n").map((line) => {
-		if (!line.endsWith("  ") || line.endsWith("   ")) return line;
-		const stripped = line.slice(0, -2);
-		const candidateLine = stripped.startsWith("  ") ? stripped.slice(2) : stripped;
-		return candidateLabel(candidateLine) ? stripped : line;
+/** Apply only bounded Markdown normalization to otherwise recognizable candidate field lines. */
+function normalizeCandidateLines(text: string): string {
+	return text.split("\n").map((original) => {
+		let line = original;
+		if (line.endsWith("  ") && !line.endsWith("   ")) {
+			const stripped = line.slice(0, -2);
+			const candidateLine = stripped.startsWith("  ") ? stripped.slice(2) : stripped;
+			if (candidateLabel(candidateLine)) line = stripped;
+		}
+		const candidateLine = line.startsWith("  ") ? line.slice(2) : line;
+		const label = candidateLabel(candidateLine);
+		const codeSpan = label && canonicalField(label.field) === "location" ? /^`([^`\r\n]+)`$/.exec(label.value) : undefined;
+		return codeSpan ? `${line.slice(0, line.length - label!.value.length)}${codeSpan[1]}` : line;
 	}).join("\n");
 }
 
@@ -324,7 +330,7 @@ function safeLocation(value: string): boolean {
 	if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(end) || end < start) return false;
 	if (!locationPath || Buffer.byteLength(locationPath, "utf8") > MAX_CANDIDATE_PATH_BYTES ||
 		locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
-	if (/[\\\u0000-\u001f\u007f]/.test(locationPath)) return false;
+	if (/[\\`\u0000-\u001f\u007f]/.test(locationPath)) return false;
 	const segments = locationPath.split("/");
 	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
 }
@@ -490,7 +496,7 @@ function parseCandidatePrefix(
 }
 
 function parseIntegratedCompletion(rawText: string): boolean {
-	const text = normalizeCandidateHardBreaks(rawText);
+	const text = normalizeCandidateLines(rawText);
 	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || hasHtmlContainer(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
@@ -548,7 +554,7 @@ export function extractValidatedReviewLaneCandidates(
 	rawText: string,
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
 ): readonly ValidatedReviewLaneCandidate[] {
-	const text = normalizeCandidateHardBreaks(normalizeReviewText(rawText));
+	const text = normalizeCandidateLines(normalizeReviewText(rawText));
 	if (
 		!text.trim() || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
@@ -628,7 +634,7 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 }
 
 function parseOrdinaryCandidateCompletion(rawText: string): boolean {
-	const text = normalizeCandidateHardBreaks(normalizeReviewText(rawText));
+	const text = normalizeCandidateLines(normalizeReviewText(rawText));
 	if (
 		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
