@@ -755,16 +755,16 @@ export default function registerReviewTable(
 	const invalidatedIncrementalContinuationTexts = new Set<string>();
 	const rejectedIncrementalContinuationHashes = new Set<string>();
 	const incrementalContinuationHash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
-	const retainBoundedContinuationText = (texts: Set<string>, text: string) => {
-		texts.add(text);
-		while (texts.size > 8) {
-			const oldest = texts.values().next().value;
+	const retainBoundedContinuationValue = (values: Set<string>, value: string) => {
+		values.add(value);
+		while (values.size > 8) {
+			const oldest = values.values().next().value;
 			if (typeof oldest !== "string") break;
-			texts.delete(oldest);
+			values.delete(oldest);
 		}
 	};
 	const invalidateIncrementalContinuationText = (text: string) => {
-		retainBoundedContinuationText(invalidatedIncrementalContinuationTexts, text);
+		retainBoundedContinuationValue(invalidatedIncrementalContinuationTexts, text);
 	};
 	const clearIncrementalHostContinuation = (invalidateQueued = true) => {
 		if (invalidateQueued && incrementalHostContinuation && !incrementalHostContinuation.delivered) {
@@ -784,16 +784,6 @@ export default function registerReviewTable(
 			});
 		} catch {
 			// Diagnostic evidence is best-effort and cannot change review authority.
-		}
-	};
-	const restoreRejectedIncrementalContinuations = (ctx: ExtensionContext, reset = true) => {
-		if (reset) rejectedIncrementalContinuationHashes.clear();
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "custom" || entry.customType !== "pr-review-incremental-continuation") continue;
-			const data = entry.data as { outcome?: unknown; textSha256?: unknown } | undefined;
-			if (data?.outcome === "rejected" && typeof data.textSha256 === "string" && /^[a-f0-9]{64}$/.test(data.textSha256)) {
-				rejectedIncrementalContinuationHashes.add(data.textSha256);
-			}
 		}
 	};
 	const reviewToolNames = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
@@ -899,7 +889,7 @@ export default function registerReviewTable(
 
 	pi.on("session_start", (_event, ctx) => {
 		revokeActiveLoop();
-		restoreRejectedIncrementalContinuations(ctx);
+		rejectedIncrementalContinuationHashes.clear();
 		restoreCompletedReviews(ctx);
 	});
 
@@ -908,12 +898,15 @@ export default function registerReviewTable(
 	});
 
 	pi.on("context", (event, ctx) => {
-		restoreRejectedIncrementalContinuations(ctx, false);
-		const messages = event.messages.filter((message) =>
-			message.role !== "custom" ||
-			(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE ||
-			!rejectedIncrementalContinuationHashes.has(incrementalContinuationHash(assistantText(message))),
-		);
+		const continuation = incrementalHostContinuation;
+		const activeGeneration = loopCoordinator.activeGeneration(ctx);
+		const messages = event.messages.filter((message) => {
+			if (message.role !== "custom" ||
+				(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return true;
+			return continuation?.delivered === true && activeGeneration === continuation.generation &&
+				ctx.sessionManager.getSessionId() === continuation.sessionId &&
+				assistantText(message) === continuation.text;
+		});
 		return messages.length === event.messages.length ? undefined : { messages };
 	});
 
@@ -923,7 +916,7 @@ export default function registerReviewTable(
 		const text = assistantText(event.message);
 		if (invalidatedIncrementalContinuationTexts.delete(text)) {
 			const textSha256 = incrementalContinuationHash(text);
-			rejectedIncrementalContinuationHashes.add(textSha256);
+			retainBoundedContinuationValue(rejectedIncrementalContinuationHashes, textSha256);
 			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start", textSha256 });
 			ctx.abort();
 			return;
@@ -935,7 +928,7 @@ export default function registerReviewTable(
 			ctx.sessionManager.getSessionId() === continuation.sessionId;
 		if (!valid) {
 			const textSha256 = incrementalContinuationHash(text);
-			rejectedIncrementalContinuationHashes.add(textSha256);
+			retainBoundedContinuationValue(rejectedIncrementalContinuationHashes, textSha256);
 			recordIncrementalHostContinuation("rejected", {
 				generation: continuation.generation,
 				reason: "message_binding_mismatch",
@@ -969,7 +962,7 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		restoreRejectedIncrementalContinuations(ctx);
+		rejectedIncrementalContinuationHashes.clear();
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 		const session = sessionIdentity(ctx);
@@ -1311,7 +1304,7 @@ export default function registerReviewTable(
 				];
 				const continuationText = [
 					"Host continuation: this cumulative incremental review is incomplete.",
-					`Recovery generation: ${retainedGeneration}.`,
+					`Recovery generation: ${retainedGeneration}; nonce: ${randomUUID()}.`,
 					...requirements,
 					"Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
 				].join("\n");
