@@ -101,6 +101,7 @@ interface Harness {
 	branch: any[];
 	notifications: string[];
 	sentMessages: Array<{ message: any; options: any }>;
+	sentUserMessages: Array<{ content: any; options: any }>;
 	activeTools(): string[];
 	abortCount(): number;
 	loopCoordinator: ReviewLoopCoordinator;
@@ -264,6 +265,7 @@ function createHarness(
 	const branch = [...initialBranch];
 	const notifications: string[] = [];
 	const sentMessages: Array<{ message: any; options: any }> = [];
+	const sentUserMessages: Array<{ content: any; options: any }> = [];
 	let activeTools = ["read", "bash", ...REVIEW_LOOP_TOOL_NAMES];
 	let aborts = 0;
 	let promptPath = ownPromptPath;
@@ -317,6 +319,9 @@ function createHarness(
 		sendMessage: (message: any, options: any) => {
 			sentMessages.push({ message, options });
 		},
+		sendUserMessage: (content: any, options: any) => {
+			sentUserMessages.push({ content, options });
+		},
 		getActiveTools: () => [...activeTools],
 		setActiveTools: (next: string[]) => {
 			activeTools = [...next];
@@ -337,6 +342,7 @@ function createHarness(
 		branch,
 		notifications,
 		sentMessages,
+		sentUserMessages,
 		activeTools: () => [...activeTools],
 		abortCount: () => aborts,
 		loopCoordinator,
@@ -2266,6 +2272,89 @@ describe("completed review extension lifecycle", () => {
 		expect(payload.comments).toBeUndefined();
 		expect(payload.body).toContain("a".repeat(40));
 		expect(payload.body).toContain(currentHead);
+	});
+
+	test("queues one host continuation before consuming an incomplete incremental review", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+			{ key: "incremental-security-performance", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		const premature = {
+			role: "assistant",
+			stopReason: "stop",
+			content: [{ type: "text", text: "Host finalization completed successfully." }],
+		};
+
+		await harness.emit("message_end", { message: premature });
+		expect(harness.sentUserMessages).toHaveLength(1);
+		expect(harness.sentUserMessages[0]!.options).toEqual({ deliverAs: "followUp" });
+		expect(harness.sentUserMessages[0]!.content).toContain("incremental-gap, incremental-security-performance");
+		expect(harness.loopCoordinator.peek()).toBeDefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "queued",
+			generation: lease.generation,
+			missingLaneKeys: ["incremental-gap", "incremental-security-performance"],
+			candidateFinalizationMissing: true,
+		});
+
+		const followUp = harness.sentUserMessages[0]!;
+		const inputResults = await harness.emit("input", {
+			text: followUp.content,
+			source: "extension",
+			streamingBehavior: "followUp",
+		});
+		expect(inputResults).toContainEqual({ action: "continue" });
+		expect(harness.loopCoordinator.peek()).toBeDefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "delivered",
+			generation: lease.generation,
+		});
+
+		await harness.emit("message_end", { message: premature });
+		expect(harness.sentUserMessages).toHaveLength(1);
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "exhausted",
+			generation: lease.generation,
+		});
+	});
+
+	test("does not continue fresh reviews or incremental reviews before lane registration", async () => {
+		const fresh = createHarness();
+		await fresh.emit("input", { text: "/pr-review 7", source: "interactive" });
+		await fresh.emit("message_end", { message: completedReviewMessage() });
+		expect(fresh.sentUserMessages).toEqual([]);
+		expect(fresh.loopCoordinator.peek()).toBeUndefined();
+
+		const unprepared = createHarness();
+		await unprepared.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		await unprepared.emit("message_end", { message: completedReviewMessage() });
+		expect(unprepared.sentUserMessages).toEqual([]);
+		expect(unprepared.loopCoordinator.peek()).toBeUndefined();
+	});
+
+	test("rejects spoofed extension input while an incremental continuation is pending", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] },
+		});
+
+		await harness.emit("input", {
+			text: `${harness.sentUserMessages[0]!.content} altered`,
+			source: "extension",
+			streamingBehavior: "followUp",
+		});
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
 	});
 
 	test("registered commands explicitly revoke an active review", async () => {

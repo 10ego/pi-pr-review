@@ -743,6 +743,30 @@ export default function registerReviewTable(
 	};
 
 	const telemetryTracker = new ReviewTelemetryTracker();
+	interface IncrementalHostContinuation {
+		readonly generation: number;
+		readonly sessionId: string;
+		readonly text: string;
+		delivered: boolean;
+	}
+	let incrementalHostContinuation: IncrementalHostContinuation | undefined;
+	const clearIncrementalHostContinuation = () => {
+		incrementalHostContinuation = undefined;
+	};
+	const recordIncrementalHostContinuation = (
+		outcome: "queued" | "delivered" | "exhausted" | "queue_failed",
+		details: Record<string, unknown>,
+	) => {
+		try {
+			pi.appendEntry("pr-review-incremental-continuation", {
+				schemaVersion: 1,
+				outcome,
+				...details,
+			});
+		} catch {
+			// Diagnostic evidence is best-effort and cannot change review authority.
+		}
+	};
 	const reviewToolNames = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
 	const activeToolGenerations = new Map<string, number>();
 	const generationsWithReviewTools = new Set<number>();
@@ -828,6 +852,7 @@ export default function registerReviewTable(
 
 	const revokeActiveLoop = () => {
 		revokePreflight();
+		clearIncrementalHostContinuation();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -858,6 +883,7 @@ export default function registerReviewTable(
 
 	pi.on("session_tree", (event, ctx) => {
 		revokePreflight();
+		clearIncrementalHostContinuation();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -874,12 +900,26 @@ export default function registerReviewTable(
 	});
 
 	pi.on("input", async (event, ctx) => {
-		// Any new input revokes the prior top-level task generation before it can
-		// authorize a replay or a queued/steering continuation.
+		const source = event.source as ReviewLoopInputSource;
+		const continuation = incrementalHostContinuation;
+		const retainedGeneration = loopCoordinator.retainedGeneration(ctx);
+		if (
+			continuation && !continuation.delivered && source === "extension" &&
+			event.streamingBehavior === "followUp" && event.text === continuation.text &&
+			retainedGeneration === continuation.generation &&
+			ctx.sessionManager.getSessionId() === continuation.sessionId
+		) {
+			continuation.delivered = true;
+			recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
+			return { action: "continue" as const };
+		}
+
+		// Any other input revokes the prior top-level task generation before it can
+		// authorize a replay or an unrelated queued/steering continuation.
+		clearIncrementalHostContinuation();
 		revokePreflight();
 		selfReviewCoordinator.clear();
 
-		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
 			(source === "interactive" || source === "rpc") &&
@@ -1061,6 +1101,7 @@ export default function registerReviewTable(
 					? resolveCompletion({ review: settled.artifact.review } as ReturnType<typeof parsePublishableReview>, deferred.invocation, ctx, settled.artifact)
 					: undefined;
 				const invocation = loopCoordinator.consume();
+				if (invocation) clearIncrementalHostContinuation();
 				if (invocation) {
 					persistTelemetry("terminal_response");
 					if (resolvedCompletion) {
@@ -1175,6 +1216,59 @@ export default function registerReviewTable(
 			ctx.sessionManager.getSessionId(),
 			retainedGeneration,
 		);
+		const missingLaneKeys = expectedLaneDescriptors
+			.filter((expected) => !laneArtifacts.some((artifact) => artifact.key === expected.key))
+			.map((expected) => expected.key);
+		const priorStatusesMissing = priorRequiredTitles.length > 0 && recordedPriorStatuses === undefined;
+		const relationship = loopCoordinator.priorRelationship(ctx);
+		const continuationRequired = active?.incremental === true &&
+			(relationship === "same_head" || relationship === "incremental") &&
+			expectedLaneDescriptors.length > 0 &&
+			(missingLaneKeys.length > 0 || priorStatusesMissing || candidateFinalization === undefined);
+		if (continuationRequired && retainedGeneration !== undefined && !loopCoordinator.deadlineExpired()) {
+			const existing = incrementalHostContinuation;
+			if (!existing || existing.generation !== retainedGeneration || existing.sessionId !== ctx.sessionManager.getSessionId()) {
+				const requirements = [
+					...(missingLaneKeys.length > 0 ? [`Missing required lane artifacts: ${missingLaneKeys.join(", ")}.`] : []),
+					...(priorStatusesMissing ? ["Structured prior-finding statuses are missing."] : []),
+					...(candidateFinalization === undefined ? ["Host candidate finalization is missing."] : []),
+				];
+				const continuationText = [
+					"Host continuation: this cumulative incremental review is incomplete.",
+					...requirements,
+					"Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
+				].join("\n");
+				incrementalHostContinuation = {
+					generation: retainedGeneration,
+					sessionId: ctx.sessionManager.getSessionId(),
+					text: continuationText,
+					delivered: false,
+				};
+				recordIncrementalHostContinuation("queued", {
+					generation: retainedGeneration,
+					missingLaneKeys,
+					priorStatusesMissing,
+					candidateFinalizationMissing: candidateFinalization === undefined,
+				});
+				try {
+					pi.sendUserMessage(continuationText, { deliverAs: "followUp" });
+					return;
+				} catch (error) {
+					recordIncrementalHostContinuation("queue_failed", {
+						generation: retainedGeneration,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					clearIncrementalHostContinuation();
+				}
+			} else {
+				recordIncrementalHostContinuation("exhausted", {
+					generation: retainedGeneration,
+					missingLaneKeys,
+					priorStatusesMissing,
+					candidateFinalizationMissing: candidateFinalization === undefined,
+				});
+			}
+		}
 		const finalizedFindings = reviewCandidateDispositionRegistry.acceptedFindings(
 			ctx.sessionManager.getSessionId(),
 			retainedGeneration,
@@ -1275,6 +1369,7 @@ export default function registerReviewTable(
 				: undefined;
 			// Persist timing before publication so network/write latency is never coupled to review wall time.
 			invocation = active ? loopCoordinator.consume() : undefined;
+			if (invocation) clearIncrementalHostContinuation();
 			if (invocation) {
 				persistTelemetry("terminal_response");
 				pendingCompletion = resolvedCompletion;
