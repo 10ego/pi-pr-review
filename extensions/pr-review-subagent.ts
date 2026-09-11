@@ -1963,16 +1963,15 @@ export default function registerPrReviewSubagents(
 	pi.registerTool({
 		name: "pr_review_prepare",
 		label: "PR Review Prepare",
-		description: "Prepare one cumulative review with frozen metadata, prior state, mode-0600 full/incremental diff files, and the mandatory host-dispatched full-PR gap lane in one host call.",
-		promptSnippet: "Prepare cumulative metadata, prior discussion, diff files, and mandatory gap coverage",
+		description: "Prepare one cumulative review with frozen metadata, prior state, and mode-0600 full/incremental diff files in one host call.",
+		promptSnippet: "Prepare cumulative metadata, prior discussion, relationship, and diff files",
 		promptGuidelines: [
-			"Use once instead of separate Step 1 metadata, identity, diff capture, prior discovery, compare, and gap-dispatch commands.",
-			"The host runs the mandatory gap lane during preparation. Classify every returned gapLane candidate, but do not call pr_review_incremental_gap again. A non-complete gapLane remains fail-closed at finalization after its bounded internal retry; never describe it as successful coverage.",
-			"Use returned fullDiffFile and incrementalDiffFile directly for other host-fixed lanes; the host removes temporaryDirectory when the invocation closes.",
+			"Use once instead of separate Step 1 metadata, identity, diff capture, prior discovery, and compare commands.",
+			"Use returned fullDiffFile and incrementalDiffFile directly; the host removes temporaryDirectory when the invocation closes.",
 			"If preparation fails or reports unusable prior state, fail open to the ordinary full review path.",
 		],
 		parameters: PrReviewPrepareParams,
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("pr_review_prepare");
 			if (loopCoordinator.peek()?.incremental !== true || params.pr_number !== loopCoordinator.peek()?.prNumber) {
@@ -2048,54 +2047,8 @@ export default function registerPrReviewSubagents(
 					fs.rmSync(ownedDirectory, { recursive: true, force: true });
 					reviewCandidateDispositionRegistry.clear(preparedSessionId, lease.generation);
 				}, ctx)) throw new Error("could not register prepared context cleanup");
-				const preparedBase = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes, incrementalDiffFile, incrementalDiffBytes: incrementalText ? Buffer.byteLength(incrementalText) : 0, incrementalEmpty };
-				if (!shouldRegister) return { content: [{ type: "text", text: JSON.stringify(preparedBase, null, 2) }], details: preparedBase };
-
-				const gapKey = "incremental-gap";
-				if (!loopCoordinator.claimArtifact(lease, gapKey, ctx)) throw new Error("could not claim the prepared cumulative gap lane");
-				const config = loadConfig(ctx);
-				const reviewBudget = lease.budget ? activateReviewBatch(lease.budget) : undefined;
-				const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
-				const gapResult = await runSubagentPass(config, ctx, {
-					id: gapKey,
-					tier: "heavy",
-					objective: INCREMENTAL_GAP_OBJECTIVE,
-					context: fullDiff,
-					toolPolicy: "configured",
-					majorOnly: reviewMode === "quick" || reviewMode === "balanced",
-					minorHygiene: false,
-					expectedOutput: "nonempty",
-					retryContractPartial: true,
-					focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, { key: gapKey, label: "incremental full-PR gap hunt", tier: "heavy" }),
-					artifactPublisher: loopCoordinator.createArtifactPublisher(lease, ctx),
-					generation: lease.generation,
-					artifactKey: gapKey,
-				}, executionSignal, (text) => onUpdate?.({ content: [{ type: "text", text }] }), () => loopCoordinator.isLeaseActive(lease, ctx), reviewBudget);
-				const gapCandidates = incrementalCandidateRecords(gapKey, gapResult.text, gapResult.attempts, "nonempty");
-				if (!loopCoordinator.isLeaseActive(lease, ctx) ||
-					!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, gapKey, gapCandidates)) {
-					throw new Error("could not retain prepared cumulative gap candidates");
-				}
-				const gapLane = {
-					status: gapResult.status,
-					fallbackUsed: gapResult.fallbackUsed,
-					attemptCount: gapResult.attempts.length,
-					candidates: gapCandidates.map((candidate) => ({
-						candidateId: candidate.candidateId,
-						severity: candidate.finding.severity,
-						title: candidate.finding.title,
-						why: candidate.finding.body,
-						blocking: candidate.finding.blocking,
-						confidence: candidate.finding.confidence_score,
-						location: candidate.finding.code_location,
-					})),
-					...(gapResult.status !== "complete" ? { incompleteReason: gapResult.errorMessage ?? "The bounded mandatory gap run did not satisfy its completion contract." } : {}),
-				};
-				const prepared = { ...preparedBase, gapLane };
-				return {
-					content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }],
-					details: prepared,
-				};
+				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes, incrementalDiffFile, incrementalDiffBytes: incrementalText ? Buffer.byteLength(incrementalText) : 0, incrementalEmpty };
+				return { content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }], details: prepared };
 			} catch (error) {
 				if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 				return { content: [{ type: "text", text: `pr_review_prepare failed: ${errMessage(error)}` }], isError: true, details: { authorized: true, reason: "prepare_failed" } };
