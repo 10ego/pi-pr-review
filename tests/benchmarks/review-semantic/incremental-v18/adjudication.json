@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "524688e4bbede5de6ba14760",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict post-login redirects to trusted destinations",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "524688e4bbede5de6ba14760",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Stop logging issued authentication tokens",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/token.ts:4 describes the expected new.token-log defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "547fe071e79840d16091c219",
+      "strategy": "incremental",
+      "expectedFindingId": "invalid-rejection.tenant-check",
+      "canonicalTitle": "[P1] Restore the tenant equality check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/access.ts:2 describes the expected invalid-rejection.tenant-check defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "c8de162386f88f4caa1f19ba",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Restrict login redirects to trusted same-origin targets",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "c8de162386f88f4caa1f19ba",
+      "strategy": "fresh",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P2] Do not log issued authentication tokens",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding at src/token.ts:4 describes the expected new.token-log defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "db1d50bceffe083b72bbf83d",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict post-login redirects to trusted local URLs",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "e7b9fda30c3378dcddd0549c",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict return URLs before navigation",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "e7b9fda30c3378dcddd0549c",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued tokens to logs",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/token.ts:4 describes the expected new.token-log defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "ff978ab3d31810d1641dd7b6",
+      "strategy": "incremental",
+      "expectedFindingId": "invalid-rejection.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant isolation for document reads",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/access.ts:2 describes the expected invalid-rejection.tenant-check defect with equivalent causal and impact wording."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 12,
+      "opportunities": 12,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 12,
+      "opportunities": 12,
+      "recall": 1
+    },
+    "incrementalStillOpenCarryForward": {
+      "matched": 6,
+      "opportunities": 6,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 7,
+      "opportunities": 12,
+      "rate": 0.5833333333333334
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 12,
+      "rate": 0.6666666666666666
+    }
+  },
+  "operationalResults": {
+    "freshCompleteRuns": 11,
+    "incrementalCompleteRuns": 12,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.9833333333333333,
+    "incrementalLaneCompleteRate": 1,
+    "freshPublicationFallbackRate": 0.08333333333333333,
+    "incrementalPublicationFallbackRate": 0
+  },
+  "comparativeResults": {
+    "freshDuplicateRate": 0.3333333333333333,
+    "incrementalDuplicateRate": 0.1111111111111111,
+    "completePairFreshMedianLatencyMs": 89951.622,
+    "completePairIncrementalMedianLatencyMs": 71227.232,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 0.7918393289228293
+  },
+  "decision": "explicit opt-in --incremental publication gates passed; automatic selection remains deferred because selector and --fresh mechanics are out of scope"
+}

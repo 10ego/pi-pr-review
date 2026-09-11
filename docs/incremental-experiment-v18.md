@@ -1,6 +1,6 @@
 # Cumulative incremental final campaign v18
 
-Status: **frozen; collection not started**.
+Status: **complete; explicit opt-in publication gates passed**.
 
 ## Candidate
 
@@ -20,7 +20,23 @@ V18 validates explicit `--incremental` only. Automatic selection and `--fresh` m
 - Model: `openai-codex/gpt-5.6-sol`, medium effort
 - 24 rows: balanced, fresh and explicit incremental, two repetitions of six cases
 
-Execute every row exactly once in stored order without reruns, skips, reordering, or substitutions; retain every failure.
+Every row was executed exactly once in stored order without reruns, skips, reordering, or substitutions; every result was retained.
+
+## Results
+
+- 24/24 rows retained with process exit 0;
+- exact relationships/statuses: 12/12;
+- still-open carry-forward: 6/6;
+- adjudicated seeded-defect presence: 12/12 for both strategies;
+- adjudicated exact severity: 58.3% fresh and 66.7% incremental;
+- operational completion: 11/12 fresh and 12/12 incremental;
+- required-lane completion: 98.3% fresh and 100% incremental;
+- publication fallback rate: 8.3% fresh and 0% incremental;
+- duplicate rate: 33.3% fresh and 11.1% incremental;
+- complete-pair median latency: 90.0s fresh and 71.2s incremental (0.792 ratio);
+- clean-control false-positive rate: 0% for both.
+
+The raw matcher undercounted nine visibly equivalent findings. They are retained separately in `adjudication.json`; the frozen raw report and run evidence are unchanged. Explicit opt-in `--incremental` passes every publication gate. Automatic selection remains deferred because selector and explicit `--fresh` mechanics were outside this campaign.
 
 ## Pre-freeze evidence
 

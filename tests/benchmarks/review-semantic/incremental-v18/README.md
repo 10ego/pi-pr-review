@@ -8,4 +8,4 @@ Frozen paired final campaign for explicit cumulative incremental review with one
 - plan SHA-256: `4f97e57203b63d306b76a322c3faf4b7c5a3fd47d84fcb53a88d82da2ca7e920`
 - model: `openai-codex/gpt-5.6-sol`, medium effort
 
-Collect all 24 rows once in stored order and retain every result without reruns.
+All 24 rows were collected once in stored order with no reruns. Incremental completed 12/12 operational runs and 40/40 required lanes, preserved exact prior state and adjudicated seeded-defect presence, had higher adjudicated exact severity, lower fallback and duplication, and a 20.8% lower complete-pair median latency. Explicit opt-in publication gates passed; automatic selection remains out of scope.
