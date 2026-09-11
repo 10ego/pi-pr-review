@@ -12,7 +12,7 @@
  */
 
 import * as fs from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -753,8 +753,6 @@ export default function registerReviewTable(
 	}
 	let incrementalHostContinuation: IncrementalHostContinuation | undefined;
 	const invalidatedIncrementalContinuationTexts = new Set<string>();
-	const rejectedIncrementalContinuationHashes = new Set<string>();
-	const incrementalContinuationHash = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 	const retainBoundedContinuationValue = (values: Set<string>, value: string) => {
 		values.add(value);
 		while (values.size > 8) {
@@ -889,7 +887,6 @@ export default function registerReviewTable(
 
 	pi.on("session_start", (_event, ctx) => {
 		revokeActiveLoop();
-		rejectedIncrementalContinuationHashes.clear();
 		restoreCompletedReviews(ctx);
 	});
 
@@ -900,14 +897,19 @@ export default function registerReviewTable(
 	pi.on("context", (event, ctx) => {
 		const continuation = incrementalHostContinuation;
 		const activeGeneration = loopCoordinator.activeGeneration(ctx);
-		const messages = event.messages.filter((message) => {
+		let changed = false;
+		const messages = event.messages.flatMap((message) => {
 			if (message.role !== "custom" ||
-				(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return true;
-			return continuation?.delivered === true && activeGeneration === continuation.generation &&
-				ctx.sessionManager.getSessionId() === continuation.sessionId &&
-				assistantText(message) === continuation.text;
+				(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return [message];
+			changed = true;
+			const generation = (message as { details?: { generation?: unknown } }).details?.generation;
+			if (continuation?.delivered === true && activeGeneration === continuation.generation &&
+				generation === continuation.generation && ctx.sessionManager.getSessionId() === continuation.sessionId) {
+				return [{ ...message, content: continuation.text }];
+			}
+			return [];
 		});
-		return messages.length === event.messages.length ? undefined : { messages };
+		return changed ? { messages } : undefined;
 	});
 
 	pi.on("message_start", (event, ctx) => {
@@ -915,24 +917,29 @@ export default function registerReviewTable(
 			(event.message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return;
 		const text = assistantText(event.message);
 		if (invalidatedIncrementalContinuationTexts.delete(text)) {
-			const textSha256 = incrementalContinuationHash(text);
-			retainBoundedContinuationValue(rejectedIncrementalContinuationHashes, textSha256);
-			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start", textSha256 });
+			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start" });
 			ctx.abort();
 			return;
 		}
 		const continuation = incrementalHostContinuation;
 		if (!continuation || continuation.delivered) return;
-		const valid = text === continuation.text &&
-			loopCoordinator.activeGeneration(ctx) === continuation.generation &&
+		const retainedBindingMatches = text === continuation.text &&
+			loopCoordinator.retainedGeneration(ctx) === continuation.generation &&
 			ctx.sessionManager.getSessionId() === continuation.sessionId;
+		if (retainedBindingMatches && loopCoordinator.deadlineExpired()) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: continuation.generation,
+				reason: "deadline_before_delivery",
+			});
+			clearIncrementalHostContinuation(false);
+			ctx.abort();
+			return;
+		}
+		const valid = retainedBindingMatches && loopCoordinator.activeGeneration(ctx) === continuation.generation;
 		if (!valid) {
-			const textSha256 = incrementalContinuationHash(text);
-			retainBoundedContinuationValue(rejectedIncrementalContinuationHashes, textSha256);
 			recordIncrementalHostContinuation("rejected", {
 				generation: continuation.generation,
 				reason: "message_binding_mismatch",
-				textSha256,
 			});
 			clearIncrementalHostContinuation(false);
 			loopCoordinator.clear();
@@ -962,7 +969,6 @@ export default function registerReviewTable(
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
-		rejectedIncrementalContinuationHashes.clear();
 		restoreCompletedReviews(ctx);
 		telemetryTracker.clear();
 		const session = sessionIdentity(ctx);
@@ -1227,8 +1233,7 @@ export default function registerReviewTable(
 
 	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role === "custom" &&
-			(event.message as { customType?: string }).customType === INCREMENTAL_CONTINUATION_MESSAGE_TYPE &&
-			rejectedIncrementalContinuationHashes.has(incrementalContinuationHash(assistantText(event.message)))) {
+			(event.message as { customType?: string }).customType === INCREMENTAL_CONTINUATION_MESSAGE_TYPE) {
 			return { message: { ...event.message, content: "" } };
 		}
 		if (event.message.role !== "assistant") return;

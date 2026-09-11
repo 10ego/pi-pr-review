@@ -2308,6 +2308,10 @@ describe("completed review extension lifecycle", () => {
 			outcome: "delivered",
 			generation: lease.generation,
 		});
+		const [redactedFollowUp] = await harness.emit("message_end", { message: { role: "custom", ...followUp } });
+		expect(redactedFollowUp.message.content).toBe("");
+		const [liveContext] = await harness.emit("context", { messages: [redactedFollowUp.message] });
+		expect(liveContext.messages).toEqual([{ ...redactedFollowUp.message, content: followUp.content }]);
 
 		await harness.emit("message_end", { message: premature });
 		expect(harness.sentMessages).toHaveLength(1);
@@ -2379,6 +2383,38 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
+	test("preserves deadline-retained artifacts when delivery starts after expiry", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "incremental-gap", passId: "incremental-gap", tier: "heavy",
+			rawText: "Review status: COMPLETE\nOverview: complete.\nStrengths: focused.\nRisk areas: low.\nNO FINDINGS.",
+			exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [], fallbackUsed: false,
+			elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+		});
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] },
+		});
+		const followUp = harness.sentMessages[0]!.message;
+		(harness.loopCoordinator as any).deadlineExpired = () => true;
+		(harness.loopCoordinator as any).activeGeneration = () => undefined;
+
+		await harness.emit("message_start", { message: { role: "custom", ...followUp } });
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.loopCoordinator.peek()).toBeDefined();
+		expect(harness.loopCoordinator.artifactSnapshot(harness.ctx)).toHaveLength(1);
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "rejected",
+			reason: "deadline_before_delivery",
+		});
+		harness.loopCoordinator.clear();
+	});
+
 	test("aborts a queued continuation invalidated before message delivery", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
@@ -2400,7 +2436,7 @@ describe("completed review extension lifecycle", () => {
 		expect(harness.loopCoordinator.peek()).toBeUndefined();
 		const rejected = harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data;
 		expect(rejected).toMatchObject({ outcome: "rejected", reason: "invalidated_before_start" });
-		expect(rejected.textSha256).toMatch(/^[a-f0-9]{64}$/);
+		expect(rejected).not.toHaveProperty("textSha256");
 		const contextMessages = [
 			{ role: "custom", ...followUp },
 			{ role: "user", content: [{ type: "text", text: "next request" }] },
