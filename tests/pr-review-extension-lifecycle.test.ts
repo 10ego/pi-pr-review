@@ -2310,6 +2310,11 @@ describe("completed review extension lifecycle", () => {
 		expect(inputResults).toContainEqual({ action: "continue" });
 		expect(harness.loopCoordinator.peek()).toBeDefined();
 		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "input_accepted",
+			generation: lease.generation,
+		});
+		await harness.emit("before_agent_start", { prompt: followUp.content });
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
 			outcome: "delivered",
 			generation: lease.generation,
 		});
@@ -2335,6 +2340,80 @@ describe("completed review extension lifecycle", () => {
 		await unprepared.emit("message_end", { message: completedReviewMessage() });
 		expect(unprepared.sentUserMessages).toEqual([]);
 		expect(unprepared.loopCoordinator.peek()).toBeUndefined();
+	});
+
+	test("rejects a transformed continuation before its agent loop starts", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] },
+		});
+		const followUp = harness.sentUserMessages[0]!;
+		await harness.emit("input", { text: followUp.content, source: "extension", streamingBehavior: "followUp" });
+
+		await harness.emit("before_agent_start", { prompt: `${followUp.content} transformed` });
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "rejected",
+			reason: "prompt_binding_mismatch",
+		});
+	});
+
+	test("suppresses an invalidated continuation before input delivery", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] },
+		});
+		const followUp = harness.sentUserMessages[0]!;
+		await harness.emit("input", { text: "cancel", source: "interactive" });
+
+		const results = await harness.emit("input", {
+			text: followUp.content,
+			source: "extension",
+			streamingBehavior: "followUp",
+		});
+		expect(results).toContainEqual({ action: "handled" });
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "rejected",
+			reason: "invalidated_before_input",
+		});
+	});
+
+	test("aborts an accepted continuation invalidated before agent start", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.setPriorRelationship(lease, "same_head", harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		await harness.emit("message_end", {
+			message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] },
+		});
+		const followUp = harness.sentUserMessages[0]!;
+		await harness.emit("input", { text: followUp.content, source: "extension", streamingBehavior: "followUp" });
+		await harness.emit("input", { text: "cancel", source: "interactive" });
+
+		await harness.emit("before_agent_start", { prompt: followUp.content });
+		expect(harness.abortCount()).toBe(1);
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		expect(harness.branch.findLast((entry) => entry.customType === "pr-review-incremental-continuation")?.data).toMatchObject({
+			outcome: "rejected",
+			reason: "invalidated_before_start",
+		});
 	});
 
 	test("rejects spoofed extension input while an incremental continuation is pending", async () => {

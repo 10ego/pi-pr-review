@@ -747,14 +747,27 @@ export default function registerReviewTable(
 		readonly generation: number;
 		readonly sessionId: string;
 		readonly text: string;
+		inputAccepted: boolean;
 		delivered: boolean;
 	}
 	let incrementalHostContinuation: IncrementalHostContinuation | undefined;
-	const clearIncrementalHostContinuation = () => {
+	const invalidatedIncrementalContinuationTexts = new Set<string>();
+	const invalidateIncrementalContinuationText = (text: string) => {
+		invalidatedIncrementalContinuationTexts.add(text);
+		while (invalidatedIncrementalContinuationTexts.size > 8) {
+			const oldest = invalidatedIncrementalContinuationTexts.values().next().value;
+			if (typeof oldest !== "string") break;
+			invalidatedIncrementalContinuationTexts.delete(oldest);
+		}
+	};
+	const clearIncrementalHostContinuation = (invalidateQueued = true) => {
+		if (invalidateQueued && incrementalHostContinuation && !incrementalHostContinuation.delivered) {
+			invalidateIncrementalContinuationText(incrementalHostContinuation.text);
+		}
 		incrementalHostContinuation = undefined;
 	};
 	const recordIncrementalHostContinuation = (
-		outcome: "queued" | "delivered" | "exhausted" | "queue_failed",
+		outcome: "queued" | "input_accepted" | "delivered" | "exhausted" | "queue_failed" | "rejected",
 		details: Record<string, unknown>,
 	) => {
 		try {
@@ -873,7 +886,30 @@ export default function registerReviewTable(
 		restoreCompletedReviews(ctx);
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (invalidatedIncrementalContinuationTexts.delete(event.prompt)) {
+			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start" });
+			ctx.abort();
+			return;
+		}
+		const continuation = incrementalHostContinuation;
+		if (continuation?.inputAccepted && !continuation.delivered) {
+			const valid = event.prompt === continuation.text &&
+				loopCoordinator.retainedGeneration(ctx) === continuation.generation &&
+				ctx.sessionManager.getSessionId() === continuation.sessionId;
+			if (!valid) {
+				recordIncrementalHostContinuation("rejected", {
+					generation: continuation.generation,
+					reason: "prompt_binding_mismatch",
+				});
+				clearIncrementalHostContinuation(false);
+				loopCoordinator.clear();
+				ctx.abort();
+				return;
+			}
+			continuation.delivered = true;
+			recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
+		}
 		await selfReviewCoordinator.beginTask(ctx);
 	});
 
@@ -901,16 +937,20 @@ export default function registerReviewTable(
 
 	pi.on("input", async (event, ctx) => {
 		const source = event.source as ReviewLoopInputSource;
+		if (source === "extension" && invalidatedIncrementalContinuationTexts.delete(event.text)) {
+			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_input" });
+			return { action: "handled" as const };
+		}
 		const continuation = incrementalHostContinuation;
 		const retainedGeneration = loopCoordinator.retainedGeneration(ctx);
 		if (
-			continuation && !continuation.delivered && source === "extension" &&
+			continuation && !continuation.inputAccepted && !continuation.delivered && source === "extension" &&
 			event.streamingBehavior === "followUp" && event.text === continuation.text &&
 			retainedGeneration === continuation.generation &&
 			ctx.sessionManager.getSessionId() === continuation.sessionId
 		) {
-			continuation.delivered = true;
-			recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
+			continuation.inputAccepted = true;
+			recordIncrementalHostContinuation("input_accepted", { generation: continuation.generation });
 			return { action: "continue" as const };
 		}
 
@@ -1101,7 +1141,7 @@ export default function registerReviewTable(
 					? resolveCompletion({ review: settled.artifact.review } as ReturnType<typeof parsePublishableReview>, deferred.invocation, ctx, settled.artifact)
 					: undefined;
 				const invocation = loopCoordinator.consume();
-				if (invocation) clearIncrementalHostContinuation();
+				if (invocation) clearIncrementalHostContinuation(false);
 				if (invocation) {
 					persistTelemetry("terminal_response");
 					if (resolvedCompletion) {
@@ -1235,6 +1275,7 @@ export default function registerReviewTable(
 				];
 				const continuationText = [
 					"Host continuation: this cumulative incremental review is incomplete.",
+					`Recovery generation: ${retainedGeneration}.`,
 					...requirements,
 					"Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
 				].join("\n");
@@ -1242,6 +1283,7 @@ export default function registerReviewTable(
 					generation: retainedGeneration,
 					sessionId: ctx.sessionManager.getSessionId(),
 					text: continuationText,
+					inputAccepted: false,
 					delivered: false,
 				};
 				recordIncrementalHostContinuation("queued", {
@@ -1258,7 +1300,7 @@ export default function registerReviewTable(
 						generation: retainedGeneration,
 						error: error instanceof Error ? error.message : String(error),
 					});
-					clearIncrementalHostContinuation();
+					clearIncrementalHostContinuation(false);
 				}
 			} else {
 				recordIncrementalHostContinuation("exhausted", {
@@ -1369,7 +1411,7 @@ export default function registerReviewTable(
 				: undefined;
 			// Persist timing before publication so network/write latency is never coupled to review wall time.
 			invocation = active ? loopCoordinator.consume() : undefined;
-			if (invocation) clearIncrementalHostContinuation();
+			if (invocation) clearIncrementalHostContinuation(false);
 			if (invocation) {
 				persistTelemetry("terminal_response");
 				pendingCompletion = resolvedCompletion;
