@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 2,
+  "corpusId": "pi-pr-review-semantic-selector-v1",
+  "corpusSha256": "0de16c887ec9705c8a03e7229372805e1f88efda8a6827d924881a10b4346868",
+  "modes": [
+    "balanced"
+  ],
+  "strategies": [
+    "fresh",
+    "incremental",
+    "auto"
+  ],
+  "repetitions": 2,
+  "entries": [
+    {
+      "entryId": "53c2946fe8feda8b1dc79d66",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "cc1a8910d6f5ba27bed05688",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "aad32603c86413a5c813d61d",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "1275015988859bcda5dd934e",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "3b746300ed564b7c3d7b5d3f",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "687cda2c67e7460d51b36a26",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "4eb9c4b8ab2d50578c73df62",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "460eda7ca5c892100f17897a",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "cab3984fc0ca337bae1c1b0b",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "a94dfdf6529d0016ca0df5c5",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "3766501d728e83aa2928d02e",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "898cae80cb338e8c63c643c6",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "f27defb7efeb57792f96d700",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "2d68a7957b1b24a39ee38c8d",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "c46fb90b005c4a3c89a1e181",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "ad591056096be6c476d2ccad",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 1
+    },
+    {
+      "entryId": "8e1761e7e40aab0a75d633f9",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 1
+    },
+    {
+      "entryId": "1edaee0764fb28f8735f7777",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 1
+    },
+    {
+      "entryId": "f73beb40624783f723d72743",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "9305ffa7cfeb18b8dc0a528c",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    },
+    {
+      "entryId": "6432aab41cde2cde1ae84f44",
+      "caseId": "open-blocker",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "f91cd83c1d26e2d02a0a82d8",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    },
+    {
+      "entryId": "f4846374de1b1467cd3d8d2e",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "9df5dcac8d0393074cfb38a7",
+      "caseId": "resolved-blocker",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "88c87a12b2d13efe2879e86a",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "34a733dee6939c8086241689",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "ef99d97022f2d64925f23379",
+      "caseId": "obsolete-and-new",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    },
+    {
+      "entryId": "2449a391e6a320456f4a1b52",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "9e013fc326a8872aeebf3915",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    },
+    {
+      "entryId": "3f2bdc0f15447c8719e1da27",
+      "caseId": "same-head",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "4d6018d13326b69421a21cae",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    },
+    {
+      "entryId": "404f18fc6d9efc043449257a",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "44a62ff2b531a44c1cc3d1bc",
+      "caseId": "no-prior",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "812f4fbd211cc50680bd97f2",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "fresh",
+      "repetition": 2
+    },
+    {
+      "entryId": "14965862fb3a078317011c20",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "incremental",
+      "repetition": 2
+    },
+    {
+      "entryId": "00d001ad439de55cbdc470bf",
+      "caseId": "diverged",
+      "mode": "balanced",
+      "strategy": "auto",
+      "repetition": 2
+    }
+  ],
+  "planId": "3bee0fccb2dc4a12b375e0500c7fa94b5e1c2a6ce4a7b7460560488d9c3e5325"
+}
