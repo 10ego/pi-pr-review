@@ -989,6 +989,15 @@ export class ReviewLaneArtifactRegistry {
 		}
 	}
 
+	reset(generation: number): boolean {
+		if (this.generation !== generation) return false;
+		this.artifacts.clear();
+		this.expectedLanes.clear();
+		this.claimedLanes.clear();
+		this.frozen = false;
+		return true;
+	}
+
 	snapshot(generation: number): readonly ReviewLaneArtifact[] | undefined {
 		if (this.generation !== generation) return undefined;
 		return Object.freeze([...this.artifacts.values()].sort((left, right) => {

@@ -71,6 +71,23 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeFalse();
 	});
 
+	test("claims preparation once and atomically clears partial state before selecting fresh", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.claimPreparation(lease, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.claimPreparation(lease, h.ctx as any)).toBeFalse();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from("partial"), h.ctx as any)).toBeTrue();
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx as any)).toBeTrue();
+		expect(h.coordinator.failOpenPreparation(lease, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.priorRelationship(h.ctx as any)).toBe("none");
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toEqual([]);
+		expect(h.coordinator.preparedContextMatches(lease, "incremental-gap", Buffer.from("partial"), h.ctx as any)).toBeUndefined();
+	});
+
 	test("runs invocation cleanup exactly once on consume or clear", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);

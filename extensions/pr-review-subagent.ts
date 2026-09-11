@@ -1975,7 +1975,10 @@ export default function registerPrReviewSubagents(
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("pr_review_prepare");
 			if (loopCoordinator.peek()?.incremental !== true || params.pr_number !== loopCoordinator.peek()?.prNumber) {
-				return { content: [{ type: "text", text: "pr_review_prepare requires the matching active --incremental invocation." }], isError: true, details: { authorized: false, reason: "invocation" } };
+				return { content: [{ type: "text", text: "pr_review_prepare requires the matching active automatic or --incremental invocation." }], isError: true, details: { authorized: false, reason: "invocation" } };
+			}
+			if (!loopCoordinator.claimPreparation(lease, ctx)) {
+				return { content: [{ type: "text", text: "pr_review_prepare is already running or settled for this invocation." }], isError: true, details: { authorized: false, reason: "already_prepared" } };
 			}
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			let temporaryDirectory: string | undefined;
@@ -2028,7 +2031,6 @@ export default function registerPrReviewSubagents(
 					incrementalDiffFile = path.join(temporaryDirectory, "incremental.diff");
 					fs.writeFileSync(incrementalDiffFile, incrementalText, { mode: 0o600 });
 				}
-				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) throw new Error("could not bind the prepared relationship");
 				const shouldRegister = snapshot.relationship === "same_head" || snapshot.relationship === "incremental";
 				if (shouldRegister) {
 					const expectedPreparedLanes = cumulativeExpectedLanes(snapshot.relationship, loopCoordinator.peek()?.reviewMode ?? "balanced", !incrementalEmpty);
@@ -2047,10 +2049,38 @@ export default function registerPrReviewSubagents(
 					fs.rmSync(ownedDirectory, { recursive: true, force: true });
 					reviewCandidateDispositionRegistry.clear(preparedSessionId, lease.generation);
 				}, ctx)) throw new Error("could not register prepared context cleanup");
+				if (!loopCoordinator.setPriorRelationship(lease, snapshot.relationship, ctx)) throw new Error("could not bind the prepared relationship");
 				const prepared = { ...snapshot, metadata, temporaryDirectory, fullDiffFile, fullDiffBytes, incrementalDiffFile, incrementalDiffBytes: incrementalText ? Buffer.byteLength(incrementalText) : 0, incrementalEmpty };
+				try {
+					pi.appendEntry("pr-review-selection", {
+						schemaVersion: 1,
+						generation: lease.generation,
+						requested: loopCoordinator.peek()?.reviewSelection ?? "incremental",
+						selected: shouldRegister ? "incremental" : "fresh",
+						reason: snapshot.relationship,
+					});
+				} catch {
+					// Selection telemetry is diagnostic and cannot affect review authority.
+				}
 				return { content: [{ type: "text", text: JSON.stringify(prepared, null, 2) }], details: prepared };
 			} catch (error) {
-				if (temporaryDirectory) fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+				const failedOpen = loopCoordinator.failOpenPreparation(lease, ctx);
+				if (temporaryDirectory) {
+					try { fs.rmSync(temporaryDirectory, { recursive: true, force: true }); } catch { /* invocation cleanup retries removal */ }
+				}
+				priorRevalidationRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+				reviewCandidateDispositionRegistry.clear(ctx.sessionManager.getSessionId(), lease.generation);
+				if (failedOpen) try {
+					pi.appendEntry("pr-review-selection", {
+						schemaVersion: 1,
+						generation: lease.generation,
+						requested: loopCoordinator.peek()?.reviewSelection ?? "incremental",
+						selected: "fresh",
+						reason: "prepare_failed",
+					});
+				} catch {
+					// Selection telemetry is diagnostic and cannot affect review authority.
+				}
 				return { content: [{ type: "text", text: `pr_review_prepare failed: ${errMessage(error)}` }], isError: true, details: { authorized: true, reason: "prepare_failed" } };
 			}
 		},
@@ -2084,9 +2114,16 @@ export default function registerPrReviewSubagents(
 			}
 			if (loopCoordinator.peek()?.incremental !== true) {
 				return {
-					content: [{ type: "text", text: "pr_review_prior requires the --incremental flag on the active /pr-review invocation." }],
+					content: [{ type: "text", text: "pr_review_prior requires a legacy incremental invocation." }],
 					isError: true,
 					details: { authorized: false, reason: "not_incremental" },
+				};
+			}
+			if (loopCoordinator.peek()?.reviewSelection !== undefined) {
+				return {
+					content: [{ type: "text", text: "Automatic and explicit strategy selection require atomic pr_review_prepare; legacy pr_review_prior is unavailable." }],
+					isError: true,
+					details: { authorized: false, reason: "preparation_required" },
 				};
 			}
 			if (!loopCoordinator.isLeaseActive(lease, ctx)) return reviewLoopDeniedResult("pr_review_prior");
@@ -2467,13 +2504,17 @@ export default function registerPrReviewSubagents(
 			if (!lease) return reviewLoopDeniedResult("review_subagent");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const tier = params.tier as Tier;
-			const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+			const activeInvocation = loopCoordinator.peek();
+			const reviewMode = activeInvocation?.reviewMode ?? "balanced";
 			const incrementalPassId = typeof params.incremental_pass === "string"
 				? params.incremental_pass as IncrementalDeltaPassId
 				: undefined;
 			const incrementalPass = incrementalPassId ? INCREMENTAL_DELTA_PASSES[incrementalPassId] : undefined;
 			const relationship = loopCoordinator.priorRelationship(ctx);
-			const cumulative = loopCoordinator.peek()?.incremental === true && (relationship === "same_head" || relationship === "incremental");
+			if (activeInvocation?.incremental === true && relationship === undefined) {
+				return { content: [{ type: "text", text: "Automatic review selection is pending. Call pr_review_prepare before dispatching review lanes." }], isError: true, details: { authorized: false, reason: "preparation_required" } };
+			}
+			const cumulative = activeInvocation?.incremental === true && (relationship === "same_head" || relationship === "incremental");
 			const sameHeadResourcePass = relationship === "same_head" && incrementalPassId === "incremental-security-performance" && reviewMode !== "deep";
 			if (incrementalPassId && (!incrementalPass || (relationship !== "incremental" && !sameHeadResourcePass) ||
 				!(incrementalPass.modes as readonly string[]).includes(reviewMode) || tier !== incrementalPass.tier)) {
@@ -2620,12 +2661,16 @@ export default function registerPrReviewSubagents(
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("review_subagents");
 			const relationship = loopCoordinator.priorRelationship(ctx);
-			if (loopCoordinator.peek()?.incremental === true && (relationship === "same_head" || relationship === "incremental")) {
+			const activeInvocation = loopCoordinator.peek();
+			if (activeInvocation?.incremental === true && relationship === undefined) {
+				return { content: [{ type: "text", text: "Automatic review selection is pending. Call pr_review_prepare before dispatching the fresh batch." }], isError: true, details: { authorized: false, reason: "preparation_required" } };
+			}
+			if (activeInvocation?.incremental === true && (relationship === "same_head" || relationship === "incremental")) {
 				return { content: [{ type: "text", text: "review_subagents is unavailable after cumulative review preparation. Use pr_review_incremental_gap and the host-fixed incremental_pass lanes." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
 			}
 			const executionSignal = combineAbortSignals(signal, lease.signal);
 			const rawPasses = Array.isArray(params.passes) ? params.passes : [];
-			const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
+			const reviewMode = activeInvocation?.reviewMode ?? "balanced";
 			const topology = FIXED_REVIEW_TOPOLOGIES[reviewMode];
 			const receivedIds = rawPasses.map((pass) => typeof pass.id === "string" ? pass.id.trim() : "");
 			const expectedIds = topology.map((pass) => pass.id);

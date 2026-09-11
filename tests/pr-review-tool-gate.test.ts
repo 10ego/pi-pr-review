@@ -73,7 +73,7 @@ const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts
 const registerPrReviewSubagents = prReviewSubagentModule.default;
 const { automaticStillOpenCarryForwards, cumulativeExpectedLanes, invalidStillOpenPriorTitles } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
-const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
+const { parsePublishMode, resolveAutoPostSetting, resolveReviewSelection } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
 const { priorRevalidationRegistry } = await import("../lib/pr-review-prior.ts");
 const { reviewCandidateDispositionRegistry } = await import("../lib/pr-review-candidates.ts");
@@ -203,6 +203,36 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("automatic selection blocks every review lane until preparation settles", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			{ ...parsePublishMode("/pr-review 7 --quick --incremental"), reviewSelection: "auto" },
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const batch = await h.tools.get("review_subagents").execute("batch", {
+			passes: quickPasses(),
+			context: "metadata",
+			context_file: "/not-read-before-selection",
+		}, undefined, undefined, h.ctx);
+		expect(batch).toMatchObject({ isError: true, details: { reason: "preparation_required" } });
+		const single = await h.tools.get("review_subagent").execute("single", {
+			tier: "heavy",
+			objective: "review",
+			context: "metadata",
+			context_file: "/not-read-before-selection",
+		}, undefined, undefined, h.ctx);
+		expect(single).toMatchObject({ isError: true, details: { reason: "preparation_required" } });
+		expect(h.coordinator.setPriorRelationship(h.coordinator.acquire(h.ctx)!, "none", h.ctx)).toBeTrue();
+		const settled = await h.tools.get("review_subagents").execute("batch-settled", {
+			passes: quickPasses(),
+			context: "metadata",
+			context_file: "/now-context-validation-runs",
+		}, undefined, undefined, h.ctx);
+		expect(settled.details.reason).not.toBe("preparation_required");
+	});
+
 	test("prior discovery requires the --incremental flag on the active invocation", async () => {
 		const h = harness();
 		h.coordinator.begin(
@@ -216,7 +246,20 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: false, reason: "not_incremental" },
 		});
-		expect(result.content[0].text).toContain("requires the --incremental flag");
+		expect(result.content[0].text).toContain("requires a legacy incremental invocation");
+	});
+
+	test("automatic selection cannot bypass atomic preparation through the legacy prior tool", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			resolveReviewSelection(parsePublishMode("/pr-review 7")),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const result = await h.tools.get("pr_review_prior").execute("prior-auto", { pr_number: 7 }, undefined, undefined, h.ctx);
+		expect(result).toMatchObject({ isError: true, details: { authorized: false, reason: "preparation_required" } });
+		expect(h.coordinator.priorRelationship(h.ctx)).toBeUndefined();
 	});
 
 	test("prior discovery rejects a PR number that differs from the active invocation", async () => {

@@ -40,6 +40,7 @@ import {
 	canonicalReviewSnapshot,
 	resolveApproveMaxPriorityLevelSetting,
 	resolveDefaultReviewModeSetting,
+	resolveReviewSelection,
 	type PublishResult,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
@@ -1025,7 +1026,8 @@ export default function registerReviewTable(
 			persistTelemetry("cleared");
 		}
 
-		const parsed = parsePublishMode(event.text);
+		const parsedInput = parsePublishMode(event.text);
+		const parsed = resolveReviewSelection(parsedInput);
 		if (loopCoordinator.peek()) {
 			// Any independent user/extension input revokes the current generation.
 			// Only a fresh idle /pr-review command may begin the replacement.
@@ -1058,8 +1060,12 @@ export default function registerReviewTable(
 		}
 		const resolvedReviewMode = explicitReviewMode ?? publishingConfig.defaultReviewMode.value;
 		const resolvedParsed = { ...parsed, reviewMode: resolvedReviewMode };
-		const transformedInput = explicitReviewMode === undefined
-			? `${event.text.trimEnd()} --${resolvedReviewMode}`
+		const transformedFlags = [
+			...(explicitReviewMode === undefined ? [`--${resolvedReviewMode}`] : []),
+			...(parsed.reviewSelection === "auto" ? ["--incremental"] : []),
+		];
+		const transformedInput = transformedFlags.length > 0
+			? `${event.text.trimEnd()} ${transformedFlags.join(" ")}`
 			: event.text;
 		const deadlineResolution = resolveReviewDeadlinesForContext(ctx);
 		const budget = createReviewBudget(deadlineResolution);
@@ -1116,6 +1122,19 @@ export default function registerReviewTable(
 			ctx.ui.notify(`Invalid /pr-review invocation: ${gate.error}`, "error");
 			persistTelemetry("cleared");
 			return { action: "handled" as const };
+		}
+		if (parsed.reviewSelection === "fresh") {
+			try {
+				pi.appendEntry("pr-review-selection", {
+					schemaVersion: 1,
+					generation: loopCoordinator.activeGeneration(ctx),
+					requested: "fresh",
+					selected: "fresh",
+					reason: "explicit_override",
+				});
+			} catch {
+				// Selection telemetry is diagnostic and cannot affect review authority.
+			}
 		}
 		if (transformedInput !== event.text) {
 			return { action: "transform" as const, text: transformedInput, images: event.images };
@@ -1298,24 +1317,47 @@ export default function registerReviewTable(
 			.map((expected) => expected.key);
 		const priorStatusesMissing = priorRequiredTitles.length > 0 && recordedPriorStatuses === undefined;
 		const relationship = loopCoordinator.priorRelationship(ctx);
-		const continuationRequired = active?.incremental === true &&
+		const preparationMissing = active?.incremental === true && relationship === undefined;
+		const trustedDraftSkip = active?.reviewBinding?.draft === true && strict?.review?.disposition === "skipped";
+		const freshTopologyMissing = active?.incremental === true &&
+			(relationship === "none" || relationship === "diverged") &&
+			expectedLaneDescriptors.length === 0 && !trustedDraftSkip;
+		const cumulativeCompletionMissing = active?.incremental === true &&
 			(relationship === "same_head" || relationship === "incremental") &&
 			expectedLaneDescriptors.length > 0 &&
 			(missingLaneKeys.length > 0 || priorStatusesMissing || candidateFinalization === undefined);
+		const selectionTopologyMissing = preparationMissing || freshTopologyMissing;
+		const continuationRequired = selectionTopologyMissing || cumulativeCompletionMissing;
+		if (selectionTopologyMissing && loopCoordinator.deadlineExpired()) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: retainedGeneration,
+				reason: preparationMissing ? "deadline_before_preparation" : "deadline_before_fresh_topology",
+			});
+			clearIncrementalHostContinuation(false);
+			loopCoordinator.clear();
+			persistTelemetry("cleared");
+			return;
+		}
 		if (continuationRequired && retainedGeneration !== undefined && !loopCoordinator.deadlineExpired()) {
 			const existing = incrementalHostContinuation;
 			if (!existing || existing.generation !== retainedGeneration || existing.sessionId !== ctx.sessionManager.getSessionId()) {
 				const requirements = [
+					...(preparationMissing ? ["Automatic prior-state preparation has not run. Call pr_review_prepare once before selecting the review topology."] : []),
+					...(freshTopologyMissing ? ["Fresh review topology has not been dispatched after automatic selection."] : []),
 					...(missingLaneKeys.length > 0 ? [`Missing required lane artifacts: ${missingLaneKeys.join(", ")}.`] : []),
 					...(priorStatusesMissing ? ["Structured prior-finding statuses are missing."] : []),
-					...(candidateFinalization === undefined ? ["Host candidate finalization is missing."] : []),
+					...(!selectionTopologyMissing && candidateFinalization === undefined ? ["Host candidate finalization is missing."] : []),
 				];
 				const continuationId = randomUUID();
 				const continuationText = [
-					"Host continuation: this cumulative incremental review is incomplete.",
+					"Host continuation: this automatic PR review is incomplete.",
 					`Recovery generation: ${retainedGeneration}; nonce: ${continuationId}.`,
 					...requirements,
-					"Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
+					preparationMissing
+						? "Call pr_review_prepare now. Then use its relationship to run the selected fresh or cumulative topology; do not answer with prose instead."
+						: freshTopologyMissing
+							? "Dispatch the selected mode's fixed fresh review_subagents batch over fullDiffFile, then synthesize from its retained results."
+							: "Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
 				].join("\n");
 				incrementalHostContinuation = {
 					id: continuationId,
@@ -1326,9 +1368,11 @@ export default function registerReviewTable(
 				};
 				recordIncrementalHostContinuation("queued", {
 					generation: retainedGeneration,
+					preparationMissing,
+					freshTopologyMissing,
 					missingLaneKeys,
 					priorStatusesMissing,
-					candidateFinalizationMissing: candidateFinalization === undefined,
+					candidateFinalizationMissing: !selectionTopologyMissing && candidateFinalization === undefined,
 				});
 				try {
 					pi.sendMessage({
@@ -1344,14 +1388,27 @@ export default function registerReviewTable(
 						error: error instanceof Error ? error.message : String(error),
 					});
 					clearIncrementalHostContinuation(false);
+					if (selectionTopologyMissing) {
+						loopCoordinator.clear();
+						persistTelemetry("cleared");
+						return;
+					}
 				}
 			} else {
 				recordIncrementalHostContinuation("exhausted", {
 					generation: retainedGeneration,
+					preparationMissing,
+					freshTopologyMissing,
 					missingLaneKeys,
 					priorStatusesMissing,
-					candidateFinalizationMissing: candidateFinalization === undefined,
+					candidateFinalizationMissing: !selectionTopologyMissing && candidateFinalization === undefined,
 				});
+				if (selectionTopologyMissing) {
+					clearIncrementalHostContinuation(false);
+					loopCoordinator.clear();
+					persistTelemetry("cleared");
+					return;
+				}
 			}
 		}
 		const finalizedFindings = reviewCandidateDispositionRegistry.acceptedFindings(

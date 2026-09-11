@@ -248,6 +248,9 @@ export class PriorRevalidationRegistry {
 	statuses(sessionId: string, generation: number | undefined): readonly PriorFindingStatusRecord[] | undefined {
 		return generation === undefined ? undefined : this.entries.get(`${sessionId}:${generation}`)?.statuses;
 	}
+	clear(sessionId: string, generation: number): void {
+		this.entries.delete(`${sessionId}:${generation}`);
+	}
 }
 
 export const priorRevalidationRegistry = new PriorRevalidationRegistry();

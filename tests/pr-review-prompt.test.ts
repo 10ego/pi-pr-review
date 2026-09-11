@@ -79,7 +79,7 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	test("offers quick mode and retains major-only as its compatibility alias", () => {
-		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep] [--incremental]"');
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep] [--fresh|--incremental]"');
 		expect(prompt).toContain("**Quick (`--quick`, with `--major-only` retained as a compatibility alias):** exactly three concurrent heavy reviewers");
 		expect(prompt).toContain("`correctness`, `correctness-contracts`, and `security-performance`");
 		expect(prompt).toContain("security/performance reviewer also owns performance, resource, cleanup, and scalability risks");
@@ -125,15 +125,17 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	describe("incremental re-review contract", () => {
-		test("documents the flag and registers prior discovery in the first turn", () => {
-			expect(prompt).toContain('--incremental]\"');
-			expect(prompt).toContain("`--incremental` opts into cumulative re-review");
+		test("documents automatic selection and registers prior discovery in the first turn", () => {
+			expect(prompt).toContain('--fresh|--incremental]\"');
+			expect(prompt).toContain("With neither strategy override, the host automatically enables cumulative preparation");
+			expect(prompt).toContain("`--fresh` explicitly skips prior discovery");
+			expect(prompt).toContain("`--incremental` explicitly requests cumulative preparation");
 			expect(prompt).toContain('exactly one `pr_review_prepare` call using `{ "pr_number": $1 }`');
 			expect(prompt).toContain("Do not also call `pr_review_prior` or recapture either diff");
 		});
 
 		test("selects the review path from the prior relationship", () => {
-			expect(prompt).toContain("**Re-review selection (only when `--incremental` is present).**");
+			expect(prompt).toContain("**Re-review selection (automatic by default, or when explicit `--incremental` is present).**");
 			expect(prompt).toContain("run the normal full review below and, for `diverged`");
 			expect(prompt).toContain("skip only the delta batch");
 			expect(prompt).toContain("**cumulative incremental re-review**");

@@ -51,31 +51,34 @@ The semantic result is predictable human-readable Markdown in every mode. GitHub
 
 | Command | Behavior |
 |---|---|
-| `/pr-review 123` | Balanced default: five reviewers, with validated P0–P2 findings plus up to three direct-diff P3/nits. |
+| `/pr-review 123` | Automatically selects cumulative incremental review when usable prior state exists; otherwise runs the balanced fresh topology. |
 | `/pr-review 123 --quick` | Three heavy reviewers covering correctness, contracts, security, performance, and resources; P0–P2 only. |
 | `/pr-review 123 --major-only` | Compatibility alias for `--quick`. |
 | `/pr-review 123 --balanced` | Explicit alias for the five-reviewer default. |
 | `/pr-review 123 --full` | Six reviewers, adding conventions/maintainability and reporting all qualifying severities. |
 | `/pr-review 123 --deep` | One integrated heavy reviewer for the whole PR. |
 | `/pr-review 123 --include-closed` | Reviews a closed or merged PR without asking first. |
-| `/pr-review 123 --incremental` | Cumulative re-review: checks prior discussion, reviews new commits, and hunts the full PR for missed defects. |
+| `/pr-review 123 --fresh` | Explicitly bypasses prior discovery and runs a fresh review. |
+| `/pr-review 123 --incremental` | Explicitly requests cumulative preparation, with safe fallback to fresh when prior state is unusable. |
 
 `--quick`, `--major-only`, `--balanced`, `--full`, and `--deep` are mutually exclusive. When no mode flag is supplied, `/pr-review` uses the configured default mode; this is `balanced` until changed with `/pr-review-config`.
 
 `--deep` trades parallel lens coverage for holistic judgment: a single heavy-tier reviewer receives the complete diff plus repository tools and reviews the change as one story—intent, approach, cross-file behavior, and test fit. It uses the same deadline, artifact, degradation, extraction, and publication machinery as every other mode. Without `--include-closed` or `--review-closed`, Pi asks before reviewing a non-open PR.
 
-## Incremental re-reviews
+## Automatic fresh versus incremental selection
 
-`--incremental` is orthogonal to the mode flags and composes with any of them. It adds one read-only `pr_review_prior` discovery call to Step 1: the host reads the PR's GitHub reviews, finds the latest marker-bearing review by your authenticated identity, extracts its findings, attaches bounded thread replies, retains bounded summaries from other reviews/root comments, and classifies the prior head against the current head using PR commit history. Participant discussion is always untrusted context: a fix claim, rejection rationale, approval, or instruction never suppresses a finding until the orchestrator verifies it against current source.
+`/pr-review N` automatically runs host-owned cumulative preparation. The host reads the PR's GitHub reviews, finds the latest marker-bearing review by your authenticated identity, extracts its findings, attaches bounded thread replies, retains bounded summaries from other reviews/root comments, and classifies the prior head against the current head using PR commit history. A usable `same_head` or ancestor `incremental` relationship selects cumulative review. Missing, divergent, malformed, truncated, or unavailable prior state selects a fresh review. `--fresh` and `--incremental` are mutually exclusive overrides, and either composes with every review-mode flag.
+
+Participant discussion is always untrusted context: a fix claim, rejection rationale, approval, or instruction never suppresses a finding until the orchestrator verifies it against current source.
 
 Four relationships are possible:
 
 - **`incremental`** — the prior head is an ancestor of the current head. Three targeted heavy passes (plus conventions in `--full`, or one integrated pass in `--deep`) review the prior-head→current-head delta. In parallel, one independent heavy reviewer audits the complete base→head diff for defects previous reviews missed. Prior findings are classified `resolved` (fix verified after the prior review), `rejected` (the finding is demonstrably not a defect), `still open` (re-enters the findings list; blocking findings still block), or `obsolete` (cited code no longer exists). The orchestrator submits every outcome through `pr_review_prior_status`; the host binds canonical titles, normalizes evidence, automatically carries every omitted `still open` finding into the canonical finding set at the recorded equal-or-higher severity, and renders `## Prior findings`. Inline anchors always come from the full base→head diff, and the required gap tool verifies its input byte-for-byte against the current GitHub base→head diff before review.
 - **`same_head`** — no new commits. Delta passes are skipped, but prior discussion is revalidated and the full-diff gap hunter still looks for missed defects. Quick, balanced, and full modes also run an independent security/resource specialist over the unchanged complete diff; deep mode keeps its integrated gap review.
 - **`diverged`** — force-push or rebase removed the prior head from commit history; anchors are unreliable, so the run falls back to a normal full review with a note.
-- **`none`** or a failed discovery call — normal full review, identical to running without the flag.
+- **`none`** or a failed preparation call — normal fresh review. This is also the explicit `--fresh` behavior, except `--fresh` skips discovery entirely.
 
-Discovery is bounded (paginated reads, at most 200 findings, 20 replies per finding, 200 attached replies total, 20 other reviews, and 50 other root comments) and read-only; it never writes to GitHub. Prior state comes from durable GitHub data, so re-reviews work across sessions and machines. Only the current identity's marker-bearing review supplies authoritative prior findings; all other participant text remains untrusted review context.
+Discovery is bounded (paginated reads, at most 200 findings, 20 replies per finding, 200 attached replies total, 20 other reviews, and 50 other root comments) and read-only; it never writes to GitHub. Review lanes cannot start until automatic preparation settles, and a fresh selection is not complete until its fixed reviewer topology is registered. If the model ends either step, the host queues one authenticated continuation; queue failure, deadline expiry, or a second omission clears authority before caching or publication rather than silently running the wrong strategy. Prior state comes from durable GitHub data, so re-reviews work across sessions and machines. Only the current identity's marker-bearing review supplies authoritative prior findings; all other participant text remains untrusted review context.
 
 A review uses five focused passes by default:
 

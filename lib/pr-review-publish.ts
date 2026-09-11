@@ -241,6 +241,8 @@ export function resolveAllowStaleApprovalsSetting(
 	return { value: false, valid: true, source: "default" };
 }
 
+export type ReviewSelection = "auto" | "fresh" | "incremental";
+
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
@@ -248,6 +250,8 @@ export interface PublishModeParseResult {
 	prNumber?: number;
 	allowNonOpen?: boolean;
 	incremental?: boolean;
+	fresh?: boolean;
+	reviewSelection?: ReviewSelection;
 	error?: string;
 }
 
@@ -267,8 +271,13 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	const majorOnly = tokens.includes("--major-only");
 	const balanced = tokens.includes("--balanced");
 	const deep = tokens.includes("--deep");
+	const incremental = tokens.includes("--incremental");
+	const fresh = tokens.includes("--fresh");
 	if (force && disabled) {
 		return { matched: true, error: "--comment and --no-comment cannot be used together" };
+	}
+	if (incremental && fresh) {
+		return { matched: true, error: "--incremental and --fresh cannot be used together" };
 	}
 	if ([quick, full, majorOnly, balanced, deep].filter(Boolean).length > 1) {
 		return { matched: true, error: "--quick, --full, --major-only, --balanced, and --deep cannot be used together" };
@@ -287,8 +296,18 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 						: {}),
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
-		...(tokens.includes("--incremental") ? { incremental: true } : {}),
+		...(incremental ? { incremental: true } : {}),
+		...(fresh ? { fresh: true } : {}),
 	};
+}
+
+/** Resolve the default automatic strategy before any model or review tool runs. */
+export function resolveReviewSelection(parsed: PublishModeParseResult): PublishModeParseResult {
+	if (!parsed.matched || parsed.error) return parsed;
+	const { fresh, ...base } = parsed;
+	if (fresh) return { ...base, reviewSelection: "fresh" };
+	if (parsed.incremental) return { ...base, incremental: true, reviewSelection: "incremental" };
+	return { ...base, incremental: true, reviewSelection: "auto" };
 }
 
 export interface ReviewHostBinding extends RepositoryBinding {
@@ -308,8 +327,10 @@ export interface ReviewInvocation {
 	readonly reviewMode?: ReviewMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
-	/** Trusted `--incremental` flag captured before review execution; gates pr_review_prior. */
+	/** Host-selected cumulative preparation. False/absent means an explicit fresh review. */
 	readonly incremental?: boolean;
+	/** Trusted automatic/default or explicit strategy selection captured before execution. */
+	readonly reviewSelection?: ReviewSelection;
 	/** Host-resolved target captured before review execution; assistant output cannot override it. */
 	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
@@ -441,6 +462,7 @@ export class ReviewInvocationGate {
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
 			...(parsed.incremental ? { incremental: true } : {}),
+			...(parsed.reviewSelection ? { reviewSelection: parsed.reviewSelection } : {}),
 			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,

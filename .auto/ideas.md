@@ -68,3 +68,10 @@
 - `9979ba0` applies fallback-attempt budget/deadline caps and reserves the synthetic slot; a second snapshot review found nonempty provider failures still classified partial.
 - `ce0260b` records clean-process contract eligibility separately, so provider failures cannot consume the slot. A final high-effort snapshot review found no P0-P2 issues. Every Orca review worktree was removed after worker settlement and release.
 - Directional plan `554ff18b29a494419ad9f122a4c3f0edfaee58e6e97b837d66193ecc078a7c2a` completed 6/6 with 20/20 lanes, no fallbacks, exact statuses/carry-forward, and one observed `partial -> complete` same-model gap retry with `fallbackUsed: false`. This pilot is not release evidence.
+
+## Automatic selector after cumulative v18
+
+- V18 passed the explicit cumulative publication gates: 12/12 incremental operational completion, 40/40 lanes, exact prior state, zero fallback, lower duplication, and lower paired median latency.
+- Plain `/pr-review N` now requests host-owned automatic preparation; `same_head`/ancestor state selects cumulative review and `none`/`diverged`/preparation failure selects fresh. `--fresh` and `--incremental` are explicit mutually exclusive overrides.
+- Review lanes are unavailable until selection settles. Missing preparation receives the same one-shot authenticated continuation and cannot silently become a fresh run; preparation failure atomically clears cumulative state before authorizing fresh.
+- Do not release automatic defaulting until the dedicated selector campaign in `docs/automatic-selection-experiment-v1.md` passes without reruns.

@@ -52,6 +52,7 @@ interface ReviewLoopBinding {
 	synthesisStarted: boolean;
 	cleanupCallbacks: Set<() => void>;
 	preparedContextBytes: Map<string, Buffer>;
+	preparationClaimed: boolean;
 	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
@@ -194,6 +195,7 @@ export class ReviewLoopCoordinator {
 			synthesisStarted: false,
 			cleanupCallbacks: new Set(),
 			preparedContextBytes: new Map(),
+			preparationClaimed: false,
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -385,6 +387,17 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
+	/** Claim the one asynchronous automatic-preparation lifecycle before any await. */
+	claimPreparation(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation ||
+			this.binding.preparationClaimed || this.binding.priorRelationship !== undefined) return false;
+		this.binding.preparationClaimed = true;
+		return true;
+	}
+
 	setPriorRelationship(
 		lease: ReviewLoopLease,
 		relationship: "none" | "same_head" | "incremental" | "diverged",
@@ -397,6 +410,18 @@ export class ReviewLoopCoordinator {
 
 	priorRelationship(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): "none" | "same_head" | "incremental" | "diverged" | undefined {
 		return this.binding && sameBinding(this.binding, ctx) ? this.binding.priorRelationship : undefined;
+	}
+
+	/** Atomically make failed automatic preparation eligible for the fresh path. */
+	failOpenPreparation(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation ||
+			!this.binding.preparationClaimed) return false;
+		this.binding.preparedContextBytes.clear();
+		this.binding.priorRelationship = "none";
+		return this.artifactRegistry.reset(lease.generation);
 	}
 
 	registerExpectedArtifacts(
