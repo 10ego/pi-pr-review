@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "52353391c0e0e9cf8fa23b70",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "b7defee35b3cc6eeb9deea7d",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "66e4b9b2d17a40ec2afb1fee",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "dd563025f8b2adb6c686b334",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "c2838de2a6764257d3254c1b",
+      "strategy": "auto",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The retained process stdout visibly reports the anchored command-injection defect before Pi fails to terminate and the collector hard timeout marks the row failed."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected: one automatic no-prior row hit the collector hard timeout after producing fallback output, leaving 11/12 operational automatic runs and 43/48 complete automatic lanes. The failure is retained without rerun."
+}
