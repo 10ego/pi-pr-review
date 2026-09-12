@@ -681,6 +681,24 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			quality: { fresh: freshMetrics, incremental: incrementalMetrics, p0p1RecallDelta: metricDelta(incrementalMetrics.p0p1.recall, freshMetrics.p0p1.recall), p2RecallDelta: metricDelta(incrementalMetrics.p2.recall, freshMetrics.p2.recall), crossFileRecallDelta: metricDelta(incrementalMetrics.crossFile.recall, freshMetrics.crossFile.recall) },
 			latencyMs: { freshP50: freshMedian, incrementalP50: incrementalMedian, incrementalToFreshRatio: typeof freshMedian === "number" && freshMedian > 0 && typeof incrementalMedian === "number" ? incrementalMedian / freshMedian : null },
 		};
+		if (plan.strategies.includes("auto")) {
+			const automaticPairs = pairs.map((pair) => {
+				const item = caseById.get(pair.caseId), correspondingStrategy = item?.priorState?.relationship === "same_head" || item?.priorState?.relationship === "incremental" ? "incremental" : "fresh";
+				return { ...pair, correspondingStrategy, corresponding: pair[correspondingStrategy] };
+			}), completeAutomaticPairs = automaticPairs.filter((pair) => pair.auto && pair.corresponding && complete(pair.auto) && complete(pair.corresponding));
+			const deltas = completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs - pair.corresponding.run.elapsedMs);
+			result.automaticSelection = {
+				plannedPairs: automaticPairs.length,
+				completePairs: completeAutomaticPairs.length,
+				incompletePairs: automaticPairs.filter((pair) => !completeAutomaticPairs.includes(pair)).map((pair) => ({ mode: pair.mode, repetition: pair.repetition, caseId: pair.caseId, correspondingStrategy: pair.correspondingStrategy, autoComplete: !!pair.auto && complete(pair.auto), correspondingComplete: !!pair.corresponding && complete(pair.corresponding) })),
+				latencyMs: {
+					autoP50: percentile(completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs), 0.5),
+					correspondingExplicitP50: percentile(completeAutomaticPairs.map((pair) => pair.corresponding.run.elapsedMs), 0.5),
+					pairedDeltaP50: percentile(deltas, 0.5),
+					autoFasterOrEqualPairs: deltas.filter((delta) => delta <= 0).length,
+				},
+			};
+		}
 	}
 	return result;
 }

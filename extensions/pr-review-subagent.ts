@@ -190,6 +190,14 @@ const INCREMENTAL_DELTA_PASS_IDS = Object.freeze(Object.keys(INCREMENTAL_DELTA_P
 
 const canonicalFindingTitle = (value: string) => value.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim();
 
+export function matchesCanonicalStillOpen(
+	statuses: readonly { status: string; title: string }[],
+	title: string,
+): boolean {
+	return statuses.some((status) => status.status === "still open" &&
+		canonicalFindingTitle(status.title) === canonicalFindingTitle(title));
+}
+
 export function invalidStillOpenPriorTitles(
 	statuses: readonly { status: string; title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
 	findings: readonly { title: string; severity: "P0" | "P1" | "P2" | "P3" | "nit" }[],
@@ -2279,24 +2287,32 @@ export default function registerPrReviewSubagents(
 				if (!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, gapKey, gapCandidates)) return { content: [{ type: "text", text: "Mandatory incremental gap candidates could not be retained." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 				return { content: [{ type: "text", text: [`Mandatory incremental gap ${gapResult.status}; resubmit finalization with every Candidate ID below.`, "", candidateIndexText(gapCandidates)].join("\n") }], isError: true, details: { authorized: true, reason: "gap_recovered", status: gapResult.status, attempts: gapResult.attempts, candidates: gapCandidates.map((candidate) => candidate.id) } };
 			}
-			const decisions = params.decisions.map((decision) => ({
-				candidateId: decision.candidate_id,
-				disposition: decision.disposition,
-				...(decision.duplicate_of ? { duplicateOf: decision.duplicate_of } : {}),
-			}));
 			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
 			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
 			}
-			const severityRank = { P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 } as const;
+			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
+			const suppressedPriorCandidates = new Set(registeredCandidates.filter((candidate) =>
+				matchesCanonicalStillOpen(recordedStatuses ?? [], candidate.finding.title)).map((candidate) => candidate.id));
+			const decisions = params.decisions.map((decision) => {
+				if ((decision.disposition === "accepted" && suppressedPriorCandidates.has(decision.candidate_id)) ||
+					(decision.disposition === "duplicate" && decision.duplicate_of && suppressedPriorCandidates.has(decision.duplicate_of))) {
+					return { candidateId: decision.candidate_id, disposition: "rejected" as const };
+				}
+				return {
+					candidateId: decision.candidate_id,
+					disposition: decision.disposition,
+					...(decision.duplicate_of ? { duplicateOf: decision.duplicate_of } : {}),
+				};
+			});
 			const completeAddedParams = [];
 			for (const finding of params.added_findings) {
+				// Exact prior identity and severity are host-owned. Parent re-entry is
+				// discarded here and replaced below from the validated status record.
+				if (matchesCanonicalStillOpen(recordedStatuses ?? [], finding.title)) continue;
 				const completeLocation = Number.isInteger(finding.start_line) && Number.isInteger(finding.end_line) &&
 					(finding.side === "LEFT" || finding.side === "RIGHT") && typeof finding.commentable === "boolean";
 				if (!completeLocation) {
-					const matchingStillOpen = recordedStatuses?.find((status) => status.status === "still open" &&
-						canonicalFindingTitle(status.title) === canonicalFindingTitle(finding.title));
-					if (matchingStillOpen && severityRank[finding.severity] <= severityRank[matchingStillOpen.severity]) continue;
 					return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: new parent-added findings require a complete location" }], isError: true, details: { authorized: true, reason: "invalid_added_finding" } };
 				}
 				completeAddedParams.push(finding as typeof finding & { start_line: number; end_line: number; side: "LEFT" | "RIGHT"; commentable: boolean });
@@ -2313,7 +2329,6 @@ export default function registerPrReviewSubagents(
 				confidence_score: finding.confidence,
 				code_location: { absolute_file_path: finding.path, line_range: { start: finding.start_line, end: finding.end_line }, side: finding.side, commentable: finding.commentable },
 			}));
-			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
 			const representedFindings = [
 				...decisions.filter((decision) => decision.disposition === "accepted").flatMap((decision) => {
 					const candidate = registeredCandidates.find((registered) => registered.id === decision.candidateId);
@@ -2333,7 +2348,7 @@ export default function registerPrReviewSubagents(
 				...automaticCarryForwards.map((finding) => ({ title: finding.title, severity: finding.severity })),
 			]);
 			if (invalidStillOpen.length > 0) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: a supplied still-open prior finding has a mismatched canonical title or lower severity" }], isError: true, details: { authorized: true, reason: "invalid_still_open_finding" } };
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: a source-revalidated still-open prior finding is missing its host-owned canonical carry-forward" }], isError: true, details: { authorized: true, reason: "invalid_still_open_finding" } };
 			}
 			const expectedCandidateLaneKeys = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? [])
 				.map((descriptor) => descriptor.key)

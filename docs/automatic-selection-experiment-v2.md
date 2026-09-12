@@ -29,6 +29,12 @@ V2 repeats the exact v1 relationships, cases, strategies, repetitions, order pol
 
 The only raw automatic matcher miss is visibly the expected same-head listener-cleanup defect, reported twice at the correct location, but both canonical findings overclassify the expected P2 as P1. The scorer rejects both because P1 is outside the expected finding's P2-only severity constraint; semantic presence is clear, but severity accuracy genuinely fails. Automatic selection also exceeded the corresponding explicit median latency by 11.8%. Automatic defaulting therefore remains unreleased.
 
+## Post-campaign forensics
+
+Retained phase timing showed automatic execution was faster in 8/12 corresponding pairs, with a nearest-rank median within-pair delta of −14.8s and an 11.6s lower lane-sum median. The apparent 11.8% regression came from subtracting marginal medians under high model-runtime variance. Future selector campaigns use the corpus-defined automatic↔explicit pairing and gate the median within-pair delta; both marginal medians remain diagnostic.
+
+The severity miss exposed a deterministic host boundary: same-title model or parent re-entry could replace a canonical still-open finding at a higher severity. The follow-up implementation discards such re-entry and renders the source-revalidated prior finding from its host-owned canonical title and exact recorded severity. V2 remains rejected and immutable; these corrections require new evidence.
+
 ## Directional pilot
 
 A disposable six-case post-fix automatic-only pilot completed 6/6 operational runs and 24/24 required lanes with exact relationship and strategy behavior, 100% raw seeded-defect recall, zero fallback, and 65.8s median latency. Directional evidence does not override the failed immutable severity and latency gates.

@@ -71,7 +71,7 @@ mock.module("typebox", () => {
 
 const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts");
 const registerPrReviewSubagents = prReviewSubagentModule.default;
-const { automaticStillOpenCarryForwards, cumulativeExpectedLanes, invalidStillOpenPriorTitles } = prReviewSubagentModule;
+const { automaticStillOpenCarryForwards, cumulativeExpectedLanes, invalidStillOpenPriorTitles, matchesCanonicalStillOpen } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
 const { parsePublishMode, resolveAutoPostSetting, resolveReviewSelection } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
@@ -147,6 +147,8 @@ describe("review tool execution gate", () => {
 
 	test("automatically carries forward omitted still-open findings without masking a supplied downgrade", () => {
 		const statuses = [{ findingId: "thread:1", status: "still open", title: "Restore tenant guard", severity: "P1", evidence: "The unconditional return remains at src/access.ts:2." }] as const;
+		expect(matchesCanonicalStillOpen(statuses, "[P0] Restore tenant guard")).toBeTrue();
+		expect(matchesCanonicalStillOpen(statuses, "[P1] restore tenant guard")).toBeFalse();
 		expect(automaticStillOpenCarryForwards(statuses, [])).toEqual([{
 			title: "[P1] Restore tenant guard",
 			severity: "P1",
@@ -338,10 +340,14 @@ describe("review tool execution gate", () => {
 		priorRevalidationRegistry.markFindings("automatic-carry-session", lease.generation, [{ findingId: "thread:1", threadId: 1, inReplyToId: null, path: "src/access.ts", line: 2, side: "RIGHT", severity: "P1", title: "Restore tenant guard" }]);
 		const status = await h.tools.get("pr_review_prior_status").execute("carry-status", { statuses: [{ finding_id: "thread:1", status: "still open", severity: "P1", evidence: "The unconditional authorization remains." }] }, undefined, undefined, h.ctx);
 		expect(status.isError).toBeUndefined();
-		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates("automatic-carry-session", lease.generation, "incremental-gap", [])).toBeTrue();
-		const finalized = await h.tools.get("pr_review_candidate_disposition").execute("carry-finalize", { overview: "Review complete", verification: "Source inspected", decisions: [], added_findings: [{ title: "[P1] Restore tenant guard", severity: "P1", body: "Duplicate manual carry-forward without a safe current anchor.", confidence: 0.8, path: "src/access.ts" }] }, undefined, undefined, h.ctx);
+		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates("automatic-carry-session", lease.generation, "incremental-gap", [
+			{ id: "incremental-gap:1", laneKey: "incremental-gap", finding: { title: "[P0] Restore tenant guard", severity: "P0", body: "Model-escalated duplicate.", code_location: null } },
+			{ id: "incremental-gap:2", laneKey: "incremental-gap", finding: { title: "[P0] Alternate wording", severity: "P0", body: "Duplicate of the model-escalated prior candidate.", code_location: null } },
+		])).toBeTrue();
+		const finalized = await h.tools.get("pr_review_candidate_disposition").execute("carry-finalize", { overview: "Review complete", verification: "Source inspected", decisions: [{ candidate_id: "incremental-gap:1", disposition: "accepted" }, { candidate_id: "incremental-gap:2", disposition: "duplicate", duplicate_of: "incremental-gap:1" }], added_findings: [{ title: "[P0] Restore tenant guard", severity: "P0", body: "Duplicate parent carry-forward with an escalated severity.", confidence: 0.8, path: "src/access.ts", start_line: 2, end_line: 2, side: "RIGHT", commentable: true }] }, undefined, undefined, h.ctx);
 		expect(finalized.isError).toBeUndefined();
 		expect(finalized.details.automaticCarryForwards).toBe(1);
+		expect(finalized.details.finalization.decisions).toEqual([{ candidateId: "incremental-gap:1", disposition: "rejected" }, { candidateId: "incremental-gap:2", disposition: "rejected" }]);
 		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
 	});
 
