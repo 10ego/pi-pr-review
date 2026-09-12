@@ -611,10 +611,12 @@ function mergeUniqueFindings(
 	additional: readonly ReviewFindingLike[],
 ): ReviewFindingLike[] {
 	const merged = [...primary];
+	// A recovered lane candidate is supplemental evidence, not a second issue.
+	// Suppress it when terminal synthesis already published the same canonical
+	// severity/title/anchor identity, even if the rationale was paraphrased.
 	const findingKey = (finding: ReviewFindingLike) => JSON.stringify([
 		finding.severity,
 		finding.title,
-		finding.body,
 		finding.code_location?.absolute_file_path,
 		finding.code_location?.line_range?.start,
 		finding.code_location?.line_range?.end,

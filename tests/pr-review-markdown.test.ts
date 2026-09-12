@@ -1373,6 +1373,33 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
 	});
 
+	test("does not duplicate a paraphrased recovered candidate already present at the same canonical anchor", () => {
+		const lane = {
+			...completeLane,
+			key: "recovered:0",
+			passId: "recovered",
+			rawText: [
+				"title: [P2] Keep the raw synthesis",
+				"severity: P2",
+				"why: The lane independently phrases the same anchored defect differently.",
+				"location: src/review.ts:10-11",
+				"side: RIGHT",
+				"in_diff: yes",
+				"pr_related: yes",
+				"confidence: 0.95",
+			].join("\n"),
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: lane.tier, minorHygiene: false }],
+		});
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.body).toContain("Partial extraction must not drop this rationale.");
+		expect(artifact.review.findings?.[0]?.body).not.toContain("Recommend validating");
+	});
+
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
 		const lane = {
 			generation: 1,
