@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "079c0b486c5659e14dee967a",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant ownership check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced the tenant equality check and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "d4ceb90916cccedb508ef613",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant ownership check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical repo-wide carry-forward states that unconditional true replaced the tenant equality check and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "ed7e897e5b60524d6f3b0b37",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant ownership check",
+      "selectedSeverity": "P1",
+      "reason": "The visible fallback carry-forward states that unconditional true replaced the tenant equality check and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "c1c1bbdff1d6e242cbde3fc4",
+      "strategy": "incremental",
+      "expectedFindingId": "current.tenant-scope",
+      "canonicalTitle": "[P1] Restore tenant scoping when loading documents",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/documents.ts:2 describes the expected cross-tenant query defect with equivalent causal and impact wording."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected by the frozen operational gate: one automatic no-prior lane was structurally partial, yielding 11/12 operational automatic runs and 47/48 complete automatic lanes. The retained output becomes complete only under the subsequent bounded bold-title normalization and is not rewritten here."
+}
