@@ -337,7 +337,7 @@ describe("review tool execution gate", () => {
 		const lease = h.coordinator.acquire(h.ctx)!;
 		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
 		expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
-		priorRevalidationRegistry.markFindings("automatic-carry-session", lease.generation, [{ findingId: "thread:1", threadId: 1, inReplyToId: null, path: "src/access.ts", line: 2, side: "RIGHT", severity: "P1", title: "Restore tenant guard" }]);
+		priorRevalidationRegistry.markFindings("automatic-carry-session", lease.generation, [{ findingId: "thread:1", threadId: 1, inReplyToId: null, path: "src/access.ts", line: 2, side: "RIGHT", severity: "P2", title: "Restore tenant guard" }]);
 		const status = await h.tools.get("pr_review_prior_status").execute("carry-status", { statuses: [{ finding_id: "thread:1", status: "still open", severity: "P1", evidence: "The unconditional authorization remains." }] }, undefined, undefined, h.ctx);
 		expect(status.isError).toBeUndefined();
 		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates("automatic-carry-session", lease.generation, "incremental-gap", [
@@ -348,7 +348,7 @@ describe("review tool execution gate", () => {
 		expect(finalized.isError).toBeUndefined();
 		expect(finalized.details.automaticCarryForwards).toBe(1);
 		expect(finalized.details.finalization.decisions).toEqual([{ candidateId: "incremental-gap:1", disposition: "rejected" }, { candidateId: "incremental-gap:2", disposition: "rejected" }]);
-		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P1] Restore tenant guard", severity: "P1", code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
+		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P2] Restore tenant guard", severity: "P2", blocking: false, code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
 	});
 
 	test("recovers an omitted prepared gap after validation and requires one finalization resubmission", async () => {
