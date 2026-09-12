@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "status": "invalid_incomplete",
+  "retainedRows": 31,
+  "plannedRows": 36,
+  "interruptedEntryId": "66c4a0377c43dfc2cec35e1e",
+  "missingEntryIds": [
+    "66c4a0377c43dfc2cec35e1e",
+    "b42ed49228104ff906055822",
+    "86e72d9112ba8ea9ed96b7cd",
+    "47ddfc89dc9759eeb4e9cb74",
+    "876918ea6e1915f30063d1ee"
+  ],
+  "reason": "The top-level execution tool terminated the collection command at its configured 5000-second limit during the interrupted entry. The interrupted row was not retained and was not rerun; later rows were never attempted."
+}

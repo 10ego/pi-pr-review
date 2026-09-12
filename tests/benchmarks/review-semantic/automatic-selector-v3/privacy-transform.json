@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "2edc2d9f910a715205210de890c6c987b9ec0cb4bc04513ec4ed60403357ce67",
+  "sanitizedRunManifestSha256": "d622b0a8db839238f4cb49273a8af76f06f9e5ea04a3b461f872752dbcbcc861",
+  "interruptionSha256": "b196b06582382412ee4cdbb008604e9191a8978909e5e48372967de6dbac30e8",
+  "transformations": [
+    "replace private benchmark workspace and system temporary paths in recursively embedded session evidence",
+    "recompute embedded session, artifact, outer run, and manifest hashes and sizes"
+  ],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "campaignValidity": "invalid incomplete collection; no release decision permitted"
+}

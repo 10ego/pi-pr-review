@@ -1,8 +1,8 @@
 # Automatic fresh versus incremental selection v3
 
-Status: **frozen; collection not started**.
+Status: **invalid incomplete collection; no release decision permitted**.
 
-V3 repeats V2's six cases, relationships, strategy order, and two repetitions after two host-owned corrections:
+V3 repeated V2's six cases, relationships, strategy order, and two repetitions after two host-owned corrections:
 
 1. still-open canonical title and severity come from the original host-parsed finding, not model status/candidate/parent severity;
 2. automatic latency is compared to the relationship-selected explicit strategy using the median within-pair delta. Marginal medians remain diagnostic.
@@ -11,6 +11,5 @@ V3 repeats V2's six cases, relationships, strategy order, and two repetitions af
 - corpus SHA-256: `8088604ba1ce95c50ab14930a20b83732205b78d3aaa2cead56d6c91b3a9bbff`
 - plan ID: `aff6b9ac9691582f7dc99a4f49a6e674833838f4a498766ee8eafcc541fc344e`
 - plan SHA-256: `10e24554439a9119516be5a46681af1e53251b76d9e53bae3cb99acbc6ea66c6`
-- 36 rows, collected once in stored order with no reruns
 
-Release requires exact selection/relationship/status/carry-forward behavior; 100% operational and required-lane completion; no-worse adjudicated recall, severity accuracy, clean controls, duplication, or fallback; and a non-positive median paired automatic latency delta.
+The first 31 rows were retained once in stored order. The execution tool's configured 5,000-second command limit interrupted row 32 before a result existed; it was not rerun, and the final four rows were never attempted. V3 is retained as invalid rather than repaired, scored, or used for release. A replacement campaign must use a new corpus/plan identity and collect rows in bounded command batches.
