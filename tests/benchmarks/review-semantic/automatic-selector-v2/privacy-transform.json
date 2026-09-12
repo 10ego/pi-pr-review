@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "67535d6d979ecd43635cb935ee6fc89586da224df3a4c2212a0762734eb7ad22",
+  "sanitizedRunManifestSha256": "42abeb41af9ea314622248fd851a57314cd151cb19c7bcf405f5378594a4c6e9",
+  "reportSha256": "c13e28cbc74d4080c4216ef97081a2a8a0455d6c965157dd6ae3d4195b06fa22",
+  "selectionAuditSha256": "f4d4414bf91f75e0ea207c821a9d394e340122f9460b7944b76daffe6970c452",
+  "adjudicationSha256": "056a95348c3504af5f273d684f122b2dcba3d2fa1a19755a4624a0b148bc7b96",
+  "scorerSha256": "826e9c7607d75ada407e177541cc2729b172f3ac0a9794928a55ba14a695a19a",
+  "transformations": [
+    "replace private benchmark workspace and system temporary paths in recursively embedded session evidence",
+    "recompute embedded session, artifact, outer run, and manifest hashes and sizes"
+  ],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection without reruns; automatic defaulting rejected by severity accuracy and latency gates"
+}

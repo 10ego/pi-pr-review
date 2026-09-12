@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "5f8954d04305eea0c0ae74b6",
+      "strategy": "auto",
+      "expectedFindingId": "prior.listener-cleanup",
+      "canonicalTitles": [
+        "[P1] Restore listener removal in the returned cleanup function",
+        "[P1] Remove the message listener during cleanup"
+      ],
+      "selectedSeverity": "P1",
+      "expectedSeverity": "P2",
+      "reason": "Both canonical findings at src/socket.ts:3 describe the expected still-open listener-cleanup defect. The raw matcher rejects both findings because P1 is outside the expected finding's P2-only severity constraint; semantically they cover the defect, but both overclassify its severity."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 7,
+      "opportunities": 8,
+      "rate": 0.875
+    }
+  },
+  "decision": "Automatic defaulting rejected: despite exact visible defect presence and full automatic lane completion, automatic exact severity is worse than both explicit strategies and automatic median latency is 11.8% slower than the corresponding explicit strategy."
+}
