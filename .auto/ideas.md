@@ -85,3 +85,8 @@
 
 - Product owner accepted a prospective automatic-selection latency allowance: median paired delta <=15 seconds and <=20% of corresponding-explicit p50, with no automatic p95 regression.
 - All operational, selector, prior-state, adjudicated quality, duplication, fallback, and privacy/evidence gates remain unchanged. V7 remains rejected under its original criterion; only a newly frozen campaign may authorize release.
+
+## 2026-09-12 automatic selector V8 result
+
+- V8 failed closed despite favorable complete-pair latency: automatic completion was 11/12 with 46/48 lanes; one automatic row had an invalid read audit, and one explicit fresh row completed targeted replacement output but Pi did not terminate before the collector hard timeout.
+- Do not rerun or replace V8 rows. Automatic defaulting remains unreleased. Before any further campaign, address end-to-end Pi termination after replacement and prevent/contain parent-generated unhosted `gh api` reads without weakening audit enforcement.

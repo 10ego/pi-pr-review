@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "b403f049028d14b098931d0965bed7945370c47698e6b170bcc215bd641c7277",
+  "sanitizedRunManifestSha256": "5394c97919317c905db2698413e625911ac95021cf36101c2af466d13df6439f",
+  "reportSha256": "8a51c1fd3c5d36b4f4d4abac6dddd31d8f127c77745d1ed87a5ec8310d2c3b61",
+  "selectionAuditSha256": "3c8c35bf5d8ab35763da187ae0490b6b3136c63dd7c01f67ec49ec7101933f19",
+  "adjudicationSha256": "ee95e5ea6bc3c4ad411c0a1c78a7e5795c8c839e9610b6adb6f6dfded76c3d8d",
+  "scorerSha256": "cf62378d737093668859f0875b5f58fa0e5df221cc5edc547b01f0265dbd1513",
+  "transformations": [
+    "replace private benchmark workspace, system temporary paths, and local account names in recursively embedded session evidence",
+    "recompute embedded session, artifact, outer run, and manifest hashes and sizes"
+  ],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection without reruns; automatic defaulting rejected by retained audit and hard-timeout operational failures"
+}
