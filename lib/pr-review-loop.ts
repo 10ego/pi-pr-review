@@ -555,10 +555,12 @@ export class ReviewLoopCoordinator {
 		descriptors: readonly FreshRecoveryDescriptor[],
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): boolean {
-		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryDescriptors.size > 0) return false;
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || descriptors.length === 0) return false;
 		const expected = this.artifactRegistry.expected(lease.generation);
-		if (!expected || descriptors.length !== expected.length ||
-			descriptors.some((descriptor, index) => descriptor.key !== expected[index]?.key)) return false;
+		const expectedKeys = new Set(expected?.map((lane) => lane.key) ?? []);
+		const suppliedKeys = new Set(descriptors.map((descriptor) => descriptor.key));
+		if (!expected || suppliedKeys.size !== descriptors.length || descriptors.some((descriptor) =>
+			!expectedKeys.has(descriptor.key) || this.binding!.freshRecoveryDescriptors.has(descriptor.key))) return false;
 		for (const descriptor of descriptors) this.binding.freshRecoveryDescriptors.set(descriptor.key, Object.freeze({ ...descriptor }));
 		return true;
 	}

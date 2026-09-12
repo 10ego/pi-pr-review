@@ -614,14 +614,21 @@ function mergeUniqueFindings(
 	// A recovered lane candidate is supplemental evidence, not a second issue.
 	// Suppress it when terminal synthesis already published the same canonical
 	// severity/title/anchor identity, even if the rationale was paraphrased.
-	const findingKey = (finding: ReviewFindingLike) => JSON.stringify([
-		finding.severity,
-		finding.title,
-		finding.code_location?.absolute_file_path,
-		finding.code_location?.line_range?.start,
-		finding.code_location?.line_range?.end,
-		finding.code_location?.side,
-	]);
+	const findingKey = (finding: ReviewFindingLike) => {
+		const location = finding.code_location;
+		const hasCanonicalAnchor = typeof location?.absolute_file_path === "string" &&
+			Number.isSafeInteger(location.line_range?.start) && Number.isSafeInteger(location.line_range?.end) &&
+			(location.side === "RIGHT" || location.side === "LEFT");
+		return JSON.stringify([
+			finding.severity,
+			finding.title,
+			location?.absolute_file_path,
+			location?.line_range?.start,
+			location?.line_range?.end,
+			location?.side,
+			hasCanonicalAnchor ? undefined : finding.body,
+		]);
+	};
 	const keys = new Map(merged.map((finding, index) => [findingKey(finding), index]));
 	for (const finding of additional) {
 		const key = findingKey(finding);

@@ -86,9 +86,12 @@ type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
 
 /** Block parent-shell GitHub API reads that bypass the host-bound hostname. */
 export function containsUnhostedGhApi(command: string, requiredHostname?: string): boolean {
-	// Normalize only empty quote pairs: shells remove these while concatenating
-	// tokens, and accepting no broader rewriting keeps the guard fail-closed.
-	const normalized = command.replace(/''|""/gu, "");
+	// Shells remove quotes while constructing argv tokens. Collapse a quoted
+	// executable path first, then remove remaining quotes so api/a'p'i/'api'
+	// spellings cannot bypass this bounded command gate.
+	const normalized = command
+		.replace(/["'][^"'\r\n;&|]*[\\/]gh(?:\.exe)?["']/giu, "gh")
+		.replace(/["']/gu, "");
 	for (const segment of normalized.split(/[\r\n;&|]+/u)) {
 		const starts = [...segment.matchAll(/(?:^|[\s(])(?:"(?:[^"\r\n;&|]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n;&|]*[\\/])?gh(?:\.exe)?'|(?:[^\s;&|"'`]*[\\/])?gh(?:\.exe)?)\s+api(?=\s|$)/giu)];
 		let residual = segment;
@@ -101,8 +104,8 @@ export function containsUnhostedGhApi(command: string, requiredHostname?: string
 		if (/(?:^|\s)api(?=\s|$)/iu.test(residual) && (/[gG]["']?[hH]/u.test(residual) || /[$`]/u.test(residual))) return true;
 		for (let index = 0; index < starts.length; index++) {
 			const invocation = segment.slice(starts[index]!.index, starts[index + 1]?.index);
-			const hostnames = [...invocation.matchAll(/--hostname(?:=|\s+)(["']?)([A-Za-z0-9.-]+)\1(?=\s|$)/gu)]
-				.map((match) => match[2]!);
+			const hostnames = [...invocation.matchAll(/(?:^|\s)--hostname(?:=|\s+)([A-Za-z0-9.-]+)(?=\s|$)/gu)]
+				.map((match) => match[1]!);
 			if (!requiredHostname || hostnames.length === 0 || hostnames.some((hostname) => hostname !== requiredHostname)) return true;
 		}
 	}

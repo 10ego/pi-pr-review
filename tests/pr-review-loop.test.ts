@@ -263,6 +263,25 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.claimFreshRecoveryTarget(lease, h.ctx as any)).toBeUndefined();
 	});
 
+	test("appends frozen recovery descriptors for sequential standalone lanes", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "single:0", tier: "heavy", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "single:0", scope: "first", majorOnly: true },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "single:1", tier: "medium", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "single:1", scope: "second", majorOnly: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBe(2);
+	});
+
 	test("expires the total budget, aborts work, and preserves artifacts until partial synthesis consumes them", async () => {
 		const h = harness();
 		let deadlineCallbacks = 0;

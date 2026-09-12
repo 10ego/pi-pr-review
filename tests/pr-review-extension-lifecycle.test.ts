@@ -470,8 +470,10 @@ describe("completed review extension lifecycle", () => {
 		expect(containsUnhostedGhApi("gh api --hostname github.com user | gh api repos/owner/repo")).toBeTrue();
 		expect(containsUnhostedGhApi("echo $(gh api --hostname github.com user) $(/usr/bin/gh api repos/owner/repo)")).toBeTrue();
 		expect(containsUnhostedGhApi("\"gh\" api repos/owner/repo")).toBeTrue();
-		expect(containsUnhostedGhApi("g'h' api --hostname github.com repos/owner/repo", "github.com")).toBeTrue();
+		expect(containsUnhostedGhApi("g'h' api repos/owner/repo", "github.com")).toBeTrue();
 		expect(containsUnhostedGhApi("gh a''pi repos/owner/repo", "github.com")).toBeTrue();
+		expect(containsUnhostedGhApi("gh 'api' repos/owner/repo", "github.com")).toBeTrue();
+		expect(containsUnhostedGhApi("gh api value--hostname github.com", "github.com")).toBeTrue();
 		expect(containsUnhostedGhApi("& \"C:\\Program Files\\GitHub CLI\\gh.exe\" api repos/owner/repo")).toBeTrue();
 		expect(containsUnhostedGhApi("git grep api")).toBeFalse();
 		expect(containsUnhostedGhApi("gh pr view 7 --json number")).toBeFalse();
