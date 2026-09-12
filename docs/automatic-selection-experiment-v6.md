@@ -21,4 +21,6 @@ V6 replaced V5 after bounded normalization of exact non-nested bold title scalar
 - automatic completion: 11/12 runs and 43/48 lanes, fallback 1/12;
 - paired automatic latency across 11 operational pairs: +4.2s median delta, with automatic faster or equal in 5/11.
 
-The failed automatic no-prior row reached the 900-second lane batch deadline, emitted visible fallback findings, and then did not terminate. The collector killed and retained it at the 1,230-second hard timeout. This demonstrates a Pi/provider lifecycle limitation, not a remaining selector or parser defect. The row is retained without rerun, and automatic defaulting remains unreleased because absolute completion and paired-latency gates fail.
+The failed automatic no-prior row reached the 900-second lane batch deadline, emitted visible fallback findings, and then did not terminate. The collector killed and retained it at the 1,230-second hard timeout. The row is retained without rerun, and automatic defaulting remains unreleased because absolute completion and paired-latency gates fail.
+
+Post-campaign hardening reserves the configured secondary-attempt window before primary dispatch, so one hung primary cannot consume the entire batch and prevent its single host-authorized replacement from starting. This host workaround requires new immutable evidence; V6 remains unchanged and rejected.

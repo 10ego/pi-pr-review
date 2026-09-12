@@ -968,6 +968,8 @@ interface SubagentPassRequest {
 	expectedOutput?: InternalExpectedOutput;
 	/** Retry one structurally partial completion with the same bounded evidence. */
 	retryContractPartial?: boolean;
+	/** Host-authorized targeted recovery may consume the primary-reserved secondary window. */
+	recoveryAttempt?: boolean;
 	systemPrompt?: string;
 	focusPublisher?: ReviewFocusPublisher;
 	artifactPublisher?: ReviewArtifactPublisher;
@@ -1101,7 +1103,7 @@ async function runSubagentAttempt(
 	const batchRemainingBeforeAttemptMs = budget ? budget.batchDeadlineMs - startedAt : undefined;
 	const totalRemainingBeforeAttemptMs = budget ? budget.totalDeadlineMs - startedAt : undefined;
 	const deadlineAtMs = budget
-		? attemptDeadline(budget, pass.tier, attempt.kind === "fallback" || attempt.contractRetry === true, () => startedAt)
+		? attemptDeadline(budget, pass.tier, pass.recoveryAttempt === true || attempt.kind === "fallback" || attempt.contractRetry === true, () => startedAt)
 		: undefined;
 	const deadlineMs = deadlineAtMs === undefined ? undefined : Math.max(0, deadlineAtMs - startedAt);
 	try {
@@ -1393,7 +1395,9 @@ async function runSubagentPass(
 	for (let attemptIndex = 0; attemptIndex < boundedAttempts.length; attemptIndex++) {
 		const attempt = boundedAttempts[attemptIndex]!;
 		if (attempt.contractRetry === true && reports.at(-1)?.contractRetryable !== true) break;
-		if ((attempt.kind === "fallback" || attempt.contractRetry === true) && budget && !fallbackBudget(budget).allowed) {
+		const requiresSecondaryBudget = (pass.recoveryAttempt === true && attemptIndex === 0) ||
+			attempt.kind === "fallback" || attempt.contractRetry === true;
+		if (requiresSecondaryBudget && budget && !fallbackBudget(budget).allowed) {
 			fallbackBudgetRejected = true;
 			break;
 		}
@@ -2280,7 +2284,7 @@ export default function registerPrReviewSubagents(
 				const reviewMode = loopCoordinator.peek()?.reviewMode ?? "balanced";
 				const gapResult = await runSubagentPass(config, ctx, {
 					id: gapKey, tier: "heavy", objective: INCREMENTAL_GAP_OBJECTIVE, context: gapBytes.toString("utf8"), toolPolicy: "configured",
-					majorOnly: reviewMode === "quick" || reviewMode === "balanced", minorHygiene: false, expectedOutput: "nonempty", retryContractPartial: true,
+					majorOnly: reviewMode === "quick" || reviewMode === "balanced", minorHygiene: false, expectedOutput: "nonempty", retryContractPartial: true, recoveryAttempt: true,
 					focusPublisher: loopCoordinator.createFocusPublisher(lease, ctx, { key: gapKey, label: "incremental full-PR gap hunt", tier: "heavy" }), artifactPublisher: loopCoordinator.createArtifactPublisher(lease, ctx), generation: lease.generation, artifactKey: gapKey,
 				}, combineAbortSignals(signal, lease.signal), (text) => onUpdate?.({ content: [{ type: "text", text }] }), () => loopCoordinator.isLeaseActive(lease, ctx), lease.budget ? activateReviewBatch(lease.budget) : undefined);
 				const gapCandidates = incrementalCandidateRecords(gapKey, gapResult.text, gapResult.attempts, "nonempty");
@@ -2563,6 +2567,12 @@ export default function registerPrReviewSubagents(
 				return { content: [{ type: "text", text: "Generic review_subagent passes are unavailable during cumulative review. Use pr_review_incremental_gap for the host-prepared full diff or incremental_pass for a host-fixed delta lane." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
 			}
 			const artifactKey = incrementalPassId ?? (implicitGap ? "incremental-gap" : `${toolCallId}:single`);
+			const hasIncompleteFreshArtifact = !cumulative && !incrementalPassId && !implicitGap &&
+				(loopCoordinator.artifactSnapshot(ctx)?.some((artifact) => artifact.lifecycle !== "complete") ?? false);
+			const targetedFreshRecovery = hasIncompleteFreshArtifact && loopCoordinator.claimFreshRecovery(lease, ctx);
+			if (hasIncompleteFreshArtifact && !targetedFreshRecovery) {
+				return { content: [{ type: "text", text: "The single targeted fresh-lane recovery was already consumed." }], isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } };
+			}
 			if (incrementalPassId && (!loadedContext.contextFileRawBytes ||
 				loopCoordinator.preparedContextMatches(lease, artifactKey, loadedContext.contextFileRawBytes, ctx) !== true)) {
 				return { content: [{ type: "text", text: "Incremental delta context failed: context_file is not the exact host-prepared prior-to-current diff." }], isError: true, details: { authorized: true, reason: "incremental_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes } };
@@ -2601,6 +2611,7 @@ export default function registerPrReviewSubagents(
 					majorOnly: incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
 					minorHygiene,
 					...(implicitGap ? { expectedOutput: "nonempty" as const, retryContractPartial: true } : {}),
+					...(targetedFreshRecovery ? { recoveryAttempt: true } : {}),
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,

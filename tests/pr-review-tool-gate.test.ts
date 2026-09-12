@@ -861,8 +861,8 @@ describe("review tool execution gate", () => {
 				parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx,
 				true, false, "off", undefined,
 				{ source: "default", warnings: [], config: {
-					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 2_000,
-					batchMs: 500, synthesisMs: 100, totalMs: 2_000, terminationGraceMs: 50,
+					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 300,
+					batchMs: 800, synthesisMs: 100, totalMs: 2_500, terminationGraceMs: 50,
 					cleanupReserveMs: 50, minimumFallbackMs: 100,
 				} },
 			);
@@ -887,7 +887,18 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0].totalRemainingBeforeAttemptMs).toBeGreaterThan(0);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete"]);
+			const recovery = await h.tools.get("review_subagent").execute(
+				"batch-recovery", { tier: "heavy", objective: "recover timed-out scope" }, undefined, undefined, h.ctx,
+			);
+			expect(recovery.isError).toBeUndefined();
+			expect(recovery.details.status).toBe("complete");
+			expect(recovery.details.attempts[0].deadlineMs).toBeLessThanOrEqual(300);
+			expect(recovery.details.attempts[0].deadlineMs).toBeGreaterThan(0);
+			const duplicateRecovery = await h.tools.get("review_subagent").execute(
+				"duplicate-recovery", { tier: "heavy", objective: "run another recovery" }, undefined, undefined, h.ctx,
+			);
+			expect(duplicateRecovery).toMatchObject({ isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete", "complete"]);
 			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
 				configuredDeadlineMs: 2_000,
 				budgetElapsedBeforeAttemptMs: expect.any(Number),

@@ -53,6 +53,7 @@ interface ReviewLoopBinding {
 	cleanupCallbacks: Set<() => void>;
 	preparedContextBytes: Map<string, Buffer>;
 	preparationClaimed: boolean;
+	freshRecoveryClaimed: boolean;
 	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
@@ -196,6 +197,7 @@ export class ReviewLoopCoordinator {
 			cleanupCallbacks: new Set(),
 			preparedContextBytes: new Map(),
 			preparationClaimed: false,
+			freshRecoveryClaimed: false,
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -517,6 +519,13 @@ export class ReviewLoopCoordinator {
 
 	claimArtifact(lease: ReviewLoopLease, key: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.claim(lease.generation, key);
+	}
+
+	/** Consume the invocation's sole targeted fresh-lane recovery authorization. */
+	claimFreshRecovery(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryClaimed) return false;
+		this.binding.freshRecoveryClaimed = true;
+		return true;
 	}
 
 	freezeArtifacts(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
