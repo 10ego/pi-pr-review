@@ -258,9 +258,11 @@ function normalizeCandidateLines(text: string): string {
 			if (candidateLabel(candidateLine)) line = stripped;
 		}
 		const candidateLine = line.startsWith("  ") ? line.slice(2) : line;
-		const label = candidateLabel(candidateLine);
-		const codeSpan = label && canonicalField(label.field) === "location" ? /^`([^`\r\n]+)`$/.exec(label.value) : undefined;
-		return codeSpan ? `${line.slice(0, line.length - label!.value.length)}${codeSpan[1]}` : line;
+		const label = candidateLabel(candidateLine), field = label ? canonicalField(label.field) : undefined;
+		const codeSpan = field === "location" ? /^`([^`\r\n]+)`$/.exec(label!.value) : undefined;
+		const boldTitle = field === "title" ? /^(?:\*\*([^*_\r\n]+)\*\*|__([^*_\r\n]+)__)$/.exec(label!.value) : undefined;
+		const normalizedValue = codeSpan?.[1] ?? boldTitle?.[1] ?? boldTitle?.[2];
+		return normalizedValue !== undefined ? `${line.slice(0, line.length - label!.value.length)}${normalizedValue}` : line;
 	}).join("\n");
 }
 

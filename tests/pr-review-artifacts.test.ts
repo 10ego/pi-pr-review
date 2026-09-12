@@ -302,6 +302,18 @@ describe("semantic lane completion", () => {
 		expect(classifyReviewLane({ tier: "heavy", rawText: `${hardBreakCandidate}\narbitrary prose  `, exitCode: 0, stopReason: "stop" })).toBe("partial");
 	});
 
+	test("unwraps only an exact non-nested bold candidate title", () => {
+		const yaml = integratedCandidate().split("\n").map((line, index) => `${index === 0 ? "- " : "  "}${line}`).join("\n");
+		for (const wrapped of ["**[P2] Preserve review evidence**", "__[P2] Preserve review evidence__"]) {
+			const candidate = yaml.replace("[P2] Preserve review evidence", wrapped);
+			expect(classifyReviewLane({ tier: "heavy", rawText: candidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+			expect(extractValidatedReviewLaneCandidates(candidate)).toHaveLength(1);
+		}
+		for (const wrapped of ["**[P2] Preserve **review** evidence**", "**[P2] Preserve __review__ evidence**", "__[P2] Preserve **review** evidence__", "**[P2] Preserve review evidence", "**[P2] Preserve review evidence** trailing", "___[P2] Preserve review evidence___"]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: yaml.replace("[P2] Preserve review evidence", wrapped), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
 	test("unwraps only an exact single-code-span candidate location", () => {
 		const repeated = integratedCandidate().split("\n").map((line) => `- **${line.replace(": ", ":** ")}`).join("\n").replace("src/a.ts:10-12", "`src/a.ts:10-12`");
 		expect(classifyReviewLane({ tier: "heavy", rawText: repeated, exitCode: 0, stopReason: "stop" })).toBe("complete");
