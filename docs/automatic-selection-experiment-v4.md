@@ -1,12 +1,7 @@
 # Automatic fresh versus incremental selection v4
 
-Status: **frozen; collection not started**.
+Status: **invalid incomplete collection; no release decision permitted**.
 
-V4 is the replacement for externally interrupted V3. It uses the same source-bound prior severity rule, paired automatic latency metric, six selector cases, three strategies, and two repetitions. Rows are collected in stored order using bounded command batches so the top-level harness deadline cannot interrupt the full campaign command.
+V4 replaced externally interrupted V3 and retained the same source-bound severity and paired-latency corrections. The first 17 rows were retained once in order. A provider-failure row consumed most of a six-row batch, after which the top-level 1,800-second execution limit interrupted row 18 before retention. It was not rerun; later rows were never attempted.
 
-- candidate: `9558a0637a868e3a50e94cb6d7f090cde94473e9`
-- corpus SHA-256: `110baeb5f6ebe073cd04af4adf0d385abf629621ebe3e0646bb5d80de4ac6fff`
-- plan ID: `1df2b5c58265c8cfe57a15df1ad2153627d80b82dac3e83a58cdd29149ce2e7f`
-- plan SHA-256: `265e0a35f1432f25aa54eebcff97904b218911f39e4ac9c553055f09e597a1f4`
-
-Release gates are unchanged from V3.
+The result demonstrates that bounded multi-row batches are still unsafe. A replacement campaign must use a new identity and a detached sequential runner or one host command per row so top-level command deadlines cannot interrupt collection.

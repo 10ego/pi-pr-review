@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "status": "invalid_incomplete",
+  "retainedRows": 17,
+  "plannedRows": 36,
+  "interruptedEntryId": "2fa2aa0a941eadd01fd9c89e",
+  "missingEntryIds": [
+    "2fa2aa0a941eadd01fd9c89e",
+    "c9795c5f6625a2691e219990",
+    "34551402e8f948bb1bebdfbf",
+    "51af4a00507df34e7e8c0d0d",
+    "1022dcc5d05d19b5b849ae1a",
+    "c5ee57ba37255377eaaacfab",
+    "6005f6b659c295506ad3d1b4",
+    "77439a9059cb6f4a66f8ced0",
+    "81f1b6204285269b80b6df01",
+    "d6b3b386b7f0d4c90ec92d0b",
+    "9dc480110a9190f61de88ffd",
+    "913bb5b51ebab0990de278b3",
+    "44dff5347db0cabbed305780",
+    "16af602f269ca1963605f1b7",
+    "3bc634b8db87350845e8df59",
+    "59be89c9ba11a7bc82022f2d",
+    "3a1a7f8de03e36ee533154f5",
+    "8c95952d8e37b3d833199da0",
+    "a09dc11224c51701086431d4"
+  ],
+  "reason": "The top-level execution tool terminated the collection command at its configured 1800-second limit during the interrupted entry after an earlier retained provider-failure row consumed most of the six-row batch. The interrupted row was not retained and was not rerun; later rows were never attempted."
+}
