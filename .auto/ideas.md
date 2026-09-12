@@ -80,3 +80,8 @@
 
 - V7 achieved post-hardening absolute completion (12/12 automatic runs, 48/48 required lanes, no fallback), but no lane timed out, so targeted recovery was not exercised by the campaign; deterministic subprocess tests cover it. Automatic defaulting remains deferred because median paired automatic latency was +9.626s instead of non-positive.
 - Before another immutable campaign, isolate deterministic automatic-path overhead or reduce redundant orchestration without weakening cumulative coverage; do not rerun V7 or rely on additional stochastic sampling of the same candidate.
+
+## 2026-09-12 automatic latency policy decision
+
+- Product owner accepted a prospective automatic-selection latency allowance: median paired delta <=15 seconds and <=20% of corresponding-explicit p50, with no automatic p95 regression.
+- All operational, selector, prior-state, adjudicated quality, duplication, fallback, and privacy/evidence gates remain unchanged. V7 remains rejected under its original criterion; only a newly frozen campaign may authorize release.

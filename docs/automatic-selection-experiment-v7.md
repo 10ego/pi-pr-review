@@ -30,4 +30,6 @@ The absolute lifecycle failure seen in V6 did not recur: every automatic run and
 
 Four raw semantic matcher misses were visibly equivalent findings: three source-authoritative locationless carry-forwards of the tenant-ownership blocker, and one anchored automatic finding that explicitly described cross-tenant retrieval after removing `ctx.tenantId` from the query. `adjudication.json` records these decisions separately; the immutable rows and raw report remain unchanged.
 
-Automatic defaulting remains unreleased. Although selection, prior handling, operational completion, adjudicated quality, duplication, and fallback gates pass, the release policy requires a non-positive median within-pair automatic latency delta. V7 measured +9.626s, so it cannot authorize defaulting.
+Automatic defaulting remains unreleased. Although selection, prior handling, operational completion, adjudicated quality, duplication, and fallback gates pass, the release policy in force for V7 required a non-positive median within-pair automatic latency delta. V7 measured +9.626s, so it cannot authorize defaulting.
+
+After V7 was frozen and reviewed, the product owner prospectively accepted bounded selector latency in exchange for automatic strategy selection. The next campaign—not V7—uses the precommitted policy of at most +15 seconds and +20% median paired overhead with no automatic p95 regression. All non-latency gates remain unchanged.

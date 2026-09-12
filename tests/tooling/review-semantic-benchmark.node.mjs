@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { completedReviewTextBound, createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
+import { AUTOMATIC_LATENCY_POLICY, completedReviewTextBound, createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, createIncrementalFixtureRepository, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
@@ -196,7 +196,16 @@ test("automatic selector latency uses paired deltas against each selected explic
 	const latency = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.automaticSelection;
 	assert.equal(latency.plannedPairs, 6); assert.equal(latency.completePairs, 6); assert.deepEqual(latency.incompletePairs, []);
 	assert.equal(latency.latencyMs.autoP50, 1_050); assert.equal(latency.latencyMs.correspondingExplicitP50, 300);
-	assert.equal(latency.latencyMs.pairedDeltaP50, -50); assert.equal(latency.latencyMs.autoFasterOrEqualPairs, 4);
+	assert.equal(latency.latencyMs.autoP95, 1_200); assert.equal(latency.latencyMs.correspondingExplicitP95, 1_200);
+	assert.equal(latency.latencyMs.pairedDeltaP50, -50); assert.equal(latency.latencyMs.pairedDeltaRatio, -1 / 6); assert.equal(latency.latencyMs.autoFasterOrEqualPairs, 4);
+	assert.deepEqual(latency.latencyMs.policy, { ...AUTOMATIC_LATENCY_POLICY, passed: true });
+
+	const overBudget = createBundle({ corpus: SELECTOR_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental", "auto"], mutateRun(run, item) {
+		const selected = item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental" ? "incremental" : "fresh";
+		run.elapsedMs = run.strategy === "auto" ? 115_001 : run.strategy === selected ? 100_000 : 5_000;
+	} });
+	const rejected = scoreBundle({ corpusInfo: overBudget.corpusInfo, plan: overBudget.plan, resultsDirectory: overBudget.root }).metrics.automaticSelection.latencyMs;
+	assert.equal(rejected.pairedDeltaP50, 15_001); assert.equal(rejected.pairedDeltaRatio, 0.15001); assert.equal(rejected.policy.passed, false);
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {

@@ -68,6 +68,11 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export const SCORER_SHA256 = sha256(fs.readFileSync(new URL(import.meta.url)));
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
+export const AUTOMATIC_LATENCY_POLICY = Object.freeze({
+	maximumPairedDeltaMs: 15_000,
+	maximumPairedDeltaRatio: 0.2,
+	requireNoP95Regression: true,
+});
 
 function invariant(condition, message) {
 	if (!condition) throw new Error(`Semantic benchmark invalid: ${message}`);
@@ -686,16 +691,33 @@ export function aggregateScores(corpusInfo, plan, runs) {
 				const item = caseById.get(pair.caseId), correspondingStrategy = item?.priorState?.relationship === "same_head" || item?.priorState?.relationship === "incremental" ? "incremental" : "fresh";
 				return { ...pair, correspondingStrategy, corresponding: pair[correspondingStrategy] };
 			}), completeAutomaticPairs = automaticPairs.filter((pair) => pair.auto && pair.corresponding && complete(pair.auto) && complete(pair.corresponding));
+			const autoLatencies = completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs);
+			const correspondingLatencies = completeAutomaticPairs.map((pair) => pair.corresponding.run.elapsedMs);
 			const deltas = completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs - pair.corresponding.run.elapsedMs);
+			const autoP50 = percentile(autoLatencies, 0.5), correspondingExplicitP50 = percentile(correspondingLatencies, 0.5);
+			const autoP95 = percentile(autoLatencies, 0.95), correspondingExplicitP95 = percentile(correspondingLatencies, 0.95);
+			const pairedDeltaP50 = percentile(deltas, 0.5);
+			const pairedDeltaRatio = typeof pairedDeltaP50 === "number" && typeof correspondingExplicitP50 === "number" && correspondingExplicitP50 > 0
+				? pairedDeltaP50 / correspondingExplicitP50 : null;
 			result.automaticSelection = {
 				plannedPairs: automaticPairs.length,
 				completePairs: completeAutomaticPairs.length,
 				incompletePairs: automaticPairs.filter((pair) => !completeAutomaticPairs.includes(pair)).map((pair) => ({ mode: pair.mode, repetition: pair.repetition, caseId: pair.caseId, correspondingStrategy: pair.correspondingStrategy, autoComplete: !!pair.auto && complete(pair.auto), correspondingComplete: !!pair.corresponding && complete(pair.corresponding) })),
 				latencyMs: {
-					autoP50: percentile(completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs), 0.5),
-					correspondingExplicitP50: percentile(completeAutomaticPairs.map((pair) => pair.corresponding.run.elapsedMs), 0.5),
-					pairedDeltaP50: percentile(deltas, 0.5),
+					autoP50,
+					correspondingExplicitP50,
+					autoP95,
+					correspondingExplicitP95,
+					pairedDeltaP50,
+					pairedDeltaRatio,
 					autoFasterOrEqualPairs: deltas.filter((delta) => delta <= 0).length,
+					policy: {
+						...AUTOMATIC_LATENCY_POLICY,
+						passed: completeAutomaticPairs.length === automaticPairs.length &&
+							typeof pairedDeltaP50 === "number" && pairedDeltaP50 <= AUTOMATIC_LATENCY_POLICY.maximumPairedDeltaMs &&
+							typeof pairedDeltaRatio === "number" && pairedDeltaRatio <= AUTOMATIC_LATENCY_POLICY.maximumPairedDeltaRatio &&
+							(!AUTOMATIC_LATENCY_POLICY.requireNoP95Regression || (typeof autoP95 === "number" && typeof correspondingExplicitP95 === "number" && autoP95 <= correspondingExplicitP95)),
+					},
 				},
 			};
 		}
