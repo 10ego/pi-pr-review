@@ -838,6 +838,15 @@ export function runReviewSubprocess(
 		const finish = (code: number | null, processSignal: NodeJS.Signals | null | undefined, error?: Error) => {
 			if (settled) return;
 			cleanupAbort();
+			// A bounded timeout may settle before Node observes child close. Destroy
+			// every inherited pipe and unref the reaped-or-killed handle so one stuck
+			// reviewer cannot keep the parent Pi event loop alive after recovery.
+			if (termination) {
+				proc.stdin.destroy();
+				proc.stdout.destroy();
+				proc.stderr.destroy();
+				proc.unref();
+			}
 			// Flush a final unterminated JSON record while processEvent is still
 			// authoritative. Marking settled first would silently discard it.
 			decoder.end();
@@ -970,6 +979,8 @@ interface SubagentPassRequest {
 	retryContractPartial?: boolean;
 	/** Host-authorized targeted recovery may consume the primary-reserved secondary window. */
 	recoveryAttempt?: boolean;
+	/** Canonical incomplete lane whose evidence/attempt history this recovery replaces. */
+	priorArtifact?: ReviewLaneArtifact;
 	systemPrompt?: string;
 	focusPublisher?: ReviewFocusPublisher;
 	artifactPublisher?: ReviewArtifactPublisher;
@@ -1308,14 +1319,17 @@ export async function repairReviewOutput(
 function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResult): void {
 	if (!pass.artifactPublisher || pass.generation === undefined || !pass.artifactKey) return;
 	const finalAttempt = result.attempts.at(-1);
+	const prior = pass.priorArtifact;
+	const priorAttempts = prior?.attempts ?? [];
+	const nextOrdinal = priorAttempts.reduce((maximum, attempt) => Math.max(maximum, attempt.ordinal), 0) + 1;
 	const artifact: ReviewLaneArtifact = {
 		generation: pass.generation,
 		key: pass.artifactKey,
 		passId: result.id,
-		requestedPassOrdinal: pass.requestedPassOrdinal,
+		requestedPassOrdinal: prior?.requestedPassOrdinal ?? pass.requestedPassOrdinal,
 		tier: result.tier,
 		minorHygiene: pass.minorHygiene === true,
-		requestedModel: result.attempts[0]?.spec,
+		requestedModel: prior?.requestedModel ?? result.attempts[0]?.spec,
 		observedModel: result.model,
 		rawText: result.text,
 		exitCode: result.exitCode,
@@ -1324,8 +1338,8 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 		errorMessage: result.errorMessage,
 		lifecycle: result.status,
 		deadlineExpired: result.deadlineExpired,
-		attempts: result.attempts.map((attempt, index) => ({
-			ordinal: index + 1,
+		attempts: [...priorAttempts, ...result.attempts.map((attempt, index) => ({
+			ordinal: nextOrdinal + index,
 			kind: attempt.kind,
 			requestedModel: attempt.spec,
 			observedModel: attempt.model,
@@ -1351,16 +1365,16 @@ function retainPassArtifact(pass: SubagentPassRequest, result: SubagentPassResul
 			budgetElapsedBeforeAttemptMs: attempt.budgetElapsedBeforeAttemptMs,
 			batchRemainingBeforeAttemptMs: attempt.batchRemainingBeforeAttemptMs,
 			totalRemainingBeforeAttemptMs: attempt.totalRemainingBeforeAttemptMs,
-		})),
-		fallbackUsed: result.fallbackUsed,
-		elapsedMs: result.elapsedMs,
-		firstEventMs: finalAttempt?.firstEventMs,
-		firstAssistantMs: finalAttempt?.firstAssistantMs,
-		toolElapsedMs: finalAttempt?.toolElapsedMs ?? 0,
-		toolCallCount: finalAttempt?.toolCallCount ?? 0,
-		startOffsetMs: result.startOffsetMs,
+		}))],
+		fallbackUsed: prior?.fallbackUsed === true || result.fallbackUsed,
+		elapsedMs: (prior?.elapsedMs ?? 0) + result.elapsedMs,
+		firstEventMs: prior?.firstEventMs ?? finalAttempt?.firstEventMs,
+		firstAssistantMs: prior?.firstAssistantMs ?? finalAttempt?.firstAssistantMs,
+		toolElapsedMs: (prior?.toolElapsedMs ?? 0) + result.attempts.reduce((total, attempt) => total + attempt.toolElapsedMs, 0),
+		toolCallCount: (prior?.toolCallCount ?? 0) + result.attempts.reduce((total, attempt) => total + attempt.toolCallCount, 0),
+		startOffsetMs: prior?.startOffsetMs ?? result.startOffsetMs,
 		endOffsetMs: result.endOffsetMs,
-		fallbackBudgetRejected: result.fallbackBudgetRejected,
+		fallbackBudgetRejected: prior?.fallbackBudgetRejected === true || result.fallbackBudgetRejected,
 		deadlineSource: result.deadlineSource,
 		batchDeadlineMs: result.batchDeadlineMs,
 		totalDeadlineMs: result.totalDeadlineMs,
@@ -2522,7 +2536,7 @@ export default function registerPrReviewSubagents(
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("review_subagent");
 			const executionSignal = combineAbortSignals(signal, lease.signal);
-			const tier = params.tier as Tier;
+			let tier = params.tier as Tier;
 			const activeInvocation = loopCoordinator.peek();
 			const reviewMode = activeInvocation?.reviewMode ?? "balanced";
 			const incrementalPassId = typeof params.incremental_pass === "string"
@@ -2550,9 +2564,21 @@ export default function registerPrReviewSubagents(
 			if (cumulative && !incrementalPassId && tier !== "heavy") {
 				return { content: [{ type: "text", text: "Generic review_subagent passes are unavailable during cumulative review. Use pr_review_incremental_gap or a host-fixed incremental_pass lane." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
 			}
+			const hasIncompleteFreshArtifact = !cumulative && !incrementalPassId &&
+				(loopCoordinator.artifactSnapshot(ctx)?.some((artifact) => artifact.lifecycle !== "complete") ?? false);
+			if (!cumulative && !incrementalPassId && !hasIncompleteFreshArtifact && loopCoordinator.freshRecoveryWasClaimed(ctx)) {
+				return { content: [{ type: "text", text: "The single targeted fresh-lane recovery was already consumed." }], isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } };
+			}
+			const freshRecoveryTarget = hasIncompleteFreshArtifact ? loopCoordinator.claimFreshRecoveryTarget(lease, ctx) : undefined;
+			if (hasIncompleteFreshArtifact && !freshRecoveryTarget) {
+				return { content: [{ type: "text", text: "The single targeted fresh-lane recovery was already consumed or no longer has a canonical target." }], isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } };
+			}
+			if (freshRecoveryTarget) tier = freshRecoveryTarget.expected.tier;
 			let loadedContext;
 			try {
-				loadedContext = await loadReviewContext(ctx.cwd, params.context, params.context_file);
+				loadedContext = freshRecoveryTarget
+					? { context: freshRecoveryTarget.descriptor.context, contextFileBytes: 0 }
+					: await loadReviewContext(ctx.cwd, params.context, params.context_file);
 			} catch (error) {
 				return {
 					content: [{ type: "text", text: `Review context failed: ${errMessage(error)}` }],
@@ -2566,32 +2592,34 @@ export default function registerPrReviewSubagents(
 			if (cumulative && !incrementalPassId && !implicitGap) {
 				return { content: [{ type: "text", text: "Generic review_subagent passes are unavailable during cumulative review. Use pr_review_incremental_gap for the host-prepared full diff or incremental_pass for a host-fixed delta lane." }], isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } };
 			}
-			const artifactKey = incrementalPassId ?? (implicitGap ? "incremental-gap" : `${toolCallId}:single`);
-			const hasIncompleteFreshArtifact = !cumulative && !incrementalPassId && !implicitGap &&
-				(loopCoordinator.artifactSnapshot(ctx)?.some((artifact) => artifact.lifecycle !== "complete") ?? false);
-			const targetedFreshRecovery = hasIncompleteFreshArtifact && loopCoordinator.claimFreshRecovery(lease, ctx);
-			if (hasIncompleteFreshArtifact && !targetedFreshRecovery) {
-				return { content: [{ type: "text", text: "The single targeted fresh-lane recovery was already consumed." }], isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } };
-			}
+			const artifactKey = freshRecoveryTarget?.artifact.key ?? incrementalPassId ?? (implicitGap ? "incremental-gap" : `${toolCallId}:single`);
 			if (incrementalPassId && (!loadedContext.contextFileRawBytes ||
 				loopCoordinator.preparedContextMatches(lease, artifactKey, loadedContext.contextFileRawBytes, ctx) !== true)) {
 				return { content: [{ type: "text", text: "Incremental delta context failed: context_file is not the exact host-prepared prior-to-current diff." }], isError: true, details: { authorized: true, reason: "incremental_diff_mismatch", contextFileBytes: loadedContext.contextFileBytes } };
 			}
-			const minorHygiene = incrementalPass || implicitGap ? false : params.minor_hygiene === true;
-			if (!loopCoordinator.registerExpectedArtifacts(lease, [{
-				key: artifactKey,
-				tier,
-				minorHygiene,
-				...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
-			}], ctx)) {
-				return reviewLoopDeniedResult("review_subagent");
+			const minorHygiene = freshRecoveryTarget?.expected.minorHygiene ?? (incrementalPass || implicitGap ? false : params.minor_hygiene === true);
+			if (!freshRecoveryTarget) {
+				const expectedRegistered = loopCoordinator.registerExpectedArtifacts(lease, [{
+					key: artifactKey,
+					tier,
+					minorHygiene,
+					...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
+				}], ctx);
+				const descriptorRegistered = cumulative || incrementalPassId || implicitGap || loopCoordinator.registerFreshRecoveryDescriptors(lease, [{
+					key: artifactKey,
+					scope: params.objective,
+					context: loadedContext.context,
+					toolPolicy: normalizeToolPolicy(params.tool_policy),
+					majorOnly: params.major_only === true,
+				}], ctx);
+				if (!expectedRegistered || !descriptorRegistered) return reviewLoopDeniedResult("review_subagent");
 			}
 			if ((incrementalPassId || implicitGap) && !loopCoordinator.claimArtifact(lease, artifactKey, ctx)) {
 				return { content: [{ type: "text", text: `The cumulative ${implicitGap ? "gap" : "delta"} lane was already invoked.` }], isError: true, details: { authorized: false, reason: "duplicate_cumulative_lane" } };
 			}
 			const focusPublisher = loopCoordinator.createFocusPublisher(lease, ctx, {
 				key: artifactKey,
-				label: implicitGap ? "incremental full-PR gap hunt" : incrementalPassId ?? `${tier} review`,
+				label: implicitGap ? "incremental full-PR gap hunt" : incrementalPassId ?? freshRecoveryTarget?.artifact.passId ?? `${tier} review`,
 				tier,
 			});
 			const artifactPublisher = loopCoordinator.createArtifactPublisher(lease, ctx);
@@ -2602,16 +2630,26 @@ export default function registerPrReviewSubagents(
 				ctx,
 				{
 					...(incrementalPassId || implicitGap ? { id: artifactKey } : {}),
+					...(freshRecoveryTarget ? { id: freshRecoveryTarget.artifact.passId } : {}),
 					tier,
 					objective: implicitGap ? INCREMENTAL_GAP_OBJECTIVE : sameHeadResourcePass
 						? "Independently review the complete unchanged base-to-head PR diff for security, resource-lifecycle, performance, scalability, I/O, memory, and contention defects. Treat prior discussion as unavailable and return only independently substantiated findings."
-						: incrementalPass?.scope ?? params.objective,
-					context: loadedContext.context,
-					toolPolicy: incrementalPass || implicitGap ? "configured" : normalizeToolPolicy(params.tool_policy),
-					majorOnly: incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true,
+						: incrementalPass?.scope ?? (freshRecoveryTarget ? `Review only this previously incomplete required lane. Host-fixed recovery scope: ${freshRecoveryTarget.descriptor.scope}` : params.objective),
+					context: freshRecoveryTarget?.descriptor.context ?? loadedContext.context,
+					toolPolicy: incrementalPass || implicitGap ? "configured" : freshRecoveryTarget?.descriptor.toolPolicy ?? normalizeToolPolicy(params.tool_policy),
+					majorOnly: freshRecoveryTarget?.descriptor.majorOnly ?? (incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true),
 					minorHygiene,
 					...(implicitGap ? { expectedOutput: "nonempty" as const, retryContractPartial: true } : {}),
-					...(targetedFreshRecovery ? { recoveryAttempt: true } : {}),
+					...(freshRecoveryTarget ? {
+						expectedOutput: freshRecoveryTarget.expected.expectedOutput,
+						recoveryAttempt: true,
+						priorArtifact: freshRecoveryTarget.artifact,
+						requestedPassOrdinal: freshRecoveryTarget.artifact.requestedPassOrdinal,
+						toolNames: freshRecoveryTarget.descriptor.toolNames,
+						fileBackedContext: freshRecoveryTarget.descriptor.fileBackedContext,
+						fileBackedContextPath: freshRecoveryTarget.descriptor.fileBackedContextPath,
+						fileBackedRequiredReads: freshRecoveryTarget.descriptor.fileBackedRequiredReads,
+					} : {}),
 					focusPublisher,
 					artifactPublisher,
 					generation: lease.generation,
@@ -2823,6 +2861,16 @@ export default function registerPrReviewSubagents(
 				tier: pass.tier,
 				minorHygiene: pass.minorHygiene === true,
 				...(pass.expectedOutput ? { expectedOutput: pass.expectedOutput } : {}),
+			})), ctx) || !loopCoordinator.registerFreshRecoveryDescriptors(lease, passes.map((pass, index) => ({
+				key: pass.artifactKey,
+				scope: topology[index]!.scope,
+				context: pass.context,
+				toolPolicy: pass.toolPolicy,
+				toolNames: pass.toolNames,
+				majorOnly: pass.majorOnly,
+				fileBackedContext: pass.fileBackedContext,
+				fileBackedContextPath: pass.fileBackedContextPath,
+				fileBackedRequiredReads: pass.fileBackedRequiredReads,
 			})), ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}

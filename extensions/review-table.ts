@@ -84,6 +84,31 @@ import {
 
 type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
 
+/** Block parent-shell GitHub API reads that bypass the host-bound hostname. */
+export function containsUnhostedGhApi(command: string, requiredHostname?: string): boolean {
+	// Normalize only empty quote pairs: shells remove these while concatenating
+	// tokens, and accepting no broader rewriting keeps the guard fail-closed.
+	const normalized = command.replace(/''|""/gu, "");
+	for (const segment of normalized.split(/[\r\n;&|]+/u)) {
+		const starts = [...segment.matchAll(/(?:^|[\s(])(?:"(?:[^"\r\n;&|]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n;&|]*[\\/])?gh(?:\.exe)?'|(?:[^\s;&|"'`]*[\\/])?gh(?:\.exe)?)\s+api(?=\s|$)/giu)];
+		let residual = segment;
+		for (let index = starts.length - 1; index >= 0; index--) {
+			const start = starts[index]!.index;
+			residual = residual.slice(0, start) + residual.slice(start + starts[index]![0].length);
+		}
+		// Shell token concatenation (for example g'h' api) is intentionally
+		// denied rather than interpreted by a partial shell parser.
+		if (/(?:^|\s)api(?=\s|$)/iu.test(residual) && (/[gG]["']?[hH]/u.test(residual) || /[$`]/u.test(residual))) return true;
+		for (let index = 0; index < starts.length; index++) {
+			const invocation = segment.slice(starts[index]!.index, starts[index + 1]?.index);
+			const hostnames = [...invocation.matchAll(/--hostname(?:=|\s+)(["']?)([A-Za-z0-9.-]+)\1(?=\s|$)/gu)]
+				.map((match) => match[2]!);
+			if (!requiredHostname || hostnames.length === 0 || hostnames.some((hostname) => hostname !== requiredHostname)) return true;
+		}
+	}
+	return false;
+}
+
 interface Finding {
 	title?: string;
 	body?: string;
@@ -1151,6 +1176,17 @@ export default function registerReviewTable(
 		if (!loopCoordinator.peek()) return;
 		const generation = loopCoordinator.deferActiveSynthesis(ctx);
 		if (generation !== undefined) generationsReadyForSynthesis.add(generation);
+	});
+
+	pi.on("tool_call", (event) => {
+		const invocation = loopCoordinator.peek();
+		if (!invocation || (event.toolName !== "bash" && event.toolName !== "powershell")) return;
+		const command = typeof event.input.command === "string" ? event.input.command : "";
+		if (!containsUnhostedGhApi(command, invocation.reviewBinding?.hostname)) return;
+		return {
+			block: true,
+			reason: "Direct gh api calls during /pr-review require the host-bound --hostname. Use the registered review tools for GitHub state.",
+		};
 	});
 
 	pi.on("tool_execution_start", (event, ctx) => {

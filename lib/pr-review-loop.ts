@@ -54,6 +54,7 @@ interface ReviewLoopBinding {
 	preparedContextBytes: Map<string, Buffer>;
 	preparationClaimed: boolean;
 	freshRecoveryClaimed: boolean;
+	freshRecoveryDescriptors: Map<string, FreshRecoveryDescriptor>;
 	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
@@ -94,6 +95,24 @@ export interface ReviewFocusPublisher {
 
 export interface ReviewArtifactPublisher {
 	retain(artifact: ReviewLaneArtifact): boolean;
+}
+
+export interface FreshRecoveryDescriptor {
+	readonly key: string;
+	readonly scope: string;
+	readonly context?: string;
+	readonly toolPolicy?: "none" | "configured";
+	readonly toolNames?: readonly string[];
+	readonly majorOnly: boolean;
+	readonly fileBackedContext?: boolean;
+	readonly fileBackedContextPath?: string;
+	readonly fileBackedRequiredReads?: readonly { readonly offset: number; readonly limit: number }[];
+}
+
+export interface FreshRecoveryTarget {
+	readonly expected: ExpectedReviewLane;
+	readonly artifact: ReviewLaneArtifact;
+	readonly descriptor: FreshRecoveryDescriptor;
 }
 
 function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
@@ -198,6 +217,7 @@ export class ReviewLoopCoordinator {
 			preparedContextBytes: new Map(),
 			preparationClaimed: false,
 			freshRecoveryClaimed: false,
+			freshRecoveryDescriptors: new Map(),
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -521,11 +541,42 @@ export class ReviewLoopCoordinator {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.claim(lease.generation, key);
 	}
 
-	/** Consume the invocation's sole targeted fresh-lane recovery authorization. */
-	claimFreshRecovery(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
-		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryClaimed) return false;
-		this.binding.freshRecoveryClaimed = true;
+	/**
+	 * Consume the invocation's sole targeted fresh-lane recovery authorization.
+	 * The host chooses the first incomplete required lane in canonical order;
+	 * callers cannot redirect the reserved attempt to an unrelated scope.
+	 */
+	freshRecoveryWasClaimed(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return !!this.binding?.freshRecoveryClaimed && sameBinding(this.binding, ctx);
+	}
+
+	registerFreshRecoveryDescriptors(
+		lease: ReviewLoopLease,
+		descriptors: readonly FreshRecoveryDescriptor[],
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryDescriptors.size > 0) return false;
+		const expected = this.artifactRegistry.expected(lease.generation);
+		if (!expected || descriptors.length !== expected.length ||
+			descriptors.some((descriptor, index) => descriptor.key !== expected[index]?.key)) return false;
+		for (const descriptor of descriptors) this.binding.freshRecoveryDescriptors.set(descriptor.key, Object.freeze({ ...descriptor }));
 		return true;
+	}
+
+	claimFreshRecoveryTarget(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): FreshRecoveryTarget | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryClaimed) return undefined;
+		const artifacts = this.artifactRegistry.snapshot(lease.generation) ?? [];
+		const artifactByKey = new Map(artifacts.map((artifact) => [artifact.key, artifact]));
+		const expected = this.artifactRegistry.expected(lease.generation)?.find((candidate) =>
+			artifactByKey.get(candidate.key)?.lifecycle !== "complete");
+		const artifact = expected && artifactByKey.get(expected.key);
+		const descriptor = expected && this.binding.freshRecoveryDescriptors.get(expected.key);
+		if (!artifact || !expected || !descriptor) return undefined;
+		this.binding.freshRecoveryClaimed = true;
+		return Object.freeze({ expected, artifact, descriptor });
 	}
 
 	freezeArtifacts(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {

@@ -236,6 +236,33 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toBeUndefined();
 	});
 
+	test("claims fresh recovery by canonical expected order rather than artifact completion order", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+			{ key: "call:1", tier: "medium", minorHygiene: true, expectedOutput: "review_lane" },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "call:0", scope: "first scope", context: "first context", toolPolicy: "configured", majorOnly: true },
+			{ key: "call:1", scope: "second scope", toolPolicy: "none", majorOnly: false },
+		], h.ctx as any)).toBeTrue();
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
+		const retain = (key: string, passId: string, tier: "heavy" | "medium", minorHygiene: boolean) => publisher.retain({
+			generation: lease.generation, key, passId, tier, minorHygiene, rawText: "partial", exitCode: 1,
+			lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 10,
+			toolElapsedMs: 0, toolCallCount: 0,
+		});
+		expect(retain("call:1", "second", "medium", true)).toBeTrue();
+		expect(retain("call:0", "first", "heavy", false)).toBeTrue();
+		const target = h.coordinator.claimFreshRecoveryTarget(lease, h.ctx as any);
+		expect(target?.expected.key).toBe("call:0");
+		expect(target?.artifact.passId).toBe("first");
+		expect(target?.descriptor).toMatchObject({ scope: "first scope", context: "first context", toolPolicy: "configured" });
+		expect(h.coordinator.claimFreshRecoveryTarget(lease, h.ctx as any)).toBeUndefined();
+	});
+
 	test("expires the total budget, aborts work, and preserves artifacts until partial synthesis consumes them", async () => {
 		const h = harness();
 		let deadlineCallbacks = 0;

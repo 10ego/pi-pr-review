@@ -601,6 +601,52 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("canonically recovers a failed standalone fresh lane with its frozen scope and context", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-single-recovery-"));
+		const child = path.join(root, "child.mjs");
+		const marker = path.join(root, "attempted");
+		const complete = [
+			"- title: [P2] Recovered standalone lane", "- severity: P2", "- why: The retry retained its canonical standalone scope.",
+			"- location: file.ts:1-1", "- side: RIGHT", "- in_diff: yes", "- pr_related: yes", "- confidence: 0.9",
+		].join("\n");
+		writeFileSync(child, `
+			import fs from "node:fs";
+			let input = "";
+			process.stdin.on("data", chunk => input += chunk);
+			process.stdin.on("end", () => {
+				if (!fs.existsSync(${JSON.stringify(marker)})) {
+					fs.writeFileSync(${JSON.stringify(marker)}, input);
+					process.exit(1);
+				}
+				if (!input.includes("Host-fixed recovery scope: original standalone scope") || !input.includes("original standalone context")) process.exit(2);
+				process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(complete)} }] } }));
+			});
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const failed = await h.tools.get("review_subagent").execute(
+				"single-primary", { tier: "heavy", objective: "original standalone scope", context: "original standalone context", tool_policy: "configured" }, undefined, undefined, h.ctx,
+			);
+			expect(failed.isError).toBeTrue();
+			const recovered = await h.tools.get("review_subagent").execute(
+				"single-recovery", { tier: "light", objective: "caller redirect", context_file: "missing.diff", tool_policy: "none" }, undefined, undefined, h.ctx,
+			);
+			expect(recovered.isError).toBeUndefined();
+			const artifacts = h.coordinator.artifactSnapshot(h.ctx)!;
+			expect(artifacts).toHaveLength(1);
+			expect(artifacts[0]).toMatchObject({ key: "single-primary:single", lifecycle: "complete", tier: "heavy" });
+			expect(artifacts[0]?.attempts).toHaveLength(2);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("public batch path accepts nonempty framing output under passes[].expected_output", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-public-nonempty-"));
 		const child = path.join(root, "child.mjs");
@@ -888,7 +934,7 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
 			const recovery = await h.tools.get("review_subagent").execute(
-				"batch-recovery", { tier: "heavy", objective: "recover timed-out scope" }, undefined, undefined, h.ctx,
+				"batch-recovery", { tier: "light", objective: "recover timed-out scope", context: "caller replacement context", context_file: "missing.diff", tool_policy: "none" }, undefined, undefined, h.ctx,
 			);
 			expect(recovery.isError).toBeUndefined();
 			expect(recovery.details.status).toBe("complete");
@@ -898,13 +944,19 @@ describe("review tool execution gate", () => {
 				"duplicate-recovery", { tier: "heavy", objective: "run another recovery" }, undefined, undefined, h.ctx,
 			);
 			expect(duplicateRecovery).toMatchObject({ isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } });
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete", "complete"]);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
+			const recoveredArtifacts = h.coordinator.artifactSnapshot(h.ctx)!;
+			expect(recoveredArtifacts.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "complete", "complete"]);
+			expect(recoveredArtifacts[1]).toMatchObject({ passId: "correctness-contracts", requestedPassOrdinal: 1, fallbackUsed: false });
+			expect(recoveredArtifacts[1]?.attempts).toHaveLength(2);
+			expect(recoveredArtifacts[1]?.attempts[0]).toMatchObject({
+				ordinal: 1,
+				lifecycle: "timed_out",
 				configuredDeadlineMs: 2_000,
 				budgetElapsedBeforeAttemptMs: expect.any(Number),
 				batchRemainingBeforeAttemptMs: expect.any(Number),
 				totalRemainingBeforeAttemptMs: expect.any(Number),
 			});
+			expect(recoveredArtifacts[1]?.attempts[1]).toMatchObject({ ordinal: 2, lifecycle: "complete" });
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });
