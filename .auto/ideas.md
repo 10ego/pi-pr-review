@@ -75,3 +75,8 @@
 - Plain `/pr-review N` now requests host-owned automatic preparation; `same_head`/ancestor state selects cumulative review and `none`/`diverged`/preparation failure selects fresh. `--fresh` and `--incremental` are explicit mutually exclusive overrides.
 - Review lanes are unavailable until selection settles. Missing preparation receives the same one-shot authenticated continuation and cannot silently become a fresh run; preparation failure atomically clears cumulative state before authorizing fresh.
 - Do not release automatic defaulting until the dedicated selector campaign in `docs/automatic-selection-experiment-v1.md` passes without reruns.
+
+## 2026-09-12 automatic selector V7 follow-up
+
+- V7 achieved post-hardening absolute completion (12/12 automatic runs, 48/48 required lanes, no fallback), but no lane timed out, so targeted recovery was not exercised by the campaign; deterministic subprocess tests cover it. Automatic defaulting remains deferred because median paired automatic latency was +9.626s instead of non-positive.
+- Before another immutable campaign, isolate deterministic automatic-path overhead or reduce redundant orchestration without weakening cumulative coverage; do not rerun V7 or rely on additional stochastic sampling of the same candidate.

@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "44cdb10b94ebd258fdea9714",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "508908b07f6967c71eb0ae58",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "cbcba0fbb5460ab3f42e8548",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and continues to bypass tenant ownership checks."
+    },
+    {
+      "planEntryId": "f997eb7ae11881922fa40ac3",
+      "strategy": "auto",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The anchored canonical finding states that removing authenticated tenantId from the query permits retrieval of another tenant’s document by documentId."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected: all 12 automatic runs and all 48 required automatic lanes completed with exact selection and no fallback, but median paired automatic latency delta was +9.626 seconds rather than non-positive."
+}
