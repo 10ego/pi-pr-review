@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "policy": "Visible equivalent defect coverage only; raw rows and scorer remain unchanged.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "097bfbd6779c0005903681d9",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "1300bcec4d5f01ecbb3ae805",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "4e0db2be35bfec6e85df4be0",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "53237cdbb08667771b1ac30d",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "5515fdf305fd8dd00f6515de",
+      "strategy": "incremental",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "597a9eb87332ff6b9e689001",
+      "strategy": "incremental",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "6d829f4cbf57947fa9b2eb38",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "797298f3ab9c9e2cc9c39ff2",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "8943de08fc5c21f197b45996",
+      "strategy": "auto",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "976b306437c8e2d89961a518",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The retained terminal Markdown visibly reports the anchored P1 shell command-injection defect before invalid lifecycle binding fails the row."
+    },
+    {
+      "planEntryId": "9c78af25b41fe6d306cf9602",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "a266b76dbc724dea00d12f15",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "ad2ddf449f3ca9c2b3bf88f8",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.listener-cleanup",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    },
+    {
+      "planEntryId": "ea80959060b25647f580996f",
+      "strategy": "auto",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Rejected: one corresponding explicit fresh row lost host authority before finalization, leaving only 11/12 operational pairs despite 12/12 operational automatic rows."
+}
