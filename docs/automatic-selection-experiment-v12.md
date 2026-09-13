@@ -1,6 +1,6 @@
 # Automatic fresh versus incremental selection v12
 
-Status: **prospectively frozen; collection not yet started**.
+Status: **complete; precommitted automatic-defaulting gates passed**.
 
 V12 is the release-gate campaign for post-deadline artifact retention at candidate `5ea22b4521e90a927b9e4ba27255e6a38d40744a`. It also retains V11's host-only parent GitHub API access and bounded cumulative prompt-policy retry hardening. It uses `openai-codex/gpt-5.6-sol` at medium effort. Its 36 rows must be collected exactly once in stored plan order, retaining failures without reruns, substitutions, skips, or rewriting.
 
@@ -26,3 +26,9 @@ Automatic defaulting is authorized only if all of these gates pass:
 - automatic p95 does not regress against corresponding explicit p95.
 
 Selector latency uses within-pair deltas. Prompt-policy recovery may occur only once inside the original cumulative lane, only when the bounded fallback budget preserves useful runtime and teardown reserves, and must retain ordered attempt history. After any host deadline, later tools must be blocked without clearing retained invocation artifacts so deterministic host completion remains possible. Any invalid GitHub audit, hard collector timeout, incomplete lane, missing pair, unsafe fallback, or rewritten row fails the campaign closed.
+
+## Result
+
+All 36 rows were collected exactly once in stored order. Automatic selection was exact 12/12, automatic statuses were exact 8/8, all 156 lanes completed, all 12 pairs were operational, and no strategy used fallback. Adjudicated defect presence and exact source-authored severity were 8/8 for fresh, incremental, and automatic. Duplication was zero. Automatic and corresponding fresh each produced one clean-control finding in the same repetition, so automatic had no false-positive count-rate regression.
+
+The paired automatic-minus-corresponding-explicit median was −5.686 seconds (−7.0%). Automatic p95 was 232.817 seconds versus 350.962 seconds for corresponding explicit rows. The precommitted operational, quality, duplication, fallback, and latency gates pass. Immutable sanitized evidence is retained under `tests/benchmarks/review-semantic/automatic-selector-v12/`.
