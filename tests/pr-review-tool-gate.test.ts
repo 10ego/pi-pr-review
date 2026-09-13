@@ -1006,14 +1006,15 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0].budgetElapsedBeforeAttemptMs).toBeGreaterThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].batchRemainingBeforeAttemptMs).toBeGreaterThan(0);
 			expect(result.details.results[1].attempts[0].totalRemainingBeforeAttemptMs).toBeGreaterThan(0);
-			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500);
+			// Monotonic timestamp subtraction may retain sub-nanosecond IEEE-754 noise.
+			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500 + 1e-6);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
 			const recovery = await h.tools.get("review_subagent").execute(
 				"batch-recovery", { tier: "light", objective: "recover timed-out scope", context: "caller replacement context", context_file: "missing.diff", tool_policy: "none" }, undefined, undefined, h.ctx,
 			);
 			expect(recovery.isError).toBeUndefined();
 			expect(recovery.details.status).toBe("complete");
-			expect(recovery.details.attempts[0].deadlineMs).toBeLessThanOrEqual(300);
+			expect(recovery.details.attempts[0].deadlineMs).toBeLessThanOrEqual(300 + 1e-6);
 			expect(recovery.details.attempts[0].deadlineMs).toBeGreaterThan(0);
 			const duplicateRecovery = await h.tools.get("review_subagent").execute(
 				"duplicate-recovery", { tier: "heavy", objective: "run another recovery" }, undefined, undefined, h.ctx,
