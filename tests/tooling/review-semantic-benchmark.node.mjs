@@ -5,12 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
+import { AUTOMATIC_LATENCY_POLICY, completedReviewTextBound, createPlan, expectedModeTopology, loadCorpus, resolvedTierModelIdentities, SCORER_SHA256, scoreBundle, scoreRun, validatePlan } from "./review-semantic-benchmark.mjs";
 import { collectSessionResult, createIncrementalFixtureRepository, installGhShim, materializeOldFiles, spawnPi } from "./review-semantic-collect.mjs";
 import { sanitizeBundle } from "./review-semantic-sanitize-evidence.mjs";
 
 const CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v6.json");
 const INCREMENTAL_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v7.json");
+const CUMULATIVE_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-v8.json");
+const SELECTOR_CORPUS = path.resolve("tests/benchmarks/review-semantic/corpus-selector-v2.json");
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
 
@@ -32,17 +34,20 @@ function createBundle({ corpus = CORPUS, modes = ["balanced", "full"], strategie
 	const cases = new Map(corpusInfo.corpus.cases.map((item) => [item.id, item]));
 	const runs = [];
 	for (const entry of plan.entries) {
-		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item, { strategy: entry.strategy }), strategyRun = entry.strategy !== undefined, incremental = entry.strategy === "incremental";
+		const item = cases.get(entry.caseId), topology = expectedModeTopology(entry.mode, item, { strategy: entry.strategy }), strategyRun = entry.strategy !== undefined, cumulative = entry.strategy === "incremental" || entry.strategy === "auto";
 		const run = {
-			schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: incremental ? item.priorState.relationship : null, priorStatuses: incremental ? item.priorState.expectedStatuses.map(({ title, status }) => ({ title, status })) : [], mergeApprovalEligible: incremental && item.priorState.relationship === "same_head" ? false : true } } : {}), repetition: entry.repetition,
+			schemaVersion: strategyRun ? 2 : 1, planEntryId: entry.entryId, caseId: entry.caseId, mode: entry.mode, ...(strategyRun ? { strategy: entry.strategy, reviewOutcome: { observedRelationship: cumulative ? item.priorState.relationship : null, priorStatuses: cumulative ? item.priorState.expectedStatuses.map(({ title, status }) => ({ title, status })) : [], mergeApprovalEligible: cumulative && item.priorState.relationship === "same_head" ? false : true } } : {}), repetition: entry.repetition,
 			startedAtUtc: "2026-08-28T00:00:00.000Z", elapsedMs: 100 + runs.length,
 			timing: { parentValidationSynthesisMs: 15 },
 			configuration: { provider: "fixture", model: "fixture-reviewer", thinking: "high", toolPolicy: "configured", reviewVersion: "1.15.16", topologyGeneration: "fixed-v1", piVersion: "0.84.3", piSha256: "1".repeat(64), piRuntimeSha256: "7".repeat(64), nodeVersion: "v24.0.0", nodeSha256: "8".repeat(64), collectorRuntimeVersion: "1.3.0", collectorRuntimeSha256: "9".repeat(64), reviewConfigSha256, extensionSha256: "3".repeat(64), promptSha256: "4".repeat(64), collectorSha256: "5".repeat(64), topology: { passIds: topology.passIds, shardCount: topology.shardCount, maxParallel: topology.maxParallel } },
 			lanes: topology.passIds.map((id) => ({ id, lens: id.replace(/-shard-[123]$/, ""), status: "complete", elapsedMs: 80, provider: "fixture", model: "fixture-reviewer" })),
-			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map(findingFor), artifacts: [],
+			publication: { artifact: "canonical", fallback: false }, findings: item.expectedFindings.map((expected) => {
+				const finding = findingFor(expected), prior = cumulative ? item.priorState.expectedStatuses.find((status) => status.status === "still open" && status.currentFindingId === expected.id) : undefined;
+				return prior ? { ...finding, title: `[${expected.targetSeverity}] ${prior.title}` } : finding;
+			}), artifacts: [],
 		};
 		mutateRun?.(run, item, runs.length, root);
-		const priorMarkdown = strategyRun && incremental && run.reviewOutcome.priorStatuses.length > 0 ? `## Prior findings\n${run.reviewOutcome.priorStatuses.map((status) => `- ${status.status} — ${status.title}`).join("\n")}\n\n` : "", defaultMarkdown = `${priorMarkdown}${run.findings.map((finding) => `${finding.title}\n${finding.body}`).join("\n") || "No findings."}`, markdown = markdownForRun?.(run, item, defaultMarkdown) ?? defaultMarkdown, rawLaneArtifacts = run.lanes.filter((lane) => lane.status !== "failed").map((lane) => ({ passId: lane.id, lifecycle: lane.status, requestedModel: lane.provider && lane.model ? `${lane.provider}/${lane.model}` : undefined, observedModel: lane.model ?? undefined, startOffsetMs: 0, endOffsetMs: lane.elapsedMs ?? 0, attempts: [] })), telemetry = { completion: "terminal_response", totalWallMs: run.elapsedMs, phases: { aggregateOrchestration: { elapsedMs: run.timing.parentValidationSynthesisMs } } }, hostFindings = run.findings.map((finding) => ({ title: finding.title, body: finding.body, severity: finding.severity, code_location: finding.location ? { absolute_file_path: finding.location.path, side: finding.location.side, line_range: { start: finding.location.start, end: finding.location.end } } : null })), completed = { review: { findings: hostFindings }, rawText: markdown, laneArtifacts: rawLaneArtifacts, synthesisQuality: run.publication.artifact === "canonical" ? "fully_parsed" : run.publication.artifact === "raw_body_only" ? "raw" : "partially_parsed", completeness: run.lanes.every((lane) => lane.status === "complete") ? "complete" : "incomplete", ...(strategyRun ? { mergeApprovalEligible: run.reviewOutcome.mergeApprovalEligible } : {}) }, records = [{ type: "session", version: 3, id: entry.entryId, timestamp: run.startedAtUtc, cwd: "/fixture" }, { type: "model_change", provider: run.configuration.provider, modelId: run.configuration.model }, { type: "thinking_level_change", thinkingLevel: run.configuration.thinking }, ...(incremental ? [{ type: "message", message: { role: "toolResult", toolName: "pr_review_prior", content: [{ type: "text", text: JSON.stringify({ relationship: item.priorState.relationship }) }] } }] : []), { type: "message", message: { role: "assistant", content: [{ type: "text", text: markdown }], stopReason: "stop" } }, { type: "custom", customType: "pr-review-completed", data: completed }, { type: "custom", customType: "pr-review-telemetry", data: telemetry }], sessionBytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+		const priorMarkdown = strategyRun && cumulative && run.reviewOutcome.priorStatuses.length > 0 ? `## Prior findings\n${run.reviewOutcome.priorStatuses.map((status) => `- ${status.status} — ${status.title}`).join("\n")}\n\n` : "", defaultMarkdown = `${priorMarkdown}${run.findings.map((finding) => `${finding.title}\n${finding.body}`).join("\n") || "No findings."}`, markdown = markdownForRun?.(run, item, defaultMarkdown) ?? defaultMarkdown, rawLaneArtifacts = run.lanes.filter((lane) => lane.status !== "failed").map((lane) => ({ passId: lane.id, lifecycle: lane.status, requestedModel: lane.provider && lane.model ? `${lane.provider}/${lane.model}` : undefined, observedModel: lane.model ?? undefined, startOffsetMs: 0, endOffsetMs: lane.elapsedMs ?? 0, attempts: [] })), telemetry = { completion: "terminal_response", totalWallMs: run.elapsedMs, phases: { aggregateOrchestration: { elapsedMs: run.timing.parentValidationSynthesisMs } } }, hostFindings = run.findings.map((finding) => ({ title: finding.title, body: finding.body, severity: finding.severity, code_location: finding.location ? { absolute_file_path: finding.location.path, side: finding.location.side, line_range: { start: finding.location.start, end: finding.location.end } } : null })), completed = { review: { findings: hostFindings }, rawText: markdown, laneArtifacts: rawLaneArtifacts, synthesisQuality: run.publication.artifact === "canonical" ? "fully_parsed" : run.publication.artifact === "raw_body_only" ? "raw" : "partially_parsed", completeness: run.lanes.every((lane) => lane.status === "complete") ? "complete" : "incomplete", ...(strategyRun ? { mergeApprovalEligible: run.reviewOutcome.mergeApprovalEligible } : {}) }, records = [{ type: "session", version: 3, id: entry.entryId, timestamp: run.startedAtUtc, cwd: "/fixture" }, { type: "model_change", provider: run.configuration.provider, modelId: run.configuration.model }, { type: "thinking_level_change", thinkingLevel: run.configuration.thinking }, ...(cumulative ? [{ type: "message", message: { role: "toolResult", toolName: entry.strategy === "auto" ? "pr_review_prepare" : "pr_review_prior", content: [{ type: "text", text: JSON.stringify({ relationship: item.priorState.relationship }) }] } }] : []), ...(entry.strategy === "auto" ? [{ type: "custom", customType: "pr-review-selection", data: { schemaVersion: 1, generation: 1, requested: "auto", selected: item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental" ? "incremental" : "fresh", reason: item.priorState.relationship } }] : []), { type: "message", message: { role: "assistant", content: [{ type: "text", text: markdown }], stopReason: "stop" } }, { type: "custom", customType: "pr-review-completed", data: completed }, { type: "custom", customType: "pr-review-telemetry", data: telemetry }], sessionBytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
 		run.artifacts = [
 			artifact(root, entry.entryId, "lane-artifacts", { schemaVersion: 1, planEntryId: entry.entryId, lanes: run.lanes, raw: { laneArtifacts: rawLaneArtifacts, telemetry, resolvedReview: completed.review, ghAudit: [{ allowed: true, write: false }], auditValid: true, process: { stdout: "fixture output", stderr: "", exitCode: 0, signal: null, error: null, elapsedMs: run.elapsedMs }, session: { sha256: sha256(sessionBytes), bytes: sessionBytes.length, recordCount: records.length, contentBase64: sessionBytes.toString("base64") } } }),
 			artifact(root, entry.entryId, "canonical-review", strategyRun ? { schemaVersion: 2, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown, rawMarkdown: markdown } : { schemaVersion: 1, planEntryId: entry.entryId, publication: run.publication, findings: run.findings, markdown }),
@@ -88,6 +93,7 @@ test("incremental corpus v7 pins six executable relationship scenarios", () => {
 	const info = loadCorpus(INCREMENTAL_CORPUS); assert.equal(info.corpus.schemaVersion, 2); assert.equal(info.corpus.cases.length, 6); assert.deepEqual(info.corpus.cases.map((item) => item.priorState.relationship), ["incremental", "incremental", "incremental", "same_head", "none", "diverged"]); assert.equal(info.corpus.cases.filter((item) => item.cleanControl).length, 2); assert.ok(info.corpus.cases.some((item) => item.crossFile));
 	for (const item of info.corpus.cases) { const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-v7-materialize-")), fixture = createIncrementalFixtureRepository(info, item, root); assert.equal(fs.existsSync(path.join(fixture.repo, ".git")), true); if (item.priorState.relationship === "incremental") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 0); if (item.priorState.relationship === "same_head") assert.equal(fixture.priorHeadSha, fixture.headSha); if (item.priorState.relationship === "none") assert.equal(fixture.priorHeadSha, null); if (item.priorState.relationship === "diverged") assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", fixture.priorHeadSha, fixture.headSha], { cwd: fixture.repo }).status, 1); fs.rmSync(root, { recursive: true, force: true }); }
 	const plan = createPlan(info, ["balanced"], 2, ["fresh", "incremental"]); assert.equal(plan.entries.length, 24); assert.deepEqual(validatePlan(plan, info), plan);
+	const autoPlan = createPlan(info, ["balanced"], 1, ["auto"]); assert.equal(autoPlan.entries.length, 6); assert.deepEqual(validatePlan(autoPlan, info), autoPlan);
 });
 
 test("plan is deterministic and spans the same corpus for every mode and repetition", () => {
@@ -110,6 +116,13 @@ test("schema-v1 planning remains byte-compatible while schema-v2 interleaves rev
 	const wrongCorpusVersion = { ...v2Info, corpus: { ...v2Info.corpus, schemaVersion: 1 } }; assert.throws(() => validatePlan(plan, wrongCorpusVersion), /plan identity/);
 });
 
+test("automatic strategy uses cumulative topology only for usable prior relationships", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	for (const item of info.corpus.cases) {
+		assert.deepEqual(expectedModeTopology("balanced", item, { strategy: "auto" }), expectedModeTopology("balanced", item, { strategy: "incremental" }));
+	}
+});
+
 test("large multi-file cases keep fixed reviewers while legacy evidence retains historical shards", () => {
 	const info = loadCorpus(CORPUS), item = info.corpus.cases.find((candidate) => candidate.id === "sharded-registry-contract");
 	const quick = expectedModeTopology("quick", item), majorOnly = expectedModeTopology("major-only", item), balanced = expectedModeTopology("balanced", item), full = expectedModeTopology("full", item), deep = expectedModeTopology("deep", item);
@@ -121,6 +134,40 @@ test("large multi-file cases keep fixed reviewers while legacy evidence retains 
 	assert.deepEqual(deep, { passIds: ["deep-review"], shardCount: 1, maxParallel: 1 });
 	const legacy = expectedModeTopology("balanced", item, { legacySharding: true });
 	assert.equal(legacy.shardCount, 2); assert.equal(legacy.passIds.length, 10); assert.equal(legacy.maxParallel, 10);
+});
+
+test("cumulative schema-v2 cases bind replies and require gap plus mode-specific delta lanes", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	const ancestor = info.corpus.cases.find((item) => item.id === "fixed-claim-false");
+	const sameHead = info.corpus.cases.find((item) => item.id === "malicious-same-head");
+	assert.deepEqual(expectedModeTopology("balanced", ancestor, { strategy: "incremental" }), {
+		passIds: ["incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance"],
+		shardCount: 1,
+		maxParallel: 4,
+	});
+	assert.deepEqual(expectedModeTopology("full", ancestor, { strategy: "incremental" }).passIds, [
+		"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
+	]);
+	assert.deepEqual(expectedModeTopology("deep", ancestor, { strategy: "incremental" }).passIds, ["incremental-gap", "incremental-deep"]);
+	assert.deepEqual(expectedModeTopology("balanced", sameHead, { strategy: "incremental" }), {
+		passIds: ["incremental-gap", "incremental-security-performance"], shardCount: 1, maxParallel: 2,
+	});
+	assert.deepEqual(expectedModeTopology("deep", sameHead, { strategy: "incremental" }), {
+		passIds: ["incremental-gap"], shardCount: 1, maxParallel: 1,
+	});
+	assert.equal(ancestor.priorState.review.comments[0].replies.length, 1);
+});
+
+test("cumulative fixtures reproduce every pinned final tree, including added files", () => {
+	const info = loadCorpus(CUMULATIVE_CORPUS);
+	for (const item of info.corpus.cases) {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-review-cumulative-"));
+		try {
+			const fixture = createIncrementalFixtureRepository(info, item, root);
+			assert.ok(fixture.headSha);
+			if (item.id === "missed-old-and-new") assert.equal(fs.readFileSync(path.join(fixture.repo, "src/token.ts"), "utf8").includes("audit"), true);
+		} finally { fs.rmSync(root, { recursive: true, force: true }); }
+	}
 });
 
 test("perfect immutable result bundle emits recall, lifecycle, fallback, and latency metrics", () => {
@@ -135,8 +182,30 @@ test("perfect immutable result bundle emits recall, lifecycle, fallback, and lat
 
 test("schema-v2 bundles score relationship, status, carry-forward, approval, and lane savings", () => {
 	const bundle = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental"] }), report = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }), fresh = report.metrics.strategies.fresh, incremental = report.metrics.strategies.incremental;
-	assert.equal(report.schemaVersion, 2); assert.equal(report.resultCount, 12); assert.equal(incremental.priorReview.relationships.recall, 1, "relationships"); assert.equal(incremental.priorReview.statuses.recall, 1, "statuses"); assert.equal(incremental.priorReview.stillOpenCarryForward.recall, 1, "carry-forward"); assert.equal(incremental.priorReview.resolvedObsoleteRepublished, 0); assert.equal(incremental.priorReview.sameHeadRuns, 1); assert.equal(incremental.priorReview.sameHeadApprovalEligible, 0); assert.equal(fresh.lanes.total, 30); assert.equal(incremental.lanes.total, 25); assert.equal(report.metrics.runs.filter((run) => run.strategy === "incremental").length, 6);
+	assert.equal(report.schemaVersion, 2); assert.equal(report.resultCount, 12); assert.equal(report.metrics.paired.plannedPairs, 6); assert.equal(report.metrics.paired.completePairs, 6); assert.equal(report.metrics.paired.incompletePairs.length, 0); assert.equal(report.metrics.paired.operationalCompletion.fresh.recall, 1); assert.equal(report.metrics.paired.operationalCompletion.incremental.recall, 1); assert.equal(report.metrics.paired.quality.p0p1RecallDelta, 0); assert.ok(report.metrics.paired.latencyMs.incrementalToFreshRatio > 0); assert.equal(incremental.priorReview.relationships.recall, 1, "relationships"); assert.equal(incremental.priorReview.statuses.recall, 1, "statuses"); assert.equal(incremental.priorReview.stillOpenCarryForward.recall, 1, "carry-forward"); assert.equal(incremental.priorReview.resolvedObsoleteRepublished, 0); assert.equal(incremental.priorReview.sameHeadRuns, 1); assert.equal(incremental.priorReview.sameHeadApprovalEligible, 0); assert.equal(fresh.lanes.total, 30); assert.equal(incremental.lanes.total, 25); assert.equal(report.metrics.runs.filter((run) => run.strategy === "incremental").length, 6);
 	const tampered = createBundle({ corpus: INCREMENTAL_CORPUS, modes: ["balanced"], strategies: ["incremental"] }), file = path.join(tampered.root, "runs", `${tampered.plan.entries[0].entryId}.json`), run = JSON.parse(fs.readFileSync(file)); run.reviewOutcome.observedRelationship = "diverged"; fs.writeFileSync(file, `${JSON.stringify(run, null, 2)}\n`); assert.throws(() => scoreBundle({ corpusInfo: tampered.corpusInfo, plan: tampered.plan, resultsDirectory: tampered.root }), /retained prior-review outcome binding/);
+});
+
+test("automatic selector latency uses paired deltas against each selected explicit strategy", () => {
+	const info = loadCorpus(SELECTOR_CORPUS), cases = new Map(info.corpus.cases.map((item, index) => [item.id, index]));
+	const corresponding = [100, 200, 300, 1_000, 1_100, 1_200], deltas = [1_000, 1_000, -50, -50, -50, -50];
+	const bundle = createBundle({ corpus: SELECTOR_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental", "auto"], mutateRun(run, item) {
+		const index = cases.get(item.id), selected = item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental" ? "incremental" : "fresh";
+		run.elapsedMs = run.strategy === "auto" ? corresponding[index] + deltas[index] : run.strategy === selected ? corresponding[index] : 5_000;
+	} });
+	const latency = scoreBundle({ corpusInfo: bundle.corpusInfo, plan: bundle.plan, resultsDirectory: bundle.root }).metrics.automaticSelection;
+	assert.equal(latency.plannedPairs, 6); assert.equal(latency.completePairs, 6); assert.deepEqual(latency.incompletePairs, []);
+	assert.equal(latency.latencyMs.autoP50, 1_050); assert.equal(latency.latencyMs.correspondingExplicitP50, 300);
+	assert.equal(latency.latencyMs.autoP95, 1_200); assert.equal(latency.latencyMs.correspondingExplicitP95, 1_200);
+	assert.equal(latency.latencyMs.pairedDeltaP50, -50); assert.equal(latency.latencyMs.pairedDeltaRatio, -1 / 6); assert.equal(latency.latencyMs.autoFasterOrEqualPairs, 4);
+	assert.deepEqual(latency.latencyMs.policy, { ...AUTOMATIC_LATENCY_POLICY, passed: true });
+
+	const overBudget = createBundle({ corpus: SELECTOR_CORPUS, modes: ["balanced"], strategies: ["fresh", "incremental", "auto"], mutateRun(run, item) {
+		const selected = item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental" ? "incremental" : "fresh";
+		run.elapsedMs = run.strategy === "auto" ? 115_001 : run.strategy === selected ? 100_000 : 5_000;
+	} });
+	const rejected = scoreBundle({ corpusInfo: overBudget.corpusInfo, plan: overBudget.plan, resultsDirectory: overBudget.root }).metrics.automaticSelection.latencyMs;
+	assert.equal(rejected.pairedDeltaP50, 15_001); assert.equal(rejected.pairedDeltaRatio, 0.15001); assert.equal(rejected.policy.passed, false);
 });
 
 test("accepted explicit baseline gates pass a perfect bundle", () => {
@@ -367,6 +436,17 @@ test("incremental fixtures materialize exact ancestor, same-head, and diverged h
 	const diverged = materialize("diverged"); assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", diverged.priorHeadSha, diverged.headSha], { cwd: diverged.repo }).status, 1); assert.equal(diverged.compareOutput, "");
 });
 
+test("host-finalized lifecycle binding accepts only exact direct JSON", () => {
+	const review = { findings: [], verdict: "approve" }, data = { rawText: JSON.stringify(review), review, candidateDispositionRecorded: true };
+	assert.equal(completedReviewTextBound(data, "Host finalization completed."), true);
+	assert.equal(completedReviewTextBound({ ...data, candidateDispositionRecorded: false }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ ...data, rawText: JSON.stringify({ ...review, verdict: "request_changes" }) }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ ...data, rawText: "not JSON" }, "Host finalization completed."), false);
+	assert.equal(completedReviewTextBound({ rawText: "normalized", publicationBody: "published" }, "published"), true);
+	assert.equal(completedReviewTextBound({ rawText: "normalized", publicationBody: "published" }, "different"), false);
+	assert.equal(completedReviewTextBound({ rawText: "same" }, "same"), true);
+});
+
 test("session collection maps host lanes, telemetry, findings, and failure fallback", async () => {
 	const info = loadCorpus(CORPUS), plan = createPlan(info, ["balanced"], 1), entry = plan.entries[0], item = info.corpus.cases.find((candidate) => candidate.id === entry.caseId), passIds = ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], laneArtifacts = passIds.map((passId) => ({ passId, lifecycle: "complete", requestedModel: "fixture/lane", observedModel: "lane", startOffsetMs: 1, endOffsetMs: 11, attempts: [] })), review = { findings: [{ title: "[P2] Finding", body: "Concrete issue.", severity: "P2", code_location: { absolute_file_path: item.changedFiles[0], side: "RIGHT", line_range: { start: 1, end: 1 } } }] }, records = [
 		{ type: "custom", customType: "pr-review-completed", data: { review, rawText: "# PR Review", laneArtifacts, synthesisQuality: "fully_parsed", completeness: "complete" } },
@@ -380,6 +460,7 @@ test("session collection maps host lanes, telemetry, findings, and failure fallb
 	const partialRecords = structuredClone(records); partialRecords[0].data.laneArtifacts[0].lifecycle = "partial"; partialRecords[0].data.synthesisQuality = "partially_parsed"; partialRecords[0].data.completeness = "incomplete"; const partial = await collectSessionResult({ records: partialRecords, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review }); assert.equal(partial.run.publication.artifact, "degraded"); assert.equal(partial.run.lanes[0].status, "partial"); assert.equal(partial.operationallyValid, true);
 	const missingCompleteness = structuredClone(records); missingCompleteness[0].data.laneArtifacts[0].lifecycle = "timed_out"; delete missingCompleteness[0].data.completeness; const incomplete = await collectSessionResult({ records: missingCompleteness, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review }); assert.equal(incomplete.run.publication.artifact, "degraded"); assert.equal(incomplete.run.lanes[0].status, "timed_out");
 	const mismatchedAssistant = structuredClone(records); mismatchedAssistant[2].message.content[0].text = "Unrelated response."; const mismatched = await collectSessionResult({ records: mismatchedAssistant, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review }); assert.equal(mismatched.operationallyValid, false); assert.ok(mismatched.run.lanes.every((lane) => lane.status === "failed")); assert.equal(mismatched.laneRaw.process.error, "invalid host-authored Pi session lifecycle");
+	const finalizedRecords = structuredClone(records); finalizedRecords[0].data.rawText = JSON.stringify(review); finalizedRecords[0].data.candidateDispositionRecorded = true; finalizedRecords[2].message.content[0].text = "Host finalization completed."; const finalized = await collectSessionResult({ records: finalizedRecords, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => { throw new Error("host-finalized lifecycle must not use the Markdown parser"); } }); assert.equal(finalized.operationallyValid, true); assert.ok(finalized.run.lanes.every((lane) => lane.status === "complete")); assert.equal(finalized.run.publication.artifact, "canonical");
 	const malformedTelemetry = structuredClone(records); delete malformedTelemetry[1].data.totalWallMs; const poisoned = await collectSessionResult({ records: malformedTelemetry, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review }); assert.equal(poisoned.operationallyValid, false); assert.ok(poisoned.run.lanes.every((lane) => lane.status === "failed")); assert.equal(poisoned.laneRaw.telemetry, null); assert.equal(poisoned.laneRaw.process.error, "invalid host-authored Pi session lifecycle");
 	const contradictoryTiming = structuredClone(records); contradictoryTiming[1].data.totalWallMs = 10; contradictoryTiming[1].data.phases.aggregateOrchestration.elapsedMs = 20; const contradictory = await collectSessionResult({ records: contradictoryTiming, entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "", ghAudit: [{ allowed: true, write: false }], parseReview: () => review }); assert.equal(contradictory.operationallyValid, false); assert.ok(contradictory.run.lanes.every((lane) => lane.status === "failed"));
 	const failed = await collectSessionResult({ records: [], entry, item, mode: "balanced", elapsedMs: 120, startedAtUtc: "2026-08-28T00:00:00Z", stdout: "", stderr: "provider failed", ghAudit: [{ allowed: true, write: false }], parseReview: () => undefined });

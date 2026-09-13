@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -69,15 +69,19 @@ mock.module("typebox", () => {
 	};
 });
 
-const registerPrReviewSubagents = (await import("../extensions/pr-review-subagent.ts")).default;
+const prReviewSubagentModule = await import("../extensions/pr-review-subagent.ts");
+const registerPrReviewSubagents = prReviewSubagentModule.default;
+const { automaticStillOpenCarryForwards, cumulativeExpectedLanes, invalidStillOpenPriorTitles, matchesCanonicalStillOpen } = prReviewSubagentModule;
 const { ReviewLoopCoordinator } = await import("../lib/pr-review-loop.ts");
-const { parsePublishMode, resolveAutoPostSetting } = await import("../lib/pr-review-publish.ts");
+const { parsePublishMode, resolveAutoPostSetting, resolveReviewSelection } = await import("../lib/pr-review-publish.ts");
 const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+const { priorRevalidationRegistry } = await import("../lib/pr-review-prior.ts");
+const { reviewCandidateDispositionRegistry } = await import("../lib/pr-review-candidates.ts");
 
 function harness() {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
-	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior", "self_review_subagent"];
+	let activeTools = ["read", "review_subagent", "review_subagents", "pr_review_verify", "pr_review_prepare", "pr_review_prior", "pr_review_prior_status", "pr_review_candidate_disposition", "pr_review_incremental_gap", "self_review_subagent"];
 	const pi = {
 		registerTool: (definition: any) => tools.set(definition.name, definition),
 		registerCommand: (name: string, definition: any) => commands.set(name, definition.handler),
@@ -122,6 +126,56 @@ function balancedPasses() {
 }
 
 describe("review tool execution gate", () => {
+	test("requires exact canonical re-entry for every still-open prior finding", () => {
+		expect(invalidStillOpenPriorTitles([
+			{ status: "resolved", title: "Old resolved", severity: "P1" },
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P1] Restore tenant guard", severity: "P1" }])).toEqual([]);
+		expect(invalidStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P1] Restore tenant guard", severity: "P2" }])).toEqual(["Restore tenant guard"]);
+		expect(invalidStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P0] Restore tenant guard", severity: "P0" }])).toEqual([]);
+		expect(invalidStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P1] restore tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
+		expect(invalidStillOpenPriorTitles([
+			{ status: "still open", title: "Restore tenant guard", severity: "P1" },
+		], [{ title: "[P1] Restore   tenant guard", severity: "P1" }])).toEqual(["Restore tenant guard"]);
+	});
+
+	test("automatically carries forward omitted still-open findings without masking a supplied downgrade", () => {
+		const statuses = [{ findingId: "thread:1", status: "still open", title: "Restore tenant guard", severity: "P1", evidence: "The unconditional return remains at src/access.ts:2." }] as const;
+		expect(matchesCanonicalStillOpen(statuses, "[P0] Restore tenant guard")).toBeTrue();
+		expect(matchesCanonicalStillOpen(statuses, "[P1] restore tenant guard")).toBeFalse();
+		expect(automaticStillOpenCarryForwards(statuses, [])).toEqual([{
+			title: "[P1] Restore tenant guard",
+			severity: "P1",
+			blocking: true,
+			body: "This previously reported defect remains open after current-source revalidation. Evidence: The unconditional return remains at src/access.ts:2.",
+			confidence_score: 0.9,
+			code_location: null,
+		}]);
+		expect(automaticStillOpenCarryForwards(statuses, [], [{ findingId: "thread:1", path: "src/access.ts", line: 2, side: "RIGHT" }], true)[0]?.code_location).toEqual({ absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true });
+		expect(automaticStillOpenCarryForwards(statuses, [], [{ findingId: "thread:1", path: "../outside", line: 2, side: "RIGHT" }], true)[0]?.code_location).toBeNull();
+		expect(automaticStillOpenCarryForwards(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual([]);
+		expect(invalidStillOpenPriorTitles(statuses, [{ title: "[P2] Restore tenant guard", severity: "P2" }])).toEqual(["Restore tenant guard"]);
+	});
+
+	test("pre-registers the exact cumulative topology for each mode", () => {
+		expect(cumulativeExpectedLanes("same_head", "balanced").map((lane) => lane.key)).toEqual(["incremental-gap", "incremental-security-performance"]);
+		expect(cumulativeExpectedLanes("same_head", "deep").map((lane) => lane.key)).toEqual(["incremental-gap"]);
+		expect(cumulativeExpectedLanes("incremental", "balanced").map((lane) => lane.key)).toEqual([
+			"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance",
+		]);
+		expect(cumulativeExpectedLanes("incremental", "full").map((lane) => lane.key)).toEqual([
+			"incremental-gap", "incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions",
+		]);
+		expect(cumulativeExpectedLanes("incremental", "deep").map((lane) => lane.key)).toEqual(["incremental-gap", "incremental-deep"]);
+		expect(cumulativeExpectedLanes("incremental", "balanced", false).map((lane) => lane.key)).toEqual(["incremental-gap"]);
+		expect(cumulativeExpectedLanes("none", "balanced")).toEqual([]);
+	});
 	test("registers self-review with an empty closed schema and hides it while idle", () => {
 		const h = harness();
 		const tool = h.tools.get("self_review_subagent");
@@ -143,12 +197,50 @@ describe("review tool execution gate", () => {
 
 	test("all review tools fail before processing parameters outside /pr-review", async () => {
 		const h = harness();
-		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prior"]) {
+		for (const name of ["review_subagent", "review_subagents", "pr_review_verify", "pr_review_prepare", "pr_review_prior", "pr_review_prior_status", "pr_review_candidate_disposition", "pr_review_incremental_gap"]) {
 			const result = await h.tools.get(name).execute("call-1", {}, undefined, undefined, h.ctx);
 			expect(result.isError).toBeTrue();
 			expect(result.details).toEqual({ authorized: false });
 			expect(result.content[0].text).toContain("active user-initiated /pr-review loop");
 		}
+	});
+
+	test("automatic selection blocks every review lane until preparation settles", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			{ ...parsePublishMode("/pr-review 7 --quick --incremental"), reviewSelection: "auto" },
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const batch = await h.tools.get("review_subagents").execute("batch", {
+			passes: quickPasses(),
+			context: "metadata",
+			context_file: "/not-read-before-selection",
+		}, undefined, undefined, h.ctx);
+		expect(batch).toMatchObject({ isError: true, details: { reason: "preparation_required" } });
+		const single = await h.tools.get("review_subagent").execute("single", {
+			tier: "heavy",
+			objective: "review",
+			context: "metadata",
+			context_file: "/not-read-before-selection",
+		}, undefined, undefined, h.ctx);
+		expect(single).toMatchObject({ isError: true, details: { reason: "preparation_required" } });
+		expect(h.coordinator.setPriorRelationship(h.coordinator.acquire(h.ctx)!, "none", h.ctx)).toBeTrue();
+		const preBatchSingle = await h.tools.get("review_subagent").execute("single-before-batch", {
+			tier: "heavy",
+			objective: "review",
+			context: "metadata",
+			context_file: "/not-read-before-fixed-batch",
+		}, undefined, undefined, h.ctx);
+		expect(preBatchSingle).toMatchObject({ isError: true, details: { reason: "fresh_batch_required" } });
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx)).toEqual([]);
+		const settled = await h.tools.get("review_subagents").execute("batch-settled", {
+			passes: quickPasses(),
+			context: "metadata",
+			context_file: "/now-context-validation-runs",
+		}, undefined, undefined, h.ctx);
+		expect(settled.details.reason).not.toBe("preparation_required");
 	});
 
 	test("prior discovery requires the --incremental flag on the active invocation", async () => {
@@ -164,7 +256,20 @@ describe("review tool execution gate", () => {
 			isError: true,
 			details: { authorized: false, reason: "not_incremental" },
 		});
-		expect(result.content[0].text).toContain("requires the --incremental flag");
+		expect(result.content[0].text).toContain("requires a legacy incremental invocation");
+	});
+
+	test("automatic selection cannot bypass atomic preparation through the legacy prior tool", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			resolveReviewSelection(parsePublishMode("/pr-review 7")),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const result = await h.tools.get("pr_review_prior").execute("prior-auto", { pr_number: 7 }, undefined, undefined, h.ctx);
+		expect(result).toMatchObject({ isError: true, details: { authorized: false, reason: "preparation_required" } });
+		expect(h.coordinator.priorRelationship(h.ctx)).toBeUndefined();
 	});
 
 	test("prior discovery rejects a PR number that differs from the active invocation", async () => {
@@ -182,6 +287,292 @@ describe("review tool execution gate", () => {
 			details: { authorized: false, reason: "pr_mismatch" },
 		});
 		expect(mismatch.content[0].text).toContain("does not match the active /pr-review invocation");
+	});
+
+	test("structured prior statuses require complete registered finding coverage", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7 --incremental"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+		priorRevalidationRegistry.markFindings("session-1", lease.generation, [{ findingId: "thread:9", threadId: 9, inReplyToId: null, path: "src/a.ts", line: 2, side: "RIGHT", severity: "P1", title: "Canonical title" }]);
+		const tool = h.tools.get("pr_review_prior_status");
+		const incomplete = await tool.execute("status-1", { statuses: [] }, undefined, undefined, h.ctx);
+		expect(incomplete).toMatchObject({ isError: true, details: { authorized: true, reason: "invalid_statuses" } });
+		const accepted = await tool.execute("status-2", { statuses: [{ finding_id: "thread:9", status: "rejected", severity: "P1", evidence: "Verified invariant [P0]." }] }, undefined, undefined, h.ctx);
+		expect(accepted.isError).toBeUndefined();
+		expect(accepted.details.statuses).toEqual([{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "Verified invariant (P0)." }]);
+		const repeated = await tool.execute("status-3", { statuses: [{ finding_id: "thread:9", status: "resolved", severity: "P1", evidence: "overwrite" }] }, undefined, undefined, h.ctx);
+		expect(repeated).toMatchObject({ isError: true, details: { authorized: true, reason: "invalid_statuses" } });
+	});
+
+	test("structured candidate dispositions require exact one-shot coverage", async () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+		reviewCandidateDispositionRegistry.markCandidates("session-1", lease.generation, [
+			{ id: "incremental-gap:1", laneKey: "incremental-gap", finding: { title: "[P1] Canonical", severity: "P1", body: "impact", code_location: null } },
+			{ id: "incremental-contracts:1", laneKey: "incremental-contracts", finding: { title: "[P1] Duplicate", severity: "P1", body: "impact", code_location: null } },
+		]);
+		const tool = h.tools.get("pr_review_candidate_disposition");
+		const incomplete = await tool.execute("candidates-1", { overview: "Overview", verification: "Verified", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+		expect(incomplete).toMatchObject({ isError: true, details: { reason: "invalid_dispositions" } });
+		const accepted = await tool.execute("candidates-2", { overview: "Overview", verification: "Verified", decisions: [
+			{ candidate_id: "incremental-gap:1", disposition: "accepted" },
+			{ candidate_id: "incremental-contracts:1", disposition: "duplicate", duplicate_of: "incremental-gap:1" },
+		], added_findings: [{ title: "Parent issue", severity: "P2", body: "Validated parent-only issue.", confidence: 0.9, path: "src/b.ts", start_line: 3, end_line: 3, side: "RIGHT", commentable: true }] }, undefined, undefined, h.ctx);
+		expect(accepted.isError).toBeUndefined();
+		expect(accepted.details.finalization.decisions).toHaveLength(2);
+		expect(accepted.details.finalization.addedFindings[0].title).toBe("[P2] Parent issue");
+	});
+
+	test("fresh reviews finalize through the host with empty decisions after every lane settles", async () => {
+		const h = harness(); h.ctx.sessionManager.getSessionId = () => "fresh-finalization-session";
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "fresh:0", tier: "heavy", minorHygiene: false },
+		], h.ctx)).toBeTrue();
+		const tool = h.tools.get("pr_review_candidate_disposition");
+		const early = await tool.execute("fresh-early", { overview: "Behavior is unchanged.", verification: "Source inspected.", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+		expect(early).toMatchObject({ isError: true, details: { authorized: true, reason: "incomplete_lanes" } });
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx)!;
+		expect(publisher.retain({
+			generation: lease.generation, key: "fresh:0", passId: "correctness", tier: "heavy",
+			rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		})).toBeTrue();
+		const finalized = await tool.execute("fresh-final", { overview: "Behavior is unchanged.", verification: "Source inspected.", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+		expect(finalized.isError).toBeUndefined();
+		expect(finalized.details.finalization).toMatchObject({ decisions: [], addedFindings: [], overview: "Behavior is unchanged.", verification: "Source inspected." });
+		expect(reviewCandidateDispositionRegistry.acceptedFindings("fresh-finalization-session", lease.generation)).toEqual([]);
+		expect(publisher.retain({} as any)).toBeFalse();
+	});
+
+	test("host finalization carries an omitted source-revalidated still-open prior finding", async () => {
+		const h = harness(); h.ctx.sessionManager.getSessionId = () => "automatic-carry-session";
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+		priorRevalidationRegistry.markFindings("automatic-carry-session", lease.generation, [{ findingId: "thread:1", threadId: 1, inReplyToId: null, path: "src/access.ts", line: 2, side: "RIGHT", severity: "P2", title: "Restore tenant guard" }]);
+		const status = await h.tools.get("pr_review_prior_status").execute("carry-status", { statuses: [{ finding_id: "thread:1", status: "still open", severity: "P1", evidence: "The unconditional authorization remains." }] }, undefined, undefined, h.ctx);
+		expect(status.isError).toBeUndefined();
+		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates("automatic-carry-session", lease.generation, "incremental-gap", [
+			{ id: "incremental-gap:1", laneKey: "incremental-gap", finding: { title: "[P0] Restore tenant guard", severity: "P0", body: "Model-escalated duplicate.", code_location: null } },
+			{ id: "incremental-gap:2", laneKey: "incremental-gap", finding: { title: "[P0] Alternate wording", severity: "P0", body: "Duplicate of the model-escalated prior candidate.", code_location: null } },
+		])).toBeTrue();
+		const finalized = await h.tools.get("pr_review_candidate_disposition").execute("carry-finalize", { overview: "Review complete", verification: "Source inspected", decisions: [{ candidate_id: "incremental-gap:1", disposition: "accepted" }, { candidate_id: "incremental-gap:2", disposition: "duplicate", duplicate_of: "incremental-gap:1" }], added_findings: [{ title: "[P0] Restore tenant guard", severity: "P0", body: "Duplicate parent carry-forward with an escalated severity.", confidence: 0.8, path: "src/access.ts", start_line: 2, end_line: 2, side: "RIGHT", commentable: true }] }, undefined, undefined, h.ctx);
+		expect(finalized.isError).toBeUndefined();
+		expect(finalized.details.automaticCarryForwards).toBe(1);
+		expect(finalized.details.finalization.decisions).toEqual([{ candidateId: "incremental-gap:1", disposition: "rejected" }, { candidateId: "incremental-gap:2", disposition: "rejected" }]);
+		expect(finalized.details.finalization.addedFindings).toEqual([expect.objectContaining({ title: "[P2] Restore tenant guard", severity: "P2", blocking: false, code_location: { absolute_file_path: "src/access.ts", line_range: { start: 2, end: 2 }, side: "RIGHT", commentable: true } })]);
+	});
+
+	test("recovers an omitted prepared gap after validation and requires one finalization resubmission", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-post-confirm-gap-"));
+		const child = path.join(root, "child.mjs");
+		writeFileSync(child, `process.stdin.resume(); process.stdin.on("end", () => process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Review status: COMPLETE\\nOverview: The complete PR was inspected.\\nStrengths: The change remains focused.\\nRisk areas: Authorization boundaries require attention.\\ntitle: [P1] Preserve tenant authorization\\nseverity: P1\\nwhy: Returning true permits cross-tenant document reads and removes the ownership boundary.\\nlocation: src/access.ts:2\\nside: RIGHT\\nin_diff: yes\\npr_related: yes\\nconfidence: 0.99" }] } })));`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "post-confirm-gap-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from("diff --git a/src/access.ts b/src/access.ts\n"), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const first = await h.tools.get("pr_review_candidate_disposition").execute("recover-gap", { overview: "Review complete", verification: "Source inspected", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+			expect(first).toMatchObject({ isError: true, details: { reason: "gap_recovered", status: "complete", candidates: ["incremental-gap:1"] } });
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => [artifact.key, artifact.lifecycle])).toEqual([["incremental-gap", "complete"]]);
+			const second = await h.tools.get("pr_review_candidate_disposition").execute("finalize-gap", { overview: "Review complete", verification: "Source inspected", decisions: [{ candidate_id: "incremental-gap:1", disposition: "accepted" }], added_findings: [] }, undefined, undefined, h.ctx);
+			expect(second.isError).toBeUndefined();
+			expect(second.details.finalization.decisions).toEqual([{ candidateId: "incremental-gap:1", disposition: "accepted" }]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("incremental gap hunting requires a host-established usable prior relationship", async () => {
+		const h = harness();
+		h.coordinator.begin(
+			parsePublishMode("/pr-review 7 --incremental"),
+			resolveAutoPostSetting({ autoPostReviews: false }),
+			"interactive",
+			h.ctx,
+		);
+		const tool = h.tools.get("pr_review_incremental_gap");
+		const denied = await tool.execute("gap-1", { context_file: "/tmp/diff" }, undefined, undefined, h.ctx);
+		expect(denied).toMatchObject({
+			isError: true,
+			details: { authorized: false, reason: "prior_relationship" },
+		});
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+		const contextFailure = await tool.execute("gap-2", { context_file: "/definitely/missing" }, undefined, undefined, h.ctx);
+		expect(contextFailure).toMatchObject({
+			isError: true,
+			details: { authorized: true, reason: "context_failed" },
+		});
+		const sameHeadResource = await h.tools.get("review_subagent").execute("same-head-resource", {
+			incremental_pass: "incremental-security-performance", tier: "heavy", objective: "ignored", context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(sameHeadResource).toMatchObject({ isError: true, details: { tier: "heavy", contextFileBytes: 0 } });
+		const sameHeadWrongPass = await h.tools.get("review_subagent").execute("same-head-wrong", {
+			incremental_pass: "incremental-correctness", tier: "heavy", objective: "ignored", context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(sameHeadWrongPass).toMatchObject({ isError: true, details: { authorized: false, reason: "incremental_pass" } });
+		expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+		const wrongTier = await h.tools.get("review_subagent").execute("delta-1", {
+			incremental_pass: "incremental-correctness",
+			tier: "light",
+			objective: "ignored",
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(wrongTier).toMatchObject({
+			isError: true,
+			details: { authorized: false, reason: "incremental_pass" },
+		});
+		const genericSingle = await h.tools.get("review_subagent").execute("generic-single", {
+			tier: "light",
+			objective: "generic cumulative pass",
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(genericSingle).toMatchObject({ isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } });
+		const genericBatch = await h.tools.get("review_subagents").execute("generic-batch", {
+			passes: balancedPasses(),
+			context_file: "/definitely/missing",
+		}, undefined, undefined, h.ctx);
+		expect(genericBatch).toMatchObject({ isError: true, details: { authorized: false, reason: "cumulative_lane_tool" } });
+	});
+
+	test("routes a generic heavy pass over the exact prepared full diff into the mandatory gap lane", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-alias-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		const framing = "Review status: COMPLETE\nOverview: complete full-diff gap hunt.\nStrengths: bounded scope.\nRisk areas: low integration risk.\nNO FINDINGS.";
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		const partialWithCandidate = "Review status: COMPLETE\nOverview: first attempt found a defect.\nStrengths: bounded scope.\nRisk areas: authorization regression.\ntitle: [P1] Preserve the first attempt finding\nseverity: P1\nwhy: The changed authorization path permits cross-tenant access.\nlocation: src/access.ts:2\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.99\n\ntitle: [P1] truncated";
+		writeFileSync(child, `import fs from "node:fs"; process.stdin.resume(); process.stdin.on("end", () => { const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); const text = count === 0 ? ${JSON.stringify(partialWithCandidate)} : ${JSON.stringify(framing)}; process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text }] } })); });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-alias-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("generic-heavy", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).not.toBeTrue();
+			expect(result.details).toMatchObject({ incrementalGapAlias: true, relationship: "incremental", status: "complete", fallbackUsed: false });
+			expect(result.details.attempts).toHaveLength(2);
+			expect(result.details.attempts.map((attempt: any) => [attempt.status, attempt.contractRetryable])).toEqual([["partial", true], ["complete", false]]);
+			expect(result.content[0].text).toContain("Candidate IDs: none");
+			expect(reviewCandidateDispositionRegistry.candidates("gap-alias-session", lease.generation)).toEqual([]);
+			expect(h.coordinator.expectedArtifactDescriptors(h.ctx)?.map((entry: any) => entry.key)).toEqual(["incremental-gap"]);
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((entry: any) => [entry.passId, entry.lifecycle])).toEqual([["incremental-gap", "complete"]]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("does not spend the synthetic contract slot after a provider failure", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-provider-failure-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [{ type: "text", text: "Review status: COMPLETE\\nOverview: partial provider output before failure." }] } })); process.stderr.write("429 rate limited"); process.exit(1); });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-provider-failure-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("generic-heavy-failure", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeTrue();
+			expect(result.details.attempts).toHaveLength(1);
+			expect(result.details.attempts[0]).toMatchObject({ status: "partial", contractRetryable: false });
+			expect(readFileSync(counter, "utf8")).toBe("1");
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("retries one provider prompt-policy false positive within the cumulative lane budget", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-policy-retry-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		const complete = "Review status: COMPLETE\nOverview: complete full-diff gap hunt.\nStrengths: bounded scope.\nRisk areas: low integration risk.\nNO FINDINGS.";
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { if (count === 0) { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [] } })); process.stderr.write("Codex error: Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt"); process.exitCode = 1; } else { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(complete)} }] } })); } });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-policy-retry-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("policy-retry", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeUndefined();
+			expect(result.details).toMatchObject({ status: "complete", fallbackUsed: false });
+			expect(result.details.attempts.map((attempt: any) => [attempt.status, attempt.contractRetryable])).toEqual([["failed", true], ["complete", false]]);
+			expect(readFileSync(counter, "utf8")).toBe("2");
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => [artifact.key, artifact.lifecycle, artifact.attempts.length])).toEqual([["incremental-gap", "complete", 2]]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("bounds repeated prompt-policy failures to one cumulative retry", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-policy-bound-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [] } })); process.stderr.write("Codex error: Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt"); process.exitCode = 1; });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-policy-bound-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("policy-bound", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result).toMatchObject({ isError: true, details: { status: "failed" } });
+			expect(result.details.attempts).toHaveLength(2);
+			expect(readFileSync(counter, "utf8")).toBe("2");
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({ key: "incremental-gap", lifecycle: "failed" });
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("incremental gap hunting rejects a context file that differs by any byte from GitHub", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-binding-"));
+		const previousPath = process.env.PATH;
+		try {
+			const gh = path.join(root, "gh"), diff = path.join(root, "full.diff");
+			writeFileSync(gh, "#!/bin/sh\nprintf 'different\\n'\n"); chmodSync(gh, 0o755);
+			writeFileSync(diff, "expected\n"); process.env.PATH = `${root}:${previousPath ?? ""}`;
+			const h = harness(); h.ctx.cwd = root;
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx, true, false, "off", { repository: "acme/widget", hostname: "github.com", prNumber: 7, prTitle: "PR", reviewedHeadSha: "a".repeat(40), state: "OPEN", draft: false });
+			const lease = h.coordinator.acquire(h.ctx)!; expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx)).toBeTrue();
+			const result = await h.tools.get("pr_review_incremental_gap").execute("gap-bind", { context_file: diff }, undefined, undefined, h.ctx);
+			expect(result).toMatchObject({ isError: true, details: { authorized: true, reason: "full_diff_mismatch" } });
+		} finally { process.env.PATH = previousPath; rmSync(root, { recursive: true, force: true }); }
 	});
 
 	test("verification reports action-specific argument errors after flat-schema validation", async () => {
@@ -279,6 +670,52 @@ describe("review tool execution gate", () => {
 				observedModel: "provider/observed",
 				lifecycle: "complete",
 			});
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("canonically recovers a failed standalone fresh lane with its frozen scope and context", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-single-recovery-"));
+		const child = path.join(root, "child.mjs");
+		const marker = path.join(root, "attempted");
+		const complete = [
+			"- title: [P2] Recovered standalone lane", "- severity: P2", "- why: The retry retained its canonical standalone scope.",
+			"- location: file.ts:1-1", "- side: RIGHT", "- in_diff: yes", "- pr_related: yes", "- confidence: 0.9",
+		].join("\n");
+		writeFileSync(child, `
+			import fs from "node:fs";
+			let input = "";
+			process.stdin.on("data", chunk => input += chunk);
+			process.stdin.on("end", () => {
+				if (!fs.existsSync(${JSON.stringify(marker)})) {
+					fs.writeFileSync(${JSON.stringify(marker)}, input);
+					process.exit(1);
+				}
+				if (!input.includes("Host-fixed recovery scope: original standalone scope") || !input.includes("original standalone context")) process.exit(2);
+				process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(complete)} }] } }));
+			});
+		`);
+		const originalScript = process.argv[1];
+		try {
+			mkdirSync(path.join(root, "repo"));
+			const h = harness();
+			h.ctx.cwd = path.join(root, "repo");
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			process.argv[1] = child;
+			const failed = await h.tools.get("review_subagent").execute(
+				"single-primary", { tier: "heavy", objective: "original standalone scope", context: "original standalone context", tool_policy: "configured" }, undefined, undefined, h.ctx,
+			);
+			expect(failed.isError).toBeTrue();
+			const recovered = await h.tools.get("review_subagent").execute(
+				"single-recovery", { tier: "light", objective: "caller redirect", context_file: "missing.diff", tool_policy: "none" }, undefined, undefined, h.ctx,
+			);
+			expect(recovered.isError).toBeUndefined();
+			const artifacts = h.coordinator.artifactSnapshot(h.ctx)!;
+			expect(artifacts).toHaveLength(1);
+			expect(artifacts[0]).toMatchObject({ key: "single-primary:single", lifecycle: "complete", tier: "heavy" });
+			expect(artifacts[0]?.attempts).toHaveLength(2);
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });
@@ -545,8 +982,8 @@ describe("review tool execution gate", () => {
 				parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx,
 				true, false, "off", undefined,
 				{ source: "default", warnings: [], config: {
-					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 2_000,
-					batchMs: 500, synthesisMs: 100, totalMs: 2_000, terminationGraceMs: 50,
+					attemptMs: { light: 2_000, medium: 2_000, heavy: 2_000 }, fallbackAttemptMs: 300,
+					batchMs: 800, synthesisMs: 100, totalMs: 2_500, terminationGraceMs: 50,
 					cleanupReserveMs: 50, minimumFallbackMs: 100,
 				} },
 			);
@@ -571,13 +1008,30 @@ describe("review tool execution gate", () => {
 			expect(result.details.results[1].attempts[0].totalRemainingBeforeAttemptMs).toBeGreaterThan(0);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeLessThanOrEqual(500);
 			expect(result.details.results[1].attempts[0].deadlineMs).toBeGreaterThan(0);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "timed_out", "complete"]);
-			expect(h.coordinator.artifactSnapshot(h.ctx)?.[1]?.attempts[0]).toMatchObject({
+			const recovery = await h.tools.get("review_subagent").execute(
+				"batch-recovery", { tier: "light", objective: "recover timed-out scope", context: "caller replacement context", context_file: "missing.diff", tool_policy: "none" }, undefined, undefined, h.ctx,
+			);
+			expect(recovery.isError).toBeUndefined();
+			expect(recovery.details.status).toBe("complete");
+			expect(recovery.details.attempts[0].deadlineMs).toBeLessThanOrEqual(300);
+			expect(recovery.details.attempts[0].deadlineMs).toBeGreaterThan(0);
+			const duplicateRecovery = await h.tools.get("review_subagent").execute(
+				"duplicate-recovery", { tier: "heavy", objective: "run another recovery" }, undefined, undefined, h.ctx,
+			);
+			expect(duplicateRecovery).toMatchObject({ isError: true, details: { authorized: false, reason: "fresh_recovery_exhausted" } });
+			const recoveredArtifacts = h.coordinator.artifactSnapshot(h.ctx)!;
+			expect(recoveredArtifacts.map((artifact: any) => artifact.lifecycle)).toEqual(["complete", "complete", "complete"]);
+			expect(recoveredArtifacts[1]).toMatchObject({ passId: "correctness-contracts", requestedPassOrdinal: 1, fallbackUsed: false });
+			expect(recoveredArtifacts[1]?.attempts).toHaveLength(2);
+			expect(recoveredArtifacts[1]?.attempts[0]).toMatchObject({
+				ordinal: 1,
+				lifecycle: "timed_out",
 				configuredDeadlineMs: 2_000,
 				budgetElapsedBeforeAttemptMs: expect.any(Number),
 				batchRemainingBeforeAttemptMs: expect.any(Number),
 				totalRemainingBeforeAttemptMs: expect.any(Number),
 			});
+			expect(recoveredArtifacts[1]?.attempts[1]).toMatchObject({ ordinal: 2, lifecycle: "complete" });
 		} finally {
 			process.argv[1] = originalScript;
 			rmSync(root, { recursive: true, force: true });

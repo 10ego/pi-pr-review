@@ -57,6 +57,56 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.acquire(h.ctx as any)).toBeDefined();
 	});
 
+	test("binds prepared context bytes to the active generation", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		const bytes = Buffer.from("frozen diff");
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeUndefined();
+		expect(h.coordinator.registerPreparedContext(lease, "delta", bytes, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", Buffer.from("other"), h.ctx as any)).toBeFalse();
+		expect(h.coordinator.registerPreparedContext(lease, "delta", Buffer.from("other"), h.ctx as any)).toBeFalse();
+		h.coordinator.clear();
+		expect(h.coordinator.preparedContextMatches(lease, "delta", bytes, h.ctx as any)).toBeFalse();
+	});
+
+	test("claims preparation once and atomically clears partial state before selecting fresh", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.claimPreparation(lease, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.claimPreparation(lease, h.ctx as any)).toBeFalse();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", Buffer.from("partial"), h.ctx as any)).toBeTrue();
+		expect(h.coordinator.setPriorRelationship(lease, "same_head", h.ctx as any)).toBeTrue();
+		expect(h.coordinator.failOpenPreparation(lease, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.priorRelationship(h.ctx as any)).toBe("none");
+		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toEqual([]);
+		expect(h.coordinator.preparedContextMatches(lease, "incremental-gap", Buffer.from("partial"), h.ctx as any)).toBeUndefined();
+	});
+
+	test("runs invocation cleanup exactly once on consume or clear", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		let cleanups = 0;
+		expect(h.coordinator.registerCleanup(lease, () => { cleanups++; }, h.ctx as any)).toBeTrue();
+		expect(h.coordinator.consume()?.prNumber).toBe(7);
+		expect(cleanups).toBe(1);
+		h.coordinator.clear();
+		expect(cleanups).toBe(1);
+		expect(h.coordinator.registerCleanup(lease, () => { cleanups++; }, h.ctx as any)).toBeFalse();
+
+		h.coordinator.begin(parsePublishMode("/pr-review 8"), autoOff, "interactive", h.ctx as any);
+		const nextLease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerCleanup(nextLease, () => { cleanups++; }, h.ctx as any)).toBeTrue();
+		h.coordinator.clear();
+		expect(cleanups).toBe(2);
+	});
+
 	test("suspends every tool for output repair and restores only base tools", () => {
 		const h = harness();
 		h.coordinator.begin(parsePublishMode("/pr-review 7"), autoOff, "interactive", h.ctx as any);
@@ -184,6 +234,52 @@ describe("review-loop authority", () => {
 		expect(h.coordinator.artifactSnapshot(h.ctx as any)).toBeUndefined();
 		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBeUndefined();
 		expect(h.coordinator.expectedArtifactDescriptors(h.ctx as any)).toBeUndefined();
+	});
+
+	test("claims fresh recovery by canonical expected order rather than artifact completion order", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "call:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+			{ key: "call:1", tier: "medium", minorHygiene: true, expectedOutput: "review_lane" },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "call:0", scope: "first scope", context: "first context", toolPolicy: "configured", majorOnly: true },
+			{ key: "call:1", scope: "second scope", toolPolicy: "none", majorOnly: false },
+		], h.ctx as any)).toBeTrue();
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx as any)!;
+		const retain = (key: string, passId: string, tier: "heavy" | "medium", minorHygiene: boolean) => publisher.retain({
+			generation: lease.generation, key, passId, tier, minorHygiene, rawText: "partial", exitCode: 1,
+			lifecycle: "timed_out", attempts: [], fallbackUsed: false, elapsedMs: 10,
+			toolElapsedMs: 0, toolCallCount: 0,
+		});
+		expect(retain("call:1", "second", "medium", true)).toBeTrue();
+		expect(retain("call:0", "first", "heavy", false)).toBeTrue();
+		const target = h.coordinator.claimFreshRecoveryTarget(lease, h.ctx as any);
+		expect(target?.expected.key).toBe("call:0");
+		expect(target?.artifact.passId).toBe("first");
+		expect(target?.descriptor).toMatchObject({ scope: "first scope", context: "first context", toolPolicy: "configured" });
+		expect(h.coordinator.claimFreshRecoveryTarget(lease, h.ctx as any)).toBeUndefined();
+	});
+
+	test("appends frozen recovery descriptors for sequential standalone lanes", () => {
+		const h = harness();
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), autoOff, "interactive", h.ctx as any);
+		const lease = h.coordinator.acquire(h.ctx as any)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "single:0", tier: "heavy", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "single:0", scope: "first", majorOnly: true },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "single:1", tier: "medium", minorHygiene: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.registerFreshRecoveryDescriptors(lease, [
+			{ key: "single:1", scope: "second", majorOnly: false },
+		], h.ctx as any)).toBeTrue();
+		expect(h.coordinator.expectedArtifactCount(h.ctx as any)).toBe(2);
 	});
 
 	test("expires the total budget, aborts work, and preserves artifacts until partial synthesis consumes them", async () => {

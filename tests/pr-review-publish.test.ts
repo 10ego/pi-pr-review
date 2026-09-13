@@ -36,6 +36,7 @@ import {
 	resolveDefaultReviewModeSetting,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
+	resolveReviewSelection,
 	APPROVE_EVENT,
 	findingsWithinApproveMaxPriority,
 	shouldApproveReview,
@@ -944,6 +945,12 @@ describe("trusted invocation mode", () => {
 		expect(parsePublishMode("/pr-review 12 --full --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "full", prNumber: 12 });
 		expect(parsePublishMode("/pr-review 13 --deep --no-comment")).toMatchObject({ mode: "disabled", reviewMode: "deep", prNumber: 13 });
 		expect(parsePublishMode("/pr-review 14 --incremental")).toMatchObject({ mode: "auto", prNumber: 14, incremental: true });
+		expect(parsePublishMode("/pr-review 14 --fresh")).toMatchObject({ mode: "auto", prNumber: 14, fresh: true });
+		expect(resolveReviewSelection(parsePublishMode("/pr-review 14"))).toMatchObject({ incremental: true, reviewSelection: "auto" });
+		expect(resolveReviewSelection(parsePublishMode("/pr-review 14 --incremental"))).toMatchObject({ incremental: true, reviewSelection: "incremental" });
+		expect(resolveReviewSelection(parsePublishMode("/pr-review 14 --fresh"))).toMatchObject({ reviewSelection: "fresh" });
+		expect(resolveReviewSelection(parsePublishMode("/pr-review 14 --fresh"))).not.toHaveProperty("incremental");
+		expect(resolveReviewSelection(parsePublishMode("/pr-review 14 --fresh"))).not.toHaveProperty("fresh");
 		expect(parsePublishMode("/pr-review 15 --quick --incremental --no-comment")).toMatchObject({
 			mode: "disabled",
 			reviewMode: "quick",
@@ -969,6 +976,7 @@ describe("trusted invocation mode", () => {
 
 	test("rejects contradictory flags", () => {
 		expect(parsePublishMode("/pr-review 7 --comment --no-comment").error).toContain("cannot be used together");
+		expect(parsePublishMode("/pr-review 7 --incremental --fresh").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --major-only --balanced").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --quick --major-only").error).toContain("cannot be used together");
 		expect(parsePublishMode("/pr-review 7 --full --balanced").error).toContain("cannot be used together");

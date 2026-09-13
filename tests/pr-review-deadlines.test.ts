@@ -82,7 +82,8 @@ describe("review budget arithmetic", () => {
 		expect(budget.totalDeadlineMs).toBe(121_000);
 		expect(attemptDeadline(budget, "light", false, () => monotonicMs)).toBe(31_000);
 		monotonicMs = 75_000;
-		expect(attemptDeadline(budget, "heavy", false, () => monotonicMs)).toBe(budget.batchDeadlineMs);
+		expect(attemptDeadline(budget, "heavy", false, () => monotonicMs)).toBe(48_800);
+		expect(attemptDeadline(budget, "heavy", true, () => monotonicMs)).toBe(budget.batchDeadlineMs);
 		expect(budget.startedAtMs).toBeLessThanOrEqual(budget.batchDeadlineMs);
 		expect(budget.batchDeadlineMs).toBeLessThan(budget.totalDeadlineMs);
 	});
@@ -94,7 +95,8 @@ describe("review budget arithmetic", () => {
 		expect(activated.batchStartedAtMs).toBe(75_000);
 		expect(activated.batchDeadlineMs).toBe(109_900);
 		expect(activated.totalDeadlineMs).toBe(121_000);
-		expect(attemptDeadline(activated, "heavy", false, () => 75_000)).toBe(109_900);
+		expect(attemptDeadline(activated, "heavy", false, () => 75_000)).toBe(85_000);
+		expect(attemptDeadline(activated, "heavy", true, () => 75_000)).toBe(105_000);
 		expect(activateReviewBatch(budget, () => 90_000)).toBe(activated);
 		expect(activateReviewBatch(activated, () => 90_000)).toBe(activated);
 	});
@@ -115,13 +117,31 @@ describe("review budget arithmetic", () => {
 		const budget = createReviewBudget(resolution, () => 5_000);
 		expect(budget.batchDeadlineMs).toBe(99_000);
 		expect(budget.totalDeadlineMs).toBe(125_000);
-		expect(attemptDeadline(budget, "heavy", false, () => 95_000)).toBe(99_000);
+		expect(attemptDeadline(budget, "heavy", false, () => 95_000)).toBe(37_000);
+		expect(attemptDeadline(budget, "heavy", true, () => 95_000)).toBe(99_000);
 		expect(fallbackBudget(budget, () => 73_000)).toEqual({ allowed: true, availableMs: 10_000 });
 		expect(fallbackBudget(budget, () => 73_001)).toEqual({
 			allowed: false,
 			availableMs: 9_999,
 			reason: "insufficient_budget",
 		});
+	});
+
+	test("reserves the configured recovery window from a long primary batch attempt", () => {
+		const resolution = resolveReviewDeadlines({
+			...configured,
+			attemptMs: { light: 180_000, medium: 360_000, heavy: 900_000 },
+			fallbackAttemptMs: 180_000,
+			batchMs: 900_000,
+			synthesisMs: 60_000,
+			totalMs: 1_200_000,
+			terminationGraceMs: 5_000,
+			cleanupReserveMs: 5_000,
+			minimumFallbackMs: 30_000,
+		});
+		const budget = activateReviewBatch(createReviewBudget(resolution, () => 0), () => 0);
+		expect(attemptDeadline(budget, "heavy", false, () => 0)).toBe(700_000);
+		expect(attemptDeadline(budget, "heavy", true, () => 720_000)).toBe(900_000);
 	});
 
 	test("rejects fallback unless minimum useful runtime, termination grace, and cleanup remain", () => {

@@ -12,7 +12,7 @@ import crypto from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 const MODES = new Set(["quick", "balanced", "full", "major-only", "deep"]);
-const REVIEW_STRATEGIES = new Set(["fresh", "incremental"]);
+const REVIEW_STRATEGIES = new Set(["fresh", "incremental", "auto"]);
 const SEVERITIES = new Set(["P0", "P1", "P2", "P3", "nit"]);
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, nit: 4 });
 const LANE_STATES = new Set(["complete", "partial", "timed_out", "failed"]);
@@ -32,7 +32,7 @@ const LEGACY_MODE_TOPOLOGIES = Object.freeze({
 	"major-only": { passIds: ["overview", "correctness", "correctness-contracts", "security-performance", "performance-resources"], maxParallel: 5 },
 	deep: MODE_TOPOLOGIES.deep,
 });
-const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review" });
+const PASS_LENSES = Object.freeze({ overview: "overview", "conventions-maintainability": "conventions-maintainability", correctness: "correctness", "correctness-contracts": "correctness-contracts", "security-performance": "security-performance", "performance-resources": "performance-resources", "deep-review": "deep-review", "incremental-gap": "incremental-gap", "incremental-correctness": "incremental-correctness", "incremental-contracts": "incremental-contracts", "incremental-security-performance": "incremental-security-performance", "incremental-conventions": "incremental-conventions", "incremental-deep": "incremental-deep" });
 const EXPLICIT_NON_FINDING = [
 	/\bno (?:issue|finding|bug|defect|problem)(?: exists| here| with this)?\b/iu,
 	/\b(?:is|are|remains?|appears?) (?:safe|correct|valid)\b/iu,
@@ -68,12 +68,23 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export const SCORER_SHA256 = sha256(fs.readFileSync(new URL(import.meta.url)));
 const SEMANTIC_FINDINGS = Symbol("semanticFindings");
 const FALLBACK_FINDING_LIMIT = 50;
+export const AUTOMATIC_LATENCY_POLICY = Object.freeze({
+	maximumPairedDeltaMs: 15_000,
+	maximumPairedDeltaRatio: 0.2,
+	requireNoP95Regression: true,
+});
 
 function invariant(condition, message) {
 	if (!condition) throw new Error(`Semantic benchmark invalid: ${message}`);
 }
 function plain(value) {
 	return value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+export function completedReviewTextBound(data, terminalAssistantText) {
+	if (!plain(data) || typeof data.rawText !== "string" || typeof terminalAssistantText !== "string") return false;
+	if (data.rawText === terminalAssistantText || data.publicationBody === terminalAssistantText) return true;
+	if (data.candidateDispositionRecorded !== true || !plain(data.review)) return false;
+	try { const parsed = JSON.parse(data.rawText); return plain(parsed) && JSON.stringify(parsed) === JSON.stringify(data.review); } catch { return false; }
 }
 function exactKeys(value, required, optional = []) {
 	if (!plain(value)) return false;
@@ -201,7 +212,8 @@ export function loadCorpus(file) {
 		}
 		if (value.schemaVersion === 2) {
 			const prior = item.priorState, relationship = prior?.relationship;
-			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"]), `case ${item.id} prior state schema`);
+			invariant(exactKeys(prior, ["relationship", "priorDiff", "incrementalDiff", "review", "expectedStatuses"], ["cumulative"]), `case ${item.id} prior state schema`);
+			if (Object.hasOwn(prior, "cumulative")) invariant(prior.cumulative === true, `case ${item.id} cumulative topology marker`);
 			invariant(["incremental", "same_head", "none", "diverged"].includes(relationship), `case ${item.id} prior relationship`);
 			const validatePhaseDiff = (metadata, phase) => {
 				if (metadata === null) return null;
@@ -218,7 +230,7 @@ export function loadCorpus(file) {
 			if (relationship === "none") invariant(priorDiffText === null && incrementalDiffText === null && prior.review === null, `case ${item.id} none state`);
 			invariant(Array.isArray(prior.expectedStatuses) && new Set(prior.expectedStatuses.map((status) => status.title)).size === prior.expectedStatuses.length, `case ${item.id} expected prior statuses`);
 			for (const status of prior.expectedStatuses) {
-				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
+				invariant(exactKeys(status, ["title", "status"], ["currentFindingId"]) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 300 && ["resolved", "rejected", "still open", "obsolete"].includes(status.status), `case ${item.id} expected prior status`);
 				if (status.status === "still open") invariant(typeof status.currentFindingId === "string" && item.expectedFindings.some((finding) => finding.id === status.currentFindingId), `case ${item.id} still-open status current finding binding`);
 				else invariant(!Object.hasOwn(status, "currentFindingId"), `case ${item.id} non-open status current finding binding`);
 			}
@@ -229,9 +241,19 @@ export function loadCorpus(file) {
 				invariant(!review.body.includes(item.id) && review.body.length <= 64 * 1024, `case ${item.id} reviewer-visible prior body`);
 				const commentIds = new Set();
 				for (const comment of review.comments) {
-					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
+					invariant(exactKeys(comment, ["id", "path", "line", "side", "body"], ["startLine", "replies"]) && Number.isSafeInteger(comment.id) && comment.id > 0 && !commentIds.has(comment.id) && typeof comment.path === "string" && Number.isSafeInteger(comment.line) && comment.line > 0 && (comment.side === "RIGHT" || comment.side === "LEFT") && typeof comment.body === "string" && comment.body.length > 0 && comment.body.length <= 20_000, `case ${item.id} prior comment`); commentIds.add(comment.id); safeRelative(comment.path, `case ${item.id} prior comment path`);
 					if (Object.hasOwn(comment, "startLine")) invariant(Number.isSafeInteger(comment.startLine) && comment.startLine > 0 && comment.startLine < comment.line, `case ${item.id} prior comment start line`);
 					invariant(!comment.body.includes(item.id), `case ${item.id} reviewer-visible prior comment leaks its benchmark id`);
+					if (Object.hasOwn(comment, "replies")) {
+						invariant(Array.isArray(comment.replies) && comment.replies.length <= 20, `case ${item.id} prior replies`);
+						for (const reply of comment.replies) {
+							invariant(exactKeys(reply, ["id", "author", "body"], ["authorAssociation", "createdAt", "commitHead"]) && Number.isSafeInteger(reply.id) && reply.id > 0 && !commentIds.has(reply.id) && typeof reply.author === "string" && reply.author.length > 0 && reply.author.length <= 100 && typeof reply.body === "string" && reply.body.length > 0 && reply.body.length <= 20_000, `case ${item.id} prior reply`); commentIds.add(reply.id);
+							if (Object.hasOwn(reply, "authorAssociation")) invariant(typeof reply.authorAssociation === "string" && reply.authorAssociation.length > 0 && reply.authorAssociation.length <= 100, `case ${item.id} reply association`);
+							if (Object.hasOwn(reply, "createdAt")) invariant(typeof reply.createdAt === "string" && Number.isFinite(Date.parse(reply.createdAt)), `case ${item.id} reply timestamp`);
+							if (Object.hasOwn(reply, "commitHead")) invariant(reply.commitHead === "prior" || reply.commitHead === "current", `case ${item.id} reply commit binding`);
+							invariant(!reply.body.includes(item.id), `case ${item.id} reviewer-visible prior reply leaks its benchmark id`);
+						}
+					}
 				}
 				const authoredText = `${review.body}\n${review.comments.map((comment) => comment.body).join("\n")}`.toLocaleLowerCase("en-US");
 				invariant((relationship === "diverged" || prior.expectedStatuses.length > 0) && prior.expectedStatuses.every((status) => authoredText.includes(status.title.toLocaleLowerCase("en-US"))), `case ${item.id} expected status must name an authored prior finding`);
@@ -276,7 +298,15 @@ export function validatePlan(plan, corpusInfo) {
 export function expectedModeTopology(mode, item, options = {}) {
 	invariant(MODES.has(mode), `unknown mode ${mode}`);
 	invariant(item && Number.isSafeInteger(item.diffBytes) && Array.isArray(item.changedFiles), "topology requires a validated corpus case");
-	if (options.strategy === "incremental" && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
+	if ((options.strategy === "incremental" || options.strategy === "auto") && item.priorState?.cumulative === true && (item.priorState.relationship === "same_head" || item.priorState.relationship === "incremental")) {
+		const delta = item.priorState.relationship === "same_head" ? (mode === "deep" ? [] : ["incremental-security-performance"])
+			: mode === "deep" ? ["incremental-deep"]
+				: mode === "full" ? ["incremental-correctness", "incremental-contracts", "incremental-security-performance", "incremental-conventions"]
+					: ["incremental-correctness", "incremental-contracts", "incremental-security-performance"];
+		const passIds = ["incremental-gap", ...delta];
+		return { passIds, shardCount: 1, maxParallel: passIds.length };
+	}
+	if ((options.strategy === "incremental" || options.strategy === "auto") && item.priorState?.relationship === "same_head") return { passIds: [], shardCount: 0, maxParallel: 0 };
 	const legacySharding = options.legacySharding === true;
 	const base = legacySharding ? LEGACY_MODE_TOPOLOGIES[mode] : MODE_TOPOLOGIES[mode];
 	invariant(base, `mode ${mode} is unavailable under the requested topology generation`);
@@ -348,11 +378,11 @@ function normalizePersistedFindings(review) {
 function parsePriorStatuses(markdown) {
 	if (typeof markdown !== "string") return [];
 	const body = /(?:^|\n)## Prior findings\s*\n([\s\S]*?)(?=\n## (?!#)|$)/iu.exec(markdown)?.[1] ?? "", statuses = [];
-	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
+	for (const rawLine of body.split(/\r?\n/u)) { let line = rawLine.trim(); for (let index = 0; index < 6; index++) { const stripped = line.replace(/^\s*(?:>\s*)+/u, "").replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, "").replace(/^\*\*/u, "").trim(); if (stripped === line) break; line = stripped; } const match = /^(resolved|rejected|still open|obsolete)\b\s*(?::|—|-)?\s*(.+)$/iu.exec(line); if (!match) continue; const title = match[2].replace(/^\[(?:P[0-3]|nit)\]\s*/iu, "").replace(/\*\*$/u, "").trim(); if (title) statuses.push({ status: match[1].toLocaleLowerCase("en-US"), title }); }
 	return statuses;
 }
 function parsePriorRelationship(records) {
-	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || message.toolName !== "pr_review_prior" || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
+	for (const record of records) { const message = record?.type === "message" ? record.message : null; if (message?.role !== "toolResult" || !["pr_review_prior", "pr_review_prepare"].includes(message.toolName) || !Array.isArray(message.content)) continue; const text = message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("").trim(); try { const parsed = JSON.parse(text); if (["incremental", "same_head", "none", "diverged"].includes(parsed?.relationship)) return parsed.relationship; } catch {} }
 	return null;
 }
 function parseVisibleFallbackFindings(markdown) {
@@ -397,7 +427,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 	const raw = lanePayload.raw, sessionBytes = raw.session.contentBase64 === null ? null : Buffer.from(raw.session.contentBase64, "base64"); let records = [], sessionParseValid = true; try { records = sessionBytes ? sessionBytes.toString("utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []; } catch { sessionParseValid = false; }
 	const completed = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-completed"), telemetry = records.filter((record) => record?.type === "custom" && record.customType === "pr-review-telemetry" && record.data?.completion === "terminal_response"), processFailed = raw.process.exitCode !== null && raw.process.exitCode !== 0 || raw.process.signal !== null || raw.process.error !== null, failedRun = run.publication.artifact === "raw_body_only" && run.findings.length === 0 && run.lanes.every((lane) => lane.status === "failed") && raw.resolvedReview === null && raw.telemetry === null;
 	if (run.schemaVersion === 2) {
-		invariant(canonical(parsePriorStatuses(reviewPayload.rawMarkdown)) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
+		const renderedStatuses = parsePriorStatuses(reviewPayload.markdown), rawStatuses = parsePriorStatuses(reviewPayload.rawMarkdown); invariant(canonical(renderedStatuses.length > 0 ? renderedStatuses : rawStatuses) === canonical(run.reviewOutcome.priorStatuses) && parsePriorRelationship(records) === run.reviewOutcome.observedRelationship, `${label} retained prior-review outcome binding`);
 	}
 	if (!failedRun) {
 		invariant(sessionParseValid && raw.process.exitCode === 0 && !processFailed && raw.auditValid && !Object.hasOwn(raw.session, "files") && !Object.hasOwn(raw.session, "overflow"), `${label} successful run has operational failure`);
@@ -405,7 +435,7 @@ function validateSessionBindings(lanePayload, reviewPayload, run, label, effecti
 		const headers = records.filter((record) => record?.type === "session" && record.version === 3), assistants = records.filter((record) => record?.type === "message" && record.message?.role === "assistant");
 		invariant(headers.length === 1 && typeof headers[0].cwd === "string" && path.isAbsolute(headers[0].cwd) && assistants.length > 0 && assistants.at(-1).message?.stopReason === "stop", `${label} retained session lifecycle`);
 		const terminalAssistantText = Array.isArray(assistants.at(-1).message?.content) ? assistants.at(-1).message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("") : "", data = completed[0].data, terminalTelemetry = telemetry[0].data, modelChanges = records.filter((record) => record?.type === "model_change"), thinkingChanges = records.filter((record) => record?.type === "thinking_level_change");
-		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && data.rawText === terminalAssistantText && data.rawText === (run.schemaVersion === 2 ? reviewPayload.rawMarkdown : reviewPayload.markdown), `${label} session artifact binding`);
+		invariant(terminalAssistantText.length > 0 && plain(data) && canonical(data.laneArtifacts) === canonical(raw.laneArtifacts) && canonical(terminalTelemetry) === canonical(raw.telemetry) && completedReviewTextBound(data, terminalAssistantText) && data.rawText === (run.schemaVersion === 2 ? reviewPayload.rawMarkdown : reviewPayload.markdown), `${label} session artifact binding`);
 		invariant(finiteNonnegative(terminalTelemetry?.totalWallMs) && terminalTelemetry.totalWallMs === run.elapsedMs && finiteNonnegative(terminalTelemetry?.phases?.aggregateOrchestration?.elapsedMs) && terminalTelemetry.phases.aggregateOrchestration.elapsedMs === run.timing.parentValidationSynthesisMs && terminalTelemetry.phases.aggregateOrchestration.elapsedMs <= terminalTelemetry.totalWallMs, `${label} retained latency binding`);
 		invariant(modelChanges.length >= 1 && modelChanges.at(-1).provider === run.configuration.provider && modelChanges.at(-1).modelId === run.configuration.model && thinkingChanges.length >= 1 && thinkingChanges.at(-1).thinkingLevel === run.configuration.thinking, `${label} session parent model/thinking binding`);
 		const canonicalPublication = data.synthesisQuality === "fully_parsed" && data.completeness === "complete" && run.lanes.every((lane) => lane.status === "complete"), rawPublication = data.synthesisQuality === "raw";
@@ -441,7 +471,7 @@ export function validateRun(run, planEntry, bundleRoot, item, effectiveConfig) {
 	if (strategyRun) {
 		const outcome = run.reviewOutcome;
 		invariant(exactKeys(outcome, ["observedRelationship", "priorStatuses", "mergeApprovalEligible"]) && (outcome.observedRelationship === null || ["incremental", "same_head", "none", "diverged"].includes(outcome.observedRelationship)) && Array.isArray(outcome.priorStatuses) && outcome.priorStatuses.length <= 200 && (outcome.mergeApprovalEligible === null || typeof outcome.mergeApprovalEligible === "boolean"), `${label} review outcome`);
-		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
+		const statusKeys = new Set(); for (const status of outcome.priorStatuses) { invariant(exactKeys(status, ["status", "title"]) && ["resolved", "rejected", "still open", "obsolete"].includes(status.status) && typeof status.title === "string" && status.title.length > 0 && status.title.length <= 500, `${label} prior status`); const key = `${status.status}\0${status.title.toLocaleLowerCase("en-US")}`; invariant(!statusKeys.has(key), `${label} duplicate prior status`); statusKeys.add(key); }
 		if (run.strategy === "fresh") invariant(outcome.observedRelationship === null && outcome.priorStatuses.length === 0, `${label} fresh strategy prior evidence`);
 	}
 	invariant(typeof run.startedAtUtc === "string" && Number.isFinite(Date.parse(run.startedAtUtc)), `${label} timestamp`);
@@ -609,14 +639,17 @@ export function aggregateScores(corpusInfo, plan, runs) {
 		const laneTotal = Object.values(laneStates).reduce((a, b) => a + b, 0), allFindings = group.reduce((sum, { findings }) => sum + findings.length, 0), matchedFindings = group.reduce((sum, { score }) => sum + score.matchedExpectedIds.length, 0), underclassified = group.reduce((sum, { score }) => sum + score.underclassifiedExpectedIds.length, 0), overclassified = group.reduce((sum, { score }) => sum + score.overclassifiedExpectedIds.length, 0), unmatched = group.reduce((sum, { score }) => sum + score.unmatchedFindings, 0), duplicates = group.reduce((sum, { score }) => sum + score.duplicateFindings, 0), falsePositives = group.reduce((sum, { score }) => sum + score.falsePositiveFindings, 0), fallbackRuns = group.filter(({ run }) => run.publication.fallback).length, visibleFallbackFindings = group.reduce((sum, entry) => sum + entry.visibleFallbackFindings, 0);
 		let statusOpportunities = 0, statusMatches = 0, stillOpenOpportunities = 0, stillOpenCarried = 0, resolvedObsoleteRepublished = 0, relationshipOpportunities = 0, relationshipMatches = 0, sameHeadRuns = 0, sameHeadApprovalEligible = 0;
 		for (const { run, item, findings, score } of group) {
-			if (run.strategy !== "incremental") continue;
+			if (run.strategy !== "incremental" && run.strategy !== "auto") continue;
 			relationshipOpportunities++; if (run.reviewOutcome?.observedRelationship === item.priorState.relationship) relationshipMatches++;
 			if (item.priorState.relationship === "same_head") { sameHeadRuns++; if (run.reviewOutcome?.mergeApprovalEligible === true) sameHeadApprovalEligible++; }
 			for (const expected of item.priorState.expectedStatuses) {
 				statusOpportunities++; const observed = run.reviewOutcome?.priorStatuses?.filter((status) => namesPriorTitle(status.title, expected.title)) ?? []; if (observed.length === 1 && observed[0].status === expected.status) statusMatches++;
 				const republished = findings.some((finding) => namesPriorTitle(finding.title, expected.title));
-				if (expected.status === "still open") { stillOpenOpportunities++; if (score.matchedExpectedIds.includes(expected.currentFindingId)) stillOpenCarried++; }
-				else if (republished) resolvedObsoleteRepublished++;
+				if (expected.status === "still open") {
+					stillOpenOpportunities++;
+					const current = item.expectedFindings.find((finding) => finding.id === expected.currentFindingId);
+					if (current && findings.some((finding) => normalizedPriorTitle(finding.title) === normalizedPriorTitle(expected.title) && SEVERITY_RANK[finding.severity] <= SEVERITY_RANK[current.targetSeverity])) stillOpenCarried++;
+				} else if (republished) resolvedObsoleteRepublished++;
 			}
 		}
 		return {
@@ -633,7 +666,63 @@ export function aggregateScores(corpusInfo, plan, runs) {
 			latencyMs: { p50: percentile(group.map(({ run }) => run.elapsedMs), 0.5), p95: percentile(group.map(({ run }) => run.elapsedMs), 0.95), ...distribution(group.map(({ run }) => run.elapsedMs)), parentValidationSynthesisP50: percentile(group.map(({ run }) => run.timing.parentValidationSynthesisMs), 0.5) },
 		};
 	};
-	return { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
+	const result = { overall: aggregateGroup(scores), modes: Object.fromEntries(plan.modes.map((mode) => [mode, aggregateGroup(scores.filter(({ run }) => run.mode === mode))])), ...(plan.schemaVersion === 2 ? { strategies: Object.fromEntries(plan.strategies.map((strategy) => [strategy, aggregateGroup(scores.filter(({ run }) => run.strategy === strategy))])) } : {}), runs: scores.map(({ run, score }) => ({ planEntryId: run.planEntryId, caseId: run.caseId, mode: run.mode, ...(run.strategy ? { strategy: run.strategy, reviewOutcome: run.reviewOutcome } : {}), repetition: run.repetition, ...score })) };
+	if (plan.schemaVersion === 2 && plan.strategies.includes("fresh") && plan.strategies.includes("incremental")) {
+		const complete = ({ run, item }) => { const expected = expectedModeTopology(run.mode, item, { strategy: run.strategy }); return run.lanes.length === expected.passIds.length && run.lanes.every((lane) => lane.status === "complete") && run.publication.fallback === false; };
+		const grouped = new Map();
+		for (const entry of scores) {
+			const key = `${entry.run.mode}\0${entry.run.repetition}\0${entry.run.caseId}`;
+			const pair = grouped.get(key) ?? { mode: entry.run.mode, repetition: entry.run.repetition, caseId: entry.run.caseId };
+			pair[entry.run.strategy] = entry; grouped.set(key, pair);
+		}
+		const pairs = [...grouped.values()], completePairs = pairs.filter((pair) => pair.fresh && pair.incremental && complete(pair.fresh) && complete(pair.incremental));
+		const freshPaired = completePairs.map((pair) => pair.fresh), incrementalPaired = completePairs.map((pair) => pair.incremental), freshMetrics = aggregateGroup(freshPaired), incrementalMetrics = aggregateGroup(incrementalPaired);
+		const freshMedian = percentile(freshPaired.map(({ run }) => run.elapsedMs), 0.5), incrementalMedian = percentile(incrementalPaired.map(({ run }) => run.elapsedMs), 0.5), metricDelta = (incremental, fresh) => typeof incremental === "number" && typeof fresh === "number" ? incremental - fresh : null;
+		result.paired = {
+			plannedPairs: pairs.length,
+			completePairs: completePairs.length,
+			incompletePairs: pairs.filter((pair) => !completePairs.includes(pair)).map((pair) => ({ mode: pair.mode, repetition: pair.repetition, caseId: pair.caseId, freshComplete: !!pair.fresh && complete(pair.fresh), incrementalComplete: !!pair.incremental && complete(pair.incremental) })),
+			operationalCompletion: { fresh: metricPair(pairs.length, pairs.filter((pair) => pair.fresh && complete(pair.fresh)).length), incremental: metricPair(pairs.length, pairs.filter((pair) => pair.incremental && complete(pair.incremental)).length) },
+			quality: { fresh: freshMetrics, incremental: incrementalMetrics, p0p1RecallDelta: metricDelta(incrementalMetrics.p0p1.recall, freshMetrics.p0p1.recall), p2RecallDelta: metricDelta(incrementalMetrics.p2.recall, freshMetrics.p2.recall), crossFileRecallDelta: metricDelta(incrementalMetrics.crossFile.recall, freshMetrics.crossFile.recall) },
+			latencyMs: { freshP50: freshMedian, incrementalP50: incrementalMedian, incrementalToFreshRatio: typeof freshMedian === "number" && freshMedian > 0 && typeof incrementalMedian === "number" ? incrementalMedian / freshMedian : null },
+		};
+		if (plan.strategies.includes("auto")) {
+			const automaticPairs = pairs.map((pair) => {
+				const item = caseById.get(pair.caseId), correspondingStrategy = item?.priorState?.relationship === "same_head" || item?.priorState?.relationship === "incremental" ? "incremental" : "fresh";
+				return { ...pair, correspondingStrategy, corresponding: pair[correspondingStrategy] };
+			}), completeAutomaticPairs = automaticPairs.filter((pair) => pair.auto && pair.corresponding && complete(pair.auto) && complete(pair.corresponding));
+			const autoLatencies = completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs);
+			const correspondingLatencies = completeAutomaticPairs.map((pair) => pair.corresponding.run.elapsedMs);
+			const deltas = completeAutomaticPairs.map((pair) => pair.auto.run.elapsedMs - pair.corresponding.run.elapsedMs);
+			const autoP50 = percentile(autoLatencies, 0.5), correspondingExplicitP50 = percentile(correspondingLatencies, 0.5);
+			const autoP95 = percentile(autoLatencies, 0.95), correspondingExplicitP95 = percentile(correspondingLatencies, 0.95);
+			const pairedDeltaP50 = percentile(deltas, 0.5);
+			const pairedDeltaRatio = typeof pairedDeltaP50 === "number" && typeof correspondingExplicitP50 === "number" && correspondingExplicitP50 > 0
+				? pairedDeltaP50 / correspondingExplicitP50 : null;
+			result.automaticSelection = {
+				plannedPairs: automaticPairs.length,
+				completePairs: completeAutomaticPairs.length,
+				incompletePairs: automaticPairs.filter((pair) => !completeAutomaticPairs.includes(pair)).map((pair) => ({ mode: pair.mode, repetition: pair.repetition, caseId: pair.caseId, correspondingStrategy: pair.correspondingStrategy, autoComplete: !!pair.auto && complete(pair.auto), correspondingComplete: !!pair.corresponding && complete(pair.corresponding) })),
+				latencyMs: {
+					autoP50,
+					correspondingExplicitP50,
+					autoP95,
+					correspondingExplicitP95,
+					pairedDeltaP50,
+					pairedDeltaRatio,
+					autoFasterOrEqualPairs: deltas.filter((delta) => delta <= 0).length,
+					policy: {
+						...AUTOMATIC_LATENCY_POLICY,
+						passed: completeAutomaticPairs.length === automaticPairs.length &&
+							typeof pairedDeltaP50 === "number" && pairedDeltaP50 <= AUTOMATIC_LATENCY_POLICY.maximumPairedDeltaMs &&
+							typeof pairedDeltaRatio === "number" && pairedDeltaRatio <= AUTOMATIC_LATENCY_POLICY.maximumPairedDeltaRatio &&
+							(!AUTOMATIC_LATENCY_POLICY.requireNoP95Regression || (typeof autoP95 === "number" && typeof correspondingExplicitP95 === "number" && autoP95 <= correspondingExplicitP95)),
+					},
+				},
+			};
+		}
+	}
+	return result;
 }
 
 function evaluateGates(metrics, gates, corpusInfo, plan, environmentFingerprint, baselineReport) {

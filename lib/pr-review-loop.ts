@@ -28,7 +28,11 @@ export const REVIEW_LOOP_TOOL_NAMES = [
 	"review_subagent",
 	"review_subagents",
 	"pr_review_verify",
+	"pr_review_prepare",
 	"pr_review_prior",
+	"pr_review_prior_status",
+	"pr_review_candidate_disposition",
+	"pr_review_incremental_gap",
 ] as const;
 
 const REVIEW_LOOP_TOOL_SET = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
@@ -46,6 +50,12 @@ interface ReviewLoopBinding {
 	totalTimer?: ReturnType<typeof setTimeout>;
 	synthesisTimer?: ReturnType<typeof setTimeout>;
 	synthesisStarted: boolean;
+	cleanupCallbacks: Set<() => void>;
+	preparedContextBytes: Map<string, Buffer>;
+	preparationClaimed: boolean;
+	freshRecoveryClaimed: boolean;
+	freshRecoveryDescriptors: Map<string, FreshRecoveryDescriptor>;
+	priorRelationship?: "none" | "same_head" | "incremental" | "diverged";
 	deadlineKind?: "total" | "synthesis";
 }
 
@@ -85,6 +95,24 @@ export interface ReviewFocusPublisher {
 
 export interface ReviewArtifactPublisher {
 	retain(artifact: ReviewLaneArtifact): boolean;
+}
+
+export interface FreshRecoveryDescriptor {
+	readonly key: string;
+	readonly scope: string;
+	readonly context?: string;
+	readonly toolPolicy?: "none" | "configured";
+	readonly toolNames?: readonly string[];
+	readonly majorOnly: boolean;
+	readonly fileBackedContext?: boolean;
+	readonly fileBackedContextPath?: string;
+	readonly fileBackedRequiredReads?: readonly { readonly offset: number; readonly limit: number }[];
+}
+
+export interface FreshRecoveryTarget {
+	readonly expected: ExpectedReviewLane;
+	readonly artifact: ReviewLaneArtifact;
+	readonly descriptor: FreshRecoveryDescriptor;
 }
 
 function sessionBinding(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): {
@@ -185,6 +213,11 @@ export class ReviewLoopCoordinator {
 			budget,
 			onDeadline: onTotalDeadline,
 			synthesisStarted: false,
+			cleanupCallbacks: new Set(),
+			preparedContextBytes: new Map(),
+			preparationClaimed: false,
+			freshRecoveryClaimed: false,
+			freshRecoveryDescriptors: new Map(),
 		};
 		if (budget) {
 			const binding = this.binding;
@@ -376,12 +409,60 @@ export class ReviewLoopCoordinator {
 		});
 	}
 
+	/** Claim the one asynchronous automatic-preparation lifecycle before any await. */
+	claimPreparation(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation ||
+			this.binding.preparationClaimed || this.binding.priorRelationship !== undefined) return false;
+		this.binding.preparationClaimed = true;
+		return true;
+	}
+
+	setPriorRelationship(
+		lease: ReviewLoopLease,
+		relationship: "none" | "same_head" | "incremental" | "diverged",
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation) return false;
+		this.binding.priorRelationship = relationship;
+		return true;
+	}
+
+	priorRelationship(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): "none" | "same_head" | "incremental" | "diverged" | undefined {
+		return this.binding && sameBinding(this.binding, ctx) ? this.binding.priorRelationship : undefined;
+	}
+
+	/** Atomically make failed automatic preparation eligible for the fresh path. */
+	failOpenPreparation(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.generation !== lease.generation ||
+			!this.binding.preparationClaimed) return false;
+		this.binding.preparedContextBytes.clear();
+		this.binding.priorRelationship = "none";
+		return this.artifactRegistry.reset(lease.generation);
+	}
+
 	registerExpectedArtifacts(
 		lease: ReviewLoopLease,
 		lanes: readonly ExpectedReviewLane[],
 		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	): boolean {
 		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.expect(lease.generation, lanes);
+	}
+
+	/** Register invocation-owned cleanup that runs exactly once on consume, clear, or replacement. */
+	registerCleanup(
+		lease: ReviewLoopLease,
+		cleanup: () => void,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return false;
+		this.binding.cleanupCallbacks.add(cleanup);
+		return true;
 	}
 
 	createArtifactPublisher(
@@ -420,6 +501,88 @@ export class ReviewLoopCoordinator {
 		}
 		const lease = this.acquire(ctx);
 		return lease ? this.artifactRegistry.expectedCount(lease.generation) : undefined;
+	}
+
+	registerPreparedContext(
+		lease: ReviewLoopLease,
+		key: string,
+		bytes: Uint8Array,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || !key || bytes.byteLength === 0) return false;
+		const existing = this.binding.preparedContextBytes.get(key);
+		if (existing && !existing.equals(bytes)) return false;
+		this.binding.preparedContextBytes.set(key, Buffer.from(bytes));
+		return true;
+	}
+
+	preparedContextMatches(
+		lease: ReviewLoopLease,
+		key: string,
+		bytes: Uint8Array,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return false;
+		const expected = this.binding.preparedContextBytes.get(key);
+		return expected ? expected.equals(bytes) : undefined;
+	}
+
+	preparedContext(
+		lease: ReviewLoopLease,
+		key: string,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): Buffer | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding) return undefined;
+		const bytes = this.binding.preparedContextBytes.get(key);
+		return bytes ? Buffer.from(bytes) : undefined;
+	}
+
+	claimArtifact(lease: ReviewLoopLease, key: string, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.claim(lease.generation, key);
+	}
+
+	/**
+	 * Consume the invocation's sole targeted fresh-lane recovery authorization.
+	 * The host chooses the first incomplete required lane in canonical order;
+	 * callers cannot redirect the reserved attempt to an unrelated scope.
+	 */
+	freshRecoveryWasClaimed(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return !!this.binding?.freshRecoveryClaimed && sameBinding(this.binding, ctx);
+	}
+
+	registerFreshRecoveryDescriptors(
+		lease: ReviewLoopLease,
+		descriptors: readonly FreshRecoveryDescriptor[],
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): boolean {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || descriptors.length === 0) return false;
+		const expected = this.artifactRegistry.expected(lease.generation);
+		const expectedKeys = new Set(expected?.map((lane) => lane.key) ?? []);
+		const suppliedKeys = new Set(descriptors.map((descriptor) => descriptor.key));
+		if (!expected || suppliedKeys.size !== descriptors.length || descriptors.some((descriptor) =>
+			!expectedKeys.has(descriptor.key) || this.binding!.freshRecoveryDescriptors.has(descriptor.key))) return false;
+		for (const descriptor of descriptors) this.binding.freshRecoveryDescriptors.set(descriptor.key, Object.freeze({ ...descriptor }));
+		return true;
+	}
+
+	claimFreshRecoveryTarget(
+		lease: ReviewLoopLease,
+		ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
+	): FreshRecoveryTarget | undefined {
+		if (!this.isLeaseActive(lease, ctx) || !this.binding || this.binding.freshRecoveryClaimed) return undefined;
+		const artifacts = this.artifactRegistry.snapshot(lease.generation) ?? [];
+		const artifactByKey = new Map(artifacts.map((artifact) => [artifact.key, artifact]));
+		const expected = this.artifactRegistry.expected(lease.generation)?.find((candidate) =>
+			artifactByKey.get(candidate.key)?.lifecycle !== "complete");
+		const artifact = expected && artifactByKey.get(expected.key);
+		const descriptor = expected && this.binding.freshRecoveryDescriptors.get(expected.key);
+		if (!artifact || !expected || !descriptor) return undefined;
+		this.binding.freshRecoveryClaimed = true;
+		return Object.freeze({ expected, artifact, descriptor });
+	}
+
+	freezeArtifacts(lease: ReviewLoopLease, ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): boolean {
+		return this.isLeaseActive(lease, ctx) && this.artifactRegistry.freeze(lease.generation);
 	}
 
 	artifactSnapshot(
@@ -535,6 +698,12 @@ export class ReviewLoopCoordinator {
 	}
 
 	private revokeBinding(): void {
+		if (this.binding) {
+			for (const cleanup of this.binding.cleanupCallbacks) {
+				try { cleanup(); } catch { /* cleanup is best-effort and authority still revokes */ }
+			}
+			this.binding.cleanupCallbacks.clear();
+		}
 		if (this.binding?.totalTimer) clearTimeout(this.binding.totalTimer);
 		if (this.binding?.synthesisTimer) clearTimeout(this.binding.synthesisTimer);
 		const generation = this.binding?.generation;

@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "31b0bb9266f2b6eee09fe0c0",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "3cef217143d17b5651a846f0",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "4640789981679fb26bae79c1",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The retained hard-timeout process output visibly reports the anchored shell command-injection defect at P1 after the targeted replacement completed."
+    },
+    {
+      "planEntryId": "526c383ae30f3923eba21294",
+      "strategy": "auto",
+      "expectedFindingId": "prior.listener-cleanup",
+      "selectedSeverity": "P2",
+      "reason": "The retained process output visibly reports the anchored still-open listener cleanup defect at source-authored P2 before audit validation failed."
+    },
+    {
+      "planEntryId": "903c06b1449c66e2272591bc",
+      "strategy": "incremental",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The anchored canonical finding states that omitting tenantId permits retrieval of another tenant’s document by a known foreign ID."
+    },
+    {
+      "planEntryId": "9d89f9104fa40447c2e1a81c",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected: one automatic same-head row failed audit validation and one corresponding explicit fresh row hit the collector hard timeout after a timed-out primary and successful targeted replacement. Automatic completion was 11/12 runs and 46/48 lanes, so absolute completion and the bounded latency policy failed closed."
+}

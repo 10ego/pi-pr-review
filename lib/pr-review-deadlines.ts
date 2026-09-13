@@ -166,12 +166,23 @@ export function activateReviewBatch(
 export function attemptDeadline(
 	budget: ReviewBudget,
 	tier: ReviewTier,
-	fallback: boolean,
+	recovery: boolean,
 	now: MonotonicNow = monotonicNow,
 ): number {
-	const runtime = fallback ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier];
+	const runtime = recovery ? budget.config.fallbackAttemptMs : budget.config.attemptMs[tier];
 	const terminationReserveMs = budget.config.terminationGraceMs + budget.config.cleanupReserveMs;
-	return Math.min(now() + runtime, budget.batchDeadlineMs, budget.totalDeadlineMs - terminationReserveMs);
+	const batchStartMs = budget.batchStartedAtMs ?? budget.startedAtMs;
+	const batchWindowMs = Math.max(0, budget.batchDeadlineMs - batchStartMs);
+	// A primary may not consume the whole shared batch. Keep one configured
+	// secondary window plus bounded teardown for both attempts, while preserving
+	// at least minimumFallbackMs for a primary when late activation shortens the
+	// batch below its configured size.
+	const recoveryReserveMs = Math.min(
+		budget.config.fallbackAttemptMs + (2 * terminationReserveMs),
+		Math.max(0, batchWindowMs - budget.config.minimumFallbackMs),
+	);
+	const batchAttemptDeadlineMs = recovery ? budget.batchDeadlineMs : budget.batchDeadlineMs - recoveryReserveMs;
+	return Math.min(now() + runtime, batchAttemptDeadlineMs, budget.totalDeadlineMs - terminationReserveMs);
 }
 
 export function fallbackBudget(

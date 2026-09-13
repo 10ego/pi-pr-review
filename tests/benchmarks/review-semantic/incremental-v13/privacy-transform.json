@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "ad53564ebc3ea516c09efb644755e65bd13095f30ea0e3ba0f3fe02093a32724",
+  "sanitizedRunManifestSha256": "99cc957dbde2e7e25bc98171f2966c22cde6dcb722274869e85de80e9cb02421",
+  "reportSha256": "1af174a915088ec5c78aa05c13e5f50435da56c96dd307d16af36521d82b900a",
+  "scorerSha256": "c6b7a233ea62d5b63e30ae801dc651e137c2940848450051269e68d9c04546af",
+  "transformations": ["replace local temporary and checkout paths in recursively embedded session evidence", "recompute embedded and outer artifact hashes, sizes, and manifests"],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable collection; report is diagnostic baseline_required and predeclared gates were evaluated directly"
+}

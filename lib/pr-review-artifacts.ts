@@ -128,7 +128,9 @@ function hasMeaningfulLightSection(text: string, field: string, fields: readonly
  * are documented in the public tool schema and both reviewer prompts: framing
  * labels may be plain (`Overview:`), bold (`**Overview:**`), or ATX headings
  * followed by one top-level value line; candidate fields may be plain/bold or
- * use the one exact top-level `- ` list marker. Blockquotes, code fences, JSON,
+ * use the one exact top-level `- ` list marker. Candidate label names are
+ * ASCII-case-insensitive, then canonicalized before order and uniqueness checks;
+ * values and all other productions remain exact. Blockquotes, code fences, JSON,
  * and other wrappers are not part of the contract. Nonblank contract lines do
  * not carry trailing horizontal whitespace, and a `why` continuation is exactly
  * two spaces plus a non-list line.
@@ -218,6 +220,12 @@ function escapePattern(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function asciiCaseInsensitivePattern(value: string): string {
+	return [...value].map((character) => /[A-Za-z]/.test(character)
+		? `[${character.toLowerCase()}${character.toUpperCase()}]`
+		: escapePattern(character)).join("");
+}
+
 /** Parse the exact framing forms; headings are accepted only for framing. */
 function framingLabel(line: string): MarkdownLabel | undefined {
 	if (/^[ \t]/.test(line)) return undefined;
@@ -234,10 +242,28 @@ function framingLabel(line: string): MarkdownLabel | undefined {
 
 /** Candidate fields are top-level one-line values with optional bold syntax or one exact `- ` marker. */
 function candidateLabel(line: string): MarkdownLabel | undefined {
-	const names = CANDIDATE_FIELDS.map(escapePattern).join("|");
+	const names = CANDIDATE_FIELDS.map(asciiCaseInsensitivePattern).join("|");
 	const match = new RegExp(`^(?:- )?(?:(?:\\*\\*)(${names}):(?:\\*\\*)|(?:__)(${names}):(?:__)|(${names}):)[ \t]*(.*)$`).exec(line);
 	if (!match) return undefined;
 	return { field: (match[1] ?? match[2] ?? match[3])!, value: match[4] ?? "", kind: "inline" };
+}
+
+/** Apply only bounded Markdown normalization to otherwise recognizable candidate field lines. */
+function normalizeCandidateLines(text: string): string {
+	return text.split("\n").map((original) => {
+		let line = original;
+		if (line.endsWith("  ") && !line.endsWith("   ")) {
+			const stripped = line.slice(0, -2);
+			const candidateLine = stripped.startsWith("  ") ? stripped.slice(2) : stripped;
+			if (candidateLabel(candidateLine)) line = stripped;
+		}
+		const candidateLine = line.startsWith("  ") ? line.slice(2) : line;
+		const label = candidateLabel(candidateLine), field = label ? canonicalField(label.field) : undefined;
+		const codeSpan = field === "location" ? /^`([^`\r\n]+)`$/.exec(label!.value) : undefined;
+		const boldTitle = field === "title" ? /^(?:\*\*([^*_\r\n]+)\*\*|__([^*_\r\n]+)__)$/.exec(label!.value) : undefined;
+		const normalizedValue = codeSpan?.[1] ?? boldTitle?.[1] ?? boldTitle?.[2];
+		return normalizedValue !== undefined ? `${line.slice(0, line.length - label!.value.length)}${normalizedValue}` : line;
+	}).join("\n");
 }
 
 type CandidateBlockStyle = "top-level" | "list-undecided" | "repeated-list" | "yaml-list";
@@ -306,7 +332,7 @@ function safeLocation(value: string): boolean {
 	if (!Number.isSafeInteger(start) || start < 1 || !Number.isSafeInteger(end) || end < start) return false;
 	if (!locationPath || Buffer.byteLength(locationPath, "utf8") > MAX_CANDIDATE_PATH_BYTES ||
 		locationPath.startsWith("/") || locationPath.startsWith("~") || /^[A-Za-z]:/.test(locationPath)) return false;
-	if (/[\\\u0000-\u001f\u007f]/.test(locationPath)) return false;
+	if (/[\\`\u0000-\u001f\u007f]/.test(locationPath)) return false;
 	const segments = locationPath.split("/");
 	return segments.length > 0 && segments.every((segment) => segment.length > 0 && segment === segment.trim() && segment !== "." && segment !== ".." && !segment.includes(":"));
 }
@@ -471,7 +497,8 @@ function parseCandidatePrefix(
 	return { candidates, consumedAll: true };
 }
 
-function parseIntegratedCompletion(text: string): boolean {
+function parseIntegratedCompletion(rawText: string): boolean {
+	const text = normalizeCandidateLines(rawText);
 	if (hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) || hasHtmlContainer(text)) return false;
 	const lines = text.split("\n");
 	let cursor = 0;
@@ -529,7 +556,7 @@ export function extractValidatedReviewLaneCandidates(
 	rawText: string,
 	expectedOutput: "review_lane" | "nonempty" = "review_lane",
 ): readonly ValidatedReviewLaneCandidate[] {
-	const text = normalizeReviewText(rawText);
+	const text = normalizeCandidateLines(normalizeReviewText(rawText));
 	if (
 		!text.trim() || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
@@ -609,7 +636,7 @@ function expectedLaneSections(input: ReviewLaneCompletionInput): boolean {
 }
 
 function parseOrdinaryCandidateCompletion(rawText: string): boolean {
-	const text = normalizeReviewText(rawText);
+	const text = normalizeCandidateLines(normalizeReviewText(rawText));
 	if (
 		!text.trim() || hasTrailingHorizontalWhitespace(text) || CODE_FENCE.test(text) ||
 		hasHtmlContainer(text) || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) ||
@@ -902,15 +929,18 @@ export class ReviewLaneArtifactRegistry {
 	private generation?: number;
 	private readonly artifacts = new Map<string, ReviewLaneArtifact>();
 	private readonly expectedLanes = new Map<string, ExpectedReviewLane>();
+	private readonly claimedLanes = new Set<string>();
+	private frozen = false;
 
 	open(generation: number): void {
 		this.close();
 		this.generation = generation;
+		this.frozen = false;
 	}
 
 	expect(generation: number, lanes: readonly ExpectedReviewLane[]): boolean {
 		if (
-			this.generation !== generation || lanes.length === 0 ||
+			this.generation !== generation || this.frozen || lanes.length === 0 ||
 			lanes.some((lane) => !lane.key || !new Set(["light", "medium", "heavy"]).has(lane.tier) ||
 				(lane.expectedOutput !== undefined && !new Set(["review_lane", "nonempty"]).has(lane.expectedOutput)))
 		) return false;
@@ -926,6 +956,12 @@ export class ReviewLaneArtifactRegistry {
 		return true;
 	}
 
+	claim(generation: number, laneKey: string): boolean {
+		if (this.generation !== generation || this.frozen || !this.expectedLanes.has(laneKey) || this.claimedLanes.has(laneKey)) return false;
+		this.claimedLanes.add(laneKey);
+		return true;
+	}
+
 	expectedCount(generation: number): number | undefined {
 		return this.generation === generation ? this.expectedLanes.size : undefined;
 	}
@@ -934,13 +970,19 @@ export class ReviewLaneArtifactRegistry {
 		return this.generation === generation ? Object.freeze([...this.expectedLanes.values()]) : undefined;
 	}
 
+	freeze(generation: number): boolean {
+		if (this.generation !== generation) return false;
+		this.frozen = true;
+		return true;
+	}
+
 	retain(generation: number, artifact: ReviewLaneArtifact): boolean {
 		try {
 			// Read and validate every downstream-consumed field inside try/catch and
 			// store the safe frozen snapshot, never the hostile original.
 			const snapshot = laneArtifactSnapshot(artifact);
 			if (
-				!snapshot ||
+				!snapshot || this.frozen ||
 				this.generation !== generation || snapshot.generation !== generation ||
 				!this.expectedLanes.has(snapshot.key)
 			) return false;
@@ -953,6 +995,15 @@ export class ReviewLaneArtifactRegistry {
 			// are rejected at this boundary; the deterministic degraded flow continues.
 			return false;
 		}
+	}
+
+	reset(generation: number): boolean {
+		if (this.generation !== generation) return false;
+		this.artifacts.clear();
+		this.expectedLanes.clear();
+		this.claimedLanes.clear();
+		this.frozen = false;
+		return true;
 	}
 
 	snapshot(generation: number): readonly ReviewLaneArtifact[] | undefined {
@@ -968,6 +1019,8 @@ export class ReviewLaneArtifactRegistry {
 		if (generation !== undefined && this.generation !== generation) return;
 		this.artifacts.clear();
 		this.expectedLanes.clear();
+		this.claimedLanes.clear();
+		this.frozen = false;
 		this.generation = undefined;
 	}
 }

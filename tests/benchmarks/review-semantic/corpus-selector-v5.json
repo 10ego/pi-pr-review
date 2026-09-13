@@ -1,0 +1,453 @@
+{
+  "schemaVersion": 2,
+  "corpusId": "pi-pr-review-semantic-selector-v5",
+  "description": "Replacement automatic selector campaign after v4 multi-row batch interruption; source-bound severity, paired latency, seeded cases, and relationships are unchanged.",
+  "lenses": [
+    "correctness-contracts",
+    "security-performance",
+    "performance-resources"
+  ],
+  "cases": [
+    {
+      "id": "open-blocker",
+      "title": "Unchanged authorization blocker with a benign follow-up",
+      "diff": "diffs/v7/open-blocker-full.diff",
+      "diffSha256": "1e391e899756a6672c811037a791c712addacaf88166cefd2f2c54db268964a9",
+      "diffBytes": 482,
+      "changedFiles": [
+        "src/access.ts",
+        "src/labels.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "prior.tenant-check",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P0",
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/access.ts",
+              "side": "RIGHT",
+              "start": 2,
+              "end": 2
+            }
+          ],
+          "rationale": "Returning true for every tenant removes the ownership boundary and enables unauthorized cross-tenant document reads.",
+          "lenses": [
+            "correctness-contracts"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "tenant",
+              "ownership"
+            ],
+            [
+              "true",
+              "check"
+            ],
+            [
+              "access",
+              "read"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(tenant|ownership).{0,100}(check|comparison|boundary)",
+              "(check|comparison|boundary).{0,100}(tenant|ownership)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "ownership (?:is|remains) enforced",
+            "cross-tenant access (?:is|was) prevented"
+          ]
+        }
+      ],
+      "priorState": {
+        "relationship": "incremental",
+        "priorDiff": {
+          "path": "diffs/v7/open-blocker-prior.diff",
+          "sha256": "8abb63ccbed32efb1242ead231b2c315325b7fda809fb0851d50f87a2170d3ea",
+          "bytes": 266
+        },
+        "incrementalDiff": {
+          "path": "diffs/v7/open-blocker-incremental.diff",
+          "sha256": "df929a84445c8f5fda5b2044c0fb45baeefec3f0674a5c10a80ce30dcd3f5bdd",
+          "bytes": 216
+        },
+        "review": {
+          "id": 7001,
+          "submittedAt": "2026-09-01T12:00:00Z",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
+          "comments": [
+            {
+              "id": 8001,
+              "path": "src/access.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "**[P1] Restore tenant ownership check**\n\nReturning true bypasses the tenant comparison and allows a caller to read another tenant’s document."
+            }
+          ]
+        },
+        "expectedStatuses": [
+          {
+            "title": "Restore tenant ownership check",
+            "status": "still open",
+            "currentFindingId": "prior.tenant-check"
+          }
+        ],
+        "cumulative": true
+      }
+    },
+    {
+      "id": "resolved-blocker",
+      "title": "Prior nullability blocker resolved by the follow-up",
+      "diff": "diffs/v7/resolved-blocker-full.diff",
+      "diffSha256": "e01fab3500aa1017fb5a7ecae4a260ec96b9a0dae5a528129419e797bc888425",
+      "diffBytes": 311,
+      "changedFiles": [
+        "src/profile.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": [],
+      "priorState": {
+        "relationship": "incremental",
+        "priorDiff": {
+          "path": "diffs/v7/resolved-blocker-prior.diff",
+          "sha256": "42290e68aa5e9f038c82853072415c0228f49b121dce0bd3503be800b7c5d909",
+          "bytes": 273
+        },
+        "incrementalDiff": {
+          "path": "diffs/v7/resolved-blocker-incremental.diff",
+          "sha256": "b28f94f5c9e280dbab07d62c602a1114a5afb52a4181734abc9e372d0d25e922",
+          "bytes": 294
+        },
+        "review": {
+          "id": 7002,
+          "submittedAt": "2026-09-02T12:00:00Z",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
+          "comments": [
+            {
+              "id": 8002,
+              "path": "src/profile.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "**[P1] Handle missing profiles before trimming**\n\nDereferencing profile.name throws when either the profile or its optional name is absent."
+            }
+          ]
+        },
+        "expectedStatuses": [
+          {
+            "title": "Handle missing profiles before trimming",
+            "status": "resolved"
+          }
+        ],
+        "cumulative": true
+      }
+    },
+    {
+      "id": "obsolete-and-new",
+      "title": "Obsolete cache finding followed by a new tenant-scope blocker",
+      "diff": "diffs/v7/obsolete-and-new-full.diff",
+      "diffSha256": "adc53e67cb09052cec94f1513eaadcd42a7963fd4824f25e00bfc27f68b4840d",
+      "diffBytes": 915,
+      "changedFiles": [
+        "src/cache.ts",
+        "src/documents.ts",
+        "src/service.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": true,
+      "expectedFindings": [
+        {
+          "id": "current.tenant-scope",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P0",
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/documents.ts",
+              "side": "RIGHT",
+              "start": 1,
+              "end": 2
+            },
+            {
+              "path": "src/service.ts",
+              "side": "RIGHT",
+              "start": 3,
+              "end": 3
+            }
+          ],
+          "rationale": "Removing tenantId from both the service call and database predicate permits a user to retrieve another tenant’s document by ID.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": true,
+          "requiredConcepts": [
+            [
+              "tenant",
+              "tenantId"
+            ],
+            [
+              "document",
+              "id"
+            ],
+            [
+              "access",
+              "retrieve"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(tenant|tenantId).{0,120}(remov|omit|missing|scope)",
+              "(remov|omit|missing|scope).{0,120}(tenant|tenantId)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "tenant (?:scope|ownership) (?:is|remains) enforced",
+            "cross-tenant (?:access|retrieval) (?:is|was) prevented"
+          ]
+        }
+      ],
+      "priorState": {
+        "relationship": "incremental",
+        "priorDiff": {
+          "path": "diffs/v7/obsolete-and-new-prior.diff",
+          "sha256": "fbe6a327334b61b47d57e74ae9376c3aabecbb930342d1ba53902608dfdf98cb",
+          "bytes": 257
+        },
+        "incrementalDiff": {
+          "path": "diffs/v7/obsolete-and-new-incremental.diff",
+          "sha256": "c680c8341bfb30c577c80c91d0b925c68965f7c6b8e487b88f8912b46a7a3197",
+          "bytes": 914
+        },
+        "review": {
+          "id": 7003,
+          "submittedAt": "2026-09-03T12:00:00Z",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
+          "comments": [
+            {
+              "id": 8003,
+              "path": "src/cache.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "**[P2] Parse the cached payload instead of the wrapper**\n\nJSON.parse receives the cache wrapper object rather than its serialized payload."
+            }
+          ]
+        },
+        "expectedStatuses": [
+          {
+            "title": "Parse the cached payload instead of the wrapper",
+            "status": "obsolete"
+          }
+        ],
+        "cumulative": true
+      }
+    },
+    {
+      "id": "same-head",
+      "title": "Exact-head listener finding requiring revalidation only",
+      "diff": "diffs/v7/same-head-full.diff",
+      "diffSha256": "3aef6b0763c106e7888693225dda7ce7edf17c288966f447a59297c57f167329",
+      "diffBytes": 305,
+      "changedFiles": [
+        "src/socket.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "prior.listener-cleanup",
+          "targetSeverity": "P2",
+          "allowedSeverities": [
+            "P2"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/socket.ts",
+              "side": "RIGHT",
+              "start": 3,
+              "end": 3
+            }
+          ],
+          "rationale": "The returned cleanup is empty, so each attachment leaves its message listener registered and accumulates retained handlers.",
+          "lenses": [
+            "performance-resources"
+          ],
+          "blocking": false,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "listener",
+              "handler"
+            ],
+            [
+              "cleanup",
+              "return"
+            ],
+            [
+              "remove",
+              "off"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "(cleanup|return).{0,100}(empty|no-op|does not).{0,100}(listener|handler)",
+              "(listener|handler).{0,100}(remain|retain|leak|accumulat)"
+            ]
+          ],
+          "contradictionPatterns": [
+            "listener (?:is|gets) removed",
+            "cleanup (?:does|will) unregister"
+          ]
+        }
+      ],
+      "priorState": {
+        "relationship": "same_head",
+        "priorDiff": {
+          "path": "diffs/v7/same-head-prior.diff",
+          "sha256": "3aef6b0763c106e7888693225dda7ce7edf17c288966f447a59297c57f167329",
+          "bytes": 305
+        },
+        "incrementalDiff": null,
+        "review": {
+          "id": 7004,
+          "submittedAt": "2026-09-04T12:00:00Z",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
+          "comments": [
+            {
+              "id": 8004,
+              "path": "src/socket.ts",
+              "line": 3,
+              "side": "RIGHT",
+              "body": "**[P2] Remove the message listener during cleanup**\n\nThe no-op cleanup never calls socket.off, retaining every message handler after the consumer detaches."
+            }
+          ]
+        },
+        "expectedStatuses": [
+          {
+            "title": "Remove the message listener during cleanup",
+            "status": "still open",
+            "currentFindingId": "prior.listener-cleanup"
+          }
+        ],
+        "cumulative": true
+      }
+    },
+    {
+      "id": "no-prior",
+      "title": "No prior marker with a fresh shell-injection defect",
+      "diff": "diffs/v7/no-prior-full.diff",
+      "diffSha256": "99a8cb4be3362043cc4a40b139c584924a9504dc9ba9c56afdd4335e02451b9b",
+      "diffBytes": 351,
+      "changedFiles": [
+        "src/branch.ts"
+      ],
+      "cleanControl": false,
+      "crossFile": false,
+      "expectedFindings": [
+        {
+          "id": "current.command-injection",
+          "targetSeverity": "P1",
+          "allowedSeverities": [
+            "P0",
+            "P1"
+          ],
+          "acceptableLocations": [
+            {
+              "path": "src/branch.ts",
+              "side": "RIGHT",
+              "start": 1,
+              "end": 3
+            }
+          ],
+          "rationale": "Interpolating an untrusted branch into an exec shell command lets shell metacharacters execute arbitrary commands.",
+          "lenses": [
+            "security-performance"
+          ],
+          "blocking": true,
+          "crossFile": false,
+          "requiredConcepts": [
+            [
+              "branch"
+            ],
+            [
+              "exec",
+              "shell"
+            ],
+            [
+              "injection",
+              "command"
+            ]
+          ],
+          "assertionPatterns": [
+            [
+              "branch.{0,100}(interpolat|shell).{0,100}(inject|command)",
+              "(inject|arbitrary command).{0,100}branch"
+            ]
+          ],
+          "contradictionPatterns": [
+            "execFile.{0,80}(argv|argument)",
+            "branch (?:is|was) escaped",
+            "command injection (?:is|was) prevented"
+          ]
+        }
+      ],
+      "priorState": {
+        "relationship": "none",
+        "priorDiff": null,
+        "incrementalDiff": null,
+        "review": null,
+        "expectedStatuses": [],
+        "cumulative": true
+      }
+    },
+    {
+      "id": "diverged",
+      "title": "Diverged prior review with a clean current refactor",
+      "diff": "diffs/v7/diverged-full.diff",
+      "diffSha256": "761f844783bd73074344085931865062f3ff19a1a74deab62b04def6e392f3d6",
+      "diffBytes": 292,
+      "changedFiles": [
+        "src/retry.ts"
+      ],
+      "cleanControl": true,
+      "crossFile": false,
+      "expectedFindings": [],
+      "priorState": {
+        "relationship": "diverged",
+        "priorDiff": {
+          "path": "diffs/v7/diverged-prior.diff",
+          "sha256": "5bea72a4a5d50bd05020095728b301019e7ae03d588993576423c65bbd771ce6",
+          "bytes": 272
+        },
+        "incrementalDiff": null,
+        "review": {
+          "id": 7006,
+          "submittedAt": "2026-09-06T12:00:00Z",
+          "body": "# PR Review\n\nPrior review completed.\n\n<!-- pi-pr-review: {\"schema\":1,\"headRefOid\":\"{{PRIOR_HEAD}}\"} -->",
+          "comments": [
+            {
+              "id": 8006,
+              "path": "src/retry.ts",
+              "line": 2,
+              "side": "RIGHT",
+              "body": "**[P2] Avoid infinite retry delays**\n\nReturning positive infinity causes the scheduler to retain retries that can never become runnable."
+            }
+          ]
+        },
+        "expectedStatuses": [],
+        "cumulative": true
+      }
+    }
+  ]
+}

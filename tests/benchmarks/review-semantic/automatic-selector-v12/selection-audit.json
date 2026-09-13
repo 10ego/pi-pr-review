@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "entryId": "9b1a63c7edb743b7f590cd62",
+      "caseId": "open-blocker",
+      "repetition": 1,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "3984598cd4d0da6e7ef5c23e",
+      "caseId": "resolved-blocker",
+      "repetition": 1,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "0ed0fff82d199b5ae3f0eea5",
+      "caseId": "obsolete-and-new",
+      "repetition": 1,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "272e2307292d5704b49fc9ac",
+      "caseId": "same-head",
+      "repetition": 1,
+      "expectedRelationship": "same_head",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "same_head"
+        }
+      ]
+    },
+    {
+      "entryId": "6ff1d0e912f638d882ae590b",
+      "caseId": "no-prior",
+      "repetition": 1,
+      "expectedRelationship": "none",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "fresh",
+          "reason": "none"
+        }
+      ]
+    },
+    {
+      "entryId": "86d0003f26e50cc8b57bf12c",
+      "caseId": "diverged",
+      "repetition": 1,
+      "expectedRelationship": "diverged",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "fresh",
+          "reason": "diverged"
+        }
+      ]
+    },
+    {
+      "entryId": "b487f49003d1b2c460ddcf97",
+      "caseId": "open-blocker",
+      "repetition": 2,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "903d4ed39d3a033e37bb896e",
+      "caseId": "resolved-blocker",
+      "repetition": 2,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "729bf4d920bd49ab7d987234",
+      "caseId": "obsolete-and-new",
+      "repetition": 2,
+      "expectedRelationship": "incremental",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "incremental"
+        }
+      ]
+    },
+    {
+      "entryId": "9ea2cc90acebe93b4692fb86",
+      "caseId": "same-head",
+      "repetition": 2,
+      "expectedRelationship": "same_head",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "incremental",
+          "reason": "same_head"
+        }
+      ]
+    },
+    {
+      "entryId": "cd55f8567a09494ef519055d",
+      "caseId": "no-prior",
+      "repetition": 2,
+      "expectedRelationship": "none",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "fresh",
+          "reason": "none"
+        }
+      ]
+    },
+    {
+      "entryId": "3f2f0ea986db1be55b522a50",
+      "caseId": "diverged",
+      "repetition": 2,
+      "expectedRelationship": "diverged",
+      "events": [
+        {
+          "requested": "auto",
+          "selected": "fresh",
+          "reason": "diverged"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage and severity without modifying the frozen corpus, run artifacts, or raw scorer report.",
+  "method": "Every canonical review for the four defect-bearing cases was checked against the expected source location, causal mechanism, impact, and target severity. Equivalent wording missed by the bounded scorer was counted as present; severity was read from the selected canonical finding label.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "b89e049d5554bb2ef986671d",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Restrict login redirects to trusted destinations",
+      "selectedSeverity": "P2",
+      "reason": "The finding at src/redirect.ts:2 identifies an attacker-controlled return URL passed to location.assign as an open redirect; it is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "b89e049d5554bb2ef986671d",
+      "strategy": "fresh",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Redact issued tokens before auditing",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/token.ts:4 states that a replayable issued credential is forwarded unchanged to console-backed audit logs."
+    },
+    {
+      "planEntryId": "1ccbdd0bacbbe1cc2dc8900c",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Unvalidated return URL enables an open redirect",
+      "selectedSeverity": "P2",
+      "reason": "The finding at src/redirect.ts:2 explicitly describes arbitrary cross-origin navigation through location.assign; it is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "1ccbdd0bacbbe1cc2dc8900c",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Issued authentication tokens are exposed in logs",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/token.ts:4 identifies a replayable issued credential written to console or centralized logs."
+    },
+    {
+      "planEntryId": "85cddd34743f15f36dce71e9",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.poll-timer",
+      "canonicalTitle": "[P1] Restore interval cancellation in the polling disposer",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/poll.ts:2-3 states that cleanup no longer stops the interval, retaining closures, work, and the Node.js process; it is overclassified against the P2 target."
+    },
+    {
+      "planEntryId": "6001fcb405c19922a8fa8c6e",
+      "strategy": "incremental",
+      "expectedFindingId": "false-fix.tenant-check",
+      "canonicalTitle": "[P1] Preserve tenant isolation when authorizing document reads",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/access.ts:2 states that unconditional true removes the tenant comparison and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "fff56358ff45a3af334cca42",
+      "strategy": "incremental",
+      "expectedFindingId": "invalid-rejection.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant validation for document access",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/access.ts:2 states that ignoring both tenant identifiers and returning true eliminates tenant isolation."
+    },
+    {
+      "planEntryId": "5d5697ce29daeae514e5e837",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued tokens to application logs",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/token.ts:4 states that live bearer or session tokens are sent to application logs and can be replayed."
+    },
+    {
+      "planEntryId": "b34a25d6915e07cda754a850",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict redirects to approved same-origin destinations",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/redirect.ts:2 states that an untrusted return URL passed to location.assign permits attacker-controlled redirects."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incremental": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incrementalStillOpenCarryForward": { "matched": 6, "opportunities": 6, "recall": 1 }
+  },
+  "adjudicatedSeverity": {
+    "fresh": { "matched": 12, "underclassified": 1, "overclassified": 2, "exactSeverityRate": 0.75 },
+    "incremental": { "matched": 12, "underclassified": 1, "overclassified": 1, "exactSeverityRate": 0.8333333333333334 }
+  },
+  "operationalResults": {
+    "freshCompleteRuns": 10,
+    "incrementalCompleteRuns": 11,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.9666666666666667,
+    "incrementalLaneCompleteRate": 0.975,
+    "freshPublicationFallbackRate": 0.16666666666666666,
+    "incrementalPublicationFallbackRate": 0.08333333333333333
+  },
+  "contractRetryAudit": [
+    {
+      "planEntryId": "1ccbdd0bacbbe1cc2dc8900c",
+      "caseId": "missed-old-and-new",
+      "attempts": ["partial", "complete"],
+      "firstAttemptElapsedMsApprox": 506000,
+      "secondAttemptElapsedMsApprox": 56000,
+      "fallbackUsed": false,
+      "finalLaneStatus": "complete"
+    },
+    {
+      "planEntryId": "ce7857f1f61773771fab6c6c",
+      "caseId": "malicious-same-head",
+      "attempts": ["partial", "partial"],
+      "firstAttemptElapsedMsApprox": 21000,
+      "secondAttemptElapsedMsApprox": 31000,
+      "fallbackUsed": false,
+      "finalLaneStatus": "partial"
+    }
+  ],
+  "comparativeResults": {
+    "freshDuplicateRate": 0.34146341463414637,
+    "incrementalDuplicateRate": 0.1111111111111111,
+    "completePairFreshMedianLatencyMs": 60094.858,
+    "completePairIncrementalMedianLatencyMs": 116772.529,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 1.9431367821852576
+  },
+  "decision": "automatic selection rejected; explicit --incremental retained because one required incremental gap lane remained partial and incremental complete-pair median latency was worse than fresh"
+}

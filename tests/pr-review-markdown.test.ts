@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { demoteHeadings, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
+import { demoteHeadings, retainedReviewCandidateTexts, safeReviewBody, synthesizeReviewArtifact } from "../lib/pr-review-markdown.ts";
 import { classifyReviewLane } from "../lib/pr-review-artifacts.ts";
 import { validateInlineComments } from "../lib/pr-review-publish.ts";
 import type { ReviewLaneArtifact } from "../lib/pr-review-artifacts.ts";
@@ -311,6 +311,42 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.mergeApprovalEligible).toBeTrue();
 	});
 
+	test("accepts a source-verified rejected prior status as non-blocking", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve");
+		const rejected = approve.replace(
+			"## Findings",
+			"## Prior findings\n- rejected: [P1] nil map guard — src/a.ts:12 is unreachable because construction validates the map before publication.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: rejected,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["nil map guard"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "rejected", severity: "P1", title: "nil map guard", evidence: "src/a.ts:12 is unreachable after construction validation" }],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("host-rendered structured statuses replace an omitted assistant classification", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"## Findings",
+			"## Prior findings\nNone.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical title"],
+			priorRevalidationStatuses: [{ findingId: "thread:9", status: "rejected", severity: "P1", title: "Canonical title", evidence: "The source invariant was verified." }],
+		});
+		expect(artifact.body).toContain("- rejected: [P1] Canonical title — The source invariant was verified.");
+		expect(artifact.body).not.toContain("## Prior findings\nNone.");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+	});
+
 	test("blocks approval when Prior findings discloses a still-open finding Findings does not carry", () => {
 		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
 			"## Findings\n\n### [P2] Keep the raw synthesis\n**Severity:** P2\n**Rationale:** Partial extraction must not drop this rationale.\n**Confidence:** 0.90\n**Location:** `src/review.ts:10-11 RIGHT`",
@@ -453,7 +489,18 @@ describe("Markdown-first canonical review artifacts", () => {
 			priorRevalidationRequiredTitles: titles,
 		});
 		expect(disclosed.quality).toBe("fully_parsed");
-		expect(disclosed.mergeApprovalEligible).toBeTrue();
+		expect(disclosed.mergeApprovalEligible).toBeFalse();
+		const hostBound = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			...lanes,
+			priorRevalidationRequiredTitles: titles,
+			priorRevalidationStatuses: [
+				{ findingId: "a", status: "resolved", severity: "P1", title: titles[0], evidence: "reconstructed above" },
+				{ findingId: "b", status: "resolved", severity: "P2", title: titles[1], evidence: "replies skipped" },
+			],
+		});
+		expect(hostBound.mergeApprovalEligible).toBeTrue();
 		// A title mentioned in prose without a status prefix discloses nothing.
 		const proseOnly = synthesizeReviewArtifact({
 			rawText: approve.replace(
@@ -516,6 +563,24 @@ describe("Markdown-first canonical review artifacts", () => {
 			rawText: approve, ...binding, ...lanes,
 		});
 		expect(reentered.mergeApprovalEligible).toBeTrue();
+	});
+
+	test("does not let a shorter unrelated finding title satisfy still-open re-entry", () => {
+		const approve = markdown.replace("**Verdict:** comment", "**Verdict:** approve").replace(
+			"### [P2] Keep the raw synthesis",
+			"### [P2] loop",
+		).replace(
+			"## Findings",
+			"## Prior findings\n- still open: [P2] Critical retry loop — the defect persists.\n\n## Findings",
+		);
+		const artifact = synthesizeReviewArtifact({
+			rawText: approve,
+			...binding,
+			laneArtifacts: [completeLane],
+			expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Critical retry loop"],
+		});
+		expect(artifact.mergeApprovalEligible).toBeFalse();
 	});
 
 	test("rejects out-of-contract level-two sections", () => {
@@ -975,6 +1040,53 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(missingExpected.mergeApprovalEligible).toBe(false);
 	});
 
+	test("keeps strict JSON parsing when host prior statuses are recorded", () => {
+		const strictJsonReview = {
+			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
+			disposition: "reviewed" as const,
+			verification: "Passed.", overview: "No current blockers.", findings: [], verdict: "approve",
+		};
+		const artifact = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical prior"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "resolved", severity: "P1", title: "Canonical prior", evidence: "verified in current source" }],
+		});
+		expect(artifact.quality).toBe("fully_parsed");
+		expect(artifact.body).toBe("");
+		expect(artifact.mergeApprovalEligible).toBeTrue();
+
+		const stillOpen = synthesizeReviewArtifact({
+			rawText: JSON.stringify(strictJsonReview), ...binding, strictJsonReview,
+			laneArtifacts: [completeLane], expectedLaneDescriptors: [completeExpectedLane],
+			priorRevalidationRequiredTitles: ["Canonical prior"],
+			priorRevalidationStatuses: [{ findingId: "thread:1", status: "still open", severity: "P1", title: "Canonical prior", evidence: "defect remains in current source" }],
+		});
+		expect(stillOpen.quality).toBe("fully_parsed");
+		expect(stillOpen.mergeApprovalEligible).toBeFalse();
+	});
+
+	test("uses host-recorded candidate IDs as the authoritative finding set", () => {
+		const candidate = [
+			"title: [P1] Preserve retained blockers",
+			"severity: P1",
+			"why: A complete host lane retained this blocking candidate.",
+			"location: src/review.ts:10-10",
+			"side: RIGHT",
+			"in_diff: yes",
+			"pr_related: yes",
+			"confidence: 0.90",
+		].join("\n");
+		const lane = { ...completeLane, rawText: candidate } satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown, ...binding, laneArtifacts: [lane], expectedLaneDescriptors: [completeExpectedLane],
+			candidateDispositionRecorded: true, acceptedCandidateIds: ["correctness:0:1"],
+		});
+		expect(artifact.review.findings?.map((finding) => finding.title)).toEqual(["[P1] Preserve retained blockers"]);
+		expect(artifact.body).toContain("Preserve retained blockers");
+		expect(artifact.body).not.toContain("Keep the raw synthesis");
+	});
+
 	test("does not let a strict skipped disposition suppress retained lane candidates", () => {
 		const strictJsonReview = {
 			pr: { number: 57, title: "t", head_sha: "a".repeat(40) },
@@ -1261,6 +1373,33 @@ describe("Markdown-first canonical review artifacts", () => {
 		expect(artifact.review.findings?.[1]?.body).toContain("Recommend validating this comment independently.");
 	});
 
+	test("does not duplicate a paraphrased recovered candidate already present at the same canonical anchor", () => {
+		const lane = {
+			...completeLane,
+			key: "recovered:0",
+			passId: "recovered",
+			rawText: [
+				"title: [P2] Keep the raw synthesis",
+				"severity: P2",
+				"why: The lane independently phrases the same anchored defect differently.",
+				"location: src/review.ts:10-11",
+				"side: RIGHT",
+				"in_diff: yes",
+				"pr_related: yes",
+				"confidence: 0.95",
+			].join("\n"),
+		} satisfies ReviewLaneArtifact;
+		const artifact = synthesizeReviewArtifact({
+			rawText: markdown,
+			...binding,
+			laneArtifacts: [lane],
+			expectedLaneDescriptors: [{ key: lane.key, tier: lane.tier, minorHygiene: false }],
+		});
+		expect(artifact.review.findings).toHaveLength(1);
+		expect(artifact.review.findings?.[0]?.body).toContain("Partial extraction must not drop this rationale.");
+		expect(artifact.review.findings?.[0]?.body).not.toContain("Recommend validating");
+	});
+
 	test("appends retained lane evidence when terminal synthesis is a nonempty partial prefix", () => {
 		const lane = {
 			generation: 1,
@@ -1391,6 +1530,18 @@ describe("Markdown-first canonical review artifacts", () => {
 		const artifact = synthesizeReviewArtifact({ rawText: "", ...binding, laneArtifacts: [lane] });
 		expect(artifact.body).toContain("### overview-shard-1 — partial");
 		expect(artifact.body).toContain('- "overview-shard-1" — `partial`');
+	});
+
+	test("exposes the exact retry texts used for retained candidate IDs", () => {
+		const earlier = "title: [P2] Earlier\nseverity: P2\nwhy: retained\nlocation: x.ts:1\nside: RIGHT\nin_diff: yes\npr_related: yes\nconfidence: 0.8";
+		expect(retainedReviewCandidateTexts("malformed fallback", [
+			{ ordinal: 1, rawText: earlier },
+			{ ordinal: 2, rawText: "malformed fallback" },
+		], "review_lane")).toEqual(["malformed fallback", earlier]);
+		expect(retainedReviewCandidateTexts("NO FINDINGS.", [
+			{ ordinal: 1, rawText: earlier },
+			{ ordinal: 2, rawText: "NO FINDINGS." },
+		], "review_lane")).toEqual([]);
 	});
 
 	test("recovers validated findings from an earlier attempt when the terminal fallback is malformed", () => {

@@ -1,0 +1,18 @@
+diff --git a/src/redirect.ts b/src/redirect.ts
+index 3ad5e11..c5c271a 100644
+--- a/src/redirect.ts
++++ b/src/redirect.ts
+@@ -1,3 +1,3 @@
+ export function finishLogin(returnUrl: string) {
+-	location.assign("/dashboard");
++	location.assign(returnUrl);
+ }
+diff --git a/src/cache.ts b/src/cache.ts
+index 695e063..75b14bc 100644
+--- a/src/cache.ts
++++ b/src/cache.ts
+@@ -1,3 +1,3 @@
+ export function cachedName(cache: Record<string, string>, key: string) {
+-	return cache[key] ?? "Anonymous";
++	return cache[key].trim();
+ }

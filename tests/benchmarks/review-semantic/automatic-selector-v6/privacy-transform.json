@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "0f9a8a1e2dea2110992f57bc5f1fe1558d6dabafbe8c8d1cc2c8bdb3e239c16c",
+  "sanitizedRunManifestSha256": "6e84b5470445e24de7a16e548aa487901c765b20f146063d7fc43872c8be3e2c",
+  "reportSha256": "f7de7b62c514fd76eb6ad6ce6184ca6cffd18f396a1648a380d772e2bbd3bba5",
+  "selectionAuditSha256": "d9f01844fd7493e6c423f59822c08e119b29f3b55db81a9d8b4847b9d0aaa0ce",
+  "adjudicationSha256": "95db8605fecdb02a57b2ffb54d27e821ab3b825261e37dcf6a4ca56f1a55aeba",
+  "scorerSha256": "c6b3afd1996f6359789eb57495b107086bbaa4b5978beeec56a9f68d352f02d8",
+  "transformations": [
+    "replace private benchmark workspace and system temporary paths in recursively embedded session evidence",
+    "recompute embedded session, artifact, outer run, and manifest hashes and sizes"
+  ],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection without reruns; automatic defaulting rejected by retained Pi/provider lifecycle timeout"
+}

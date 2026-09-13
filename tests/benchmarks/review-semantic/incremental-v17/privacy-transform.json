@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "70f5a48ab9534554b8306786e3c4ca49c5dae1219b7e0e3bc8bfbe49a34c3805",
+  "sanitizedRunManifestSha256": "8101f608af35ccb98f7885e6aed639661efd15fbfad71b23156ef1f91d502904",
+  "reportSha256": "4d20f5565684f9b0b8e2cc64aa55d88429c68d3054957c4c089049afccbe4646",
+  "scorerSha256": "400d0dbb1d50f182c15c0e1be73a549659a854e2b4285c7e4b6cd32f859ab8e4",
+  "adjudicationSha256": "fd025d21664620fd35eeba36d5d2a64a6962772204766a812008fbdaa884e887",
+  "transformations": ["replace local temporary and checkout paths in recursively embedded session evidence", "recompute embedded and outer artifact hashes, sizes, and manifests"],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable collection with one retained failed row; raw report and separate visible-defect adjudication retained"
+}

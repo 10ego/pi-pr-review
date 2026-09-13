@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "planId": "5fcb293a25fb0a7b9f3339791c7b3f800b4dbce1b1d58299b412b2c4a9b159c6",
+  "valid": false,
+  "reruns": 0,
+  "attempts": [
+    {
+      "entryId": "9a553511e7ecfeb4a78f8054",
+      "ordinal": 1,
+      "outcome": "retained",
+      "message": "Collected with Pi exit 0 and publication suppressed."
+    },
+    {
+      "entryId": "378d350eaeb871cc31ea7615",
+      "ordinal": 2,
+      "outcome": "executed_not_retained",
+      "message": "Semantic benchmark invalid: run 378d350eaeb871cc31ea7615 retained prior-review outcome binding"
+    },
+    {
+      "entryId": "ee60e90397ee759ae6e943cd",
+      "ordinal": 3,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "fa77ceda6e708c045f81413f",
+      "ordinal": 4,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "f4bbc1fccef16ef72574c9fe",
+      "ordinal": 5,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "b3feb5d574a83953e712904a",
+      "ordinal": 6,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "0c65de180011f18e16ac1c82",
+      "ordinal": 7,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "8164f172d5c2ac9434972b07",
+      "ordinal": 8,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "1a1e56189b55d7b975c97554",
+      "ordinal": 9,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "7f5fb2a80d9b198bc484058f",
+      "ordinal": 10,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "e437b8b94b87733fa9038050",
+      "ordinal": 11,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "21e4241d6231cc684b8ce850",
+      "ordinal": 12,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "40d8a1288e57ff7039389ca8",
+      "ordinal": 13,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "24bf8e63be9f8e214ba08fb9",
+      "ordinal": 14,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "cf2c57955748b14d61e30d6c",
+      "ordinal": 15,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "5b2ab418d9a747ef1b500a7d",
+      "ordinal": 16,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "1548fd9b5b40abb134a95a92",
+      "ordinal": 17,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "e5f449b796c25cb65d19baff",
+      "ordinal": 18,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "5f3476d733ba4fc02361a335",
+      "ordinal": 19,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "aa36a18fc01dd836b66907b8",
+      "ordinal": 20,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "bd062529b3ba602fb585d418",
+      "ordinal": 21,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "8416b3d981f71a23d5d78187",
+      "ordinal": 22,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "32e8c2da3131586269c6881a",
+      "ordinal": 23,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    },
+    {
+      "entryId": "6ac492f3260b6cf5a0c48352",
+      "ordinal": 24,
+      "outcome": "refused_missing_prior",
+      "message": "Semantic collector refused: prior plan entry 378d350eaeb871cc31ea7615 is missing"
+    }
+  ]
+}

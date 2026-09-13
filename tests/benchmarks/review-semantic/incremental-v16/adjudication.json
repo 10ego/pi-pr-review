@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage without modifying the frozen corpus, run artifacts, or raw scorer report. Severity metrics remain the untouched scorer values.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "14dec540cdf09f7700efca83",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict login redirects to trusted destinations",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/redirect.ts:2 identifies an attacker-controlled return URL passed directly to location.assign and requires same-origin validation."
+    },
+    {
+      "planEntryId": "bbe664d0c4ad313cba167805",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict login redirects to trusted destinations",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/redirect.ts:2 identifies external or executable navigation through an unvalidated login return URL."
+    },
+    {
+      "planEntryId": "50b78f70a717e2887b3c42cb",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Restrict post-login redirects to trusted local URLs",
+      "selectedSeverity": "P2",
+      "reason": "The finding at src/redirect.ts:2 explicitly identifies the unvalidated returnUrl as an open redirect; it is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "50b78f70a717e2887b3c42cb",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued tokens to application logs",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/token.ts:3-4 states that replayable authentication tokens are written to application logs."
+    },
+    {
+      "planEntryId": "5e1b6615e2fc7a7f2bc1b667",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Restrict post-login redirects to trusted destinations",
+      "selectedSeverity": "P2",
+      "reason": "The finding at src/redirect.ts:2 identifies attacker-controlled post-login navigation; it is present but underclassified against the P1 target."
+    },
+    {
+      "planEntryId": "5e1b6615e2fc7a7f2bc1b667",
+      "strategy": "fresh",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued authentication tokens to logs",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/token.ts:4 states that a live issued credential is written to retained logs and can be replayed."
+    },
+    {
+      "planEntryId": "26379a81f86629056b300b21",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.poll-timer",
+      "canonicalTitle": "[P1] Cancel the interval when polling stops",
+      "selectedSeverity": "P1",
+      "reason": "The finding at src/poll.ts:2-3 states that the disposer no longer clears the interval, so work and retained state continue after teardown."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incremental": { "matched": 12, "opportunities": 12, "recall": 1 },
+    "incrementalStillOpenCarryForward": { "matched": 6, "opportunities": 6, "recall": 1 }
+  },
+  "rawSeverity": {
+    "fresh": { "matched": 8, "underclassified": 0, "overclassified": 2, "exactSeverityRate": 0.75 },
+    "incremental": { "matched": 9, "underclassified": 0, "overclassified": 0, "exactSeverityRate": 1 }
+  },
+  "operationalResults": {
+    "freshCompleteRuns": 9,
+    "incrementalCompleteRuns": 10,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.95,
+    "incrementalLaneCompleteRate": 0.95,
+    "freshPublicationFallbackRate": 0.25,
+    "incrementalPublicationFallbackRate": 0.16666666666666666
+  },
+  "incrementalIncompleteRows": [
+    {
+      "planEntryId": "bbe664d0c4ad313cba167805",
+      "caseId": "missed-old-and-new",
+      "reason": "The registered incremental-gap dispatch was not retained; three of four expected lane artifacts settled."
+    },
+    {
+      "planEntryId": "b34a333e78dbdd661d90e9e9",
+      "caseId": "malicious-same-head",
+      "reason": "The incremental-security-performance lane returned complete candidate evidence with trailing Markdown hard-break spaces and remained structurally partial."
+    }
+  ],
+  "contractRetryAudit": [
+    {
+      "planEntryId": "f301bcd5616fff4e3ecad39c",
+      "caseId": "malicious-same-head",
+      "attempts": ["partial", "complete"],
+      "fallbackUsed": false,
+      "finalLaneStatus": "complete"
+    }
+  ],
+  "comparativeResults": {
+    "freshDuplicateRate": 0.23809523809523808,
+    "incrementalDuplicateRate": 0.2,
+    "completePairFreshMedianLatencyMs": 61061.786,
+    "completePairIncrementalMedianLatencyMs": 68320.095,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 1.1188682722120182
+  },
+  "decision": "explicit incremental final gate failed; automatic selection remains rejected because two required incremental rows were incomplete and complete-pair median latency was worse than fresh"
+}

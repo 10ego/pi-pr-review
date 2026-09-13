@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "policy": "Visible equivalent defect coverage only; raw rows and scorer remain unchanged.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "1f72755076f7851ec40bcceb",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "2c205f6d03a3eb06a8ce1a82",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "3f65306527ef8a36a563d9ac",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "4bc24e5f8a56ae57223774f1",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "5b9ecbb85e7f0e3c2ec7f377",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "9b1a63c7edb743b7f590cd62",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "b487f49003d1b2c460ddcf97",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "cd55f8567a09494ef519055d",
+      "strategy": "auto",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "d539be23397fdf3e0422c979",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    },
+    {
+      "planEntryId": "f9c78608f2aa6559f1fea93d",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at source-authored severity and an overlapping source anchor."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "cleanControlAdjudication": {
+    "fresh": {
+      "runsWithFindings": 1,
+      "runs": 4,
+      "rate": 0.25
+    },
+    "incremental": {
+      "runsWithFindings": 0,
+      "runs": 4,
+      "rate": 0
+    },
+    "auto": {
+      "runsWithFindings": 1,
+      "runs": 4,
+      "rate": 0.25
+    },
+    "reason": "Automatic and its corresponding explicit fresh strategy each reported the same empty-name compatibility concern in resolved-blocker repetition 1; automatic has no count-rate regression."
+  },
+  "decision": "Accepted: all precommitted automatic-selection operational, quality, duplication, fallback, and paired-latency gates pass."
+}

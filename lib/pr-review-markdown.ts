@@ -6,6 +6,7 @@ import {
 	type ExpectedReviewLane,
 	type ReviewLaneArtifact,
 } from "./pr-review-artifacts.ts";
+import type { PriorFindingStatusRecord } from "./pr-review-prior.ts";
 import type { ReviewFindingLike, ReviewLike } from "./pr-review-publish.ts";
 
 export type ReviewSynthesisQuality = "fully_parsed" | "partially_parsed" | "raw" | "lane_fallback";
@@ -42,7 +43,7 @@ const MAX_INLINE_BODY_BYTES = 65_536;
 const MAX_PATH_BYTES = 4_096;
 const RESERVED_MARKER = /<!--\s*pi-pr-review:/gi;
 const FINDING_HEADING = /^(#{3,6})\s+(\[(?:P[0-3]|nit)\]\s+.+?)\s*$/gim;
-const PRIOR_STATUS_LINE = /^(?:resolved|still open|obsolete)\b/i;
+const PRIOR_STATUS_LINE = /^(?:resolved|rejected|still open|obsolete)\b/i;
 
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -514,8 +515,9 @@ function retainedLaneText(lane: ReviewLaneArtifact): string {
 	return "";
 }
 
-function retainedLaneCandidateTexts(
-	lane: ReviewLaneArtifact,
+export function retainedReviewCandidateTexts(
+	rawText: string,
+	attempts: readonly Pick<ReviewLaneArtifact["attempts"][number], "ordinal" | "rawText">[],
 	contract: "review_lane" | "nonempty",
 ): string[] {
 	const texts: string[] = [];
@@ -533,13 +535,13 @@ function retainedLaneCandidateTexts(
 	// The lane-level text is the latest authoritative output. Earlier attempts
 	// remain eligible only for independently contract-valid findings; malformed
 	// prose can neither become a finding nor poison a valid earlier attempt.
-	if (retain(lane.rawText) === "stop") return texts;
+	if (retain(rawText) === "stop") return texts;
 	const ordinals = new Set<number>();
-	for (const attempt of lane.attempts) {
+	for (const attempt of attempts) {
 		if (ordinals.has(attempt.ordinal)) return texts;
 		ordinals.add(attempt.ordinal);
 	}
-	const newestFirst = [...lane.attempts].sort((left, right) =>
+	const newestFirst = [...attempts].sort((left, right) =>
 		left.ordinal === right.ordinal ? 0 : left.ordinal > right.ordinal ? -1 : 1);
 	for (const attempt of newestFirst) {
 		if (retain(attempt.rawText) === "stop") break;
@@ -550,14 +552,18 @@ function retainedLaneCandidateTexts(
 function retainedLaneFindings(
 	lanes: readonly ReviewLaneArtifact[],
 	expected: readonly ExpectedReviewLane[],
+	acceptedCandidateIds?: ReadonlySet<string>,
 ): ReviewFindingLike[] {
 	const findings: ReviewFindingLike[] = [];
 	const seen = new Map<string, number>();
 	for (const lane of lanes) {
 		const contract = expected.find((descriptor) => descriptor.key === lane.key)?.expectedOutput ?? "review_lane";
-		for (const text of retainedLaneCandidateTexts(lane, contract)) {
+		let candidateOrdinal = 0;
+		for (const text of retainedReviewCandidateTexts(lane.rawText, lane.attempts, contract)) {
 			for (const candidate of extractValidatedReviewLaneCandidates(text, contract)) {
 				if (!candidate.prRelated) continue;
+				candidateOrdinal++;
+				if (acceptedCandidateIds && !acceptedCandidateIds.has(`${lane.key}:${candidateOrdinal}`)) continue;
 				const parsedLocation = candidate.location === "repo-wide"
 					? { status: "absent" as const, location: null }
 					: parseLocation(`${candidate.location} ${candidate.side}`);
@@ -605,15 +611,24 @@ function mergeUniqueFindings(
 	additional: readonly ReviewFindingLike[],
 ): ReviewFindingLike[] {
 	const merged = [...primary];
-	const findingKey = (finding: ReviewFindingLike) => JSON.stringify([
-		finding.severity,
-		finding.title,
-		finding.body,
-		finding.code_location?.absolute_file_path,
-		finding.code_location?.line_range?.start,
-		finding.code_location?.line_range?.end,
-		finding.code_location?.side,
-	]);
+	// A recovered lane candidate is supplemental evidence, not a second issue.
+	// Suppress it when terminal synthesis already published the same canonical
+	// severity/title/anchor identity, even if the rationale was paraphrased.
+	const findingKey = (finding: ReviewFindingLike) => {
+		const location = finding.code_location;
+		const hasCanonicalAnchor = typeof location?.absolute_file_path === "string" &&
+			Number.isSafeInteger(location.line_range?.start) && Number.isSafeInteger(location.line_range?.end) &&
+			(location.side === "RIGHT" || location.side === "LEFT");
+		return JSON.stringify([
+			finding.severity,
+			finding.title,
+			location?.absolute_file_path,
+			location?.line_range?.start,
+			location?.line_range?.end,
+			location?.side,
+			hasCanonicalAnchor ? undefined : finding.body,
+		]);
+	};
 	const keys = new Map(merged.map((finding, index) => [findingKey(finding), index]));
 	for (const finding of additional) {
 		const key = findingKey(finding);
@@ -834,6 +849,18 @@ function buildDegradedReviewBody(input: {
 	return safeReviewBody(lines.join("\n").trim());
 }
 
+function applyHostPriorStatuses(rawText: string, statuses: readonly PriorFindingStatusRecord[] | undefined): string {
+	if (!statuses?.length) return rawText;
+	const body = statuses.map((status) => `- ${status.status}: [${status.severity}] ${status.title} — ${status.evidence}`).join("\n");
+	const normalized = rawText.replace(/\r\n?/g, "\n");
+	const existing = /^## Prior findings\s*$[\s\S]*?(?=^## (?:Findings|Lane completeness|Strengths and notes)\s*$)/mi;
+	if (existing.test(normalized)) return normalized.replace(existing, `## Prior findings\n${body}\n\n`);
+	const findings = /^## Findings\s*$/mi;
+	return findings.test(normalized)
+		? normalized.replace(findings, `## Prior findings\n${body}\n\n## Findings`)
+		: `${normalized.trimEnd()}\n\n## Prior findings\n${body}\n`;
+}
+
 /** Build the canonical semantic artifact while taking every authority field from the host binding. */
 export function synthesizeReviewArtifact(input: {
 	rawText: string;
@@ -846,6 +873,12 @@ export function synthesizeReviewArtifact(input: {
 	/** Host-recorded prior-finding titles this run's Prior findings section
 	 * must each disclose in one status line. */
 	priorRevalidationRequiredTitles?: readonly string[];
+	/** Complete structured statuses accepted by the host status tool. Canonical
+	 * titles and normalized evidence replace assistant-authored disclosure. */
+	priorRevalidationStatuses?: readonly PriorFindingStatusRecord[];
+	/** When recorded, lane recovery is authoritative and includes only these host-issued candidate IDs. */
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 }): ReviewSynthesisArtifact {
 	const lanes = Object.freeze([...(input.laneArtifacts ?? [])]);
 	const expectedLaneDescriptors = Object.freeze((input.expectedLaneDescriptors ?? [])
@@ -860,15 +893,24 @@ export function synthesizeReviewArtifact(input: {
 		lanes.every((lane) => expectedLaneDescriptors.some((expected) =>
 			expected.key === lane.key && expected.tier === lane.tier &&
 			expected.minorHygiene === !!lane.minorHygiene));
-	const validatedLaneFindings = retainedLaneFindings(lanes, expectedLaneDescriptors);
+	const validatedLaneFindings = retainedLaneFindings(
+		lanes,
+		expectedLaneDescriptors,
+		input.candidateDispositionRecorded ? new Set(input.acceptedCandidateIds ?? []) : undefined,
+	);
 	// The prior-finding disclosure gate must be computed before the strict JSON
 	// branch returns: a legacy JSON envelope is raw text without the section,
 	// so a required-but-absent disclosure blocks approval there too.
-	const rawForPrior = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const hostPriorStatusesRecorded = input.priorRevalidationStatuses !== undefined;
+	const effectiveRawText = applyHostPriorStatuses(input.rawText, input.priorRevalidationStatuses);
+	const rawForPrior = effectiveRawText.trim().replace(/\r\n?/g, "\n");
 	const priorFindingsDisclosureEarly = section(rawForPrior, "Prior findings");
 	const priorDisclosureSatisfied = (() => {
 		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
 		if (requiredTitles.length === 0) return true;
+		// Assistant-authored Markdown is untrusted. A required disclosure is
+		// approval evidence only after the one-shot host status tool recorded it.
+		if (!hostPriorStatusesRecorded) return false;
 		const disclosure = priorFindingsDisclosureEarly?.trim();
 		if (!disclosure || /^(?:[-*]\s*)?none[.!]?\s*$/i.test(disclosure)) return false;
 		// Each prior finding must be disclosed by title in some distinct
@@ -900,6 +942,8 @@ export function synthesizeReviewArtifact(input: {
 		});
 	})();
 	if (input.strictJsonReview) {
+		// Strict JSON remains authoritative even when host prior statuses were
+		// recorded; status rendering must not degrade a valid structured review.
 		// Strict JSON carries no assistant disclosure line; host lane evidence is
 		// the only completeness authority whenever a batch ran.
 		const batchEvidence = lanes.length > 0 || expectedLaneCount > 0;
@@ -912,10 +956,16 @@ export function synthesizeReviewArtifact(input: {
 		const recoveredOverridesSkip = input.strictJsonReview.disposition === "skipped" &&
 			validatedLaneFindings.length > 0;
 		const bodyFallback = !safe || completeness === "incomplete" || recoveredOverridesSkip;
-		const strictFindings = mergeUniqueFindings(
-			safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [],
-			validatedLaneFindings,
-		);
+		// A strict review supplied by host finalization already contains only
+		// accepted lane candidates plus validated parent-added findings.
+		const strictModelFindings = safe && !recoveredOverridesSkip ? (input.strictJsonReview.findings ?? []) : [];
+		const strictFindings = mergeUniqueFindings(strictModelFindings, validatedLaneFindings);
+		const stillOpenStatuses = (input.priorRevalidationStatuses ?? []).filter((status) => status.status === "still open");
+		const strictPriorStillOpenBlocking = stillOpenStatuses.some((status) => status.severity === "P0" || status.severity === "P1");
+		const strictFindingTitles = strictFindings.map((finding) => String(finding.title ?? "")
+			.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").replace(/\s+/g, " ").trim().toLowerCase());
+		const strictPriorStillOpenReentered = stillOpenStatuses.every((status) =>
+			strictFindingTitles.includes(status.title.replace(/\s+/g, " ").trim().toLowerCase()));
 		const body = bodyFallback
 			? buildDegradedReviewBody({
 				rawText: input.rawText,
@@ -958,7 +1008,7 @@ export function synthesizeReviewArtifact(input: {
 			expectedLaneDescriptors,
 			expectedLaneCount,
 			completeness,
-			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied,
+			mergeApprovalEligible: !bodyFallback && priorDisclosureSatisfied && !strictPriorStillOpenBlocking && strictPriorStillOpenReentered,
 			diagnostics: Object.freeze(bodyFallback
 				? [recoveredOverridesSkip
 					? "retained lane findings overrode a skipped model synthesis"
@@ -968,7 +1018,7 @@ export function synthesizeReviewArtifact(input: {
 				: []),
 		});
 	}
-	const raw = input.rawText.trim().replace(/\r\n?/g, "\n");
+	const raw = effectiveRawText.trim().replace(/\r\n?/g, "\n");
 	if (!raw) {
 		const completeness = synthesisCompleteness(input.rawText, lanes);
 		const recoveredLaneFindings = mergeUniqueFindings([], validatedLaneFindings);
@@ -1016,7 +1066,7 @@ export function synthesizeReviewArtifact(input: {
 	// `- still  open` cannot bypass the gate. Any *unrecognized* status line
 	// that still carries a [P0]/[P1] tag fails closed: the section exists
 	// precisely to disclose prior severity, and a blocking tag without an
-	// explicit `resolved`/`obsolete` status is ambiguous evidence. This
+	// explicit `resolved`/`rejected`/`obsolete` status is ambiguous evidence. This
 	// deliberately trades a recoverable false positive (off-contract prose
 	// mentioning a blocking tag downgrades publication to COMMENT) against an
 	// unrecoverable false negative (an unresolved blocker APPROVing); the
@@ -1028,7 +1078,7 @@ export function synthesizeReviewArtifact(input: {
 	// upgrade to APPROVE.
 	const priorStillOpenBlocking = !!priorFindingsDisclosure && priorFindingsDisclosure.split(/\r?\n/).some((line) => {
 		const normalized = normalizePriorStatusLine(line);
-		if (/^resolved\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
+		if (/^resolved\b/i.test(normalized) || /^rejected\b/i.test(normalized) || /^obsolete\b/i.test(normalized)) return false;
 		if (/^still open\b/i.test(normalized)) {
 			const tagged = /\[(P[0-3]|nit)\]/i.exec(normalized);
 			return !tagged || /^p[01]$/i.test(tagged[1]!);
@@ -1068,11 +1118,14 @@ export function synthesizeReviewArtifact(input: {
 			? "fully_parsed"
 			: canonicalParsed.findings.length > 0 ? "partially_parsed" : "raw";
 	const parsedSynthesisFindings = canonicalParsed.unsafe ? [] : canonicalParsed.findings;
-	// Terminal semantic validation may confirm a candidate, but it may not erase
-	// a complete host-validated lane block. Omitted candidates retain ordinary
-	// finding behavior with an explicit independent-validation advisory.
+	const authoritativePrimaryFindings = input.candidateDispositionRecorded
+		? parsedSynthesisFindings.filter((finding) => (input.priorRevalidationStatuses ?? []).some((status) =>
+			status.status === "still open" && String(finding.title ?? "").replace(/^\[(?:P[0-3]|nit)\]\s*/i, "").trim().toLowerCase() === status.title.trim().toLowerCase()))
+		: parsedSynthesisFindings;
+	// Once the parent records a complete disposition set, accepted lane IDs are
+	// publication authority; rejected/duplicate candidates cannot be recovered.
 	const recoveredLaneFindings = validatedLaneFindings;
-	const safeFindings = mergeUniqueFindings(parsedSynthesisFindings, recoveredLaneFindings);
+	const safeFindings = mergeUniqueFindings(authoritativePrimaryFindings, recoveredLaneFindings);
 	// A still-open prior finding must re-enter Findings as a normal finding
 	// (the published concise body omits the Prior findings section, so a
 	// still-open entry that never re-enters would be invisible to readers
@@ -1089,12 +1142,22 @@ export function synthesizeReviewArtifact(input: {
 		const normalizedFindingTitles = safeFindings.map((finding) =>
 			String(finding.title ?? "")
 				// Reassessed severity may differ between the status line and the
-				// re-entered finding; compare tag-stripped titles.
+				// re-entered finding; compare tag-stripped canonical titles.
 				.replace(/^\[(?:P[0-3]|nit)\]\s*/i, "")
 				.replace(/\s+/g, " ").trim().toLowerCase());
-		return stillOpenLines.every((line) =>
-			normalizedFindingTitles.some((findingTitle) =>
-				findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
+		const requiredTitles = input.priorRevalidationRequiredTitles ?? [];
+		if (requiredTitles.length > 0) {
+			return stillOpenLines.every((line) => requiredTitles.some((required) => {
+				const canonical = required.replace(/\s+/g, " ").trim().toLowerCase();
+				if (!canonical) return false;
+				let namesCanonical = false;
+				try { namesCanonical = new RegExp(`\\b${escapeRegExp(canonical)}\\b`, "i").test(line); }
+				catch { namesCanonical = line.toLowerCase().includes(canonical); }
+				return namesCanonical && normalizedFindingTitles.includes(canonical);
+			}));
+		}
+		return stillOpenLines.every((line) => normalizedFindingTitles.some((findingTitle) =>
+			findingTitle.length > 0 && line.toLowerCase().includes(findingTitle)));
 	})();
 	const degradationReasons = (() => {
 		if (canonicalParsed.unsafe) {
@@ -1130,16 +1193,25 @@ export function synthesizeReviewArtifact(input: {
 	// Markdown is the durable semantic product. Keep the complete deterministic
 	// body for local rendering, cache diagnostics, and extraction. GitHub
 	// publication independently renders a concise host summary for every quality.
-	const body = quality === "fully_parsed"
-		? safeReviewBody(raw)
-		: buildDegradedReviewBody({
-			rawText: raw,
+	const body = input.candidateDispositionRecorded
+		? buildDegradedReviewBody({
+			rawText: "",
 			lanes,
 			findings: safeFindings,
 			expectedLaneCount,
 			exactCoverage: exactLaneCoverage,
-			reason: degradationReasons[0],
-		});
+			reason: "host-recorded candidate dispositions produced the authoritative finding set",
+		})
+		: quality === "fully_parsed"
+			? safeReviewBody(raw)
+			: buildDegradedReviewBody({
+				rawText: raw,
+				lanes,
+				findings: safeFindings,
+				expectedLaneCount,
+				exactCoverage: exactLaneCoverage,
+				reason: degradationReasons[0],
+			});
 	return Object.freeze({
 		quality,
 		rawText: input.rawText,

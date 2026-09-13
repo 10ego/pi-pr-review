@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "6119a22df006e14aa1a5abd0b61d9f025ffce8a6e3635548802d9478fe331953",
+  "sanitizedRunManifestSha256": "6119a22df006e14aa1a5abd0b61d9f025ffce8a6e3635548802d9478fe331953",
+  "reportSha256": "fbf46f6baa0a83f9c4b18d7ad191e9b9f9c334dec0121546684d54eed43b6332",
+  "selectionAuditSha256": "55638fb0a5a9a6fd9c2c05fc3f377f818776372c7633b6a87a4ba5b0c3451172",
+  "adjudicationSha256": "ae916ed6cdd2a02cec81592f28a68d9b41332d08fbeaa6888c0c263b1402fa54",
+  "scorerSha256": "cf62378d737093668859f0875b5f58fa0e5df221cc5edc547b01f0265dbd1513",
+  "privacyScan": "Recursive decoded scan contains no private local paths or account names.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection; all precommitted automatic-defaulting gates passed"
+}

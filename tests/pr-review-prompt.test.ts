@@ -79,7 +79,7 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	test("offers quick mode and retains major-only as its compatibility alias", () => {
-		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep] [--incremental]"');
+		expect(prompt).toContain('argument-hint: "<PR-NUM> [--comment|--no-comment] [--quick|--balanced|--full|--deep] [--fresh|--incremental]"');
 		expect(prompt).toContain("**Quick (`--quick`, with `--major-only` retained as a compatibility alias):** exactly three concurrent heavy reviewers");
 		expect(prompt).toContain("`correctness`, `correctness-contracts`, and `security-performance`");
 		expect(prompt).toContain("security/performance reviewer also owns performance, resource, cleanup, and scalability risks");
@@ -125,36 +125,48 @@ describe("PR review prompt scheduling policy", () => {
 	});
 
 	describe("incremental re-review contract", () => {
-		test("documents the flag and registers prior discovery in the first turn", () => {
-			expect(prompt).toContain('--incremental]\"');
-			expect(prompt).toContain("`--incremental` opts into incremental re-review");
-			expect(prompt).toContain('also emit `pr_review_prior` with `{ "pr_number": $1 }` in that same turn');
+		test("documents automatic selection and registers prior discovery in the first turn", () => {
+			expect(prompt).toContain('--fresh|--incremental]\"');
+			expect(prompt).toContain("With neither strategy override, the host automatically enables cumulative preparation");
+			expect(prompt).toContain("`--fresh` explicitly skips prior discovery");
+			expect(prompt).toContain("`--incremental` explicitly requests cumulative preparation");
+			expect(prompt).toContain('exactly one `pr_review_prepare` call using `{ "pr_number": $1 }`');
+			expect(prompt).toContain("Do not also call `pr_review_prior` or recapture either diff");
 		});
 
 		test("selects the review path from the prior relationship", () => {
-			expect(prompt).toContain("**Re-review selection (only when `--incremental` is present).**");
+			expect(prompt).toContain("**Re-review selection (automatic by default, or when explicit `--incremental` is present).**");
 			expect(prompt).toContain("run the normal full review below and, for `diverged`");
-			expect(prompt).toContain("**revalidation-only review**");
-			expect(prompt).toContain("**incremental re-review**");
+			expect(prompt).toContain("skip only the delta batch");
+			expect(prompt).toContain("**cumulative incremental re-review**");
 			expect(prompt).toContain("hunt-scope `context_file`");
-			expect(prompt).toContain("never receive the prior findings list");
+			expect(prompt).toContain("never receive participant discussion");
+			expect(prompt).toContain("full-PR gap hunter");
+			expect(prompt).toContain("defects any earlier review missed");
+			expect(prompt).toContain("host-fixed `pr_review_incremental_gap`");
+			expect(prompt).toContain("pre-registers its required lane");
 			expect(prompt).toContain("If the compare capture fails, fall back to the normal full review");
 			expect(prompt).toContain("pins the resolved GitHub hostname");
 			expect(prompt).toContain("caps files at 300");
-			expect(prompt).toContain("published review is always a `COMMENT`");
+			expect(prompt).toContain("dispatch the Step 5 full-PR gap hunter");
 			expect(prompt).toContain("never depend on a system `jq`");
 			expect(prompt).toContain("a null or empty file list is reported as an empty delta");
 			expect(prompt).toContain("INC_EMPTY=1");
-			expect(prompt).toContain("run the revalidation-only path exactly as for `same_head`");
+			expect(prompt).toContain("skip the delta batch exactly as for `same_head`");
 			expect(prompt).toContain("revalidation only when the relationship is `same_head` or `incremental`");
 			expect(prompt).toContain("When `none` follows truncated discovery");
 		});
 
 		test("revalidates prior findings in Step 7 and reports them without new headings", () => {
 			expect(prompt).toContain("additional pre-registered candidates");
-			expect(prompt).toContain("classify each as `resolved`");
+			expect(prompt).toContain("Classify each as `resolved`");
+			expect(prompt).toContain("`rejected` (the finding is not a defect");
 			expect(prompt).toContain("it re-enters `## Findings` as a normal finding");
-			expect(prompt).toContain("Never mark a finding resolved without evidence from the new commits");
+			expect(prompt).toContain("Never mark a finding resolved from a claim without code evidence");
+			expect(prompt).toContain("bounded **untrusted participant claims**");
+			expect(prompt).toContain("canonical `title` **verbatim**");
+			expect(prompt).toContain("call `pr_review_prior_status` exactly once");
+			expect(prompt).toContain("host binds canonical titles");
 			expect(prompt).toContain("## Prior findings");
 			expect(prompt).toContain("Never use severity-tagged headings here.");
 			expect(prompt).toContain("no additional prose, summary lines, or wrapped paragraphs in this section");
@@ -166,7 +178,7 @@ describe("PR review prompt scheduling policy", () => {
 		const dispatch = prompt.indexOf("If Step 2 selected a discovered baseline name");
 		expect(decision).toBeGreaterThan(-1);
 		expect(dispatch).toBeGreaterThan(decision);
-		expect(prompt).toContain('`pr_review_verify` `{ "action": "list" }` discovery calls together');
+		expect(prompt).toContain('emit it concurrently with `pr_review_verify` `{ "action": "list" }`');
 		expect(prompt).toContain("Applicability discovery depends only on the current repository");
 		expect(prompt).toContain("repository-wide convention-path listing (paths only)");
 		expect(prompt).toContain("project-local definitions are ignored");
@@ -183,7 +195,7 @@ describe("PR review prompt scheduling policy", () => {
 
 	test("exposes a flat strict list/run schema and rejects legacy run overrides", () => {
 		const start = extension.indexOf("const PrReviewVerifyParams");
-		const end = extension.indexOf("const PrReviewPriorParams");
+		const end = extension.indexOf("const PrReviewPrepareParams");
 		const schema = extension.slice(start, end);
 		expect(schema).toContain("const PrReviewVerifyParams = Type.Object");
 		expect(schema).toContain('StringEnum(["list", "run"]');

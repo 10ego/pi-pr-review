@@ -241,6 +241,8 @@ export function resolveAllowStaleApprovalsSetting(
 	return { value: false, valid: true, source: "default" };
 }
 
+export type ReviewSelection = "auto" | "fresh" | "incremental";
+
 export interface PublishModeParseResult {
 	matched: boolean;
 	mode?: PublishMode;
@@ -248,6 +250,8 @@ export interface PublishModeParseResult {
 	prNumber?: number;
 	allowNonOpen?: boolean;
 	incremental?: boolean;
+	fresh?: boolean;
+	reviewSelection?: ReviewSelection;
 	error?: string;
 }
 
@@ -267,8 +271,13 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 	const majorOnly = tokens.includes("--major-only");
 	const balanced = tokens.includes("--balanced");
 	const deep = tokens.includes("--deep");
+	const incremental = tokens.includes("--incremental");
+	const fresh = tokens.includes("--fresh");
 	if (force && disabled) {
 		return { matched: true, error: "--comment and --no-comment cannot be used together" };
+	}
+	if (incremental && fresh) {
+		return { matched: true, error: "--incremental and --fresh cannot be used together" };
 	}
 	if ([quick, full, majorOnly, balanced, deep].filter(Boolean).length > 1) {
 		return { matched: true, error: "--quick, --full, --major-only, --balanced, and --deep cannot be used together" };
@@ -287,8 +296,18 @@ export function parsePublishMode(input: string): PublishModeParseResult {
 						: {}),
 		prNumber: requested,
 		allowNonOpen: tokens.includes("--include-closed") || tokens.includes("--review-closed"),
-		...(tokens.includes("--incremental") ? { incremental: true } : {}),
+		...(incremental ? { incremental: true } : {}),
+		...(fresh ? { fresh: true } : {}),
 	};
+}
+
+/** Resolve the default automatic strategy before any model or review tool runs. */
+export function resolveReviewSelection(parsed: PublishModeParseResult): PublishModeParseResult {
+	if (!parsed.matched || parsed.error) return parsed;
+	const { fresh, ...base } = parsed;
+	if (fresh) return { ...base, reviewSelection: "fresh" };
+	if (parsed.incremental) return { ...base, incremental: true, reviewSelection: "incremental" };
+	return { ...base, incremental: true, reviewSelection: "auto" };
 }
 
 export interface ReviewHostBinding extends RepositoryBinding {
@@ -308,8 +327,10 @@ export interface ReviewInvocation {
 	readonly reviewMode?: ReviewMode;
 	readonly prNumber: number;
 	readonly allowNonOpen: boolean;
-	/** Trusted `--incremental` flag captured before review execution; gates pr_review_prior. */
+	/** Host-selected cumulative preparation. False/absent means an explicit fresh review. */
 	readonly incremental?: boolean;
+	/** Trusted automatic/default or explicit strategy selection captured before execution. */
+	readonly reviewSelection?: ReviewSelection;
 	/** Host-resolved target captured before review execution; assistant output cannot override it. */
 	readonly reviewBinding?: Readonly<ReviewHostBinding>;
 	/** Trusted stale-publication setting captured before review execution begins. */
@@ -441,6 +462,7 @@ export class ReviewInvocationGate {
 			prNumber: parsed.prNumber,
 			allowNonOpen: parsed.allowNonOpen === true,
 			...(parsed.incremental ? { incremental: true } : {}),
+			...(parsed.reviewSelection ? { reviewSelection: parsed.reviewSelection } : {}),
 			...(reviewBinding ? { reviewBinding: Object.freeze({ ...reviewBinding }) } : {}),
 			allowStalePublish,
 			allowStaleApprovals,
@@ -593,6 +615,9 @@ export interface CompletedReviewRecord {
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
+	priorRevalidationStatuses?: readonly { findingId: string; status: "resolved" | "rejected" | "still open" | "obsolete"; severity: "P0" | "P1" | "P2" | "P3" | "nit"; title: string; evidence: string }[];
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 	diagnostics?: readonly string[];
 }
 
@@ -620,6 +645,9 @@ export interface PersistedCompletedReview {
 	expectedLaneCount?: number;
 	completeness?: ReviewSynthesisCompleteness;
 	mergeApprovalEligible?: boolean;
+	priorRevalidationStatuses?: readonly { findingId: string; status: "resolved" | "rejected" | "still open" | "obsolete"; severity: "P0" | "P1" | "P2" | "P3" | "nit"; title: string; evidence: string }[];
+	candidateDispositionRecorded?: boolean;
+	acceptedCandidateIds?: readonly string[];
 	diagnostics?: readonly string[];
 }
 
@@ -789,7 +817,7 @@ export class CompletedReviewCache {
 		review: ReviewLike,
 		invocation: ReviewInvocation,
 		repository: RepositoryBinding,
-		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "diagnostics">,
+		artifact?: Pick<CompletedReviewRecord, "publicationBody" | "synthesisQuality" | "rawText" | "laneArtifacts" | "expectedLaneDescriptors" | "expectedLaneCount" | "completeness" | "mergeApprovalEligible" | "priorRevalidationStatuses" | "candidateDispositionRecorded" | "acceptedCandidateIds" | "diagnostics">,
 	): {
 		record: CompletedReviewRecord;
 		previous?: CompletedReviewRecord;
@@ -810,6 +838,9 @@ export class CompletedReviewCache {
 			...(typeof artifact?.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: artifact.mergeApprovalEligible }
 				: {}),
+			...(artifact?.priorRevalidationStatuses ? { priorRevalidationStatuses: artifact.priorRevalidationStatuses } : {}),
+			...(artifact?.candidateDispositionRecorded ? { candidateDispositionRecorded: true } : {}),
+			...(artifact?.acceptedCandidateIds ? { acceptedCandidateIds: artifact.acceptedCandidateIds } : {}),
 			...(artifact?.diagnostics ? { diagnostics: artifact.diagnostics } : {}),
 		};
 		const key = completedReviewKey(repository, invocation.prNumber);
@@ -848,6 +879,9 @@ export class CompletedReviewCache {
 			...(typeof record.mergeApprovalEligible === "boolean"
 				? { mergeApprovalEligible: record.mergeApprovalEligible }
 				: {}),
+			...(record.priorRevalidationStatuses ? { priorRevalidationStatuses: record.priorRevalidationStatuses } : {}),
+			...(record.candidateDispositionRecorded ? { candidateDispositionRecorded: true } : {}),
+			...(record.acceptedCandidateIds ? { acceptedCandidateIds: record.acceptedCandidateIds } : {}),
 			...(record.diagnostics ? { diagnostics: record.diagnostics } : {}),
 		};
 	}
@@ -915,6 +949,19 @@ export class CompletedReviewCache {
 		const persistedMergeApprovalEligible = typeof value.mergeApprovalEligible === "boolean"
 			? value.mergeApprovalEligible
 			: undefined;
+		const priorRevalidationStatuses = Array.isArray(value.priorRevalidationStatuses) && value.priorRevalidationStatuses.length <= 200 &&
+			value.priorRevalidationStatuses.every((status) => isObject(status) && typeof status.findingId === "string" && typeof status.title === "string" && typeof status.evidence === "string" &&
+				["resolved", "rejected", "still open", "obsolete"].includes(String(status.status)) && ["P0", "P1", "P2", "P3", "nit"].includes(String(status.severity)))
+			? value.priorRevalidationStatuses as CompletedReviewRecord["priorRevalidationStatuses"]
+			: undefined;
+		if (Object.prototype.hasOwnProperty.call(value, "priorRevalidationStatuses") && !priorRevalidationStatuses) return false;
+		const acceptedCandidateIds = Array.isArray(value.acceptedCandidateIds) && value.acceptedCandidateIds.length <= 1_000 &&
+			value.acceptedCandidateIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= 160) && new Set(value.acceptedCandidateIds).size === value.acceptedCandidateIds.length
+			? value.acceptedCandidateIds as string[]
+			: undefined;
+		if (Object.prototype.hasOwnProperty.call(value, "acceptedCandidateIds") && !acceptedCandidateIds) return false;
+		const candidateDispositionRecorded = value.candidateDispositionRecorded === true;
+		if (value.candidateDispositionRecorded !== undefined && value.candidateDispositionRecorded !== true) return false;
 		// Never trust a persisted true independently of the evidence it claims to
 		// summarize. Current-schema restored approvals require a fully parsed,
 		// complete artifact and at least one validated complete host lane. Legacy
@@ -935,6 +982,8 @@ export class CompletedReviewCache {
 				laneArtifacts: laneArtifacts ?? [],
 				expectedLaneDescriptors: expectedLaneDescriptors ?? [],
 				...(strictJsonReview ? { strictJsonReview } : {}),
+				...(priorRevalidationStatuses ? { priorRevalidationStatuses } : {}),
+				...(candidateDispositionRecorded ? { candidateDispositionRecorded: true, acceptedCandidateIds: acceptedCandidateIds ?? [] } : {}),
 			});
 			rawApprovalEvidenceValid = rebound.mergeApprovalEligible && rebound.review.verdict === "approve" &&
 				reviewHash(rebound.review) === reviewHash(parsed.review);
@@ -983,6 +1032,8 @@ export class CompletedReviewCache {
 			...(expectedLaneCount !== undefined ? { expectedLaneCount } : {}),
 			...(completeness ? { completeness } : {}),
 			...(restoredMergeApprovalEligible !== undefined ? { mergeApprovalEligible: restoredMergeApprovalEligible } : {}),
+			...(priorRevalidationStatuses ? { priorRevalidationStatuses } : {}),
+			...(candidateDispositionRecorded ? { candidateDispositionRecorded: true, acceptedCandidateIds: acceptedCandidateIds ?? [] } : {}),
 			...(diagnostics ? { diagnostics } : {}),
 		});
 		return true;
@@ -1617,7 +1668,10 @@ function runGh(
 		let settled = false;
 		let closed = false;
 		let groupCleanupStarted = false;
-		let stdout = "";
+		const stdoutChunks: Buffer[] = [];
+		let stdoutBytes = 0;
+		let stdoutTruncated = false;
+		const stdoutText = () => `${Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8")}${stdoutTruncated ? "\0" : ""}`;
 		let stderr = "";
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1714,7 +1768,7 @@ function runGh(
 			termination = reason;
 			if (timer) clearTimeout(timer);
 			pendingResult = {
-				stdout,
+				stdout: stdoutText(),
 				stderr,
 				exitCode: 1,
 				timedOut: reason === "timeout",
@@ -1734,9 +1788,14 @@ function runGh(
 				finishPending();
 			}, graceMs + reserveMs);
 		};
-		proc.stdout.on("data", (data) => {
-			if (stdout.length >= outputMaxBytes) return;
-			stdout += data.toString().slice(0, Math.max(0, outputMaxBytes - stdout.length));
+		proc.stdout.on("data", (data: Buffer) => {
+			if (stdoutBytes >= outputMaxBytes) return;
+			const retained = data.subarray(0, Math.max(0, outputMaxBytes - stdoutBytes));
+			if (retained.length < data.length) stdoutTruncated = true;
+			if (retained.length > 0) {
+				stdoutChunks.push(retained);
+				stdoutBytes += retained.length;
+			}
 		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.stdin.on("error", (error) => {
@@ -1744,12 +1803,12 @@ function runGh(
 			if (!settled && code !== "EPIPE") stderr += error.message;
 		});
 		proc.on("error", (error) =>
-			finish({ stdout, stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
+			finish({ stdout: stdoutText(), stderr, exitCode: 1, timedOut: false, errorMessage: error.message }),
 		);
 		proc.on("close", (code) => {
 			closed = true;
 			pendingResult = {
-				stdout,
+				stdout: stdoutText(),
 				stderr,
 				exitCode: termination ? 1 : code ?? 1,
 				timedOut: termination === "timeout",
@@ -1774,10 +1833,14 @@ function runGh(
 	});
 }
 
-export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+export async function ghRawText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
 	const result = await runGh(args, cwd, undefined, timeoutMs, lifecycle, outputMaxBytes);
 	if (result.exitCode !== 0) throw new Error(result.errorMessage || result.stderr || "gh command failed");
-	return result.stdout.trim();
+	return result.stdout;
+}
+
+export async function ghText(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<string> {
+	return (await ghRawText(args, cwd, timeoutMs, lifecycle, outputMaxBytes)).trim();
 }
 
 export async function ghJson<T>(args: string[], cwd: string, timeoutMs?: number, lifecycle?: GhCommandLifecycle, outputMaxBytes?: number): Promise<T> {

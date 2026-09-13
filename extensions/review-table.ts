@@ -40,6 +40,7 @@ import {
 	canonicalReviewSnapshot,
 	resolveApproveMaxPriorityLevelSetting,
 	resolveDefaultReviewModeSetting,
+	resolveReviewSelection,
 	type PublishResult,
 	resolveRepositoryBinding,
 	resolveReviewHostBinding,
@@ -54,6 +55,7 @@ import {
 	type ReviewModeResolution,
 } from "../lib/pr-review-publish.ts";
 import { demoteHeadings, mergeExtractedFindings, safeReviewBody, synthesizeReviewArtifact, type ReviewSynthesisArtifact } from "../lib/pr-review-markdown.ts";
+import { reviewCandidateDispositionRegistry } from "../lib/pr-review-candidates.ts";
 import { priorRevalidationRegistry } from "../lib/pr-review-prior.ts";
 import { resolveReviewDeadlinesForContext } from "../lib/pr-review-deadline-config.ts";
 import { createReviewBudget } from "../lib/pr-review-deadlines.ts";
@@ -81,6 +83,50 @@ import {
 } from "../lib/pr-review-telemetry.ts";
 
 type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
+
+/** Detect parent-shell GitHub API reads that bypass the host-bound hostname. */
+export function containsUnhostedGhApi(command: string, requiredHostname?: string): boolean {
+	// Shells remove quotes while constructing argv tokens. Collapse a quoted
+	// executable path first, then remove remaining quotes so api/a'p'i/'api'
+	// spellings cannot bypass this bounded command gate.
+	const normalized = command
+		// Shell line continuations disappear before tokenization. Remove them
+		// before splitting command segments so they cannot hide either token.
+		.replace(/(?:\\|`)\r?\n/gu, "")
+		// Collapse quoted executable paths before interpreting token-level shell
+		// escapes; Windows path separators are path syntax, not shell escapes.
+		.replace(/["'][^"'\r\n;&|]*[\\/]gh(?:\.exe)?["']/giu, "gh")
+		.replace(/(^|[\s(&])(?:[^\s;&|"'`]*[\\/])+gh(?:\.exe)?(?=\s|$)/giu, "$1gh")
+		// POSIX backslash and PowerShell backtick escapes can split executable and
+		// subcommand names without changing the resulting argv tokens.
+		.replace(/[\\`]([A-Za-z])/gu, "$1")
+		.replace(/["']/gu, "");
+	for (const segment of normalized.split(/[\r\n;&|]+/u)) {
+		const starts = [...segment.matchAll(/(?:^|[\s(])(?:"(?:[^"\r\n;&|]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n;&|]*[\\/])?gh(?:\.exe)?'|(?:[^\s;&|"'`]*[\\/])?gh(?:\.exe)?)\s+api(?=\s|$)/giu)];
+		let residual = segment;
+		for (let index = starts.length - 1; index >= 0; index--) {
+			const start = starts[index]!.index;
+			residual = residual.slice(0, start) + residual.slice(start + starts[index]![0].length);
+		}
+		// Shell token concatenation (for example g'h' api) is intentionally
+		// denied rather than interpreted by a partial shell parser.
+		if (/(?:^|\s)api(?=\s|$)/iu.test(residual) && (/[gG]["']?[hH]/u.test(residual) || /[$`]/u.test(residual))) return true;
+		for (let index = 0; index < starts.length; index++) {
+			const invocation = segment.slice(starts[index]!.index, starts[index + 1]?.index);
+			const hostnames = [...invocation.matchAll(/(?:^|\s)--hostname(?:=|\s+)([A-Za-z0-9.-]+)(?=\s|$)/gu)]
+				.map((match) => match[1]!);
+			if (!requiredHostname || hostnames.length === 0 || hostnames.some((hostname) => hostname !== requiredHostname)) return true;
+		}
+	}
+	return false;
+}
+
+/** During an active review all parent GitHub API reads must use host-owned tools. */
+export function containsDirectGhApi(command: string): boolean {
+	// This sentinel cannot match the hostname grammar above, so every recognized
+	// invocation is denied while retaining the same quote/concatenation defenses.
+	return containsUnhostedGhApi(command, "__host_tools_only__");
+}
 
 interface Finding {
 	title?: string;
@@ -132,7 +178,8 @@ function isOwnReviewPrompt(pi: Pick<ExtensionAPI, "getCommands">): boolean {
 	}
 }
 
-function assistantText(message: { content?: MessagePart[] }): string {
+function assistantText(message: { content?: string | MessagePart[] }): string {
+	if (typeof message.content === "string") return message.content;
 	if (!Array.isArray(message.content)) return "";
 	return message.content
 		.filter((p) => p.type === "text" && typeof p.text === "string")
@@ -699,6 +746,11 @@ export default function registerReviewTable(
 		if (!invocation.reviewBinding) {
 			return completionError(invocation, "the completed review has no frozen host repository binding; no publish-only cache is available");
 		}
+		const completionSessionId = ctx.sessionManager.getSessionId();
+		const completionGeneration = invocation.reviewBinding.invocationGeneration;
+		const completionFinalization = reviewCandidateDispositionRegistry.finalization(completionSessionId, completionGeneration);
+		const completionPriorStatuses = priorRevalidationRegistry.statuses(completionSessionId, completionGeneration);
+		const hostFinalized = !!completionFinalization;
 		const repository = {
 			repository: invocation.reviewBinding.repository,
 			hostname: invocation.reviewBinding.hostname,
@@ -713,12 +765,17 @@ export default function registerReviewTable(
 			...(artifact.body && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
 				? { publicationBody: artifact.body }
 				: {}),
-			rawText: artifact.rawText,
+			rawText: hostFinalized ? JSON.stringify(artifact.review) : artifact.rawText,
 			laneArtifacts: artifact.laneArtifacts,
 			expectedLaneDescriptors: artifact.expectedLaneDescriptors,
 			expectedLaneCount: artifact.expectedLaneCount,
 			completeness: artifact.completeness,
 			mergeApprovalEligible: artifact.mergeApprovalEligible,
+			...(completionPriorStatuses !== undefined ? { priorRevalidationStatuses: completionPriorStatuses } : {}),
+			...(completionFinalization !== undefined ? {
+				candidateDispositionRecorded: true,
+				acceptedCandidateIds: completionFinalization.decisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId),
+			} : {}),
 			diagnostics: artifact.diagnostics,
 		} : undefined);
 		const { record } = replacement;
@@ -732,6 +789,47 @@ export default function registerReviewTable(
 	};
 
 	const telemetryTracker = new ReviewTelemetryTracker();
+	const INCREMENTAL_CONTINUATION_MESSAGE_TYPE = "pr-review-incremental-continuation-request";
+	interface IncrementalHostContinuation {
+		readonly id: string;
+		readonly generation: number;
+		readonly sessionId: string;
+		readonly text: string;
+		delivered: boolean;
+	}
+	let incrementalHostContinuation: IncrementalHostContinuation | undefined;
+	const invalidatedIncrementalContinuationTexts = new Set<string>();
+	const retainBoundedContinuationValue = (values: Set<string>, value: string) => {
+		values.add(value);
+		while (values.size > 8) {
+			const oldest = values.values().next().value;
+			if (typeof oldest !== "string") break;
+			values.delete(oldest);
+		}
+	};
+	const invalidateIncrementalContinuationText = (text: string) => {
+		retainBoundedContinuationValue(invalidatedIncrementalContinuationTexts, text);
+	};
+	const clearIncrementalHostContinuation = (invalidateQueued = true) => {
+		if (invalidateQueued && incrementalHostContinuation && !incrementalHostContinuation.delivered) {
+			invalidateIncrementalContinuationText(incrementalHostContinuation.text);
+		}
+		incrementalHostContinuation = undefined;
+	};
+	const recordIncrementalHostContinuation = (
+		outcome: "queued" | "delivered" | "exhausted" | "queue_failed" | "rejected",
+		details: Record<string, unknown>,
+	) => {
+		try {
+			pi.appendEntry("pr-review-incremental-continuation", {
+				schemaVersion: 1,
+				outcome,
+				...details,
+			});
+		} catch {
+			// Diagnostic evidence is best-effort and cannot change review authority.
+		}
+	};
 	const reviewToolNames = new Set<string>(REVIEW_LOOP_TOOL_NAMES);
 	const activeToolGenerations = new Map<string, number>();
 	const generationsWithReviewTools = new Set<number>();
@@ -817,6 +915,7 @@ export default function registerReviewTable(
 
 	const revokeActiveLoop = () => {
 		revokePreflight();
+		clearIncrementalHostContinuation();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -841,12 +940,80 @@ export default function registerReviewTable(
 		await selfReviewCoordinator.beginTask(ctx);
 	});
 
+	pi.on("context", (event, ctx) => {
+		const continuation = incrementalHostContinuation;
+		const activeGeneration = loopCoordinator.activeGeneration(ctx);
+		let changed = false;
+		const messages = event.messages.flatMap((message) => {
+			if (message.role !== "custom" ||
+				(message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return [message];
+			changed = true;
+			const details = (message as { details?: { generation?: unknown; continuationId?: unknown } }).details;
+			if (continuation?.delivered === true && activeGeneration === continuation.generation &&
+				details?.generation === continuation.generation && details.continuationId === continuation.id &&
+				ctx.sessionManager.getSessionId() === continuation.sessionId) {
+				return [{ ...message, content: continuation.text }];
+			}
+			return [];
+		});
+		return changed ? { messages } : undefined;
+	});
+
+	pi.on("message_start", (event, ctx) => {
+		if (event.message.role !== "custom" ||
+			(event.message as { customType?: string }).customType !== INCREMENTAL_CONTINUATION_MESSAGE_TYPE) return;
+		const text = assistantText(event.message);
+		if (invalidatedIncrementalContinuationTexts.delete(text)) {
+			recordIncrementalHostContinuation("rejected", { reason: "invalidated_before_start" });
+			ctx.abort();
+			return;
+		}
+		const continuation = incrementalHostContinuation;
+		if (!continuation || continuation.delivered) return;
+		const continuationId = (event.message as { details?: { continuationId?: unknown } }).details?.continuationId;
+		const retainedBindingMatches = text === continuation.text && continuationId === continuation.id &&
+			loopCoordinator.retainedGeneration(ctx) === continuation.generation &&
+			ctx.sessionManager.getSessionId() === continuation.sessionId;
+		if (retainedBindingMatches && loopCoordinator.deadlineExpired()) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: continuation.generation,
+				reason: "deadline_before_delivery",
+			});
+			clearIncrementalHostContinuation(false);
+			ctx.abort();
+			return;
+		}
+		const valid = retainedBindingMatches && loopCoordinator.activeGeneration(ctx) === continuation.generation;
+		if (!valid) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: continuation.generation,
+				reason: "message_binding_mismatch",
+			});
+			clearIncrementalHostContinuation(false);
+			loopCoordinator.clear();
+			ctx.abort();
+			return;
+		}
+		continuation.delivered = true;
+		recordIncrementalHostContinuation("delivered", { generation: continuation.generation });
+	});
+
 	pi.on("agent_settled", () => {
 		selfReviewCoordinator.clear();
+		const continuation = incrementalHostContinuation;
+		if (!continuation || continuation.delivered) return;
+		recordIncrementalHostContinuation("queue_failed", {
+			generation: continuation.generation,
+			reason: "settled_without_delivery",
+		});
+		clearIncrementalHostContinuation(false);
+		loopCoordinator.clear();
+		persistTelemetry("cleared");
 	});
 
 	pi.on("session_tree", (event, ctx) => {
 		revokePreflight();
+		clearIncrementalHostContinuation();
 		loopCoordinator.clear();
 		selfReviewCoordinator.clear();
 		pendingCompletion = undefined;
@@ -863,12 +1030,14 @@ export default function registerReviewTable(
 	});
 
 	pi.on("input", async (event, ctx) => {
-		// Any new input revokes the prior top-level task generation before it can
-		// authorize a replay or a queued/steering continuation.
+		const source = event.source as ReviewLoopInputSource;
+
+		// Any input revokes the prior top-level task generation before it can
+		// authorize a replay or an unrelated queued/steering continuation.
+		clearIncrementalHostContinuation();
 		revokePreflight();
 		selfReviewCoordinator.clear();
 
-		const source = event.source as ReviewLoopInputSource;
 		const directPublish = parseDirectPublishRequest(event.text);
 		if (
 			(source === "interactive" || source === "rpc") &&
@@ -901,7 +1070,8 @@ export default function registerReviewTable(
 			persistTelemetry("cleared");
 		}
 
-		const parsed = parsePublishMode(event.text);
+		const parsedInput = parsePublishMode(event.text);
+		const parsed = resolveReviewSelection(parsedInput);
 		if (loopCoordinator.peek()) {
 			// Any independent user/extension input revokes the current generation.
 			// Only a fresh idle /pr-review command may begin the replacement.
@@ -934,8 +1104,12 @@ export default function registerReviewTable(
 		}
 		const resolvedReviewMode = explicitReviewMode ?? publishingConfig.defaultReviewMode.value;
 		const resolvedParsed = { ...parsed, reviewMode: resolvedReviewMode };
-		const transformedInput = explicitReviewMode === undefined
-			? `${event.text.trimEnd()} --${resolvedReviewMode}`
+		const transformedFlags = [
+			...(explicitReviewMode === undefined ? [`--${resolvedReviewMode}`] : []),
+			...(parsed.reviewSelection === "auto" ? ["--incremental"] : []),
+		];
+		const transformedInput = transformedFlags.length > 0
+			? `${event.text.trimEnd()} ${transformedFlags.join(" ")}`
 			: event.text;
 		const deadlineResolution = resolveReviewDeadlinesForContext(ctx);
 		const budget = createReviewBudget(deadlineResolution);
@@ -993,6 +1167,19 @@ export default function registerReviewTable(
 			persistTelemetry("cleared");
 			return { action: "handled" as const };
 		}
+		if (parsed.reviewSelection === "fresh") {
+			try {
+				pi.appendEntry("pr-review-selection", {
+					schemaVersion: 1,
+					generation: loopCoordinator.activeGeneration(ctx),
+					requested: "fresh",
+					selected: "fresh",
+					reason: "explicit_override",
+				});
+			} catch {
+				// Selection telemetry is diagnostic and cannot affect review authority.
+			}
+		}
 		if (transformedInput !== event.text) {
 			return { action: "transform" as const, text: transformedInput, images: event.images };
 		}
@@ -1010,8 +1197,26 @@ export default function registerReviewTable(
 		if (generation !== undefined) generationsReadyForSynthesis.add(generation);
 	});
 
+	pi.on("tool_call", (event) => {
+		const invocation = loopCoordinator.peek();
+		if (!invocation) return;
+		if (loopCoordinator.deadlineExpired()) {
+			return {
+				block: true,
+				reason: "The review synthesis deadline expired. No further tools may run; finish from the retained host artifacts.",
+			};
+		}
+		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
+		const command = typeof event.input.command === "string" ? event.input.command : "";
+		if (!containsDirectGhApi(command)) return;
+		return {
+			block: true,
+			reason: "Direct gh api calls are unavailable during /pr-review. Use the registered host-owned review tools for GitHub state.",
+		};
+	});
+
 	pi.on("tool_execution_start", (event, ctx) => {
-		if (!loopCoordinator.peek()) return;
+		if (!loopCoordinator.peek() || loopCoordinator.deadlineExpired()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
 		const lease = loopCoordinator.acquire(ctx);
 		if (!lease) return;
@@ -1050,6 +1255,7 @@ export default function registerReviewTable(
 					? resolveCompletion({ review: settled.artifact.review } as ReturnType<typeof parsePublishableReview>, deferred.invocation, ctx, settled.artifact)
 					: undefined;
 				const invocation = loopCoordinator.consume();
+				if (invocation) clearIncrementalHostContinuation(false);
 				if (invocation) {
 					persistTelemetry("terminal_response");
 					if (resolvedCompletion) {
@@ -1110,6 +1316,10 @@ export default function registerReviewTable(
 	});
 
 	pi.on("message_end", async (event, ctx) => {
+		if (event.message.role === "custom" &&
+			(event.message as { customType?: string }).customType === INCREMENTAL_CONTINUATION_MESSAGE_TYPE) {
+			return { message: { ...event.message, content: "" } };
+		}
 		if (event.message.role !== "assistant") return;
 		const completion = classifyAssistantCompletion(event.message.stopReason, hasToolCall(event.message));
 		if (completion === "continue_tools") {
@@ -1150,10 +1360,135 @@ export default function registerReviewTable(
 			!validateReviewInvocation(strict.review, active)
 			? strict.review
 			: undefined;
+		const retainedGeneration = loopCoordinator.retainedGeneration(ctx);
 		const priorRequiredTitles = priorRevalidationRegistry.isRequired(
 			ctx.sessionManager.getSessionId(),
-			loopCoordinator.retainedGeneration(ctx),
+			retainedGeneration,
 		) ?? [];
+		const recordedPriorStatuses = priorRevalidationRegistry.statuses(
+			ctx.sessionManager.getSessionId(),
+			retainedGeneration,
+		);
+		const priorStatuses = recordedPriorStatuses ?? [];
+		const candidateFinalization = reviewCandidateDispositionRegistry.finalization(
+			ctx.sessionManager.getSessionId(),
+			retainedGeneration,
+		);
+		const missingLaneKeys = expectedLaneDescriptors
+			.filter((expected) => !laneArtifacts.some((artifact) => artifact.key === expected.key))
+			.map((expected) => expected.key);
+		const priorStatusesMissing = priorRequiredTitles.length > 0 && recordedPriorStatuses === undefined;
+		const relationship = loopCoordinator.priorRelationship(ctx);
+		const preparationMissing = active?.incremental === true && relationship === undefined;
+		const trustedDraftSkip = active?.reviewBinding?.draft === true && strict?.review?.disposition === "skipped";
+		const freshTopologyMissing = active?.incremental === true &&
+			(relationship === "none" || relationship === "diverged") &&
+			expectedLaneDescriptors.length === 0 && !trustedDraftSkip;
+		const cumulativeCompletionMissing = active?.incremental === true &&
+			(relationship === "same_head" || relationship === "incremental") &&
+			expectedLaneDescriptors.length > 0 &&
+			(missingLaneKeys.length > 0 || priorStatusesMissing || candidateFinalization === undefined);
+		const selectionTopologyMissing = preparationMissing || freshTopologyMissing;
+		const continuationRequired = selectionTopologyMissing || cumulativeCompletionMissing;
+		if (selectionTopologyMissing && loopCoordinator.deadlineExpired()) {
+			recordIncrementalHostContinuation("rejected", {
+				generation: retainedGeneration,
+				reason: preparationMissing ? "deadline_before_preparation" : "deadline_before_fresh_topology",
+			});
+			clearIncrementalHostContinuation(false);
+			loopCoordinator.clear();
+			persistTelemetry("cleared");
+			return;
+		}
+		if (continuationRequired && retainedGeneration !== undefined && !loopCoordinator.deadlineExpired()) {
+			const existing = incrementalHostContinuation;
+			if (!existing || existing.generation !== retainedGeneration || existing.sessionId !== ctx.sessionManager.getSessionId()) {
+				const requirements = [
+					...(preparationMissing ? ["Automatic prior-state preparation has not run. Call pr_review_prepare once before selecting the review topology."] : []),
+					...(freshTopologyMissing ? ["Fresh review topology has not been dispatched after automatic selection."] : []),
+					...(missingLaneKeys.length > 0 ? [`Missing required lane artifacts: ${missingLaneKeys.join(", ")}.`] : []),
+					...(priorStatusesMissing ? ["Structured prior-finding statuses are missing."] : []),
+					...(!selectionTopologyMissing && candidateFinalization === undefined ? ["Host candidate finalization is missing."] : []),
+				];
+				const continuationId = randomUUID();
+				const continuationText = [
+					"Host continuation: this automatic PR review is incomplete.",
+					`Recovery generation: ${retainedGeneration}; nonce: ${continuationId}.`,
+					...requirements,
+					preparationMissing
+						? "Call pr_review_prepare now. Then use its relationship to run the selected fresh or cumulative topology; do not answer with prose instead."
+						: freshTopologyMissing
+							? "Dispatch the selected mode's fixed fresh review_subagents batch over fullDiffFile, then synthesize from its retained results."
+							: "Use the existing prepared context and host review tools to complete only the missing work, then call pr_review_candidate_disposition. Do not answer with prose until host finalization succeeds.",
+				].join("\n");
+				incrementalHostContinuation = {
+					id: continuationId,
+					generation: retainedGeneration,
+					sessionId: ctx.sessionManager.getSessionId(),
+					text: continuationText,
+					delivered: false,
+				};
+				recordIncrementalHostContinuation("queued", {
+					generation: retainedGeneration,
+					preparationMissing,
+					freshTopologyMissing,
+					missingLaneKeys,
+					priorStatusesMissing,
+					candidateFinalizationMissing: !selectionTopologyMissing && candidateFinalization === undefined,
+				});
+				try {
+					pi.sendMessage({
+						customType: INCREMENTAL_CONTINUATION_MESSAGE_TYPE,
+						content: continuationText,
+						display: false,
+						details: { generation: retainedGeneration, continuationId },
+					}, { deliverAs: "followUp", triggerTurn: true });
+					return;
+				} catch (error) {
+					recordIncrementalHostContinuation("queue_failed", {
+						generation: retainedGeneration,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					clearIncrementalHostContinuation(false);
+					if (selectionTopologyMissing) {
+						loopCoordinator.clear();
+						persistTelemetry("cleared");
+						return;
+					}
+				}
+			} else {
+				recordIncrementalHostContinuation("exhausted", {
+					generation: retainedGeneration,
+					preparationMissing,
+					freshTopologyMissing,
+					missingLaneKeys,
+					priorStatusesMissing,
+					candidateFinalizationMissing: !selectionTopologyMissing && candidateFinalization === undefined,
+				});
+				if (selectionTopologyMissing) {
+					clearIncrementalHostContinuation(false);
+					loopCoordinator.clear();
+					persistTelemetry("cleared");
+					return;
+				}
+			}
+		}
+		const finalizedFindings = reviewCandidateDispositionRegistry.acceptedFindings(
+			ctx.sessionManager.getSessionId(),
+			retainedGeneration,
+		) ?? [];
+		const hostFinalizedReview = active?.reviewBinding && candidateFinalization ? {
+			pr: { number: active.reviewBinding.prNumber, title: active.reviewBinding.prTitle, head_sha: active.reviewBinding.reviewedHeadSha },
+			disposition: "reviewed" as const,
+			overview: candidateFinalization.overview,
+			verification: candidateFinalization.verification,
+			findings: [...finalizedFindings],
+			strengths: [],
+			notes: { correctness: "", security: "", performance: "" },
+			verdict: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "request_changes" : "approve",
+			overall_correctness: finalizedFindings.some((finding) => finding.severity === "P0" || finding.severity === "P1") ? "patch is incorrect" : "patch is correct",
+			overall_explanation: candidateFinalization.overview,
+		} : undefined;
 		const artifact = active?.reviewBinding
 			? synthesizeReviewArtifact({
 				rawText: text,
@@ -1162,8 +1497,13 @@ export default function registerReviewTable(
 				headSha: active.reviewBinding.reviewedHeadSha,
 				laneArtifacts,
 				expectedLaneDescriptors,
-				...(trustedStrictReview ? { strictJsonReview: trustedStrictReview } : {}),
+				...(hostFinalizedReview || trustedStrictReview ? { strictJsonReview: hostFinalizedReview ?? trustedStrictReview } : {}),
 				...(priorRequiredTitles.length > 0 ? { priorRevalidationRequiredTitles: priorRequiredTitles } : {}),
+				...(recordedPriorStatuses !== undefined ? { priorRevalidationStatuses: priorStatuses } : {}),
+				...(candidateFinalization !== undefined ? {
+					candidateDispositionRecorded: true,
+					acceptedCandidateIds: candidateFinalization.decisions.filter((decision) => decision.disposition === "accepted").map((decision) => decision.candidateId),
+				} : {}),
 			})
 			: undefined;
 		const publishable = artifact ? { review: artifact.review } : strict;
@@ -1233,6 +1573,7 @@ export default function registerReviewTable(
 				: undefined;
 			// Persist timing before publication so network/write latency is never coupled to review wall time.
 			invocation = active ? loopCoordinator.consume() : undefined;
+			if (invocation) clearIncrementalHostContinuation(false);
 			if (invocation) {
 				persistTelemetry("terminal_response");
 				pendingCompletion = resolvedCompletion;
@@ -1251,13 +1592,17 @@ export default function registerReviewTable(
 		const degradedBody = artifact && (artifact.quality !== "fully_parsed" || artifact.completeness === "incomplete")
 			? artifact.body
 			: undefined;
+		const hostFinalizedBody = candidateFinalization && artifact
+			? JSON.stringify(artifact.review, null, 2)
+			: undefined;
 		// Automation must not surface an approval claim that host-owned lane
 		// evidence has already downgraded. Preserve raw fully parsed output for
 		// machine consumers, but replace degraded/incomplete terminal text with
 		// the same deterministic body used by publication.
 		if (ctx.mode !== "tui") {
-			if (!degradedBody) return;
-			return { message: { ...event.message, content: [...nonText, { type: "text", text: degradedBody }] } };
+			const automationBody = degradedBody ?? hostFinalizedBody;
+			if (!automationBody) return;
+			return { message: { ...event.message, content: [...nonText, { type: "text", text: automationBody }] } };
 		}
 		return {
 			message: {

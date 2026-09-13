@@ -87,6 +87,9 @@ describe("review subprocess policy and task transport", () => {
 		expect(extension).toContain("process.kill(-processGroupId, processSignal)");
 		expect(extension).toContain('signalProcess("SIGTERM")');
 		expect(extension).toContain('signalProcess("SIGKILL")');
+		expect(extension).toContain("proc.stdout.destroy()");
+		expect(extension).toContain("proc.stderr.destroy()");
+		expect(extension).toContain("proc.unref()");
 		expect(extension).not.toContain("if (!proc.killed)");
 	});
 

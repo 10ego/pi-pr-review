@@ -22,7 +22,7 @@ describe("npm release package policy", () => {
 	test("accepts the current lifecycle-script-disabled package", () => {
 		assert.equal(current.package.name, "pi-pr-review");
 		assert.equal(current.package.version, packageJson.version);
-		assert.equal(current.paths.length, 26);
+		assert.equal(current.paths.length, 27);
 	});
 
 	test("rejects unsafe, unexpected, executable, oversized, and duplicate paths", () => {

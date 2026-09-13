@@ -272,6 +272,68 @@ describe("semantic lane completion", () => {
 		}
 	});
 
+	test("accepts unambiguous ASCII case variants of candidate labels without repairing other framing", () => {
+		const upperLabels = integratedCandidate().split("\n").map((line) => {
+			const separator = line.indexOf(":");
+			return `${line.slice(0, separator).replace(/(^|_)([a-z])/g, (_, prefix, letter) => `${prefix}${letter.toUpperCase()}`)}${line.slice(separator)}`;
+		}).join("\n");
+		const valid = `${integratedFraming()}\n${upperLabels}`;
+		expect(classifyReviewLane({ tier: "heavy", rawText: valid, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: valid.replace("Review status: COMPLETE", "Review status status completeStatus: COMPLETE"), exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${valid}\ntitle: [P2] Duplicate field`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("partial");
+	});
+
+	test("normalizes only exact candidate-field Markdown hard breaks", () => {
+		const hardBreakCandidate = [
+			"- **title:** [P2] Preserve review evidence  ",
+			"  **severity:** P2  ",
+			"  **why:** The changed path drops a required result.  ",
+			"  **location:** src/a.ts:10-12  ",
+			"  **side:** RIGHT  ",
+			"  **in_diff:** yes  ",
+			"  **pr_related:** yes  ",
+			"  **confidence:** 0.9",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(hardBreakCandidate)).toHaveLength(1);
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${integratedFraming()}\n${hardBreakCandidate}`, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate.replace("P2  ", "P2   "), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: hardBreakCandidate.replace("P2  ", "P2 \t"), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		expect(classifyReviewLane({ tier: "heavy", rawText: `${hardBreakCandidate}\narbitrary prose  `, exitCode: 0, stopReason: "stop" })).toBe("partial");
+	});
+
+	test("unwraps only an exact non-nested bold candidate title", () => {
+		const yaml = integratedCandidate().split("\n").map((line, index) => `${index === 0 ? "- " : "  "}${line}`).join("\n");
+		for (const wrapped of ["**[P2] Preserve review evidence**", "__[P2] Preserve review evidence__"]) {
+			const candidate = yaml.replace("[P2] Preserve review evidence", wrapped);
+			expect(classifyReviewLane({ tier: "heavy", rawText: candidate, exitCode: 0, stopReason: "stop" })).toBe("complete");
+			expect(extractValidatedReviewLaneCandidates(candidate)).toHaveLength(1);
+		}
+		for (const wrapped of ["**[P2] Preserve **review** evidence**", "**[P2] Preserve __review__ evidence**", "__[P2] Preserve **review** evidence__", "**[P2] Preserve review evidence", "**[P2] Preserve review evidence** trailing", "___[P2] Preserve review evidence___"]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: yaml.replace("[P2] Preserve review evidence", wrapped), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
+	test("unwraps only an exact single-code-span candidate location", () => {
+		const repeated = integratedCandidate().split("\n").map((line) => `- **${line.replace(": ", ":** ")}`).join("\n").replace("src/a.ts:10-12", "`src/a.ts:10-12`");
+		expect(classifyReviewLane({ tier: "heavy", rawText: repeated, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		expect(extractValidatedReviewLaneCandidates(repeated)).toHaveLength(1);
+		const yaml = [
+			"- **title:** [P1] Prevent command injection",
+			"  **severity:** P1",
+			"  **why:** The changed shell invocation executes attacker-controlled syntax.",
+			"  **location:** `src/branch.ts:3-3`",
+			"  **side:** RIGHT",
+			"  **in_diff:** yes",
+			"  **pr_related:** yes",
+			"  **confidence:** 1.0",
+		].join("\n");
+		expect(classifyReviewLane({ tier: "heavy", rawText: yaml, exitCode: 0, stopReason: "stop" })).toBe("complete");
+		for (const location of ["``src/a.ts:10-12``", "`src/a.ts:10-12", "`src/a.ts`:10-12", "`src/a.ts:10-12` trailing", "`../src/a.ts:10-12`", "`src/a.ts:10-12` `extra`"]) {
+			expect(classifyReviewLane({ tier: "heavy", rawText: yaml.replace("`src/branch.ts:3-3`", location), exitCode: 0, stopReason: "stop" })).toBe("partial");
+		}
+	});
+
 	test("characterizes reserved nit tags, blank separators, and Unicode prose", () => {
 		const nit = `${integratedFraming()}\n${integratedCandidate("The changed path drops a required result.").replace("[P2] Preserve review evidence", "[nit] Preserve review evidence").replace("severity: P2", "severity: nit")}`;
 		expect(classifyReviewLane({ tier: "heavy", rawText: nit, exitCode: 0, stopReason: "stop", expectedOutput: "nonempty" })).toBe("complete");
@@ -354,7 +416,6 @@ declared prose\nNO FINDINGS.`,
 
 		for (const malformed of [
 			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "severity: P9")}`,
-			`${integratedFraming()}\n${integratedCandidate().replace("severity: P2", "Severity: P2")}`,
 			`${integratedFraming("heading").replace("## Overview\n", "## Overview: inline\n")}\nNO FINDINGS.`,
 			`${integratedFraming()}\n${integratedCandidate().replace("title: [P2] Preserve review evidence", "title: [P1] Preserve review evidence").replace("severity: P2", "severity: P2")}`,
 			`${integratedFraming()}\n${integratedCandidate().replace("side: RIGHT", "side: MIDDLE")}`,
@@ -581,6 +642,21 @@ describe("invocation lane artifact retention", () => {
 		registry.close(7);
 		expect(registry.snapshot(7)).toBeUndefined();
 		expect(registry.retain(7, retained)).toBeFalse();
+	});
+
+	test("freezes retained artifacts before authoritative finalization", () => {
+		const registry = new ReviewLaneArtifactRegistry();
+		registry.open(7);
+		expect(registry.expect(7, [{ key: "call:0", tier: "heavy", minorHygiene: false }])).toBeTrue();
+		expect(registry.claim(7, "call:0")).toBeTrue();
+		expect(registry.claim(7, "call:0")).toBeFalse();
+		expect(registry.retain(7, artifact())).toBeTrue();
+		expect(registry.freeze(7)).toBeTrue();
+		expect(registry.expect(7, [{ key: "late", tier: "heavy", minorHygiene: false }])).toBeFalse();
+		expect(registry.claim(7, "call:0")).toBeFalse();
+		expect(registry.retain(7, artifact({ rawText: "replacement" }))).toBeFalse();
+		expect(registry.snapshot(7)?.[0]?.rawText).toBe("NO FINDINGS.");
+		expect(registry.freeze(8)).toBeFalse();
 	});
 
 	test("snapshots concurrent completions in requested-pass order", () => {

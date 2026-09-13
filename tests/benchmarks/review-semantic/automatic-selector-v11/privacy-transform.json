@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "9028c489c25eb19cb1be403e80549fff8714f7e1e6ffc38cf3651fc1d12ac8e8",
+  "sanitizedRunManifestSha256": "9028c489c25eb19cb1be403e80549fff8714f7e1e6ffc38cf3651fc1d12ac8e8",
+  "reportSha256": "54a2aeb6c2170b07d59ee9e186617cb0c8b725adc14ab77d86b3faf5746f2055",
+  "selectionAuditSha256": "39a8b2a9c06e5ce5592883c2670945de3c0e1fe328e0f8f54cefa2da6d85df1b",
+  "adjudicationSha256": "33adbcd1f22a5f7eb3c9779fdf50c4188112bf37b894318333c34237e94dbad9",
+  "scorerSha256": "cf62378d737093668859f0875b5f58fa0e5df221cc5edc547b01f0265dbd1513",
+  "privacyScan": "Recursive decoded scan contains no private local paths or account names.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection; rejected by one corresponding explicit lifecycle failure"
+}

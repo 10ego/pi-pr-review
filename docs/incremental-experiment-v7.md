@@ -1,6 +1,8 @@
 # Incremental re-review experiment v7
 
-Status: **complete; automatic defaulting rejected, explicit incremental mode retained**.
+Status: **complete historical baseline; automatic defaulting rejected**.
+
+> This experiment evaluated the v1.18.0 code-only topology: ancestor runs hunted only the new-commit delta and same-head runs dispatched no reviewers. It did not include participant replies, rejection rationales, or seeded defects missed by the prior review. The cumulative conversation-aware topology introduced afterward requires a new corpus revision and paired campaign before any defaulting decision.
 
 This experiment validates the incremental re-review behavior released in `pi-pr-review@1.18.0` before plain `/pr-review N` is allowed to auto-detect prior state. Corpus v6 remains the accepted topology evidence; it cannot exercise prior-review discovery, status disclosure, delta comparison, or revalidation-only behavior.
 

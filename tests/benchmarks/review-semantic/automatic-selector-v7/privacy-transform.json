@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceRunManifestSha256": "3ec4ca8aa3156a4e8a6608aeb9ad32f25a880903f6d09b6d15403776d5d8d66e",
+  "sanitizedRunManifestSha256": "fac6f173bbbe1f9ebab32e6f8c6121ae0436d465f4b51d98ecf2eac7e43dad6d",
+  "reportSha256": "e3edcab39b5d9c13e694df1332f6341da7b54aed2edce0ed21fc36ab3e5467e4",
+  "selectionAuditSha256": "6515b0f4839a1bb2fcb67a85f412168913cbd4c91e69d20373dc5884a24de426",
+  "adjudicationSha256": "45709b9a63aa19aa24942948a3a5ec85af91bc8e54347c76ac801791b2bfa184",
+  "scorerSha256": "c6b3afd1996f6359789eb57495b107086bbaa4b5978beeec56a9f68d352f02d8",
+  "transformations": [
+    "replace private benchmark workspace and system temporary paths in recursively embedded session evidence",
+    "recompute embedded session, artifact, outer run, and manifest hashes and sizes"
+  ],
+  "privacyScan": "No local account names, home-directory paths, private macOS temporary-directory paths, or repository checkout paths remain in root JSON or recursively decoded artifact/session payloads.",
+  "semanticTimingLifecycleAndAuditMetricsUnchanged": true,
+  "campaignValidity": "valid immutable 36-row collection without reruns; post-hardening absolute completion passed without exercising targeted recovery; automatic defaulting rejected by positive median paired latency delta"
+}

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection human adjudication records visible defect coverage without modifying the frozen corpus, run artifacts, or raw scorer report. Severity metrics remain untouched.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "c8de162386f88f4caa1f19ba",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Restrict login redirects to trusted same-origin paths",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "e7b9fda30c3378dcddd0549c",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Validate return URLs before redirecting",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "e7b9fda30c3378dcddd0549c",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued tokens to the audit log",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/token.ts:4 describes the expected new.token-log defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "266dd6a689fd2687504cb3e2",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.poll-timer",
+      "canonicalTitle": "[P1] Cancel the interval in the polling disposer",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/poll.ts:2 describes the expected missed.poll-timer defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "ba51903184a39ac5b7ff5ea2",
+      "strategy": "fresh",
+      "expectedFindingId": "false-fix.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant-based document access validation",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/access.ts:2 describes the expected false-fix.tenant-check defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "0669b0926c17deffac134657",
+      "strategy": "incremental",
+      "expectedFindingId": "false-fix.tenant-check",
+      "canonicalTitle": "[P1] Restore tenant isolation for document reads",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/access.ts:2 describes the expected false-fix.tenant-check defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "524688e4bbede5de6ba14760",
+      "strategy": "incremental",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P1] Reject untrusted redirect schemes and origins",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "524688e4bbede5de6ba14760",
+      "strategy": "incremental",
+      "expectedFindingId": "new.token-log",
+      "canonicalTitle": "[P1] Do not write issued tokens to audit logs",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding at src/token.ts:4 describes the expected new.token-log defect with equivalent causal and impact wording."
+    },
+    {
+      "planEntryId": "db1d50bceffe083b72bbf83d",
+      "strategy": "fresh",
+      "expectedFindingId": "missed.redirect",
+      "canonicalTitle": "[P2] Restrict post-login redirects to trusted destinations",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding at src/redirect.ts:2 describes the expected missed.redirect defect with equivalent causal and impact wording."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 12,
+      "opportunities": 12,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 12,
+      "opportunities": 12,
+      "recall": 1
+    },
+    "incrementalStillOpenCarryForward": {
+      "matched": 6,
+      "opportunities": 6,
+      "recall": 1
+    }
+  },
+  "operationalResults": {
+    "freshCompleteRuns": 11,
+    "incrementalCompleteRuns": 11,
+    "opportunitiesPerStrategy": 12,
+    "freshLaneCompleteRate": 0.9833333333333333,
+    "incrementalLaneCompleteRate": 0.95,
+    "freshPublicationFallbackRate": 0.08333333333333333,
+    "incrementalPublicationFallbackRate": 0.08333333333333333
+  },
+  "incrementalFailure": {
+    "planEntryId": "16bdb6f4feef7d16bba428bf",
+    "caseId": "rejection-valid",
+    "relationship": "same_head",
+    "seededDefects": 0,
+    "reason": "The terminal response claimed host finalization, but retained no required gap or security/resource lane artifacts; the collector preserved the fallback row without rerun."
+  },
+  "comparativeResults": {
+    "freshDuplicateRate": 0.3191489361702128,
+    "incrementalDuplicateRate": 0.1111111111111111,
+    "completePairFreshMedianLatencyMs": 75940.195,
+    "completePairIncrementalMedianLatencyMs": 73333.224,
+    "incrementalToFreshCompletePairMedianLatencyRatio": 0.9656707360311624
+  },
+  "decision": "publication and automatic selection rejected because required incremental lane completion was 95% and paired raw P0/P1 and cross-file recall were lower than fresh"
+}

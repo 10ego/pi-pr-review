@@ -9,8 +9,10 @@ export const MAX_REVIEW_CONTEXT_FILE_BYTES = 1024 * 1024;
 export interface LoadedReviewContext {
 	context?: string;
 	contextFile?: string;
-	/** Internal raw text used for deterministic sharding; never exposed in tool details. */
+	/** Internal normalized text used for deterministic sharding; never exposed in tool details. */
 	contextFileText?: string;
+	/** Exact bytes from the single read that produced contextFileText. */
+	contextFileRawBytes?: Buffer;
 	contextFileBytes: number;
 }
 
@@ -33,7 +35,11 @@ export async function loadReviewContext(
 	if (stat.size > maxBytes) {
 		throw new Error(`review context_file exceeds ${maxBytes} bytes: ${contextFile}`);
 	}
-	const fileContext = (await fs.readFile(resolved, "utf8")).trim();
+	const rawBytes = await fs.readFile(resolved);
+	if (rawBytes.byteLength > maxBytes) {
+		throw new Error(`review context_file exceeds ${maxBytes} bytes: ${contextFile}`);
+	}
+	const fileContext = rawBytes.toString("utf8").trim();
 	if (!fileContext) throw new Error(`review context_file contains no text: ${contextFile}`);
 	const context = inline
 		? `${inline}\n\n--- Complete PR diff from context_file ---\n${fileContext}`
@@ -42,6 +48,7 @@ export async function loadReviewContext(
 		context,
 		contextFile: resolved,
 		contextFileText: fileContext,
-		contextFileBytes: stat.size,
+		contextFileRawBytes: rawBytes,
+		contextFileBytes: rawBytes.byteLength,
 	};
 }
