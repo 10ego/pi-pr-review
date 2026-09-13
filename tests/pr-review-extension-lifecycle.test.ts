@@ -63,7 +63,7 @@ mock.module("typebox", () => {
 	};
 });
 const reviewTable = (await import("../extensions/review-table.ts")).default;
-const { containsUnhostedGhApi, renderDegradedReviewMarkdown } = await import("../extensions/review-table.ts");
+const { containsDirectGhApi, containsUnhostedGhApi, renderDegradedReviewMarkdown } = await import("../extensions/review-table.ts");
 const { reviewCandidateDispositionRegistry } = await import("../lib/pr-review-candidates.ts");
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
 const BASE_ACTIVE_TOOLS = ["read", "bash"];
@@ -462,7 +462,7 @@ describe("completed review extension lifecycle", () => {
 		});
 	});
 
-	test("blocks parent gh api reads that omit the host-bound hostname", async () => {
+	test("blocks every parent gh api read during an active review", async () => {
 		expect(containsUnhostedGhApi("gh api repos/owner/repo/pulls/7/reviews/1")).toBeTrue();
 		expect(containsUnhostedGhApi("gh api --hostname github.com repos/owner/repo/pulls/7", "github.com")).toBeFalse();
 		expect(containsUnhostedGhApi("gh api --hostname example.com repos/owner/repo/pulls/7", "github.com")).toBeTrue();
@@ -478,15 +478,19 @@ describe("completed review extension lifecycle", () => {
 		expect(containsUnhostedGhApi("& \"C:\\Program Files\\GitHub CLI\\gh.exe\" api repos/owner/repo")).toBeTrue();
 		expect(containsUnhostedGhApi("git grep api")).toBeFalse();
 		expect(containsUnhostedGhApi("gh pr view 7 --json number")).toBeFalse();
+		expect(containsDirectGhApi("gh api --hostname github.com repos/owner/repo/pulls/7")).toBeTrue();
+		expect(containsDirectGhApi("gh pr view 7 --json number")).toBeFalse();
 		const harness = createHarness([], session);
 		await harness.emit("input", { text: "/pr-review 7 --fresh", source: "interactive" });
 		const [blocked] = await harness.emit("tool_call", { toolCallId: "direct-gh", toolName: "bash", input: { command: "gh api repos/owner/repo/pulls/7/reviews/1" } });
 		expect(blocked).toEqual({
 			block: true,
-			reason: "Direct gh api calls during /pr-review require the host-bound --hostname. Use the registered review tools for GitHub state.",
+			reason: "Direct gh api calls are unavailable during /pr-review. Use the registered host-owned review tools for GitHub state.",
 		});
-		const [allowed] = await harness.emit("tool_call", { toolCallId: "hosted-gh", toolName: "bash", input: { command: "gh api --hostname github.com repos/owner/repo/pulls/7" } });
-		expect(allowed).toBeUndefined();
+		const [hostedBlocked] = await harness.emit("tool_call", { toolCallId: "hosted-gh", toolName: "bash", input: { command: "gh api --hostname github.com repos/owner/repo/pulls/7" } });
+		expect(hostedBlocked).toEqual(blocked);
+		const [nonApiAllowed] = await harness.emit("tool_call", { toolCallId: "gh-pr", toolName: "bash", input: { command: "gh pr view 7 --json number" } });
+		expect(nonApiAllowed).toBeUndefined();
 	});
 
 	test("defers the synthesis cap across review-tool turns so later lanes are not starved", async () => {

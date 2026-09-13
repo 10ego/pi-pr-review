@@ -84,7 +84,7 @@ import {
 
 type Severity = "P0" | "P1" | "P2" | "P3" | "nit";
 
-/** Block parent-shell GitHub API reads that bypass the host-bound hostname. */
+/** Detect parent-shell GitHub API reads that bypass the host-bound hostname. */
 export function containsUnhostedGhApi(command: string, requiredHostname?: string): boolean {
 	// Shells remove quotes while constructing argv tokens. Collapse a quoted
 	// executable path first, then remove remaining quotes so api/a'p'i/'api'
@@ -110,6 +110,13 @@ export function containsUnhostedGhApi(command: string, requiredHostname?: string
 		}
 	}
 	return false;
+}
+
+/** During an active review all parent GitHub API reads must use host-owned tools. */
+export function containsDirectGhApi(command: string): boolean {
+	// This sentinel cannot match the hostname grammar above, so every recognized
+	// invocation is denied while retaining the same quote/concatenation defenses.
+	return containsUnhostedGhApi(command, "__host_tools_only__");
 }
 
 interface Finding {
@@ -1185,10 +1192,10 @@ export default function registerReviewTable(
 		const invocation = loopCoordinator.peek();
 		if (!invocation || (event.toolName !== "bash" && event.toolName !== "powershell")) return;
 		const command = typeof event.input.command === "string" ? event.input.command : "";
-		if (!containsUnhostedGhApi(command, invocation.reviewBinding?.hostname)) return;
+		if (!containsDirectGhApi(command)) return;
 		return {
 			block: true,
-			reason: "Direct gh api calls during /pr-review require the host-bound --hostname. Use the registered review tools for GitHub state.",
+			reason: "Direct gh api calls are unavailable during /pr-review. Use the registered host-owned review tools for GitHub state.",
 		};
 	});
 
