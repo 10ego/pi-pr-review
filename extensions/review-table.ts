@@ -1199,7 +1199,14 @@ export default function registerReviewTable(
 
 	pi.on("tool_call", (event) => {
 		const invocation = loopCoordinator.peek();
-		if (!invocation || (event.toolName !== "bash" && event.toolName !== "powershell")) return;
+		if (!invocation) return;
+		if (loopCoordinator.deadlineExpired()) {
+			return {
+				block: true,
+				reason: "The review synthesis deadline expired. No further tools may run; finish from the retained host artifacts.",
+			};
+		}
+		if (event.toolName !== "bash" && event.toolName !== "powershell") return;
 		const command = typeof event.input.command === "string" ? event.input.command : "";
 		if (!containsDirectGhApi(command)) return;
 		return {
@@ -1209,7 +1216,7 @@ export default function registerReviewTable(
 	});
 
 	pi.on("tool_execution_start", (event, ctx) => {
-		if (!loopCoordinator.peek()) return;
+		if (!loopCoordinator.peek() || loopCoordinator.deadlineExpired()) return;
 		telemetryTracker.toolStarted(event.toolCallId, event.toolName, event.args);
 		const lease = loopCoordinator.acquire(ctx);
 		if (!lease) return;

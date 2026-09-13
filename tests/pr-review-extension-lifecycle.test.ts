@@ -2564,6 +2564,44 @@ describe("completed review extension lifecycle", () => {
 		harness.loopCoordinator.clear();
 	});
 
+	test("blocks post-deadline tools without clearing retained review artifacts", async () => {
+		const harness = createHarness();
+		await harness.emit("input", { text: "/pr-review 7 --fresh", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [
+			{ key: "correctness:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" },
+		], harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", tier: "heavy",
+			rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 1, toolElapsedMs: 0, toolCallCount: 0,
+		})).toBeTrue();
+		const binding = (harness.loopCoordinator as any).binding;
+		binding.deadlineKind = "synthesis";
+		binding.controller.abort(new Error("review synthesis deadline expired"));
+
+		const [blocked] = await harness.emit("tool_call", {
+			toolCallId: "late-read", toolName: "read", input: { path: "src/file.ts" },
+		});
+		expect(blocked).toEqual({
+			block: true,
+			reason: "The review synthesis deadline expired. No further tools may run; finish from the retained host artifacts.",
+		});
+		await harness.emit("tool_execution_start", { toolCallId: "late-race", toolName: "bash", args: { command: "echo late" } });
+		expect(harness.loopCoordinator.peek()).toBeDefined();
+		expect(harness.loopCoordinator.artifactSnapshot(harness.ctx)).toHaveLength(1);
+
+		const message = completedReviewMessage();
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "post-deadline-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		expect(harness.loopCoordinator.peek()).toBeUndefined();
+		expect(harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE)?.data).toMatchObject({
+			completeness: "complete",
+			expectedLaneCount: 1,
+		});
+	});
+
 	test("aborts a queued continuation invalidated before message delivery", async () => {
 		const harness = createHarness();
 		await harness.emit("input", { text: "/pr-review 7 --incremental", source: "interactive" });
