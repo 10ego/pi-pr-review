@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "0599592baa7d067d480f6161",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "Two anchored P1 findings explicitly state that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "5427cf8f7ec6dbd7a493223c",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical P1 carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "58910d3d18da3e370093e6e9",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical P1 carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "8ee2c28ff786ced9cf37f6a8",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical P1 carry-forward states that unconditional true replaced tenant equality and leaves the tenant check bypassed."
+    },
+    {
+      "planEntryId": "e2bad15eabdc5f41f44dc8b6",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical P1 carry-forward states that unconditional true replaced tenant equality and permits cross-tenant reads."
+    },
+    {
+      "planEntryId": "ea01b7c7d4fafc959af5e1cd",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "Multiple anchored P1 findings explicitly describe shell interpretation of branch input and arbitrary command execution."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected: one automatic diverged row degraded to raw_body_only after fresh host finalization was unavailable. Automatic completion was 11/12 despite 156/156 complete required lanes, and automatic fallback was 1/12 versus 0/12 for explicit strategies."
+}

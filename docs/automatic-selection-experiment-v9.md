@@ -1,8 +1,8 @@
 # Automatic fresh versus incremental selection v9
 
-Status: **prospectively frozen; collection not yet complete**.
+Status: **complete; automatic defaulting rejected by one publication fallback**.
 
-V9 is the release-gate campaign for the canonical recovery and termination fixes at candidate `0f79c91668f83fffcee7b952ea8027f8d8c6e2b3`. It uses `openai-codex/gpt-5.6-sol` at medium effort. Its 36 rows must be collected exactly once in stored plan order, retaining failures without reruns, substitutions, skips, or rewriting.
+V9 was the release-gate campaign for the canonical recovery and termination fixes at candidate `0f79c91668f83fffcee7b952ea8027f8d8c6e2b3`. It used `openai-codex/gpt-5.6-sol` at medium effort. Its 36 rows were collected exactly once in stored plan order, retaining failures without reruns, substitutions, skips, or rewriting.
 
 - corpus SHA-256: `667fa2976bfb730a279ddb4afb79615b23751cd6a8ac8089ecca2eb27e38d0d6`
 - plan ID: `10dcf90559089863aa809e30c40d4b000c9dff8375f897d07d759b03fa88f13c`
@@ -26,3 +26,11 @@ Automatic defaulting is authorized only if all of these gates pass:
 - automatic p95 does not regress against corresponding explicit p95.
 
 A successful targeted replacement counts only when it canonically completes the original required lane, retains the failed attempt in ordered history, and the top-level Pi process exits normally. Any invalid GitHub audit, hard collector timeout, incomplete required lane, missing pair, or rewritten row fails the campaign closed.
+
+## Result
+
+All 36 collector invocations exited normally, all 156 required lanes completed, automatic relationships were exact 12/12, and automatic prior statuses were exact 8/8. Post-collection adjudication found the expected defect and exact P1 severity in all six raw matcher misses, yielding 8/8 defect presence and severity for each strategy.
+
+Automatic operational completion was nevertheless only 11/12. Automatic diverged row `126425b909e5457a0e56e278` completed all five lanes with a valid GitHub audit, but fresh reviews could not use host candidate finalization. The parent fell back to legacy scalar terminal fields, which the unchanged Markdown safety boundary correctly degraded to `raw_body_only`. Automatic fallback was therefore 1/12 versus 0/12 for both explicit strategies.
+
+The 11 operational pairs had a favorable −4.751-second (−6.8%) median delta. Automatic p95 was 220.947 seconds versus 345.066 seconds for corresponding explicit runs. These results cannot override the absolute operational and fallback gates, so automatic defaulting remains unreleased. The immutable sanitized evidence is retained under `tests/benchmarks/review-semantic/automatic-selector-v9/`.
