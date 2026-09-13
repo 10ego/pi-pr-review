@@ -508,6 +508,58 @@ describe("review tool execution gate", () => {
 		}
 	});
 
+	test("retries one provider prompt-policy false positive within the cumulative lane budget", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-policy-retry-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		const complete = "Review status: COMPLETE\nOverview: complete full-diff gap hunt.\nStrengths: bounded scope.\nRisk areas: low integration risk.\nNO FINDINGS.";
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { if (count === 0) { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [] } })); process.stderr.write("Codex error: Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt"); process.exitCode = 1; } else { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: ${JSON.stringify(complete)} }] } })); } });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-policy-retry-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("policy-retry", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result.isError).toBeUndefined();
+			expect(result.details).toMatchObject({ status: "complete", fallbackUsed: false });
+			expect(result.details.attempts.map((attempt: any) => [attempt.status, attempt.contractRetryable])).toEqual([["failed", true], ["complete", false]]);
+			expect(readFileSync(counter, "utf8")).toBe("2");
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.map((artifact: any) => [artifact.key, artifact.lifecycle, artifact.attempts.length])).toEqual([["incremental-gap", "complete", 2]]);
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("bounds repeated prompt-policy failures to one cumulative retry", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-policy-bound-"));
+		const child = path.join(root, "child.mjs"), diff = path.join(root, "full.diff"), counter = path.join(root, "attempt-count");
+		writeFileSync(diff, "diff --git a/a.ts b/a.ts\n");
+		writeFileSync(child, `import fs from "node:fs"; const count = fs.existsSync(${JSON.stringify(counter)}) ? Number(fs.readFileSync(${JSON.stringify(counter)}, "utf8")) : 0; fs.writeFileSync(${JSON.stringify(counter)}, String(count + 1)); process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", content: [] } })); process.stderr.write("Codex error: Invalid prompt: your prompt was flagged as potentially violating our usage policy. Please try again with a different prompt"); process.exitCode = 1; });`);
+		const originalScript = process.argv[1];
+		try {
+			const h = harness(); h.ctx.cwd = root; h.ctx.sessionManager.getSessionId = () => "gap-policy-bound-session";
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const lease = h.coordinator.acquire(h.ctx)!;
+			expect(h.coordinator.setPriorRelationship(lease, "incremental", h.ctx)).toBeTrue();
+			expect(h.coordinator.registerExpectedArtifacts(lease, [{ key: "incremental-gap", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], h.ctx)).toBeTrue();
+			expect(h.coordinator.registerPreparedContext(lease, "incremental-gap", readFileSync(diff), h.ctx)).toBeTrue();
+			process.argv[1] = child;
+			const result = await h.tools.get("review_subagent").execute("policy-bound", { tier: "heavy", objective: "generic request", context_file: diff }, undefined, undefined, h.ctx);
+			expect(result).toMatchObject({ isError: true, details: { status: "failed" } });
+			expect(result.details.attempts).toHaveLength(2);
+			expect(readFileSync(counter, "utf8")).toBe("2");
+			expect(h.coordinator.artifactSnapshot(h.ctx)?.[0]).toMatchObject({ key: "incremental-gap", lifecycle: "failed" });
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("incremental gap hunting rejects a context file that differs by any byte from GitHub", async () => {
 		const root = mkdtempSync(path.join(os.tmpdir(), "pi-pr-review-gap-binding-"));
 		const previousPath = process.env.PATH;

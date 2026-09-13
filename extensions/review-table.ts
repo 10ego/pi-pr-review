@@ -90,7 +90,16 @@ export function containsUnhostedGhApi(command: string, requiredHostname?: string
 	// executable path first, then remove remaining quotes so api/a'p'i/'api'
 	// spellings cannot bypass this bounded command gate.
 	const normalized = command
+		// Shell line continuations disappear before tokenization. Remove them
+		// before splitting command segments so they cannot hide either token.
+		.replace(/(?:\\|`)\r?\n/gu, "")
+		// Collapse quoted executable paths before interpreting token-level shell
+		// escapes; Windows path separators are path syntax, not shell escapes.
 		.replace(/["'][^"'\r\n;&|]*[\\/]gh(?:\.exe)?["']/giu, "gh")
+		.replace(/(^|[\s(&])(?:[^\s;&|"'`]*[\\/])+gh(?:\.exe)?(?=\s|$)/giu, "$1gh")
+		// POSIX backslash and PowerShell backtick escapes can split executable and
+		// subcommand names without changing the resulting argv tokens.
+		.replace(/[\\`]([A-Za-z])/gu, "$1")
 		.replace(/["']/gu, "");
 	for (const segment of normalized.split(/[\r\n;&|]+/u)) {
 		const starts = [...segment.matchAll(/(?:^|[\s(])(?:"(?:[^"\r\n;&|]*[\\/])?gh(?:\.exe)?"|'(?:[^'\r\n;&|]*[\\/])?gh(?:\.exe)?'|(?:[^\s;&|"'`]*[\\/])?gh(?:\.exe)?)\s+api(?=\s|$)/giu)];

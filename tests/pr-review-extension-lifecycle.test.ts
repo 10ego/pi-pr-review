@@ -479,6 +479,16 @@ describe("completed review extension lifecycle", () => {
 		expect(containsUnhostedGhApi("git grep api")).toBeFalse();
 		expect(containsUnhostedGhApi("gh pr view 7 --json number")).toBeFalse();
 		expect(containsDirectGhApi("gh api --hostname github.com repos/owner/repo/pulls/7")).toBeTrue();
+		expect(containsDirectGhApi("x=gh; \"$x\" api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("$x='gh'; & $x api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("g\\h a\\pi repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("g`h a`pi repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("g\\\nh api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("gh \\\napi repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("g`\r\nh api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("& \"C:\\Program Files\\GitHub CLI\\gh.exe\" api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("& C:\\tools\\gh.exe api repos/owner/repo")).toBeTrue();
+		expect(containsDirectGhApi("/usr/local/bin/gh api repos/owner/repo")).toBeTrue();
 		expect(containsDirectGhApi("gh pr view 7 --json number")).toBeFalse();
 		const harness = createHarness([], session);
 		await harness.emit("input", { text: "/pr-review 7 --fresh", source: "interactive" });

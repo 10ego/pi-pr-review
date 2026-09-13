@@ -1088,6 +1088,12 @@ function isRetryableModelFailure(result: RunResult): boolean {
 	);
 }
 
+function isRetryablePromptPolicyFailure(result: RunResult): boolean {
+	if (result.stopReason !== "error") return false;
+	const diagnostic = [result.errorMessage, result.stderr].filter(Boolean).join("\n");
+	return /invalid prompt:[\s\S]{0,500}potentially violating our usage policy[\s\S]{0,300}try again/i.test(diagnostic);
+}
+
 async function runSubagentAttempt(
 	config: PrReviewConfig,
 	ctx: Pick<ExtensionContext, "cwd">,
@@ -1452,7 +1458,10 @@ async function runSubagentPass(
 			result.errorMessage = "File-backed complete diff was not fully read through every host-required range.";
 		}
 		const processFailed = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-		const contractRetryable = pass.retryContractPartial === true && lifecycle === "partial" && !processFailed && attemptIndex + 1 < boundedAttempts.length;
+		const promptPolicyRetryable = processFailed && isRetryablePromptPolicyFailure(result);
+		const contractRetryable = pass.retryContractPartial === true &&
+			((lifecycle === "partial" && !processFailed) || promptPolicyRetryable) &&
+			attemptIndex + 1 < boundedAttempts.length;
 		const retryable = contractRetryable || lifecycle === "timed_out" || (processFailed && isRetryableModelFailure(result));
 		lastResult = result;
 		lastNotice = notice;
@@ -2651,7 +2660,8 @@ export default function registerPrReviewSubagents(
 					toolPolicy: incrementalPass || implicitGap ? "configured" : freshRecoveryTarget?.descriptor.toolPolicy ?? normalizeToolPolicy(params.tool_policy),
 					majorOnly: freshRecoveryTarget?.descriptor.majorOnly ?? (incrementalPass || implicitGap ? reviewMode === "quick" || reviewMode === "balanced" : params.major_only === true),
 					minorHygiene,
-					...(implicitGap ? { expectedOutput: "nonempty" as const, retryContractPartial: true } : {}),
+					...(incrementalPassId || implicitGap ? { retryContractPartial: true } : {}),
+					...(implicitGap ? { expectedOutput: "nonempty" as const } : {}),
 					...(freshRecoveryTarget ? {
 						expectedOutput: freshRecoveryTarget.expected.expectedOutput,
 						recoveryAttempt: true,
