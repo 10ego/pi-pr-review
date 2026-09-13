@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "policy": "Post-collection adjudication records visible equivalent defect coverage without modifying the frozen corpus, source rows, or raw scorer report.",
+  "rawMissesAdjudicatedPresent": [
+    {
+      "planEntryId": "48728da44034a9fa48bf6e15",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "5cf2a83700549d0113b83e1a",
+      "strategy": "auto",
+      "expectedFindingId": "prior.listener-cleanup",
+      "selectedSeverity": "P2",
+      "reason": "The host-completed artifact visibly carries the source-authored P2 listener-cleanup finding before the invalid GitHub audit fails the row."
+    },
+    {
+      "planEntryId": "667abd66f4d5666b10c4530c",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "6aca2352336d7c65b4c4f9a0",
+      "strategy": "auto",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "70bd52e06a80aa50ef5e5660",
+      "strategy": "incremental",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "b1f1a2220335fd3764ea6d06",
+      "strategy": "incremental",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "b9d912cd76f608d64ddf2bbb",
+      "strategy": "fresh",
+      "expectedFindingId": "prior.listener-cleanup",
+      "selectedSeverity": "P2",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "d8b6290fa8704db5efb2f720",
+      "strategy": "fresh",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "e2d3e3c130f59739bcbe4dee",
+      "strategy": "auto",
+      "expectedFindingId": "current.command-injection",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "e53af1f5f694f3e99b16b664",
+      "strategy": "fresh",
+      "expectedFindingId": "current.tenant-scope",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    },
+    {
+      "planEntryId": "f237941fbad34c4327515588",
+      "strategy": "auto",
+      "expectedFindingId": "prior.tenant-check",
+      "selectedSeverity": "P1",
+      "reason": "The canonical finding explicitly describes the expected defect at the source-authored severity."
+    }
+  ],
+  "rawMissesConfirmedAbsent": [
+    {
+      "planEntryId": "74534abdd8e51399d52c09ca",
+      "strategy": "incremental",
+      "expectedFindingId": "current.command-injection",
+      "reason": "The canonical review contains no finding for shell command injection."
+    }
+  ],
+  "adjudicatedDefectPresence": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    },
+    "incremental": {
+      "matched": 7,
+      "opportunities": 8,
+      "recall": 0.875
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "recall": 1
+    }
+  },
+  "adjudicatedExactSeverity": {
+    "fresh": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    },
+    "incremental": {
+      "matched": 7,
+      "opportunities": 8,
+      "rate": 0.875
+    },
+    "auto": {
+      "matched": 8,
+      "opportunities": 8,
+      "rate": 1
+    }
+  },
+  "decision": "Automatic defaulting rejected: one automatic same-head row had an invalid GitHub audit, and one explicit incremental row retained a partial gap lane after a provider policy error. Only 10/12 automatic operational pairs completed."
+}

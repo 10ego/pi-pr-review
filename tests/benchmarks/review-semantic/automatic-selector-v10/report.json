@@ -1,0 +1,1631 @@
+{
+  "schemaVersion": 2,
+  "corpusId": "pi-pr-review-semantic-selector-v10",
+  "corpusSha256": "1b3e8e197339e6762235d2f56a285c32d663ed7501cf76f21459222585a5a8bf",
+  "planId": "7c1f3b8f665a11aaeba742413b3b5d692c124cdbe16ed51fea4c8974392fe41b",
+  "scorerSha256": "cf62378d737093668859f0875b5f58fa0e5df221cc5edc547b01f0265dbd1513",
+  "configurationFingerprint": "f1c74c2bb54aa513e5e185090448878a18f41470f4f0359d9a64b8dd0773617a",
+  "environmentFingerprint": "306be1b4f94bc7a880324ca4a8a0d63d48757130fe30c37481981973c142b86b",
+  "resultCount": 36,
+  "gate": {
+    "status": "baseline_required",
+    "passed": false,
+    "failures": [
+      "No accepted baseline gate file was supplied; metrics are diagnostic only."
+    ]
+  },
+  "metrics": {
+    "overall": {
+      "runs": 36,
+      "p0p1": {
+        "matched": 8,
+        "opportunities": 18,
+        "recall": 0.4444444444444444
+      },
+      "p2": {
+        "matched": 4,
+        "opportunities": 6,
+        "recall": 0.6666666666666666
+      },
+      "crossFile": {
+        "matched": 2,
+        "opportunities": 6,
+        "recall": 0.3333333333333333
+      },
+      "perLens": {
+        "correctness-contracts": {
+          "matched": 3,
+          "opportunities": 6,
+          "recall": 0.5
+        },
+        "security-performance": {
+          "matched": 5,
+          "opportunities": 12,
+          "recall": 0.4166666666666667
+        },
+        "performance-resources": {
+          "matched": 4,
+          "opportunities": 6,
+          "recall": 0.6666666666666666
+        }
+      },
+      "cleanControls": {
+        "runs": 12,
+        "runsWithFindings": 2,
+        "caseFalsePositiveRate": 0.16666666666666666
+      },
+      "findings": {
+        "total": 33,
+        "matched": 12,
+        "underclassified": 0,
+        "overclassified": 0,
+        "exactSeverityRate": 1,
+        "unmatched": 16,
+        "falsePositives": 2,
+        "duplicates": 5,
+        "falsePositiveRate": 0.06060606060606061,
+        "duplicateRate": 0.15151515151515152
+      },
+      "lanes": {
+        "total": 156,
+        "complete": 153,
+        "partial": 1,
+        "timed_out": 0,
+        "failed": 2,
+        "completeRate": 0.9807692307692307,
+        "partialRate": 0.00641025641025641,
+        "timedOutRate": 0,
+        "failedRate": 0.01282051282051282,
+        "elapsedMsSum": 3911648.3817949295
+      },
+      "priorReview": {
+        "statuses": {
+          "matched": 16,
+          "opportunities": 16,
+          "recall": 1
+        },
+        "stillOpenCarryForward": {
+          "matched": 7,
+          "opportunities": 8,
+          "recall": 0.875
+        },
+        "resolvedObsoleteRepublished": 0,
+        "relationships": {
+          "matched": 24,
+          "opportunities": 24,
+          "recall": 1
+        },
+        "sameHeadRuns": 4,
+        "sameHeadApprovalEligible": 3
+      },
+      "publication": {
+        "fallbackRuns": 2,
+        "fallbackRate": 0.05555555555555555,
+        "visibleFallbackFindings": 0
+      },
+      "latencyMs": {
+        "p50": 90936.514,
+        "p95": 306472.173,
+        "mean": 118258.89786111108,
+        "standardDeviation": 86503.24246463829,
+        "minimum": 35823.388,
+        "maximum": 487850.866,
+        "parentValidationSynthesisP50": 55544.342
+      }
+    },
+    "modes": {
+      "balanced": {
+        "runs": 36,
+        "p0p1": {
+          "matched": 8,
+          "opportunities": 18,
+          "recall": 0.4444444444444444
+        },
+        "p2": {
+          "matched": 4,
+          "opportunities": 6,
+          "recall": 0.6666666666666666
+        },
+        "crossFile": {
+          "matched": 2,
+          "opportunities": 6,
+          "recall": 0.3333333333333333
+        },
+        "perLens": {
+          "correctness-contracts": {
+            "matched": 3,
+            "opportunities": 6,
+            "recall": 0.5
+          },
+          "security-performance": {
+            "matched": 5,
+            "opportunities": 12,
+            "recall": 0.4166666666666667
+          },
+          "performance-resources": {
+            "matched": 4,
+            "opportunities": 6,
+            "recall": 0.6666666666666666
+          }
+        },
+        "cleanControls": {
+          "runs": 12,
+          "runsWithFindings": 2,
+          "caseFalsePositiveRate": 0.16666666666666666
+        },
+        "findings": {
+          "total": 33,
+          "matched": 12,
+          "underclassified": 0,
+          "overclassified": 0,
+          "exactSeverityRate": 1,
+          "unmatched": 16,
+          "falsePositives": 2,
+          "duplicates": 5,
+          "falsePositiveRate": 0.06060606060606061,
+          "duplicateRate": 0.15151515151515152
+        },
+        "lanes": {
+          "total": 156,
+          "complete": 153,
+          "partial": 1,
+          "timed_out": 0,
+          "failed": 2,
+          "completeRate": 0.9807692307692307,
+          "partialRate": 0.00641025641025641,
+          "timedOutRate": 0,
+          "failedRate": 0.01282051282051282,
+          "elapsedMsSum": 3911648.3817949295
+        },
+        "priorReview": {
+          "statuses": {
+            "matched": 16,
+            "opportunities": 16,
+            "recall": 1
+          },
+          "stillOpenCarryForward": {
+            "matched": 7,
+            "opportunities": 8,
+            "recall": 0.875
+          },
+          "resolvedObsoleteRepublished": 0,
+          "relationships": {
+            "matched": 24,
+            "opportunities": 24,
+            "recall": 1
+          },
+          "sameHeadRuns": 4,
+          "sameHeadApprovalEligible": 3
+        },
+        "publication": {
+          "fallbackRuns": 2,
+          "fallbackRate": 0.05555555555555555,
+          "visibleFallbackFindings": 0
+        },
+        "latencyMs": {
+          "p50": 90936.514,
+          "p95": 306472.173,
+          "mean": 118258.89786111108,
+          "standardDeviation": 86503.24246463829,
+          "minimum": 35823.388,
+          "maximum": 487850.866,
+          "parentValidationSynthesisP50": 55544.342
+        }
+      }
+    },
+    "strategies": {
+      "fresh": {
+        "runs": 12,
+        "p0p1": {
+          "matched": 3,
+          "opportunities": 6,
+          "recall": 0.5
+        },
+        "p2": {
+          "matched": 1,
+          "opportunities": 2,
+          "recall": 0.5
+        },
+        "crossFile": {
+          "matched": 0,
+          "opportunities": 2,
+          "recall": 0
+        },
+        "perLens": {
+          "correctness-contracts": {
+            "matched": 2,
+            "opportunities": 2,
+            "recall": 1
+          },
+          "security-performance": {
+            "matched": 1,
+            "opportunities": 4,
+            "recall": 0.25
+          },
+          "performance-resources": {
+            "matched": 1,
+            "opportunities": 2,
+            "recall": 0.5
+          }
+        },
+        "cleanControls": {
+          "runs": 4,
+          "runsWithFindings": 2,
+          "caseFalsePositiveRate": 0.5
+        },
+        "findings": {
+          "total": 13,
+          "matched": 4,
+          "underclassified": 0,
+          "overclassified": 0,
+          "exactSeverityRate": 1,
+          "unmatched": 8,
+          "falsePositives": 2,
+          "duplicates": 1,
+          "falsePositiveRate": 0.15384615384615385,
+          "duplicateRate": 0.07692307692307693
+        },
+        "lanes": {
+          "total": 60,
+          "complete": 60,
+          "partial": 0,
+          "timed_out": 0,
+          "failed": 0,
+          "completeRate": 1,
+          "partialRate": 0,
+          "timedOutRate": 0,
+          "failedRate": 0,
+          "elapsedMsSum": 1674812.1513357162
+        },
+        "priorReview": {
+          "statuses": {
+            "matched": 0,
+            "opportunities": 0,
+            "recall": null
+          },
+          "stillOpenCarryForward": {
+            "matched": 0,
+            "opportunities": 0,
+            "recall": null
+          },
+          "resolvedObsoleteRepublished": 0,
+          "relationships": {
+            "matched": 0,
+            "opportunities": 0,
+            "recall": null
+          },
+          "sameHeadRuns": 0,
+          "sameHeadApprovalEligible": 0
+        },
+        "publication": {
+          "fallbackRuns": 0,
+          "fallbackRate": 0,
+          "visibleFallbackFindings": 0
+        },
+        "latencyMs": {
+          "p50": 68274.131,
+          "p95": 487850.866,
+          "mean": 129417.62133333333,
+          "standardDeviation": 122631.17582338939,
+          "minimum": 50597.467,
+          "maximum": 487850.866,
+          "parentValidationSynthesisP50": 39634.125
+        }
+      },
+      "incremental": {
+        "runs": 12,
+        "p0p1": {
+          "matched": 2,
+          "opportunities": 6,
+          "recall": 0.3333333333333333
+        },
+        "p2": {
+          "matched": 2,
+          "opportunities": 2,
+          "recall": 1
+        },
+        "crossFile": {
+          "matched": 1,
+          "opportunities": 2,
+          "recall": 0.5
+        },
+        "perLens": {
+          "correctness-contracts": {
+            "matched": 0,
+            "opportunities": 2,
+            "recall": 0
+          },
+          "security-performance": {
+            "matched": 2,
+            "opportunities": 4,
+            "recall": 0.5
+          },
+          "performance-resources": {
+            "matched": 2,
+            "opportunities": 2,
+            "recall": 1
+          }
+        },
+        "cleanControls": {
+          "runs": 4,
+          "runsWithFindings": 0,
+          "caseFalsePositiveRate": 0
+        },
+        "findings": {
+          "total": 9,
+          "matched": 4,
+          "underclassified": 0,
+          "overclassified": 0,
+          "exactSeverityRate": 1,
+          "unmatched": 3,
+          "falsePositives": 0,
+          "duplicates": 2,
+          "falsePositiveRate": 0,
+          "duplicateRate": 0.2222222222222222
+        },
+        "lanes": {
+          "total": 48,
+          "complete": 47,
+          "partial": 1,
+          "timed_out": 0,
+          "failed": 0,
+          "completeRate": 0.9791666666666666,
+          "partialRate": 0.020833333333333332,
+          "timedOutRate": 0,
+          "failedRate": 0,
+          "elapsedMsSum": 1101737.158958435
+        },
+        "priorReview": {
+          "statuses": {
+            "matched": 8,
+            "opportunities": 8,
+            "recall": 1
+          },
+          "stillOpenCarryForward": {
+            "matched": 4,
+            "opportunities": 4,
+            "recall": 1
+          },
+          "resolvedObsoleteRepublished": 0,
+          "relationships": {
+            "matched": 12,
+            "opportunities": 12,
+            "recall": 1
+          },
+          "sameHeadRuns": 2,
+          "sameHeadApprovalEligible": 2
+        },
+        "publication": {
+          "fallbackRuns": 1,
+          "fallbackRate": 0.08333333333333333,
+          "visibleFallbackFindings": 0
+        },
+        "latencyMs": {
+          "p50": 85710.014,
+          "p95": 212848.485,
+          "mean": 104185.59341666667,
+          "standardDeviation": 49567.0854707888,
+          "minimum": 35823.388,
+          "maximum": 212848.485,
+          "parentValidationSynthesisP50": 69551.723
+        }
+      },
+      "auto": {
+        "runs": 12,
+        "p0p1": {
+          "matched": 3,
+          "opportunities": 6,
+          "recall": 0.5
+        },
+        "p2": {
+          "matched": 1,
+          "opportunities": 2,
+          "recall": 0.5
+        },
+        "crossFile": {
+          "matched": 1,
+          "opportunities": 2,
+          "recall": 0.5
+        },
+        "perLens": {
+          "correctness-contracts": {
+            "matched": 1,
+            "opportunities": 2,
+            "recall": 0.5
+          },
+          "security-performance": {
+            "matched": 2,
+            "opportunities": 4,
+            "recall": 0.5
+          },
+          "performance-resources": {
+            "matched": 1,
+            "opportunities": 2,
+            "recall": 0.5
+          }
+        },
+        "cleanControls": {
+          "runs": 4,
+          "runsWithFindings": 0,
+          "caseFalsePositiveRate": 0
+        },
+        "findings": {
+          "total": 11,
+          "matched": 4,
+          "underclassified": 0,
+          "overclassified": 0,
+          "exactSeverityRate": 1,
+          "unmatched": 5,
+          "falsePositives": 0,
+          "duplicates": 2,
+          "falsePositiveRate": 0,
+          "duplicateRate": 0.18181818181818182
+        },
+        "lanes": {
+          "total": 48,
+          "complete": 46,
+          "partial": 0,
+          "timed_out": 0,
+          "failed": 2,
+          "completeRate": 0.9583333333333334,
+          "partialRate": 0,
+          "timedOutRate": 0,
+          "failedRate": 0.041666666666666664,
+          "elapsedMsSum": 1135099.0715007782
+        },
+        "priorReview": {
+          "statuses": {
+            "matched": 8,
+            "opportunities": 8,
+            "recall": 1
+          },
+          "stillOpenCarryForward": {
+            "matched": 3,
+            "opportunities": 4,
+            "recall": 0.75
+          },
+          "resolvedObsoleteRepublished": 0,
+          "relationships": {
+            "matched": 12,
+            "opportunities": 12,
+            "recall": 1
+          },
+          "sameHeadRuns": 2,
+          "sameHeadApprovalEligible": 1
+        },
+        "publication": {
+          "fallbackRuns": 1,
+          "fallbackRate": 0.08333333333333333,
+          "visibleFallbackFindings": 0
+        },
+        "latencyMs": {
+          "p50": 92408.963,
+          "p95": 306472.173,
+          "mean": 121173.47883333334,
+          "standardDeviation": 67985.74729333557,
+          "minimum": 40405.514,
+          "maximum": 306472.173,
+          "parentValidationSynthesisP50": 64401.871
+        }
+      }
+    },
+    "runs": [
+      {
+        "planEntryId": "06314870c9b4ab7bf6d8226a",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "current.command-injection"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "0a919ecb4e830f87f51e5310",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "diverged",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "0d48269d0c4a79a4a488e491",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 1,
+        "cleanControlHadFinding": true
+      },
+      {
+        "planEntryId": "209183b1d9626a2c87acfa24",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "same_head",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Remove the message listener during cleanup"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 1,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "275b25ef57baff442e9f0d9a",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "same_head",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Remove the message listener during cleanup"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 1,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "2ae49ca832d968254de67b20",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "resolved",
+              "title": "Handle missing profiles before trimming"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "2c6ab4c3e12ca122b9e05ea8",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "diverged",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "2fecc1fafa9cfe5d439de3e8",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "diverged",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "38b3b901a0048334ca0899e2",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "none",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "current.command-injection"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 2,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "46163ffe4129476015bacebb",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "resolved",
+              "title": "Handle missing profiles before trimming"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "48728da44034a9fa48bf6e15",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "4fba59798cb8f7b9f0827383",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Restore tenant ownership check"
+            }
+          ],
+          "mergeApprovalEligible": false
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "51065fa1edffa3435f4973ff",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "5130b1deb550bba1c1697071",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 1,
+        "cleanControlHadFinding": true
+      },
+      {
+        "planEntryId": "57225ec063d5db5bf7b89a08",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "same_head",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Remove the message listener during cleanup"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "5cf2a83700549d0113b83e1a",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "same_head",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Remove the message listener during cleanup"
+            }
+          ],
+          "mergeApprovalEligible": null
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "667abd66f4d5666b10c4530c",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Restore tenant ownership check"
+            }
+          ],
+          "mergeApprovalEligible": false
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "6a54881d4ef442d97131d1d6",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "diverged",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "6aca2352336d7c65b4c4f9a0",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "obsolete",
+              "title": "Parse the cached payload instead of the wrapper"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "70bd52e06a80aa50ef5e5660",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "obsolete",
+              "title": "Parse the cached payload instead of the wrapper"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "74534abdd8e51399d52c09ca",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "none",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.command-injection"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "75af01eab9c887b4e83aaa31",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "resolved",
+              "title": "Handle missing profiles before trimming"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "88483a84784cb5f9dc669930",
+        "caseId": "resolved-blocker",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "resolved",
+              "title": "Handle missing profiles before trimming"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "97b11bd0b169b129ad6ddb66",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "none",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [
+          "current.command-injection"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "a0d14199603f98555d047dc1",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "obsolete",
+              "title": "Parse the cached payload instead of the wrapper"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "b1f1a2220335fd3764ea6d06",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Restore tenant ownership check"
+            }
+          ],
+          "mergeApprovalEligible": false
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "b9d912cd76f608d64ddf2bbb",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "c3a337d282abf86bbbeca5d7",
+        "caseId": "diverged",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "c5234a89950dd2b2f497c9e3",
+        "caseId": "same-head",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "prior.listener-cleanup"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 1,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "d8b6290fa8704db5efb2f720",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.command-injection"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 2,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "e2d3e3c130f59739bcbe4dee",
+        "caseId": "no-prior",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "none",
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.command-injection"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "e53af1f5f694f3e99b16b664",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "e86730c03c9fed9e68f076b1",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "efb59572a1b13bd33ea55d71",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "fresh",
+        "reviewOutcome": {
+          "observedRelationship": null,
+          "priorStatuses": [],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "f237941fbad34c4327515588",
+        "caseId": "open-blocker",
+        "mode": "balanced",
+        "strategy": "auto",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "still open",
+              "title": "Restore tenant ownership check"
+            }
+          ],
+          "mergeApprovalEligible": false
+        },
+        "repetition": 1,
+        "matchedExpectedIds": [],
+        "missedExpectedIds": [
+          "prior.tenant-check"
+        ],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 1,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      },
+      {
+        "planEntryId": "faa156546f81a577fd8df890",
+        "caseId": "obsolete-and-new",
+        "mode": "balanced",
+        "strategy": "incremental",
+        "reviewOutcome": {
+          "observedRelationship": "incremental",
+          "priorStatuses": [
+            {
+              "status": "obsolete",
+              "title": "Parse the cached payload instead of the wrapper"
+            }
+          ],
+          "mergeApprovalEligible": true
+        },
+        "repetition": 2,
+        "matchedExpectedIds": [
+          "current.tenant-scope"
+        ],
+        "missedExpectedIds": [],
+        "underclassifiedExpectedIds": [],
+        "overclassifiedExpectedIds": [],
+        "duplicateFindings": 0,
+        "unmatchedFindings": 0,
+        "falsePositiveFindings": 0,
+        "cleanControlHadFinding": false
+      }
+    ],
+    "paired": {
+      "plannedPairs": 12,
+      "completePairs": 11,
+      "incompletePairs": [
+        {
+          "mode": "balanced",
+          "repetition": 2,
+          "caseId": "open-blocker",
+          "freshComplete": true,
+          "incrementalComplete": false
+        }
+      ],
+      "operationalCompletion": {
+        "fresh": {
+          "matched": 12,
+          "opportunities": 12,
+          "recall": 1
+        },
+        "incremental": {
+          "matched": 11,
+          "opportunities": 12,
+          "recall": 0.9166666666666666
+        }
+      },
+      "quality": {
+        "fresh": {
+          "runs": 11,
+          "p0p1": {
+            "matched": 2,
+            "opportunities": 5,
+            "recall": 0.4
+          },
+          "p2": {
+            "matched": 1,
+            "opportunities": 2,
+            "recall": 0.5
+          },
+          "crossFile": {
+            "matched": 0,
+            "opportunities": 2,
+            "recall": 0
+          },
+          "perLens": {
+            "correctness-contracts": {
+              "matched": 1,
+              "opportunities": 1,
+              "recall": 1
+            },
+            "security-performance": {
+              "matched": 1,
+              "opportunities": 4,
+              "recall": 0.25
+            },
+            "performance-resources": {
+              "matched": 1,
+              "opportunities": 2,
+              "recall": 0.5
+            }
+          },
+          "cleanControls": {
+            "runs": 4,
+            "runsWithFindings": 2,
+            "caseFalsePositiveRate": 0.5
+          },
+          "findings": {
+            "total": 12,
+            "matched": 3,
+            "underclassified": 0,
+            "overclassified": 0,
+            "exactSeverityRate": 1,
+            "unmatched": 8,
+            "falsePositives": 2,
+            "duplicates": 1,
+            "falsePositiveRate": 0.16666666666666666,
+            "duplicateRate": 0.08333333333333333
+          },
+          "lanes": {
+            "total": 55,
+            "complete": 55,
+            "partial": 0,
+            "timed_out": 0,
+            "failed": 0,
+            "completeRate": 1,
+            "partialRate": 0,
+            "timedOutRate": 0,
+            "failedRate": 0,
+            "elapsedMsSum": 1591653.9787111282
+          },
+          "priorReview": {
+            "statuses": {
+              "matched": 0,
+              "opportunities": 0,
+              "recall": null
+            },
+            "stillOpenCarryForward": {
+              "matched": 0,
+              "opportunities": 0,
+              "recall": null
+            },
+            "resolvedObsoleteRepublished": 0,
+            "relationships": {
+              "matched": 0,
+              "opportunities": 0,
+              "recall": null
+            },
+            "sameHeadRuns": 0,
+            "sameHeadApprovalEligible": 0
+          },
+          "publication": {
+            "fallbackRuns": 0,
+            "fallbackRate": 0,
+            "visibleFallbackFindings": 0
+          },
+          "latencyMs": {
+            "p50": 75775.867,
+            "p95": 487850.866,
+            "mean": 134976.12045454545,
+            "standardDeviation": 126628.47265578165,
+            "minimum": 50597.467,
+            "maximum": 487850.866,
+            "parentValidationSynthesisP50": 41354.912
+          }
+        },
+        "incremental": {
+          "runs": 11,
+          "p0p1": {
+            "matched": 2,
+            "opportunities": 5,
+            "recall": 0.4
+          },
+          "p2": {
+            "matched": 2,
+            "opportunities": 2,
+            "recall": 1
+          },
+          "crossFile": {
+            "matched": 1,
+            "opportunities": 2,
+            "recall": 0.5
+          },
+          "perLens": {
+            "correctness-contracts": {
+              "matched": 0,
+              "opportunities": 1,
+              "recall": 0
+            },
+            "security-performance": {
+              "matched": 2,
+              "opportunities": 4,
+              "recall": 0.5
+            },
+            "performance-resources": {
+              "matched": 2,
+              "opportunities": 2,
+              "recall": 1
+            }
+          },
+          "cleanControls": {
+            "runs": 4,
+            "runsWithFindings": 0,
+            "caseFalsePositiveRate": 0
+          },
+          "findings": {
+            "total": 8,
+            "matched": 4,
+            "underclassified": 0,
+            "overclassified": 0,
+            "exactSeverityRate": 1,
+            "unmatched": 2,
+            "falsePositives": 0,
+            "duplicates": 2,
+            "falsePositiveRate": 0,
+            "duplicateRate": 0.25
+          },
+          "lanes": {
+            "total": 44,
+            "complete": 44,
+            "partial": 0,
+            "timed_out": 0,
+            "failed": 0,
+            "completeRate": 1,
+            "partialRate": 0,
+            "timedOutRate": 0,
+            "failedRate": 0,
+            "elapsedMsSum": 1032943.888332367
+          },
+          "priorReview": {
+            "statuses": {
+              "matched": 7,
+              "opportunities": 7,
+              "recall": 1
+            },
+            "stillOpenCarryForward": {
+              "matched": 3,
+              "opportunities": 3,
+              "recall": 1
+            },
+            "resolvedObsoleteRepublished": 0,
+            "relationships": {
+              "matched": 11,
+              "opportunities": 11,
+              "recall": 1
+            },
+            "sameHeadRuns": 2,
+            "sameHeadApprovalEligible": 2
+          },
+          "publication": {
+            "fallbackRuns": 0,
+            "fallbackRate": 0,
+            "visibleFallbackFindings": 0
+          },
+          "latencyMs": {
+            "p50": 95109.22,
+            "p95": 212848.485,
+            "mean": 105865.19154545455,
+            "standardDeviation": 51443.148639518666,
+            "minimum": 35823.388,
+            "maximum": 212848.485,
+            "parentValidationSynthesisP50": 69551.723
+          }
+        },
+        "p0p1RecallDelta": 0,
+        "p2RecallDelta": 0.5,
+        "crossFileRecallDelta": 0.5
+      },
+      "latencyMs": {
+        "freshP50": 75775.867,
+        "incrementalP50": 95109.22,
+        "incrementalToFreshRatio": 1.2551386577998507
+      }
+    },
+    "automaticSelection": {
+      "plannedPairs": 12,
+      "completePairs": 10,
+      "incompletePairs": [
+        {
+          "mode": "balanced",
+          "repetition": 2,
+          "caseId": "same-head",
+          "correspondingStrategy": "incremental",
+          "autoComplete": false,
+          "correspondingComplete": true
+        },
+        {
+          "mode": "balanced",
+          "repetition": 2,
+          "caseId": "open-blocker",
+          "correspondingStrategy": "incremental",
+          "autoComplete": true,
+          "correspondingComplete": false
+        }
+      ],
+      "latencyMs": {
+        "autoP50": 90936.514,
+        "correspondingExplicitP50": 95109.22,
+        "autoP95": 306472.173,
+        "correspondingExplicitP95": 487850.866,
+        "pairedDeltaP50": -10845.75,
+        "pairedDeltaRatio": -0.11403468559620192,
+        "autoFasterOrEqualPairs": 7,
+        "policy": {
+          "maximumPairedDeltaMs": 15000,
+          "maximumPairedDeltaRatio": 0.2,
+          "requireNoP95Regression": true,
+          "passed": false
+        }
+      }
+    }
+  }
+}
