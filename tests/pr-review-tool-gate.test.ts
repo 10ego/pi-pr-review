@@ -331,6 +331,29 @@ describe("review tool execution gate", () => {
 		expect(accepted.details.finalization.addedFindings[0].title).toBe("[P2] Parent issue");
 	});
 
+	test("fresh reviews finalize through the host with empty decisions after every lane settles", async () => {
+		const h = harness(); h.ctx.sessionManager.getSessionId = () => "fresh-finalization-session";
+		h.coordinator.begin(parsePublishMode("/pr-review 7 --fresh"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+		const lease = h.coordinator.acquire(h.ctx)!;
+		expect(h.coordinator.registerExpectedArtifacts(lease, [
+			{ key: "fresh:0", tier: "heavy", minorHygiene: false },
+		], h.ctx)).toBeTrue();
+		const tool = h.tools.get("pr_review_candidate_disposition");
+		const early = await tool.execute("fresh-early", { overview: "Behavior is unchanged.", verification: "Source inspected.", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+		expect(early).toMatchObject({ isError: true, details: { authorized: true, reason: "incomplete_lanes" } });
+		const publisher = h.coordinator.createArtifactPublisher(lease, h.ctx)!;
+		expect(publisher.retain({
+			generation: lease.generation, key: "fresh:0", passId: "correctness", tier: "heavy",
+			rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		})).toBeTrue();
+		const finalized = await tool.execute("fresh-final", { overview: "Behavior is unchanged.", verification: "Source inspected.", decisions: [], added_findings: [] }, undefined, undefined, h.ctx);
+		expect(finalized.isError).toBeUndefined();
+		expect(finalized.details.finalization).toMatchObject({ decisions: [], addedFindings: [], overview: "Behavior is unchanged.", verification: "Source inspected." });
+		expect(reviewCandidateDispositionRegistry.acceptedFindings("fresh-finalization-session", lease.generation)).toEqual([]);
+		expect(publisher.retain({} as any)).toBeFalse();
+	});
+
 	test("host finalization carries an omitted source-revalidated still-open prior finding", async () => {
 		const h = harness(); h.ctx.sessionManager.getSessionId = () => "automatic-carry-session";
 		h.coordinator.begin(parsePublishMode("/pr-review 7 --incremental"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);

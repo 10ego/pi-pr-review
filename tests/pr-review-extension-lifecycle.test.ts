@@ -64,6 +64,7 @@ mock.module("typebox", () => {
 });
 const reviewTable = (await import("../extensions/review-table.ts")).default;
 const { containsUnhostedGhApi, renderDegradedReviewMarkdown } = await import("../extensions/review-table.ts");
+const { reviewCandidateDispositionRegistry } = await import("../lib/pr-review-candidates.ts");
 const ownPromptPath = fileURLToPath(new URL("../prompts/pr-review.md", import.meta.url));
 const BASE_ACTIVE_TOOLS = ["read", "bash"];
 
@@ -605,6 +606,41 @@ describe("completed review extension lifecycle", () => {
 			laneArtifacts: [],
 			completeness: "complete",
 			diagnostics: [],
+		});
+	});
+
+	test("fresh reviews consume host finalization instead of terminal free-form synthesis", async () => {
+		const freshSession = { id: "fresh-host-finalization", startedAt: "2026-07-13T00:00:01.000Z" };
+		const harness = createHarness([], freshSession);
+		installFakeGh();
+		await harness.emit("input", { text: "/pr-review 7 --fresh", source: "interactive" });
+		const lease = harness.loopCoordinator.acquire(harness.ctx)!;
+		expect(harness.loopCoordinator.registerExpectedArtifacts(lease, [{ key: "correctness:0", tier: "heavy", minorHygiene: false, expectedOutput: "nonempty" }], harness.ctx)).toBeTrue();
+		expect(harness.loopCoordinator.createArtifactPublisher(lease, harness.ctx)!.retain({
+			generation: lease.generation, key: "correctness:0", passId: "correctness", tier: "heavy",
+			rawText: "NO FINDINGS.", exitCode: 0, stopReason: "stop", lifecycle: "complete", attempts: [],
+			fallbackUsed: false, elapsedMs: 10, toolElapsedMs: 0, toolCallCount: 0,
+		})).toBeTrue();
+		expect(reviewCandidateDispositionRegistry.replaceLaneCandidates(freshSession.id, lease.generation, "fresh-finalization", [])).toBeTrue();
+		expect(reviewCandidateDispositionRegistry.recordFinalization(
+			freshSession.id, lease.generation, [], [], "No confirmed defects.", "All review lanes completed.", [],
+		).ok).toBeTrue();
+		expect(harness.loopCoordinator.retainedGeneration(harness.ctx)).toBe(lease.generation);
+		expect(reviewCandidateDispositionRegistry.finalization(freshSession.id, lease.generation)).toBeDefined();
+
+		const raw = "Host finalization completed successfully.";
+		const message = { role: "assistant", stopReason: "stop", content: [{ type: "text", text: raw }] };
+		await harness.emit("message_end", { message });
+		harness.appendMessage(message, "fresh-host-finalized-review");
+		await harness.emit("turn_end", { message, toolResults: [] });
+		const persisted = harness.branch.findLast((entry) => entry.customType === COMPLETED_REVIEW_ENTRY_TYPE);
+		expect(persisted?.data).toMatchObject({
+			synthesisQuality: "fully_parsed", completeness: "complete", mergeApprovalEligible: true,
+			candidateDispositionRecorded: true, acceptedCandidateIds: [],
+		});
+		expect(persisted?.data.rawText).not.toBe(raw);
+		expect(persisted?.data.review).toMatchObject({
+			overview: "No confirmed defects.", verification: "All review lanes completed.", findings: [], verdict: "approve",
 		});
 	});
 

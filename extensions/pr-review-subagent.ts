@@ -2271,10 +2271,10 @@ export default function registerPrReviewSubagents(
 	pi.registerTool({
 		name: "pr_review_candidate_disposition",
 		label: "PR Review Candidate Disposition",
-		description: "Finalize the host-owned cumulative review: classify every lane candidate and submit independently discovered parent findings that have no lane ID.",
-		promptSnippet: "Finalize cumulative candidates and parent-added findings into the host artifact",
+		description: "Finalize the host-owned review: classify cumulative lane candidates when present and submit independently discovered parent findings that have no lane ID.",
+		promptSnippet: "Finalize reviewed candidates and parent-added findings into the host artifact",
 		promptGuidelines: [
-			"Call after every planned delta result is available and independently validated. If the mandatory gap call was omitted, the host runs it now and requires one resubmission with its returned Candidate IDs.",
+			"Call after every planned result is available and independently validated. For a fresh review, decisions is empty and every validated issue goes in added_findings. If a mandatory cumulative gap call was omitted, the host runs it now and requires one resubmission with its returned Candidate IDs.",
 			"Cover every Candidate ID exactly once; duplicate entries must reference the accepted canonical candidate.",
 			"Put independently validated findings without a lane ID in added_findings; never discard them because no lane proposed them. Do not manually duplicate a prior finding recorded as still open: the host carries it forward with canonical identity and severity.",
 			"Supply final overview and verification. The host publishes this artifact; after success respond only that host finalization completed.",
@@ -2284,13 +2284,15 @@ export default function registerPrReviewSubagents(
 			const lease = loopCoordinator.acquire(ctx);
 			if (!lease) return reviewLoopDeniedResult("pr_review_candidate_disposition");
 			const relationship = loopCoordinator.priorRelationship(ctx);
-			if (loopCoordinator.peek()?.incremental !== true || (relationship !== "same_head" && relationship !== "incremental")) {
-				return { content: [{ type: "text", text: "pr_review_candidate_disposition requires cumulative incremental state." }], isError: true, details: { authorized: false, reason: "prior_relationship" } };
+			const activeInvocation = loopCoordinator.peek();
+			if (activeInvocation?.incremental === true && relationship === undefined) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition requires automatic preparation to settle first." }], isError: true, details: { authorized: false, reason: "preparation_required" } };
 			}
+			const cumulative = activeInvocation?.incremental === true && (relationship === "same_head" || relationship === "incremental");
 			const gapKey = "incremental-gap";
-			const gapExpected = (loopCoordinator.expectedArtifactDescriptors(ctx) ?? []).some((descriptor) => descriptor.key === gapKey);
+			const gapExpected = cumulative && (loopCoordinator.expectedArtifactDescriptors(ctx) ?? []).some((descriptor) => descriptor.key === gapKey);
 			const gapRetained = (loopCoordinator.artifactSnapshot(ctx) ?? []).some((artifact) => artifact.key === gapKey);
-			const preparedGapBytes = loopCoordinator.preparedContext(lease, gapKey, ctx);
+			const preparedGapBytes = cumulative ? loopCoordinator.preparedContext(lease, gapKey, ctx) : undefined;
 			if (gapExpected && !gapRetained && preparedGapBytes) {
 				const gapBytes = preparedGapBytes;
 				if (!loopCoordinator.claimArtifact(lease, gapKey, ctx)) return { content: [{ type: "text", text: "Mandatory incremental gap coverage is unavailable or still running; finalization remains fail-closed." }], isError: true, details: { authorized: true, reason: "gap_unavailable" } };
@@ -2305,11 +2307,21 @@ export default function registerPrReviewSubagents(
 				if (!reviewCandidateDispositionRegistry.replaceLaneCandidates(ctx.sessionManager.getSessionId(), lease.generation, gapKey, gapCandidates)) return { content: [{ type: "text", text: "Mandatory incremental gap candidates could not be retained." }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
 				return { content: [{ type: "text", text: [`Mandatory incremental gap ${gapResult.status}; resubmit finalization with every Candidate ID below.`, "", candidateIndexText(gapCandidates)].join("\n") }], isError: true, details: { authorized: true, reason: "gap_recovered", status: gapResult.status, attempts: gapResult.attempts, candidates: gapCandidates.map((candidate) => candidate.id) } };
 			}
-			const recordedStatuses = priorRevalidationRegistry.statuses(ctx.sessionManager.getSessionId(), lease.generation);
-			if ((priorRevalidationRegistry.isRequired(ctx.sessionManager.getSessionId(), lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
+			const expectedArtifacts = loopCoordinator.expectedArtifactDescriptors(ctx) ?? [];
+			const retainedArtifactKeys = new Set((loopCoordinator.artifactSnapshot(ctx) ?? []).map((artifact) => artifact.key));
+			if (!cumulative && (expectedArtifacts.length === 0 || expectedArtifacts.some((descriptor) => !retainedArtifactKeys.has(descriptor.key)))) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: every expected review lane must settle before finalization" }], isError: true, details: { authorized: true, reason: "incomplete_lanes" } };
+			}
+			const sessionId = ctx.sessionManager.getSessionId();
+			if (!cumulative && reviewCandidateDispositionRegistry.candidates(sessionId, lease.generation) === undefined &&
+				!reviewCandidateDispositionRegistry.replaceLaneCandidates(sessionId, lease.generation, "fresh-finalization", [])) {
+				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: fresh finalization state could not be initialized" }], isError: true, details: { authorized: true, reason: "candidate_registration" } };
+			}
+			const recordedStatuses = priorRevalidationRegistry.statuses(sessionId, lease.generation);
+			if ((priorRevalidationRegistry.isRequired(sessionId, lease.generation)?.length ?? 0) > 0 && !recordedStatuses) {
 				return { content: [{ type: "text", text: "pr_review_candidate_disposition failed: structured prior statuses must be recorded before finalization" }], isError: true, details: { authorized: true, reason: "missing_prior_statuses" } };
 			}
-			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(ctx.sessionManager.getSessionId(), lease.generation) ?? [];
+			const registeredCandidates = reviewCandidateDispositionRegistry.candidates(sessionId, lease.generation) ?? [];
 			const suppressedPriorCandidates = new Set(registeredCandidates.filter((candidate) =>
 				matchesCanonicalStillOpen(recordedStatuses ?? [], candidate.finding.title)).map((candidate) => candidate.id));
 			const decisions = params.decisions.map((decision) => {
@@ -2357,7 +2369,7 @@ export default function registerPrReviewSubagents(
 			const automaticCarryForwards = automaticStillOpenCarryForwards(
 				recordedStatuses ?? [],
 				representedFindings,
-				priorRevalidationRegistry.findings(ctx.sessionManager.getSessionId(), lease.generation) ?? [],
+				priorRevalidationRegistry.findings(sessionId, lease.generation) ?? [],
 				relationship === "same_head",
 			);
 			const finalizedAddedFindings = [...addedFindings, ...automaticCarryForwards];
@@ -2372,7 +2384,7 @@ export default function registerPrReviewSubagents(
 				.map((descriptor) => descriptor.key)
 				.filter((key) => key === "incremental-gap" || INCREMENTAL_DELTA_PASS_IDS.includes(key as IncrementalDeltaPassId));
 			const recorded = reviewCandidateDispositionRegistry.recordFinalization(
-				ctx.sessionManager.getSessionId(), lease.generation, decisions, finalizedAddedFindings, params.overview, params.verification,
+				sessionId, lease.generation, decisions, finalizedAddedFindings, params.overview, params.verification,
 				expectedCandidateLaneKeys,
 			);
 			if (!recorded.ok) return { content: [{ type: "text", text: `pr_review_candidate_disposition failed: ${recorded.error}` }], isError: true, details: { authorized: true, reason: "invalid_dispositions" } };
