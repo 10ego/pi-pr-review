@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.19.0](https://github.com/10ego/pi-pr-review/compare/v1.18.1...v1.19.0) (2026-09-13)
+
+
+### Features
+
+* **review:** enable automatic cumulative selection ([#151](https://github.com/10ego/pi-pr-review/issues/151)) ([e8e60fb](https://github.com/10ego/pi-pr-review/commit/e8e60fb73afba1c230fb59c0402ddb03a544bca3))
+
+
+### Tests
+
+* **review:** tolerate floating deadline noise ([#153](https://github.com/10ego/pi-pr-review/issues/153)) ([1562e27](https://github.com/10ego/pi-pr-review/commit/1562e278dd147323e177065655f158da26052132))
+
 ## [1.18.1](https://github.com/10ego/pi-pr-review/compare/v1.18.0...v1.18.1) (2026-09-09)
 
 
