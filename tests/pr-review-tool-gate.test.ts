@@ -809,9 +809,16 @@ describe("review tool execution gate", () => {
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
-	for (const mode of ["direct", "compact", "compaction-unavailable"]) {
+	for (const mode of ["direct", "compact", "compaction-unavailable", "targeted-recovery"]) {
 		test(`dispatches isolated specialists from one ${mode} checkpoint`, async () => {
 			const root = mkdtempSync(path.join(os.tmpdir(), "pi-fork-dispatch-"));
+			const plan = {
+				findings: ["cart:1 — the subtotal stays stale after removal"],
+				assignments: quickPasses().map(({ id }) => ({
+					id, entry: "cart.ts", question: "Inspect the path owned by " + id,
+					evidence: "Trace the affected caller and its return value",
+				})),
+			};
 			const child = path.join(root, "child.mjs");
 			const diff = path.join(root, "review.patch");
 			writeFileSync(diff, "diff --git a/cart b/cart\n-old\n+new");
@@ -834,7 +841,9 @@ describe("review tool execution gate", () => {
 					for await (const chunk of process.stdin) input += chunk;
 					if (!isFork) appendFileSync(session, "turn\\n");
 					record({ isFork, session, input, history: readFileSync(session, "utf8"), key: arg("--review-cache-key"), system: arg("--append-system-prompt") });
-					console.log(JSON.stringify({type:"message_end", message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}}));
+					const answer = input.includes("Allocate the remaining investigation") ? ${JSON.stringify(JSON.stringify(plan))}
+						: (isFork && ${mode === "targeted-recovery"} && input.includes("Inspect the path owned by correctness\\n") ? "incomplete" : "NO FINDINGS.");
+					console.log(JSON.stringify({type:"message_end", message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:answer}]}}));
 				}
 			`);
 			const originalScript = process.argv[1];
@@ -844,12 +853,20 @@ describe("review tool execution gate", () => {
 				h.ctx.cwd = root;
 				h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 				process.argv[1] = child;
-				if (mode !== "direct") process.env.PI_PR_REVIEW_FORK_MODE = "compact";
+				if (mode === "compact" || mode === "compaction-unavailable") process.env.PI_PR_REVIEW_FORK_MODE = "compact";
 				else delete process.env.PI_PR_REVIEW_FORK_MODE;
 				const result = await h.tools.get("review_subagents").execute("checkpoint", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
-				expect(result.details).toMatchObject({ forkMode: mode === "compact" ? "compact" : "direct", reviewerCount: 3, incompleteCount: 0 });
+				expect(result.details).toMatchObject({ forkMode: mode === "compact" ? "compact" : "direct", reviewerCount: 3, incompleteCount: mode === "targeted-recovery" ? 1 : 0 });
 				if (mode === "compaction-unavailable") expect(result.details.checkpointWarnings[0]).toContain("Nothing to compact");
 				else expect(result.details.checkpointWarnings).toEqual([]);
+				expect(result.details.handoff).toEqual(plan);
+				expect(result.content[0].text).toContain(plan.findings[0]);
+				if (mode === "targeted-recovery") {
+					const target = h.coordinator.claimFreshRecoveryTarget(h.coordinator.acquire(h.ctx)!, h.ctx);
+					expect(target?.descriptor.scope).toContain(plan.assignments[0]!.question + "\n");
+					expect(target?.descriptor.context).toContain(plan.findings[0]);
+					expect(target?.descriptor.context).toContain("+new");
+				}
 				const calls = readFileSync(path.join(root, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 				expect(calls.map(call => call.isFork)).toEqual([false, false, true, true, true]);
 				expect(calls[0].session).toBe(calls[1].session);
@@ -861,6 +878,7 @@ describe("review tool execution gate", () => {
 				expect(new Set(specialists.map(call => call.input)).size).toBe(3);
 				for (const call of specialists) {
 					expect(call.history).toBe(mode === "compact" ? "turn\nturn\ncompact\n" : "turn\nturn\n");
+					expect(plan.assignments.filter(assignment => call.input.includes(assignment.question + "\n"))).toHaveLength(1);
 					expect(call.input).toContain("Host-fixed reviewer scope:");
 					expect(call.input).not.toContain("+new");
 					expect(existsSync(call.session)).toBeFalse();

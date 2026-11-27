@@ -94,6 +94,8 @@ The selected mode fixes both reviewer count and concurrency; there is no user/mo
 
 For fresh multi-reviewer batches with shared PR context, the heavy-tier model first reviews the change and traces relevant callers and tests. A second turn in the same Pi session fills gaps and records the general review. Each specialist then runs in a native Pi fork of that checkpoint, with its own assignment appended after the shared history. The light overview keeps its existing direct-diff scope. Single-lane and incremental reviews use their existing dispatch paths.
 
+The general review records supported findings for the parent to validate. In the second turn it gives each specialist a distinct open question, a starting file and symbol, and evidence to check. Specialists reuse the shared investigation, trace their assigned paths and return a clean result when the evidence settles the question. An incomplete lane's recovery receives the same assignment. The batch result includes the handoff alongside the specialist reports. An invalid handoff falls back to independent reviewers with the original PR context.
+
 Set `PI_PR_REVIEW_FORK_MODE` in the environment that starts Pi to select a strategy.
 
 | Value | Specialist starting point |
