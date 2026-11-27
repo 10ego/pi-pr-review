@@ -61,6 +61,7 @@ import {
 } from "../lib/pr-review-artifacts.ts";
 import { reviewCandidateDispositionRegistry, type ReviewCandidateRecord } from "../lib/pr-review-candidates.ts";
 import { retainedReviewCandidateTexts } from "../lib/pr-review-markdown.ts";
+import { checkpointArgs, compactReviewCheckpoint, FORK_TOOLS, prepareGeneralReview, withCheckpointDirectory, type CheckpointStep, type ReviewCheckpoint } from "../lib/pr-review-fork.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
@@ -593,7 +594,7 @@ const TIER_GUIDANCE: Record<Tier, string> = {
 		"You are a rigorous specialist reviewer for correctness, security, performance, and logic. Follow the assigned objective exactly, validate each candidate before reporting, and drop anything that is actually correct or that you cannot substantiate.",
 };
 
-function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput, fileBacked = false): string {
+export function buildSubagentSystemPrompt(tier: Tier, majorOnly = false, minorHygiene = false, expectedOutput?: InternalExpectedOutput, fileBacked = false): string {
 	const lines = [
 		"You are an isolated code-review subagent invoked by the /pr-review orchestrator.",
 		TIER_GUIDANCE[tier],
@@ -690,6 +691,7 @@ export function runReviewSubprocess(
 	onText: (text: string) => void,
 	onEvent?: (event: unknown) => void,
 	deadline?: { deadlineMs: number; terminationGraceMs: number; cleanupReserveMs: number; now?: () => number },
+	rpcResponseId?: string,
 ): Promise<RunResult> {
 	return new Promise<RunResult>((resolve) => {
 		const messages: Message[] = [];
@@ -751,13 +753,22 @@ export function runReviewSubprocess(
 			signal?.removeEventListener("abort", onAbort);
 		};
 
+		let rpcAcknowledged = false;
 		const processEvent = (raw: unknown) => {
 			if (settled || !raw || typeof raw !== "object") return;
 			const event = raw as {
 				type?: string;
+				id?: string;
+				success?: boolean;
+				error?: string;
 				message?: Message;
 				assistantMessageEvent?: { type?: string; delta?: string };
 			};
+			if (rpcResponseId && event.type === "response" && event.id === rpcResponseId) {
+				rpcAcknowledged = true;
+				if (event.success !== true) result.errorMessage = event.error || "Pi rejected the RPC request";
+				proc.stdin.end();
+			}
 			try {
 				onEvent?.(event);
 			} catch {
@@ -834,7 +845,8 @@ export function runReviewSubprocess(
 		// Observe EPIPE so it cannot become an unhandled stream error; close/exit
 		// remains the authoritative subprocess outcome.
 		proc.stdin.on("error", () => {});
-		proc.stdin.end(input, "utf8");
+		if (rpcResponseId) proc.stdin.write(input, "utf8");
+		else proc.stdin.end(input, "utf8");
 		const finish = (code: number | null, processSignal: NodeJS.Signals | null | undefined, error?: Error) => {
 			if (settled) return;
 			cleanupAbort();
@@ -850,6 +862,7 @@ export function runReviewSubprocess(
 			// Flush a final unterminated JSON record while processEvent is still
 			// authoritative. Marking settled first would silently discard it.
 			decoder.end();
+			if (rpcResponseId && !rpcAcknowledged) result.errorMessage ??= "Pi closed before acknowledging compaction";
 			settled = true;
 			if (activeTools > 0) {
 				result.toolElapsedMs += now() - activeToolsStartedAt;
@@ -967,6 +980,7 @@ interface FileBackedReadRange {
 }
 
 interface SubagentPassRequest {
+	checkpoint?: ReviewCheckpoint;
 	id?: string;
 	tier: Tier;
 	objective: string;
@@ -1132,23 +1146,22 @@ async function runSubagentAttempt(
 				`total remaining ${Math.round(totalRemainingBeforeAttemptMs!)}ms).`,
 			);
 		}
-		const args = buildReviewBaseArgs();
+		const args = pass.checkpoint ? checkpointArgs(pass.checkpoint, true) : buildReviewBaseArgs();
 		if (attempt.spec) args.push("--model", attempt.spec);
 		appendTierThinkingArgs(args, attempt.spec, config.thinkingLevels[pass.tier]);
 		appendToolPolicyArgs(args, toolPolicy, pass.toolNames ?? config.tools);
 
-		tmp = await writeTempPrompt(
-			pass.tier,
-			pass.systemPrompt ?? buildSubagentSystemPrompt(
-				pass.tier,
-				pass.majorOnly === true,
-				pass.minorHygiene && pass.tier === "light",
-				pass.expectedOutput,
-				pass.fileBackedContext === true,
-			),
+		const instructions = pass.systemPrompt ?? buildSubagentSystemPrompt(
+			pass.tier, pass.majorOnly === true, pass.minorHygiene && pass.tier === "light",
+			pass.expectedOutput, pass.fileBackedContext === true,
 		);
-		args.push("--append-system-prompt", tmp.filePath);
-		const task = buildPassTask(pass.objective, pass.context);
+		let task = buildPassTask(pass.objective, pass.context);
+		if (pass.checkpoint) {
+			task = instructions + "\n\n" + task;
+		} else {
+			tmp = await writeTempPrompt(pass.tier, instructions);
+			args.push("--append-system-prompt", tmp.filePath);
+		}
 
 		if (beforeSpawn && !beforeSpawn()) {
 			throw new Error("The active /pr-review loop ended before the reviewer could start.");
@@ -2907,12 +2920,19 @@ export default function registerPrReviewSubagents(
 			const dispatchPasses = passes
 				.map((pass, originalIndex) => ({ pass, originalIndex }))
 				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
-			const dispatchResults = await runWithConcurrency(dispatchPasses, reviewerConcurrency, async ({ pass, originalIndex }) => {
+			const forkTools = fileBacked ? FORK_TOOLS : config.tools;
+			const forkEvidence = fileInstructions ?? (loadedContext.contextFile ? `Original diff available at ${loadedContext.contextFile}` : undefined);
+			const dispatch = (checkpoint?: ReviewCheckpoint, evidence = forkEvidence) => runWithConcurrency(dispatchPasses, reviewerConcurrency, async ({ pass, originalIndex }) => {
 				const startOffsetMs = monotonicNow() - batchStartedAt;
+				const specialist = checkpoint && pass.tier !== "light" ? {
+					...pass,
+					checkpoint,
+					context: combineContexts(rawPasses[originalIndex]?.context, evidence),
+				} : pass;
 				const result = await runSubagentPass(
 					config,
 					ctx,
-					pass,
+					specialist,
 					executionSignal,
 					undefined,
 					() => loopCoordinator.isLeaseActive(lease, ctx),
@@ -2932,6 +2952,52 @@ export default function registerPrReviewSubagents(
 				});
 				return { result, originalIndex, startOffsetMs, endOffsetMs };
 			});
+			const requestedMode = process.env.PI_PR_REVIEW_FORK_MODE;
+			const generalContext = combineContexts(sharedContext, fileInstructions);
+			const wantsCheckpoint = passes.length > 1 && !!generalContext && requestedMode !== "independent";
+			let forkMode: "independent" | "direct" | "compact" = "independent";
+			const checkpointWarnings: string[] = [];
+			const dispatchResults = wantsCheckpoint ? await withCheckpointDirectory(async seed => {
+				const model = resolveModelAttempts(config, "heavy")[0]!.spec;
+				const args = model ? ["--model", model] : [];
+				appendTierThinkingArgs(args, model, config.thinkingLevels.heavy);
+				appendToolPolicyArgs(args, "configured", forkTools);
+				// Preparation and compaction together get at most a third of the remaining batch.
+				const preparationDeadline = reviewBudget ? {
+					deadlineMs: batchStartedAt + (reviewBudget.batchDeadlineMs - batchStartedAt) / 3,
+					terminationGraceMs: reviewBudget.config.terminationGraceMs,
+					cleanupReserveMs: reviewBudget.config.cleanupReserveMs,
+				} : undefined;
+				const run: CheckpointStep = async (stepArgs, input, responseId) => {
+					executionSignal?.throwIfAborted();
+					if (!loopCoordinator.isLeaseActive(lease, ctx)) throw new Error("Review ended before checkpoint preparation");
+					const invocation = getPiInvocation(stepArgs);
+					return runReviewSubprocess(invocation.command, invocation.args, ctx.cwd, input,
+						executionSignal, () => {}, undefined, preparationDeadline, responseId);
+				};
+				try {
+					await prepareGeneralReview(seed, args, generalContext!, run);
+				} catch (error) {
+					executionSignal?.throwIfAborted();
+					checkpointWarnings.push(`General checkpoint unavailable. Running independent reviewers. ${errMessage(error)}`);
+					return dispatch();
+				}
+				let checkpoint = seed;
+				forkMode = "direct";
+				if (requestedMode === "compact") {
+					try {
+						checkpoint = await compactReviewCheckpoint(seed, args, run);
+						forkMode = "compact";
+					} catch (error) {
+						executionSignal?.throwIfAborted();
+						checkpointWarnings.push(`Compaction unavailable. Forking the original checkpoint. ${errMessage(error)}`);
+					}
+				}
+				// An inline-only caller can still recover original evidence after compaction.
+				const evidence = forkEvidence ?? (forkMode === "compact" ? sharedContext : undefined);
+				return dispatch(checkpoint, evidence);
+			}) : await dispatch();
+
 			const scheduledResults = dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex);
 			const elapsedMs = monotonicNow() - batchStartedAt;
 			const results = scheduledResults.map((scheduled) => scheduled.result);
@@ -2942,11 +3008,13 @@ export default function registerPrReviewSubagents(
 			) as Record<ReviewLaneLifecycle, number>;
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
-				content: [{ type: "text", text: formatBatchResults(reviewMode, results, fileBacked ? "file-backed" : "embedded", [...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
+				content: [{ type: "text", text: formatBatchResults(reviewMode, results, fileBacked ? "file-backed" : "embedded", [...checkpointWarnings, ...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
 				...(incomplete.length > 0 ? { isError: true } : {}),
 				details: {
 					reviewMode,
 					reviewerCount: results.length,
+					forkMode,
+					checkpointWarnings,
 					coverageStrategy: fileBacked ? "file-backed" : "embedded",
 					majorOnly,
 					minorHygiene,
