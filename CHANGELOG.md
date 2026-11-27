@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/10ego/pi-pr-review/compare/v1.19.0...v1.20.0) (2026-11-27)
+
+
+### Features
+
+* **review:** fork specialists from a shared review checkpoint ([#154](https://github.com/10ego/pi-pr-review/issues/154)) ([a80c20a](https://github.com/10ego/pi-pr-review/commit/a80c20afb8c317099848fe7bdbe672d53b85c050))
+
 ## [1.19.0](https://github.com/10ego/pi-pr-review/compare/v1.18.1...v1.19.0) (2026-09-13)
 
 
