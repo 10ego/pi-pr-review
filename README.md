@@ -90,6 +90,22 @@ A review uses five focused passes by default:
 
 The selected mode fixes both reviewer count and concurrency; there is no user/model `max_parallel` or shard control. At 200,000 bytes and above, the same fixed reviewers receive a bounded changed-file manifest and host-enforced `read,grep,find,ls` access to the complete captured diff. Complete status requires successful reads of every host-planned range. The plan is capped at 16 reads (roughly 640 KiB, depending on line boundaries), and `context_file` is capped at 1 MiB; larger or pathological inputs fail closed because Pi's current line reader cannot safely provide non-sharded full coverage. Large inputs never multiply into extra reviewer lanes. Embedded shared/pass metadata, reviewer objectives, and aggregate metadata are independently bounded; the diff belongs only in `context_file`. Failed registered reviewers remain visible and cannot be erased by model-named reruns. If the extension is unavailable, the prompt falls back to the current Pi session model.
 
+### Shared specialist context
+
+For fresh multi-reviewer batches with shared PR context, the heavy-tier model first reviews the change and traces relevant callers and tests. A second turn in the same Pi session fills gaps and records the general review. Each specialist then runs in a native Pi fork of that checkpoint, with its own assignment appended after the shared history. The light overview keeps its existing direct-diff scope. Single-lane and incremental reviews use their existing dispatch paths.
+
+Set `PI_PR_REVIEW_FORK_MODE` in the environment that starts Pi to select a strategy.
+
+| Value | Specialist starting point |
+| --- | --- |
+| `direct` (default) | Full general-review history, including tool results |
+| `compact` | One Pi compaction of the general-review history, shared by all specialists |
+| `independent` | Each reviewer starts fresh with the original PR context |
+
+The host removes temporary session files after the batch settles. Preparation and compaction share a third of the remaining batch window. If preparation fails, reviewers receive the original PR context. If compaction fails or Pi considers the history too short, specialists receive the full checkpoint. Tool details record the effective `forkMode` and any `checkpointWarnings`. Compatible provider requests share a batch-specific prompt cache key. Actual cache reads depend on the model, tools and provider.
+
+The [historical PR pilot](docs/review-fork-pilot.md) compares review quality, cost, latency and first-request cache reads.
+
 When host lane evidence degrades or is incomplete, TUI and automation output starts with the deterministic host-owned `Comment` verdict and coverage disclosure. Any contradictory model verdict retained for evidence is relabeled as non-authoritative.
 
 ## No-write dogfooding

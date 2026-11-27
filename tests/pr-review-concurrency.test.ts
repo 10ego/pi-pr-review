@@ -10,6 +10,20 @@ async function waitFor(condition: () => boolean): Promise<void> {
 }
 
 describe("bounded review-pass scheduling", () => {
+	test("waits for active siblings before releasing a failed batch", async () => {
+		let release!: () => void;
+		const sibling = new Promise<void>(resolve => { release = resolve; });
+		let finished = false;
+		const batch = runWithConcurrency([0, 1], 2, async item => {
+			if (item === 0) throw new Error("observer failed");
+			await sibling;
+		}).catch(error => { finished = true; return error.message; });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(finished).toBeFalse();
+		release();
+		expect(await batch).toBe("observer failed");
+	});
+
 	test("starts independent workers in parallel without exceeding the concurrency cap", async () => {
 		const started: number[] = [];
 		const releases = new Map<number, () => void>();
