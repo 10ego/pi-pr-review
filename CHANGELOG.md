@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/10ego/pi-pr-review/compare/v1.20.0...v1.21.0) (2026-11-27)
+
+
+### Features
+
+* **review:** assign specialist forks distinct execution paths ([#156](https://github.com/10ego/pi-pr-review/issues/156)) ([b1fa58d](https://github.com/10ego/pi-pr-review/commit/b1fa58d35243b16c5a6db9f3f141009cfab8b436))
+
 ## [1.20.0](https://github.com/10ego/pi-pr-review/compare/v1.19.0...v1.20.0) (2026-11-27)
 
 
