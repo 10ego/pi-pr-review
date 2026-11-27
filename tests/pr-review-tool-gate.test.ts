@@ -809,7 +809,7 @@ describe("review tool execution gate", () => {
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
 
-	for (const mode of ["direct", "compact"]) {
+	for (const mode of ["direct", "compact", "compaction-unavailable"]) {
 		test(`dispatches isolated specialists from one ${mode} checkpoint`, async () => {
 			const root = mkdtempSync(path.join(os.tmpdir(), "pi-fork-dispatch-"));
 			const child = path.join(root, "child.mjs");
@@ -825,8 +825,9 @@ describe("review tool execution gate", () => {
 				if (arg("--mode") === "rpc") {
 					createInterface({input: process.stdin}).once("line", line => {
 						const {id} = JSON.parse(line);
-						appendFileSync(session, "compact\\n");
-						console.log(JSON.stringify({type:"response", command:"compact", id, success:true}));
+						const success = ${mode !== "compaction-unavailable"};
+						if (success) appendFileSync(session, "compact\\n");
+						console.log(JSON.stringify({type:"response", command:"compact", id, success, error: success ? undefined : "Nothing to compact"}));
 					});
 				} else {
 					let input = "";
@@ -843,10 +844,12 @@ describe("review tool execution gate", () => {
 				h.ctx.cwd = root;
 				h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
 				process.argv[1] = child;
-				if (mode === "compact") process.env.PI_PR_REVIEW_FORK_MODE = mode;
+				if (mode !== "direct") process.env.PI_PR_REVIEW_FORK_MODE = "compact";
 				else delete process.env.PI_PR_REVIEW_FORK_MODE;
 				const result = await h.tools.get("review_subagents").execute("checkpoint", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
-				expect(result.details).toMatchObject({ forkMode: mode, checkpointWarnings: [], reviewerCount: 3, incompleteCount: 0 });
+				expect(result.details).toMatchObject({ forkMode: mode === "compact" ? "compact" : "direct", reviewerCount: 3, incompleteCount: 0 });
+				if (mode === "compaction-unavailable") expect(result.details.checkpointWarnings[0]).toContain("Nothing to compact");
+				else expect(result.details.checkpointWarnings).toEqual([]);
 				const calls = readFileSync(path.join(root, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
 				expect(calls.map(call => call.isFork)).toEqual([false, false, true, true, true]);
 				expect(calls[0].session).toBe(calls[1].session);
