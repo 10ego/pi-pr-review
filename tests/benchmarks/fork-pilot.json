@@ -1,0 +1,613 @@
+[
+  {
+    "revision": "3e2753c",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 512,
+    "order": [
+      "direct",
+      "compact"
+    ],
+    "general": {
+      "wallMs": 40835,
+      "usage": {
+        "input": 22410,
+        "output": 1329,
+        "cacheRead": 118528,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.081816
+      }
+    },
+    "checkpointSha256": "600a8a535f86636feaf0b6a9608a4fb355c06c1460f1e0528fbabc1c2ae6b45b",
+    "direct": {
+      "wallMsIncludingGeneral": 52702,
+      "usageIncludingGeneral": {
+        "input": 55230,
+        "output": 1959,
+        "cacheRead": 187776,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.167605
+      },
+      "specialistReads": 9,
+      "specialistReadsOfGeneralFiles": 7,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 27689,
+            "output": 306,
+            "cacheRead": 23168,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.063072
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare the deep pass’s completion contract in the batch tool schema\n- severity: P2\n- why: When `--deep` supplies the newly required `expected_output: \"nonempty\"`, the `review_subagents` pass schema does not declare that property. If tool validation rejects or strips undeclared properties, `pass.expected_output` is unavailable at dispatch, so the reviewer retains the exact `NO FINDINGS.` instruction and an overview-only no-findings response is classified `partial`. The single-pass rerun path also cannot carry this contract, leaving the deep lane incomplete after a rerun.\n- location: extensions/pr-review-subagent.ts:1852\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.94"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 5131,
+            "output": 324,
+            "cacheRead": 46080,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.022718
+          },
+          "firstRequestCacheRead": 22912,
+          "review": "- title: [P2] Declare and forward the deep pass’s output contract\n- severity: P2\n- why: With `--deep`, the prompt requires `expected_output: \"nonempty\"` on the batch pass, but `ReviewSubagentsParams.passes` does not declare that property. The new mapping therefore cannot reliably receive it through the tool contract. Without it, a successful prose-only no-findings response is classified `partial` rather than `complete`, defeating this change. The documented single-pass fallback also has neither the parameter nor forwarding needed to preserve the contract.\n- location: extensions/pr-review-subagent.ts:1852\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.98"
+        }
+      ]
+    },
+    "compact": {
+      "wallMsIncludingGeneral": 80481,
+      "usageIncludingGeneral": {
+        "input": 59329,
+        "output": 2881,
+        "cacheRead": 133632,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.174194
+      },
+      "specialistReads": 9,
+      "specialistReadsOfGeneralFiles": 7,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 13595,
+            "output": 445,
+            "cacheRead": 12288,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.034098
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare the deep pass’s completion contract in the batch tool schema\n  severity: P2\n  why: With `--deep`, the prompt requires `expected_output: \"nonempty\"`, and the new batch mapping reads it, but the pass schema does not declare it. If the tool runtime rejects or drops undeclared properties, the pass cannot receive that contract; a successful prose no-findings response is then classified `partial` rather than `complete`. The runtime’s exact handling of the extra property remains unverified.\n  location: extensions/pr-review-subagent.ts:1852-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.88"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 11839,
+            "output": 310,
+            "cacheRead": 2816,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.027341
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare `expected_output` in the batch pass schema\n  severity: P2\n  why: The new `--deep` instruction requires `expected_output: \"nonempty\"`, but `ReviewSubagentsParams.passes` does not expose that field. A schema-conforming batch call cannot supply it, so the new mapping receives `undefined`; a successful deep review containing overview prose and a prose no-findings statement is then classified as partial rather than complete. Rerunning through `review_subagent` cannot preserve the contract either, because its schema and execute path omit the field.\n  location: extensions/pr-review-subagent.ts:1852-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.94"
+        }
+      ],
+      "compaction": {
+        "wallMs": 17505,
+        "usage": {
+          "input": 11485,
+          "output": 797,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "estimatedUSD": 0.03094
+        }
+      }
+    }
+  },
+  {
+    "revision": "e8339a0",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 512,
+    "order": [
+      "compact",
+      "direct"
+    ],
+    "general": {
+      "wallMs": 31412,
+      "usage": {
+        "input": 32497,
+        "output": 850,
+        "cacheRead": 134656,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.100425
+      }
+    },
+    "checkpointSha256": "f6c8416b274a0a8c99e3d962c3603e6541c810602bbc744a2edb2f47af58c119",
+    "compact": {
+      "wallMsIncludingGeneral": 79451,
+      "usageIncludingGeneral": {
+        "input": 116284,
+        "output": 2699,
+        "cacheRead": 240384,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.307635
+      },
+      "specialistReads": 7,
+      "specialistReadsOfGeneralFiles": 3,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 34741,
+            "output": 490,
+            "cacheRead": 80000,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.090382
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Keep JSON output repair on a compatible completion contract\n  severity: P2\n  why: When output repair is invoked and the repair subagent successfully returns the JSON object it was instructed to produce, the new `nonempty` parser requires Markdown beginning with `Review status: COMPLETE`. The attempt becomes partial, so `repairReviewOutput` returns `undefined` instead of the repaired review.\n  location: lib/pr-review-artifacts.ts:423-425\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.96"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 20166,
+            "output": 519,
+            "cacheRead": 25728,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.050668
+          },
+          "firstRequestCacheRead": 2688,
+          "review": "- title: [P2] Preserve the JSON output-repair completion contract\n  severity: P2\n  why: `repairReviewOutput` requests JSON-only output with `expectedOutput: \"nonempty\"` and returns it only when the pass is complete. The new classifier requires that output to begin with `Review status: COMPLETE` and follow the Markdown review grammar. A correctly formatted JSON repair response is therefore always partial, so output repair cannot return its result.\n  location: lib/pr-review-artifacts.ts:424-424\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.98"
+        }
+      ],
+      "compaction": {
+        "wallMs": 18686,
+        "usage": {
+          "input": 28880,
+          "output": 840,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "estimatedUSD": 0.06616
+        }
+      }
+    },
+    "direct": {
+      "wallMsIncludingGeneral": 52387,
+      "usageIncludingGeneral": {
+        "input": 102794,
+        "output": 1638,
+        "cacheRead": 235776,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.269123
+      },
+      "specialistReads": 7,
+      "specialistReadsOfGeneralFiles": 6,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 34527,
+            "output": 343,
+            "cacheRead": 33152,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.079114
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P1] Remove the duplicate light-section implementation\n- severity: P1\n- why: The new `hasMeaningfulLightSection` declaration duplicates the existing implementation at line 104 in the same module. TypeScript reports duplicate function implementations, blocking type-checking when `lib/pr-review-artifacts.ts` is included.\n- location: lib/pr-review-artifacts.ts:408-408\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.96"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 35770,
+            "output": 445,
+            "cacheRead": 67968,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.089584
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P1] Remove the duplicate light-section function declaration\n- severity: P1\n- why: The added `hasMeaningfulLightSection` at line 408 duplicates the existing same-scope implementation at line 104. TypeScript reports duplicate function implementations when this module is type-checked, blocking the build.\n- location: lib/pr-review-artifacts.ts:408-408\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.99"
+        }
+      ]
+    }
+  },
+  {
+    "revision": "3e2753c",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 512,
+    "order": [
+      "compact",
+      "direct"
+    ],
+    "general": {
+      "wallMs": 46497,
+      "usage": {
+        "input": 24393,
+        "output": 1395,
+        "cacheRead": 137600,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.090256
+      }
+    },
+    "checkpointSha256": "1be73ded45d61c01f7a4b22382cc1df20079bbd8c319d9b504e1be3feb6d3732",
+    "compact": {
+      "wallMsIncludingGeneral": 82953,
+      "usageIncludingGeneral": {
+        "input": 60387,
+        "output": 3140,
+        "cacheRead": 159232,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.18402
+      },
+      "specialistReads": 13,
+      "specialistReadsOfGeneralFiles": 9,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 19618,
+            "output": 458,
+            "cacheRead": 15488,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.046914
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare the deep pass’s completion contract in the batch tool schema\n  severity: P2\n  why: With `--deep`, the prompt supplies `expected_output: \"nonempty\"`, but the batch pass schema does not declare that field. The new request mapping therefore has no supported way to receive it. A successful prose-only no-findings response is classified `partial` under the default heavy-lane contract, leaving the review evidence incomplete. The prescribed `review_subagent` rerun also lacks this contract.\n  location: extensions/pr-review-subagent.ts:1849-1849\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.94"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 5052,
+            "output": 356,
+            "cacheRead": 6144,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.014893
+          },
+          "firstRequestCacheRead": 2944,
+          "review": "- title: [P2] Expose the deep-review completion contract in the batch pass schema\n  severity: P2\n  why: With `--deep`, the prompt sends `expected_output: \"nonempty\"`, but the `review_subagents` pass schema does not declare it. The new mapping therefore has no supported way to receive the contract. If the field is omitted or stripped, a successful prose overview with no findings is classified `partial` rather than `complete`, preventing the intended deep-review result from satisfying lane completion.\n  location: extensions/pr-review-subagent.ts:1852-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.94"
+        }
+      ],
+      "compaction": {
+        "wallMs": 19443,
+        "usage": {
+          "input": 11324,
+          "output": 931,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "estimatedUSD": 0.031958
+        }
+      },
+      "verifiedForks": 2,
+      "inheritedEntries": 32
+    },
+    "direct": {
+      "wallMsIncludingGeneral": 57968,
+      "usageIncludingGeneral": {
+        "input": 34388,
+        "output": 2009,
+        "cacheRead": 237440,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.136354
+      },
+      "specialistReads": 8,
+      "specialistReadsOfGeneralFiles": 6,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 5094,
+            "output": 311,
+            "cacheRead": 49920,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.023282
+          },
+          "firstRequestCacheRead": 24576,
+          "review": "- title: [P2] Expose the deep-review completion contract through the review tools\n  severity: P2\n  why: With `--deep` and no findings, the changed prompt requests `expected_output: \"nonempty\"` and a prose no-findings response. The batch pass schema does not declare `expected_output`, so the new mapping receives no value through the tool interface. The response is then classified under the ordinary heavy-lane contract as `partial`. The prescribed `review_subagent` rerun also lacks the field and mapping, so it cannot restore that contract.\n  location: extensions/pr-review-subagent.ts:1849-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.96"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 4901,
+            "output": 303,
+            "cacheRead": 49920,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.022816
+          },
+          "firstRequestCacheRead": 24576,
+          "review": "- title: [P2] Expose the deep-review completion contract in the tool schemas\n- severity: P2\n- why: With `--deep`, the prompt requests `expected_output: \"nonempty\"`, but the batch pass schema does not declare that field. The new mapping therefore has no declared input through which to receive it. A successful deep review containing an overview and a prose no-findings statement is classified `partial` under the default heavy-lane contract. The prescribed `review_subagent` rerun also lacks the field in both its schema and request mapping, so it cannot preserve the contract.\n- location: extensions/pr-review-subagent.ts:1852\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.97"
+        }
+      ],
+      "verifiedForks": 2,
+      "inheritedEntries": 31
+    }
+  },
+  {
+    "revision": "e8339a0",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 512,
+    "order": [
+      "direct",
+      "compact"
+    ],
+    "general": {
+      "wallMs": 33255,
+      "usage": {
+        "input": 35657,
+        "output": 851,
+        "cacheRead": 141312,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.108086
+      }
+    },
+    "checkpointSha256": "82c9757d2ccf8e4c0b907dbf0db3d8fcb1311cae0e1282da423ffe1ad6785b25",
+    "direct": {
+      "wallMsIncludingGeneral": 49294,
+      "usageIncludingGeneral": {
+        "input": 79798,
+        "output": 1612,
+        "cacheRead": 290560,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.233828
+      },
+      "specialistReads": 7,
+      "specialistReadsOfGeneralFiles": 5,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 41308,
+            "output": 389,
+            "cacheRead": 77312,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.101968
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P1] Remove the duplicate light-section implementation\n- severity: P1\n- why: The added `hasMeaningfulLightSection` implementation duplicates the existing function at line 104. TypeScript reports duplicate function implementations when this module is type-checked, blocking a checked build for every review mode.\n- location: lib/pr-review-artifacts.ts:408-408\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.99"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 2833,
+            "output": 372,
+            "cacheRead": 71936,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.023773
+          },
+          "firstRequestCacheRead": 35584,
+          "review": "- title: [P1] Remove the duplicate light-section parser implementation\n- severity: P1\n- why: `hasMeaningfulLightSection` already has an implementation at line 104. Adding a second implementation in the same module causes a TypeScript duplicate-function-implementation error, blocking type-checking or builds that type-check this PR.\n- location: lib/pr-review-artifacts.ts:408-408\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.99"
+        }
+      ],
+      "verifiedForks": 2,
+      "inheritedEntries": 22
+    },
+    "compact": {
+      "wallMsIncludingGeneral": 67219,
+      "usageIncludingGeneral": {
+        "input": 110313,
+        "output": 2291,
+        "cacheRead": 168704,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.277277
+      },
+      "specialistReads": 5,
+      "specialistReadsOfGeneralFiles": 3,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 22783,
+            "output": 263,
+            "cacheRead": 2816,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.048759
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P1] Remove the duplicate `hasMeaningfulLightSection` implementation\n  severity: P1\n  why: `lib/pr-review-artifacts.ts` already defines this function at line 104; the added implementation at line 408 has the same name and scope. TypeScript reports duplicate function implementations, blocking type-checking of the review lifecycle code.\n  location: lib/pr-review-artifacts.ts:408-408\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.99"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 22692,
+            "output": 297,
+            "cacheRead": 24576,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.053269
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P1] Remove the duplicate `hasMeaningfulLightSection` implementation\n  severity: P1\n  why: The PR adds a second function implementation while leaving the original at line 104. TypeScript reports duplicate function implementations when this module is type-checked, blocking the build.\n  location: lib/pr-review-artifacts.ts:408-408\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.98"
+        }
+      ],
+      "compaction": {
+        "wallMs": 18725,
+        "usage": {
+          "input": 29181,
+          "output": 880,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "estimatedUSD": 0.067162
+        }
+      },
+      "verifiedForks": 2,
+      "inheritedEntries": 23
+    }
+  },
+  {
+    "revision": "3e2753c",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 20000,
+    "order": [
+      "direct",
+      "compact"
+    ],
+    "general": {
+      "wallMs": 39018,
+      "usage": {
+        "input": 23295,
+        "output": 1311,
+        "cacheRead": 119424,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.083585
+      }
+    },
+    "checkpointSha256": "87686d8c4cedf28fb962cfc100317a7663adcce9a6d7600346a9c396a1fc0737",
+    "direct": {
+      "wallMsIncludingGeneral": 54058,
+      "usageIncludingGeneral": {
+        "input": 80893,
+        "output": 2068,
+        "cacheRead": 167808,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.216028
+      },
+      "specialistReads": 9,
+      "specialistReadsOfGeneralFiles": 7,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 28170,
+            "output": 311,
+            "cacheRead": 24192,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.064288
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare the deep pass’s completion contract in the batch schema\n- severity: P2\n- why: With `--deep`, the prompt requires `expected_output: \"nonempty\"`, but the `review_subagents` pass schema does not expose that property. The new assignment from `pass.expected_output` therefore cannot reliably receive it. A deep reviewer that follows the new instruction to return overview prose and a plain no-findings statement is classified `partial` rather than `complete`; the orchestrator must rerun or cover a finished review inline.\n- location: extensions/pr-review-subagent.ts:1852\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.97"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 29428,
+            "output": 446,
+            "cacheRead": 24192,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.068154
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Expose `expected_output` in the batch pass schema\n  severity: P2\n  why: In `--deep` mode, the prompt requests `expected_output: \"nonempty\"`, but `ReviewSubagentsParams.passes` does not declare that field. The tool call therefore cannot reliably deliver it to `pass.expected_output`. Without it, a prose no-findings response is classified as partial, defeating this change’s completion contract.\n  location: extensions/pr-review-subagent.ts:1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.98\n\n- title: [P2] Preserve the completion contract when restoring a review\n  severity: P2\n  why: If a deep lane completes with a prose no-findings response under the new `nonempty` contract and its review is saved, restoration calls `classifyReviewLane` without that contract (`lib/pr-review-publish.ts:841–859`). The same response then becomes partial, making an otherwise eligible saved approval ineligible and downgrading its verdict to `comment`.\n  location: extensions/pr-review-subagent.ts:1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.90"
+        }
+      ],
+      "verifiedForks": 2,
+      "inheritedEntries": 32
+    },
+    "compact": {
+      "wallMsIncludingGeneral": 68890,
+      "usageIncludingGeneral": {
+        "input": 70837,
+        "output": 2693,
+        "cacheRead": 170880,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.20278
+      },
+      "specialistReads": 11,
+      "specialistReadsOfGeneralFiles": 8,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 19923,
+            "output": 421,
+            "cacheRead": 15744,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.047205
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare `expected_output` in the batch pass schema\n  severity: P2\n  why: For the instructed `--deep` call, the pass schema does not expose `expected_output`, although pass construction reads it. Without that value, a prose no-findings response is classified `partial` under the heavy-lane contract rather than completing the review.\n  location: extensions/pr-review-subagent.ts:1852-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.98\n\n- title: [P2] Preserve the completion contract when restoring a deep review\n  severity: P2\n  why: Once a deep lane completes using the new `nonempty` contract, restoring an approval-eligible review reclassifies its saved prose-only output without that contract. The recheck fails and changes an approved verdict to `comment`. This bites when a saved deep review with no findings is restored.\n  location: prompts/pr-review.md:44-44\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.91"
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 23462,
+            "output": 521,
+            "cacheRead": 35712,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.059276
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Declare `expected_output` in the batch pass schema\n  severity: P2\n  why: For `--deep`, the prompt sends `expected_output: \"nonempty\"`, but the `review_subagents` pass schema does not expose that field. If the tool argument is rejected or omitted, the new mapping receives `undefined`; a valid prose no-findings response is then classified `partial` under the ordinary heavy-lane contract, defeating deep-mode completion.\n  location: extensions/pr-review-subagent.ts:1852-1852\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.97\n\n- title: [P2] Preserve the nonempty contract when restoring deep-review evidence\n  severity: P2\n  why: When a deep review completes with the newly permitted prose no-findings response and an approval-eligible synthesis is saved, restoration reclassifies its lane without `expectedOutput`. The ordinary heavy-lane check rejects that prose, so restoration clears merge-approval eligibility and changes an approved verdict to `comment`.\n  location: prompts/pr-review.md:44-44\n  side: RIGHT\n  in_diff: yes\n  pr_related: yes\n  confidence: 0.91"
+        }
+      ],
+      "compaction": {
+        "wallMs": 9754,
+        "usage": {
+          "input": 4157,
+          "output": 440,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "estimatedUSD": 0.012714
+        }
+      },
+      "verifiedForks": 2,
+      "inheritedEntries": 33
+    }
+  },
+  {
+    "revision": "e8339a0",
+    "piVersion": "1.5.2",
+    "model": "openai-codex/gpt-6-sol",
+    "keepRecentTokens": 20000,
+    "order": [
+      "compact",
+      "direct"
+    ],
+    "general": {
+      "wallMs": 28225,
+      "usage": {
+        "input": 33109,
+        "output": 959,
+        "cacheRead": 80128,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.091834
+      }
+    },
+    "checkpointSha256": "477c56247f83d5241a3131f28033d255445b74ad6d47de9b0e9a9ed8e61ab459",
+    "compact": {
+      "skipped": "Nothing to compact (session too small)"
+    },
+    "direct": {
+      "wallMsIncludingGeneral": 47032,
+      "usageIncludingGeneral": {
+        "input": 96831,
+        "output": 1733,
+        "cacheRead": 235392,
+        "cacheWrite": 0,
+        "estimatedUSD": 0.25807
+      },
+      "specialistReads": 11,
+      "specialistReadsOfGeneralFiles": 9,
+      "specialists": [
+        {
+          "lens": "lifecycle",
+          "usage": {
+            "input": 22893,
+            "output": 422,
+            "cacheRead": 121088,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.074224
+          },
+          "firstRequestCacheRead": 33408,
+          "review": "NO FINDINGS."
+        },
+        {
+          "lens": "contracts",
+          "usage": {
+            "input": 40829,
+            "output": 352,
+            "cacheRead": 34176,
+            "cacheWrite": 0,
+            "estimatedUSD": 0.092013
+          },
+          "firstRequestCacheRead": 0,
+          "review": "- title: [P2] Remove the duplicate light-section function implementation\n- severity: P2\n- why: The change adds a second top-level implementation of `hasMeaningfulLightSection` while leaving the original in place. TypeScript reports duplicate function implementations when this module is type-checked, blocking builds or CI that type-check the extension.\n- location: lib/pr-review-artifacts.ts:411-423\n- side: RIGHT\n- in_diff: yes\n- pr_related: yes\n- confidence: 0.98"
+        }
+      ],
+      "verifiedForks": 2,
+      "inheritedEntries": 19
+    }
+  }
+]

@@ -81,7 +81,16 @@ for (const [index, revision] of ["3e2753c", "e8339a0"].entries()) {
 				const directFirst = (index % 2 === 0) === (order === "AB");
 				for (const arm of directFirst ? ["direct", "compact"] : ["compact", "direct"]) {
 					const start = monotonicNow();
-					const checkpoint = arm === "direct" ? seed : await compactReviewCheckpoint(seed, modelArgs, step("compaction"));
+					let checkpoint = seed;
+					if (arm === "compact") {
+						try {
+							checkpoint = await compactReviewCheckpoint(seed, modelArgs, step("compaction"));
+						} catch (error) {
+							if (!(error instanceof Error) || !/nothing to compact/i.test(error.message)) throw error;
+							observations.push({ arm, skipped: error.message, seedSha256: digest });
+							continue;
+						}
+					}
 					const results = await Promise.all(lenses.map((lens, i) => step(arm + "-" + i)(
 						[...checkpointArgs(checkpoint, true), ...modelArgs],
 						buildSubagentSystemPrompt("heavy", true) + "\n\nObjective: " + lens + ". Review the historical change. Original diff available at " + diffFile,

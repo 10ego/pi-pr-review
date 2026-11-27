@@ -104,6 +104,8 @@ Set `PI_PR_REVIEW_FORK_MODE` in the environment that starts Pi to select a strat
 
 The host removes temporary session files after the batch settles. Preparation and compaction share a third of the remaining batch window. If preparation fails, reviewers receive the original PR context. If compaction fails or Pi considers the history too short, specialists receive the full checkpoint. Tool details record the effective `forkMode` and any `checkpointWarnings`. Compatible provider requests share a batch-specific prompt cache key. Actual cache reads depend on the model, tools and provider.
 
+The [historical PR pilot](docs/review-fork-pilot.md) compares review quality, cost, latency and first-request cache reads.
+
 When host lane evidence degrades or is incomplete, TUI and automation output starts with the deterministic host-owned `Comment` verdict and coverage disclosure. Any contradictory model verdict retained for evidence is relabeled as non-authoritative.
 
 ## No-write dogfooding
