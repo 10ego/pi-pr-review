@@ -60,9 +60,10 @@ export interface ReviewHandoff {
 
 function assignmentPrompt(roles: SpecialistRole[]): string {
 	return [
-		"Complete the general review. Record each substantiated defect you already found with its location, triggering scenario and impact for the parent to validate.",
+		"Complete the general review. Record each substantiated defect you already found with its location, triggering scenario and impact for the parent to validate. Separate observed behavior from assumptions about a framework or caller.",
 		"Allocate the remaining investigation by execution path. For each listed reviewer choose a distinct question in its scope, a real entry point (file and symbol or caller), and the evidence that would settle it.",
 		"Follow the affected producers and consumers, including secondary entry points when relevant. Shared files are fine; give each question one owner. When a scope has little exposure, assign a narrow check that can establish that.",
+		"Before returning, compare the assignments side by side. Give each failure scenario one owner. If two reviewers would check the same trigger and outcome, redirect one to a different affected entry point or consumer. State the boundary with the adjacent reviewer in the evidence field where useful.",
 		"Do not assign a settled finding for rediscovery. Keep material PR changes covered across the assignments. Return only one JSON object of this shape. Use an empty findings array if appropriate:",
 		'{"findings":["location, scenario and impact"],"assignments":[{"id":"reviewer id","entry":"path and symbol","question":"question","evidence":"what to inspect"}]}',
 		...roles.map(role => role.id + " — " + role.scope),
@@ -97,7 +98,7 @@ export function parseReviewHandoff(text: string, roles: SpecialistRole[]): Revie
 export function specialistObjective(scope: string, assignment: PathAssignment) {
 	return [
 		scope,
-		"Trace this assigned path within the host-fixed scope. Finish once the evidence settles the question and required diff reads are complete. Use the existing lane output format, including its clean result.",
+		"Trace this assigned path within the host-fixed scope. Use the other assignments in the shared checkpoint to see which adjacent checks already have an owner. Finish once the evidence settles the question and required diff reads are complete. Use the existing lane output format, including its clean result.",
 		"Entry point: " + assignment.entry,
 		"Question: " + assignment.question,
 		"Evidence to check: " + assignment.evidence,

@@ -873,6 +873,9 @@ describe("review tool execution gate", () => {
 				expect(calls[0].input).toContain("+new");
 				expect(new Set(calls.map(call => call.key)).size).toBe(1);
 				expect(new Set(calls.map(call => call.system)).size).toBe(1);
+				const duplicate = await h.tools.get("review_subagents").execute("checkpoint", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
+				expect(duplicate.isError).toBeTrue();
+				expect(readFileSync(path.join(root, "calls"), "utf8").trim().split("\n")).toHaveLength(calls.length);
 				const specialists = calls.slice(2);
 				expect(new Set(specialists.map(call => call.session)).size).toBe(1);
 				expect(new Set(specialists.map(call => call.input)).size).toBe(3);
@@ -891,6 +894,37 @@ describe("review tool execution gate", () => {
 			}
 		});
 	}
+
+	test("uses original context independently when the general review returns an invalid plan", async () => {
+		const root = mkdtempSync(path.join(os.tmpdir(), "pi-invalid-plan-"));
+		const child = path.join(root, "child.mjs");
+		writeFileSync(child, `
+			import { appendFileSync } from "node:fs";
+			let input = "";
+			for await (const chunk of process.stdin) input += chunk;
+			const sessionIndex = process.argv.indexOf("--session");
+			if (sessionIndex >= 0) appendFileSync(process.argv[sessionIndex + 1], "turn");
+			if (process.argv.includes("--no-session")) appendFileSync("independent", JSON.stringify(input) + "\\n");
+			const text = sessionIndex >= 0 ? '{"findings":[],"assignments":[]}' : "NO FINDINGS.";
+			console.log(JSON.stringify({type:"message_end",message:{role:"assistant",stopReason:"stop",content:[{type:"text",text}]}}));
+		`);
+		const originalScript = process.argv[1];
+		try {
+			process.argv[1] = child;
+			const h = harness();
+			h.ctx.cwd = root;
+			h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+			const result = await h.tools.get("review_subagents").execute("invalid-plan", { passes: quickPasses(), context: "original PR evidence" }, undefined, undefined, h.ctx);
+			expect(result.details).toMatchObject({ forkMode: "independent", incompleteCount: 0 });
+			expect(result.details.checkpointWarnings[0]).toContain("Incomplete general findings or specialist assignments");
+			const inputs = readFileSync(path.join(root, "independent"), "utf8").trim().split("\n");
+			expect(inputs).toHaveLength(3);
+			expect(inputs.every(input => input.includes("original PR evidence"))).toBeTrue();
+		} finally {
+			process.argv[1] = originalScript;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 
 	test("rejects a batch that does not match the active fixed mode", async () => {
 		const h = harness();

@@ -2894,12 +2894,14 @@ export default function registerPrReviewSubagents(
 					requestedPassOrdinal: index,
 				};
 			});
+			// Reserve this batch before spending model calls. Recovery descriptors are
+			// bound later, once the general review has allocated the paths.
 			if (!loopCoordinator.registerExpectedArtifacts(lease, passes.map((pass) => ({
 				key: pass.artifactKey,
 				tier: pass.tier,
 				minorHygiene: pass.minorHygiene === true,
 				...(pass.expectedOutput ? { expectedOutput: pass.expectedOutput } : {}),
-			})), ctx)) {
+			})), ctx) || !loopCoordinator.claimArtifact(lease, passes[0]!.artifactKey, ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
 			// Fixed mode topology is also the concurrency policy: every selected
