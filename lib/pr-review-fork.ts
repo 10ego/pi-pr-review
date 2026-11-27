@@ -41,19 +41,88 @@ export function checkpointArgs(checkpoint: ReviewCheckpoint, fork: boolean): str
 		"--review-cache-key", checkpoint.cacheKey];
 }
 
-export async function prepareGeneralReview(checkpoint: ReviewCheckpoint, modelAndTools: string[], context: string, run: CheckpointStep) {
+interface SpecialistRole {
+	id: string;
+	scope: string;
+}
+
+interface PathAssignment {
+	id: string;
+	entry: string;
+	question: string;
+	evidence: string;
+}
+
+export interface ReviewHandoff {
+	findings: string[];
+	assignments: PathAssignment[];
+}
+
+function assignmentPrompt(roles: SpecialistRole[]): string {
+	return [
+		"Complete the general review. Record each substantiated defect you already found with its location, triggering scenario and impact for the parent to validate. Separate observed behavior from assumptions about a framework or caller.",
+		"Allocate the remaining investigation by execution path. For each listed reviewer choose a distinct question in its scope, a real entry point (file and symbol or caller), and the evidence that would settle it.",
+		"Follow the affected producers and consumers, including secondary entry points when relevant. Shared files are fine; give each question one owner. When a scope has little exposure, assign a narrow check that can establish that.",
+		"If a shared interface or decision rule changes, use repository references to inventory its direct consumers, including unchanged ones. Give one reviewer the question of compatibility across their distinct inputs or modes; name the consumers to check. A representative caller alone cannot establish that all consumers still work.",
+		"Before returning, compare the assignments side by side. Give each failure scenario one owner. If two reviewers would check the same trigger and outcome, redirect one to a different affected entry point or consumer. State the boundary with the adjacent reviewer in the evidence field where useful.",
+		"Do not assign a settled finding for rediscovery. Keep material PR changes covered across the assignments. Return only one JSON object of this shape. Use an empty findings array if appropriate:",
+		'{"findings":["location, scenario and impact"],"assignments":[{"id":"reviewer id","entry":"path and symbol","question":"question","evidence":"what to inspect"}]}',
+		...roles.map(role => role.id + " — " + role.scope),
+	].join("\n");
+}
+
+function shortText(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0 && value.length <= 2048;
+}
+
+export function parseReviewHandoff(text: string, roles: SpecialistRole[]): ReviewHandoff {
+	if (Buffer.byteLength(text) > 64 * 1024) throw new Error("General handoff exceeds 64 KiB");
+	const value = JSON.parse(text);
+	if (!Array.isArray(value?.findings) || !value.findings.every(shortText) ||
+		!Array.isArray(value.assignments) || value.assignments.length !== roles.length) {
+		throw new Error("Incomplete general findings or specialist assignments");
+	}
+	const remaining = new Set(roles.map(role => role.id));
+	const questions = new Set<string>();
+	const assignments: PathAssignment[] = [];
+	for (const item of value.assignments) {
+		if (!item || !remaining.delete(item.id) || !shortText(item.entry) ||
+			!shortText(item.question) || !shortText(item.evidence)) throw new Error("Invalid specialist assignment");
+		const question = item.question.trim().replace(/\s+/g, " ").toLowerCase();
+		if (questions.has(question)) throw new Error("Duplicate specialist question");
+		questions.add(question);
+		assignments.push({ id: item.id, entry: item.entry, question: item.question, evidence: item.evidence });
+	}
+	return { findings: value.findings, assignments };
+}
+
+export function specialistObjective(scope: string, assignment: PathAssignment) {
+	return [
+		scope,
+		"Trace this assigned path within the host-fixed scope. Use the other assignments in the shared checkpoint to see which adjacent checks already have an owner. Finish once the evidence settles the question and required diff reads are complete. Use the existing lane output format, including its clean result.",
+		"Entry point: " + assignment.entry,
+		"Question: " + assignment.question,
+		"Evidence to check: " + assignment.evidence,
+		"Reuse inherited evidence. The parent validates general findings. Reopen one only for a distinct failure or unresolved evidence relevant to this path. If you incidentally substantiate a serious issue elsewhere, report it in the normal candidate format without starting another broad investigation.",
+	].join("\n");
+}
+
+export async function prepareGeneralReview(checkpoint: ReviewCheckpoint, modelAndTools: string[], context: string, run: CheckpointStep, roles?: SpecialistRole[]) {
 	const args = [...checkpointArgs(checkpoint, false), ...modelAndTools];
 	const prompts = [
 		"Read the complete change. Trace the changed behavior to its callers and tests with the available repository tools. Record concrete evidence and open questions for a general review.\n\n" + context,
-		"Complete the general review checkpoint. Resolve missing caller or contract evidence where possible. Summarize the intent, code paths inspected, and remaining uncertainty for the specialist reviewers.",
+		roles ? assignmentPrompt(roles) : "Complete the general review checkpoint. Resolve missing caller or contract evidence where possible. Summarize the intent, code paths inspected, and remaining uncertainty for the specialist reviewers.",
 	];
+	let lastText = "";
 	for (const prompt of prompts) {
 		const result = await run(args, prompt);
 		if (result.exitCode !== 0 || result.stopReason !== "stop" || !result.text.trim()) {
 			throw new Error(result.errorMessage || result.stderr || "General review did not complete");
 		}
+		lastText = result.text;
 		if (!(await stat(checkpoint.path)).size) throw new Error("Pi did not persist the general review");
 	}
+	return roles ? parseReviewHandoff(lastText, roles) : undefined;
 }
 
 export async function compactReviewCheckpoint(checkpoint: ReviewCheckpoint, modelAndTools: string[], run: CheckpointStep) {

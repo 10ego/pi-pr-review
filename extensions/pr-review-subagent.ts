@@ -61,7 +61,7 @@ import {
 } from "../lib/pr-review-artifacts.ts";
 import { reviewCandidateDispositionRegistry, type ReviewCandidateRecord } from "../lib/pr-review-candidates.ts";
 import { retainedReviewCandidateTexts } from "../lib/pr-review-markdown.ts";
-import { checkpointArgs, compactReviewCheckpoint, FORK_TOOLS, prepareGeneralReview, withCheckpointDirectory, type CheckpointStep, type ReviewCheckpoint } from "../lib/pr-review-fork.ts";
+import { checkpointArgs, compactReviewCheckpoint, FORK_TOOLS, prepareGeneralReview, withCheckpointDirectory, type CheckpointStep, type ReviewCheckpoint, type ReviewHandoff, specialistObjective } from "../lib/pr-review-fork.ts";
 import { runWithConcurrency } from "../lib/pr-review-concurrency.ts";
 import { activateReviewBatch, attemptDeadline, fallbackBudget, type ReviewBudget } from "../lib/pr-review-deadlines.ts";
 import { buildExtractionSystemPrompt, buildExtractionTask, MAX_EXTRACTION_OUTPUT_BYTES } from "../lib/pr-review-extract.ts";
@@ -1595,6 +1595,7 @@ function formatBatchResults(
 	results: SubagentPassResult[],
 	coverageStrategy: "embedded" | "file-backed",
 	warnings: readonly string[] = [],
+	generalFindings: readonly string[] = [],
 ): string {
 	const lifecycleCounts = Object.fromEntries(
 		(["complete", "partial", "timed_out", "failed"] as const).map((state) => [state, results.filter((r) => r.status === state).length]),
@@ -1607,6 +1608,8 @@ function formatBatchResults(
 		`Review mode: ${modeLabel}. Reviewers completed: ${lifecycleCounts.complete}/${results.length} (partial=${lifecycleCounts.partial}; timed_out=${lifecycleCounts.timed_out}; failed=${lifecycleCounts.failed}). Coverage strategy: ${coverageStrategy}.`,
 		...warnings,
 	];
+	if (generalFindings.length) lines.push("General-review candidates for parent validation:", ...generalFindings);
+
 	if (externalTotal > 0) {
 		const kinds = (["total", "synthesis"] as const).filter((kind) => externalDeadlines[kind] > 0).join("/");
 		lines.push(
@@ -2891,22 +2894,14 @@ export default function registerPrReviewSubagents(
 					requestedPassOrdinal: index,
 				};
 			});
+			// Reserve this batch before spending model calls. Recovery descriptors are
+			// bound later, once the general review has allocated the paths.
 			if (!loopCoordinator.registerExpectedArtifacts(lease, passes.map((pass) => ({
 				key: pass.artifactKey,
 				tier: pass.tier,
 				minorHygiene: pass.minorHygiene === true,
 				...(pass.expectedOutput ? { expectedOutput: pass.expectedOutput } : {}),
-			})), ctx) || !loopCoordinator.registerFreshRecoveryDescriptors(lease, passes.map((pass, index) => ({
-				key: pass.artifactKey,
-				scope: topology[index]!.scope,
-				context: pass.context,
-				toolPolicy: pass.toolPolicy,
-				toolNames: pass.toolNames,
-				majorOnly: pass.majorOnly,
-				fileBackedContext: pass.fileBackedContext,
-				fileBackedContextPath: pass.fileBackedContextPath,
-				fileBackedRequiredReads: pass.fileBackedRequiredReads,
-			})), ctx)) {
+			})), ctx) || !loopCoordinator.claimArtifact(lease, passes[0]!.artifactKey, ctx)) {
 				return reviewLoopDeniedResult("review_subagents");
 			}
 			// Fixed mode topology is also the concurrency policy: every selected
@@ -2922,36 +2917,59 @@ export default function registerPrReviewSubagents(
 				.sort((a, b) => tierPriority[a.pass.tier] - tierPriority[b.pass.tier] || a.originalIndex - b.originalIndex);
 			const forkTools = fileBacked ? FORK_TOOLS : config.tools;
 			const forkEvidence = fileInstructions ?? (loadedContext.contextFile ? `Original diff available at ${loadedContext.contextFile}` : undefined);
-			const dispatch = (checkpoint?: ReviewCheckpoint, evidence = forkEvidence) => runWithConcurrency(dispatchPasses, reviewerConcurrency, async ({ pass, originalIndex }) => {
-				const startOffsetMs = monotonicNow() - batchStartedAt;
-				const specialist = checkpoint && pass.tier !== "light" ? {
-					...pass,
-					checkpoint,
-					context: combineContexts(rawPasses[originalIndex]?.context, evidence),
-				} : pass;
-				const result = await runSubagentPass(
-					config,
-					ctx,
-					specialist,
-					executionSignal,
-					undefined,
-					() => loopCoordinator.isLeaseActive(lease, ctx),
-					reviewBudget,
-				);
-				const endOffsetMs = monotonicNow() - batchStartedAt;
-				result.startOffsetMs = startOffsetMs;
-				result.endOffsetMs = endOffsetMs;
-				retainPassArtifact(pass, result);
-				onUpdate?.({
-					content: [
-						{
-							type: "text",
-							text: `review_subagents: pass ${result.id} ${result.status} (${result.notice})`,
-						},
-					],
+			let handoff: ReviewHandoff | undefined;
+			const assignedScope = (index: number) => {
+				const fixed = topology[index]!;
+				const assignment = handoff?.assignments.find(item => item.id === fixed.id);
+				return assignment ? specialistObjective(fixed.scope, assignment) : fixed.scope;
+			};
+			const dispatch = async (checkpoint?: ReviewCheckpoint, evidence = forkEvidence) => {
+				const scopes = passes.map((_, i) => assignedScope(i));
+				if (!loopCoordinator.registerFreshRecoveryDescriptors(lease, passes.map((pass, index) => ({
+					key: pass.artifactKey,
+					scope: scopes[index]!,
+					context: pass.tier !== "light" && handoff?.findings.length
+						? combineContexts(pass.context, "Already referred for parent validation:\n" + handoff.findings.join("\n"))
+						: pass.context,
+					toolPolicy: pass.toolPolicy,
+					toolNames: pass.toolNames,
+					majorOnly: pass.majorOnly,
+					fileBackedContext: pass.fileBackedContext,
+					fileBackedContextPath: pass.fileBackedContextPath,
+					fileBackedRequiredReads: pass.fileBackedRequiredReads,
+				})), ctx)) return undefined;
+				return runWithConcurrency(dispatchPasses, reviewerConcurrency, async ({ pass, originalIndex }) => {
+					const startOffsetMs = monotonicNow() - batchStartedAt;
+					const specialist = checkpoint && pass.tier !== "light" ? {
+						...pass,
+						objective: handoff ? rawPasses[originalIndex]!.objective + "\n\nHost-fixed reviewer scope: " + scopes[originalIndex] : pass.objective,
+						checkpoint,
+						context: combineContexts(rawPasses[originalIndex]?.context, evidence),
+					} : pass;
+					const result = await runSubagentPass(
+						config,
+						ctx,
+						specialist,
+						executionSignal,
+						undefined,
+						() => loopCoordinator.isLeaseActive(lease, ctx),
+						reviewBudget,
+					);
+					const endOffsetMs = monotonicNow() - batchStartedAt;
+					result.startOffsetMs = startOffsetMs;
+					result.endOffsetMs = endOffsetMs;
+					retainPassArtifact(pass, result);
+					onUpdate?.({
+						content: [
+							{
+								type: "text",
+								text: `review_subagents: pass ${result.id} ${result.status} (${result.notice})`,
+							},
+						],
+					});
+					return { result, originalIndex, startOffsetMs, endOffsetMs };
 				});
-				return { result, originalIndex, startOffsetMs, endOffsetMs };
-			});
+			};
 			const requestedMode = process.env.PI_PR_REVIEW_FORK_MODE;
 			const generalContext = combineContexts(sharedContext, fileInstructions);
 			const wantsCheckpoint = passes.length > 1 && !!generalContext && requestedMode !== "independent";
@@ -2976,7 +2994,7 @@ export default function registerPrReviewSubagents(
 						executionSignal, () => {}, undefined, preparationDeadline, responseId);
 				};
 				try {
-					await prepareGeneralReview(seed, args, generalContext!, run);
+					handoff = await prepareGeneralReview(seed, args, generalContext!, run, topology.filter(role => role.tier !== "light"));
 				} catch (error) {
 					executionSignal?.throwIfAborted();
 					checkpointWarnings.push(`General checkpoint unavailable. Running independent reviewers. ${errMessage(error)}`);
@@ -2998,6 +3016,7 @@ export default function registerPrReviewSubagents(
 				return dispatch(checkpoint, evidence);
 			}) : await dispatch();
 
+			if (!dispatchResults) return reviewLoopDeniedResult("review_subagents");
 			const scheduledResults = dispatchResults.sort((a, b) => a.originalIndex - b.originalIndex);
 			const elapsedMs = monotonicNow() - batchStartedAt;
 			const results = scheduledResults.map((scheduled) => scheduled.result);
@@ -3008,12 +3027,17 @@ export default function registerPrReviewSubagents(
 			) as Record<ReviewLaneLifecycle, number>;
 			const usedTiers = [...new Set(passes.map((pass) => pass.tier))];
 			return {
-				content: [{ type: "text", text: formatBatchResults(reviewMode, results, fileBacked ? "file-backed" : "embedded", [...checkpointWarnings, ...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])]) }],
+				content: [{ type: "text", text: formatBatchResults(
+					reviewMode, results, fileBacked ? "file-backed" : "embedded",
+					[...checkpointWarnings, ...thinkingWarnings(config, usedTiers), ...(lease.budget?.warnings ?? [])],
+					handoff?.findings,
+				) }],
 				...(incomplete.length > 0 ? { isError: true } : {}),
 				details: {
 					reviewMode,
 					reviewerCount: results.length,
 					forkMode,
+					...(handoff ? { handoff } : {}),
 					checkpointWarnings,
 					coverageStrategy: fileBacked ? "file-backed" : "embedded",
 					majorOnly,
