@@ -26,6 +26,8 @@ const REQUIRED_PACKAGE_PATHS = Object.freeze([
 	"lib/pr-review-context.ts",
 	"lib/pr-review-extract.ts",
 	"lib/pr-review-focus.ts",
+	"lib/pr-review-fork.ts",
+	"lib/pr-review-cache-key.ts",
 	"lib/pr-review-loop.ts",
 	"lib/pr-review-markdown.ts",
 	"lib/pr-review-policy.ts",

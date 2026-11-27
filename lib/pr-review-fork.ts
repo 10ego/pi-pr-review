@@ -36,7 +36,7 @@ export async function withCheckpointDirectory<T>(work: (checkpoint: ReviewCheckp
 export function checkpointArgs(checkpoint: ReviewCheckpoint, fork: boolean): string[] {
 	const args = buildReviewBaseArgs().filter(arg => arg !== "--no-session");
 	return [...args, fork ? "--fork" : "--session", checkpoint.path, "--session-dir", checkpoint.directory,
-		"--system-prompt", FORK_SYSTEM, "-e", fileURLToPath(new URL("./pr-review-cache-key.ts", import.meta.url)),
+		"--append-system-prompt", FORK_SYSTEM, "-e", fileURLToPath(new URL("./pr-review-cache-key.ts", import.meta.url)),
 		"--review-cache-key", checkpoint.cacheKey];
 }
 

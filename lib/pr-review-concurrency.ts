@@ -12,6 +12,11 @@ export async function runWithConcurrency<T, R>(
 			results[index] = await worker(items[index]!, index);
 		}
 	});
-	await Promise.all(workers);
+	// The shared session directory must outlive every in-flight reviewer, including
+	// siblings of a worker whose progress callback or result processing threw.
+	const outcomes = await Promise.allSettled(workers);
+	for (const outcome of outcomes) {
+		if (outcome.status === "rejected") throw outcome.reason;
+	}
 	return results;
 }

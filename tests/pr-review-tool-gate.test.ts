@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -808,6 +808,68 @@ describe("review tool execution gate", () => {
 			expect(result.content[0].text).toContain("Review mode: Quick. Reviewers completed: 3/3");
 		} finally { process.argv[1] = originalScript; rmSync(root, { recursive: true, force: true }); }
 	});
+
+	for (const mode of ["direct", "compact"]) {
+		test(`dispatches isolated specialists from one ${mode} checkpoint`, async () => {
+			const root = mkdtempSync(path.join(os.tmpdir(), "pi-fork-dispatch-"));
+			const child = path.join(root, "child.mjs");
+			const diff = path.join(root, "review.patch");
+			writeFileSync(diff, "diff --git a/cart b/cart\n-old\n+new");
+			writeFileSync(child, `
+				import { appendFileSync, readFileSync } from "node:fs";
+				import { createInterface } from "node:readline";
+				const arg = key => process.argv[process.argv.indexOf(key) + 1];
+				const isFork = process.argv.includes("--fork");
+				const session = arg(isFork ? "--fork" : "--session");
+				const record = data => appendFileSync("calls", JSON.stringify(data) + "\\n");
+				if (arg("--mode") === "rpc") {
+					createInterface({input: process.stdin}).once("line", line => {
+						const {id} = JSON.parse(line);
+						appendFileSync(session, "compact\\n");
+						console.log(JSON.stringify({type:"response", command:"compact", id, success:true}));
+					});
+				} else {
+					let input = "";
+					for await (const chunk of process.stdin) input += chunk;
+					if (!isFork) appendFileSync(session, "turn\\n");
+					record({ isFork, session, input, history: readFileSync(session, "utf8"), key: arg("--review-cache-key"), system: arg("--append-system-prompt") });
+					console.log(JSON.stringify({type:"message_end", message:{role:"assistant",stopReason:"stop",content:[{type:"text",text:"NO FINDINGS."}]}}));
+				}
+			`);
+			const originalScript = process.argv[1];
+			const priorMode = process.env.PI_PR_REVIEW_FORK_MODE;
+			try {
+				const h = harness();
+				h.ctx.cwd = root;
+				h.coordinator.begin(parsePublishMode("/pr-review 7 --quick"), resolveAutoPostSetting({ autoPostReviews: false }), "interactive", h.ctx);
+				process.argv[1] = child;
+				if (mode === "compact") process.env.PI_PR_REVIEW_FORK_MODE = mode;
+				else delete process.env.PI_PR_REVIEW_FORK_MODE;
+				const result = await h.tools.get("review_subagents").execute("checkpoint", { passes: quickPasses(), context_file: diff }, undefined, undefined, h.ctx);
+				expect(result.details).toMatchObject({ forkMode: mode, checkpointWarnings: [], reviewerCount: 3, incompleteCount: 0 });
+				const calls = readFileSync(path.join(root, "calls"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+				expect(calls.map(call => call.isFork)).toEqual([false, false, true, true, true]);
+				expect(calls[0].session).toBe(calls[1].session);
+				expect(calls[0].input).toContain("+new");
+				expect(new Set(calls.map(call => call.key)).size).toBe(1);
+				expect(new Set(calls.map(call => call.system)).size).toBe(1);
+				const specialists = calls.slice(2);
+				expect(new Set(specialists.map(call => call.session)).size).toBe(1);
+				expect(new Set(specialists.map(call => call.input)).size).toBe(3);
+				for (const call of specialists) {
+					expect(call.history).toBe(mode === "compact" ? "turn\nturn\ncompact\n" : "turn\nturn\n");
+					expect(call.input).toContain("Host-fixed reviewer scope:");
+					expect(call.input).not.toContain("+new");
+					expect(existsSync(call.session)).toBeFalse();
+				}
+			} finally {
+				process.argv[1] = originalScript;
+				if (priorMode === undefined) delete process.env.PI_PR_REVIEW_FORK_MODE;
+				else process.env.PI_PR_REVIEW_FORK_MODE = priorMode;
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
 
 	test("rejects a batch that does not match the active fixed mode", async () => {
 		const h = harness();
